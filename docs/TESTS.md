@@ -27,8 +27,8 @@ ten map changes, and per tool where relevant.
 | T-14 | `tasks/cancel` on a long `wait_for` task | status `cancelled`, the wait is interrupted | ✅ 2026-11-07 |
 | T-15 | `tools/call` with invalid arguments (unknown property, wrong type) | `isError`, `invalid_params` | ✅ 2026-11-07 |
 | T-16 | Claude Code: `claude mcp add --transport http …` then `claude mcp list` | "✔ Connected" | ✅ 2026-11-07 |
-| T-17 | Claude Code: call `status` and `lua_exec` from the MCP client | same results as curl | ⏳ (requires `/mcp`) |
-| T-18 | restart the game while Claude Code is connected | reconnection documented (README) | ⏳ |
+| T-17 | Claude Code (v2.1.319): `status`, `lua_exec` (3 realms), `trace_through`, `debug_draw`, `screenshot_from` from the MCP client | same results as curl; image delivered inline; `map_load` runs as an MCP Task (extension 2026-07-28), backgrounded by Claude Code and reported on completion | ✅ 2026-11-07 |
+| T-18 | restart the game while Claude Code is connected; call a tool while the game is closed | next call after the restart works without `/mcp` (stateless server); while closed: immediate `ECONNREFUSED` | ✅ 2026-11-07 |
 
 ## Session and lifecycle
 

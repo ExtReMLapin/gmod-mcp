@@ -64,8 +64,9 @@ claude mcp add --transport http gmod http://127.0.0.1:27080/mcp --header "Author
 
 Restart Claude Code. That's it. The same output also shows a `.mcp.json` snippet for other MCP clients (Streamable
 HTTP + bearer token). The token is created once in `%APPDATA%\gmod-mcp\token` (Linux: `~/.config/gmod-mcp/token`), never
-changes, and is only printed when you ask for it — keep it private. If you restart the game while Claude Code is open,
-run `/mcp` to reconnect.
+changes, and is only printed when you ask for it — keep it private. You can quit and restart the game while Claude Code
+stays open: calls fail with "connection refused" while the game is closed and work again as soon as it is back (the
+server keeps no session).
 
 ### Dedicated server
 
