@@ -63,6 +63,18 @@ static json map_load_impl(const json &args) {
             if (!d.value("ok", false)) return d;
         }
     }
+    // Let the menu's HTML loading screen settle before starting a new load: back-to-back transitions crash the game's
+    // embedded Chromium (html_chromium.dll). Wait until the menu is idle, then ~30 frames.
+    if (agent::config().mode == agent::Mode::Client) {
+        auto tw = Clock::now();
+        while (since(tw) < 15.0) {
+            json idle = agent::rt(realms::MENU, "menu_idle", json::object(), 5.0);
+            if (idle.value("ok", false) && !idle["result"].value("loading", true)) break;
+            plat::sleep_ms(100);
+        }
+        uint64_t f0 = jobs::frame_count();
+        while (jobs::frame_count() < f0 + 30 && since(tw) < 20.0) plat::sleep_ms(10);
+    }
     uint64_t gs = agent::generation(realms::SERVER), gc = agent::generation(realms::CLIENT);
     uint64_t cursor = events::cursor_now();
     json p{{"map", map}};

@@ -78,8 +78,6 @@ function H.status(args)
 		s.in_game = IsInGame and IsInGame() or false
 		s.loading = IsInLoading and IsInLoading() or false
 		s.gamemode = engine and engine.ActiveGamemode and engine.ActiveGamemode() or nil
-		local okc, cv = pcall(GetConVar, "maxplayers")
-		s.maxplayers = okc and cv and cv:GetInt() or nil
 		s.jit = { os = jit and jit.os, arch = jit and jit.arch, version = jit and jit.version }
 	else
 		s.map = game.GetMap()

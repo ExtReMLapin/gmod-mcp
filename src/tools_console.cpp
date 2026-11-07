@@ -73,6 +73,14 @@ static json console_exec_tool(const json &args) {
     uint64_t ev0 = events::cursor_now();
     auto parts = util::split_args(cmd);
     bool is_connect = !parts.empty() && util::to_lower(parts[0]) == "connect" && agent::config().mode == agent::Mode::Client;
+    // Connecting while this game still runs (or hosts) a map crashes the engine: leave the current game first.
+    if (is_connect && (agent::realm_present(realms::SERVER) || agent::realm_present(realms::CLIENT))) {
+        // Internal call: target this instance explicitly (otherwise the ambiguous_instance guard would refuse it).
+        json d = mcp::call_tool("disconnect", json{{"instance", agent::config().instance_id}});
+        if (d.value("isError", false)) return agent::err("busy", "could not leave the current game before connecting", d["structuredContent"]);
+        c0 = console::cursor_now();
+        ev0 = events::cursor_now();
+    }
     json res = agent::rt(r, "console_exec", json{{"cmd", cmd}});
     if (!res.value("ok", false)) return res;
     json out = json{{"cmd", cmd}, {"realm", realms::name(r)}, {"via", realms::name(r)}};

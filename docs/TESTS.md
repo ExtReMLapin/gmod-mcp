@@ -7,6 +7,28 @@ Procedure conventions: `call <tool> {args}` denotes a `tools/call`; "in game" = 
 "Persistence across map changes" scenarios are covered globally by **X-01**, which calls all three realms between
 ten map changes, and per tool where relevant.
 
+
+## Final campaign
+
+Two consecutive full passes, each starting from a cold game start (ad-hoc harness, not part of the deliverable): the
+functional scenarios of this matrix (session, Lua, console, world, rendering, sound, documentation, X-01 with 10 map
+changes), the 75-check hardening battery, and the dedicated-server part (registration, `ambiguous_instance`, relay,
+remote LAN machine refused, connection from a hosted game to the local srcds, net message srcds -> client, coordinator
+re-election).
+
+| Pass | Result | Date |
+|---|---|---|
+| A (cold start) | **140/140** ✅ | 2026-11-07 |
+| B (cold start, after A) | **140/140** ✅ | 2026-11-07 |
+
+Issues found by the campaign and fixed before these two passes:
+- `connect` while the game hosts a map crashed the engine (access violation in `engine.dll`): `console_exec connect`
+  now leaves the current game first.
+- Back-to-back map transitions (disconnect + maxplayers + map) intermittently crashed the game's embedded Chromium
+  (`html_chromium.dll`): `map_load` now waits for the menu's loading screen to close plus ~30 frames before a new load.
+- An internal call was refused by the `ambiguous_instance` guard; the menu `status` spammed
+  "Tried to look up command maxplayers as if it were a variable".
+
 ## Transport and security
 
 | ID | Procedure | Expected | Last result |
