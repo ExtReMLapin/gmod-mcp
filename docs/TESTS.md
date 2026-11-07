@@ -38,7 +38,7 @@ Issues found by the campaign and fixed before these two passes:
 | T-03 | request without token / wrong token | HTTP 401 `unauthorized` | ✅ 2026-11-07 |
 | T-04 | valid token + `Origin: http://evil.example`; `Origin: null` | HTTP 403 `origin_forbidden` | ✅ 2026-11-07 |
 | T-05 | valid token + `Host: evil.example:27080` (DNS rebinding) | HTTP 403 `host_forbidden` | ✅ 2026-11-07 |
-| T-06 | POST to the LAN address (192.168.0.14:27080) | connection refused (loopback bind) | ✅ 2026-11-07 |
+| T-06 | POST to the LAN address (192.168.1.10:27080) | connection refused (loopback bind) | ✅ 2026-11-07 |
 | T-07 | `GET /mcp` | HTTP 405 | ✅ 2026-11-07 |
 | T-08 | `server/discover` (2026-07-28 era, `MCP-Protocol-Version`/`Mcp-Method` headers) | `supportedVersions`, `io.modelcontextprotocol/tasks` extension, `resultType:"complete"` | ✅ 2026-11-07 |
 | T-09 | 2026-07-28 era: `Mcp-Name` ≠ tool name | HTTP 400, `-32020` HeaderMismatch | ✅ 2026-11-07 |
@@ -110,7 +110,7 @@ Issues found by the campaign and fixed before these two passes:
 | C-01 | `console_exec "echo bonjour_mcp"` (menu: blocked in Lua) | `blocked_in_lua`, `via:"engine"`, output captured | ✅ 2026-11-07 |
 | C-02 | `console_exec` client realm, blocked command | engine fallback, output captured | ✅ 2026-11-07 |
 | C-03 | `console_exec "path"` (multi-line output) | several dozen lines | ✅ 2026-11-07 |
-| C-04 | `console_exec "connect 192.168.0.14:27015"` | `forbidden` (never a remote server) | ✅ 2026-11-07 |
+| C-04 | `console_exec "connect 192.168.1.99:27015"` (another machine) | `forbidden` (never a remote server) | ✅ 2026-11-07 |
 | C-05 | `console_read {regex:"bonjour_mcp"}` | filtered lines | ✅ 2026-11-07 |
 | C-06 | `console_read` with a cursor older than an overflow (reduced capacity) | `lost` > 0 | ✅ 2026-11-07 |
 | C-07 | one error in each of the 3 realms (`timer.Simple(0, error)`) then `errors_since` | 3 errors, correct realm, stack | ✅ 2026-11-07 |
@@ -204,8 +204,8 @@ Flaws found and fixed by this battery:
 | X-01 | 10 consecutive `map_load` (alternating maps, maxplayers 1/2), a call in all 3 realms between each | 10/10 OK, no crash | ✅ 2026-11-07 |
 | X-02 | request without token / with a web `Origin` | rejected (T-03, T-04) | ✅ 2026-11-07 |
 | X-03 | launch without `-mcp` | "inactive" log, no port opened, game works | ✅ 2026-11-07 |
-| X-04 | network lock: `console_exec connect 192.168.0.99:27015` (another LAN machine) | `forbidden` (not a server on this machine) | ✅ 2026-11-07 |
-| X-05 | client joins the local srcds through this machine's LAN address (192.168.0.14:27015; GMod srcds ignores packets from 127.0.0.1) | client realm allowed, reason "server runs on this machine (… address of this machine's network interface 192.168.0.14)" | ✅ 2026-11-07 |
+| X-04 | network lock: `console_exec connect 192.168.1.99:27015` (another LAN machine) | `forbidden` (not a server on this machine) | ✅ 2026-11-07 |
+| X-05 | client joins the local srcds through this machine's LAN address (192.168.1.10:27015; GMod srcds ignores packets from 127.0.0.1) | client realm allowed, reason "server runs on this machine (… address of this machine's network interface 192.168.1.10)" | ✅ 2026-11-07 |
 | X-06 | infinite loop → `game_terminate` → relaunch → `map_load` + `lua_exec` | everything works again | ✅ 2026-11-07 |
 | X-07 | coordinator (client) + member (srcds): `instances_list`, relayed `lua_exec(server)` on srcds, net message srcds -> client | 2 instances; `relayed_from`; client `net.Receive` reports `hello from srcds` through `reports_read` | ✅ 2026-11-07 |
 | X-08 | kill the coordinator (client) | srcds takes over the base port in ≈ 7 s (`role:"coordinator"`) | ✅ 2026-11-07 |
