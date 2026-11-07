@@ -331,7 +331,7 @@ void notify_player(const std::string &text) { g_pending_notice = text; }
 
 static void deliver_notice() {
     if (g_pending_notice.empty() || !realm_ready(realms::CLIENT) || !client_allowed()) return;
-    json r = call_runtime(realms::CLIENT, "notify", json{{"text", g_pending_notice}, {"delay", 5}});
+    json r = call_runtime(realms::CLIENT, "notify", json{{"text", g_pending_notice}, {"delay", 1}});
     if (r.value("ok", false)) g_pending_notice.clear();
 }
 

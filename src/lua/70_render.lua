@@ -9,12 +9,12 @@ if A.realm ~= "client" then return end
 -- the player is really in game.
 function H.notify(args)
 	local text = tostring(args.text or "")
-	timer.Simple(args.delay or 5, function()
+	timer.Simple(args.delay or 1, function()
 		if notification and notification.AddLegacy then notification.AddLegacy(text, NOTIFY_GENERIC, 15) end
 		if chat and chat.AddText then chat.AddText(Color(80, 200, 255), "[gmod-mcp] ", Color(255, 255, 255), text) end
 		surface.PlaySound("buttons/button15.wav")
 	end)
-	return { scheduled = true, delay = args.delay or 5 }
+	return { scheduled = true, delay = args.delay or 1 }
 end
 
 -- Deferred capture: the request runs in a render hook, the DLL polls for the result.
