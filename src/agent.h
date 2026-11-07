@@ -22,7 +22,7 @@ struct Config {
     std::string tmp_dir;   // .../garrysmod/lua/mcpagent_tmp (absolute)
     std::string data_dir;  // .../garrysmod/data/mcpagent (absolute)
     std::string instance_id;
-    std::string version = "0.1.0";
+    std::string version = "0.2.0";
 };
 
 Config &config();
@@ -54,6 +54,9 @@ bool realm_ready(int realm);
 std::string current_map();
 // Queues a one-time notice shown in game to the local player once the client realm is ready (client mode only).
 void notify_player(const std::string &text);
+
+// lua_job: marks a realm as having running jobs, so that the pump resumes them every frame.
+void jobs_wake(int realm);
 
 // Structured error code.
 nlohmann::json err(const std::string &code, const std::string &message, nlohmann::json extra = nullptr);

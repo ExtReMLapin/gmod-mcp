@@ -1,12 +1,17 @@
 #include "mcp.h"
 
+#include <chrono>
 #include <map>
 #include <mutex>
+#include <thread>
 
 #include "agent.h"
 #include "log.h"
+#include "prompts.h"
+#include "reqctx.h"
 #include "resources.h"
 #include "tasks.h"
+#include "util.h"
 
 namespace mcp {
 
@@ -27,7 +32,15 @@ static const json kInstanceProp = {
     {"type", "string"},
     {"description",
      "Optional. Instance identifier (see instances_list). If present and different from the local instance, the call is "
-     "relayed by the coordinator to that instance."}};
+     "relayed by the coordinator to that instance."},
+    // 2026-07-28 Streamable HTTP: the client mirrors the value into the Mcp-Param-Instance header (lets proxies route).
+    {"x-mcp-header", "Instance"}};
+
+// Default output schema: every structuredContent is an object naming the instance that answered.
+static const json kDefaultOutputSchema = {
+    {"type", "object"},
+    {"properties", {{"answered_by", {{"type", "string"}, {"description", "Identifier of the game instance that answered."}}}}},
+    {"additionalProperties", true}};
 
 void register_tool(Tool t) {
     json &s = t.input_schema;
@@ -38,6 +51,7 @@ void register_tool(Tool t) {
     if (t.annotations.is_null()) t.annotations = json::object();
     t.annotations["title"] = t.title;
     if (!t.annotations.contains("openWorldHint")) t.annotations["openWorldHint"] = false;
+    if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
     t.validator = std::make_shared<nlohmann::json_schema::json_validator>();
     t.validator->set_root_schema(s);
     g_index[t.name] = g_tools.size();
@@ -147,26 +161,54 @@ json call_tool(const std::string &name, const json &args_in) {
     return to_call_result(std::move(r));
 }
 
+// Small generic icon (SVG): a game controller on a blue rounded square.
+static json icons() {
+    static const std::string svg =
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='#1565c0'/>"
+        "<path d='M18 24h28a10 10 0 0 1 10 10v2a8 8 0 0 1-14 5l-3-3H25l-3 3a8 8 0 0 1-14-5v-2a10 10 0 0 1 10-10z' fill='#fff'/>"
+        "<path d='M20 30h4v4h4v4h-4v4h-4v-4h-4v-4h4z' fill='#1565c0' transform='translate(0 -4)'/>"
+        "<circle cx='42' cy='31' r='2.5' fill='#1565c0'/><circle cx='47' cy='35' r='2.5' fill='#1565c0'/></svg>";
+    static const std::string uri = "data:image/svg+xml;base64," + util::base64_encode(svg);
+    return json::array({json{{"src", uri}, {"mimeType", "image/svg+xml"}, {"sizes", json::array({"any"})}}});
+}
+
 static json server_info() {
     return json{{"name", "gmod-mcp"},
                 {"title", "Garry's Mod MCP agent"},
                 {"version", agent::config().version},
                 {"description", "Control of a local Garry's Mod instance: Lua in the menu/client/server realms, maps, "
-                                "console, entities, rendering, sound, performance and documentation."}};
+                                "console, entities, rendering, sound, performance and documentation."},
+                {"icons", icons()}};
 }
 
 static const char *kModernVersion = "2026-07-28";
+static const char *kSubscriptionMeta = "io.modelcontextprotocol/subscriptionId";
 
 // Request context: protocol era and capabilities declared by the client (modern era: per request).
 struct Ctx {
     tasks::Era era = tasks::Era::Legacy;
     json client_caps = json::object();
     int http_status = 200;
+    const Emit *emit = nullptr;  // SSE response stream, if any
+};
+
+struct Prepared {
+    json msg;
+    json id;
+    std::string method;
+    json params;
+    Ctx ctx;
+    bool notification = false;
+    bool stream_candidate = false;
 };
 
 static bool client_supports_tasks(const Ctx &c) {
     return c.era == tasks::Era::Modern && c.client_caps.is_object() && c.client_caps.contains("extensions") &&
            c.client_caps["extensions"].is_object() && c.client_caps["extensions"].contains(tasks::kExtensionId);
+}
+
+static bool client_supports_elicitation(const Ctx &c) {
+    return c.era == tasks::Era::Modern && c.client_caps.is_object() && c.client_caps.contains("elicitation");
 }
 
 // Server-side decision (Tasks extension): always for map_load; other "optional" tools only for an explicit wait of at
@@ -183,7 +225,7 @@ static json tools_list_json(const Ctx &c) {
     json arr = json::array();
     for (const auto &t : g_tools) {
         json j{{"name", t.name}, {"title", t.title}, {"description", t.description}, {"inputSchema", t.input_schema},
-               {"annotations", t.annotations}};
+               {"outputSchema", t.output_schema}, {"annotations", t.annotations}};
         // execution.taskSupport only exists in the experimental 2025-11-25 Tasks (with the extension, the server decides).
         if (c.era == tasks::Era::Legacy && !t.task_support.empty()) j["execution"] = json{{"taskSupport", t.task_support}};
         arr.push_back(std::move(j));
@@ -192,10 +234,110 @@ static json tools_list_json(const Ctx &c) {
 }
 
 static json server_capabilities(const Ctx &c) {
-    json caps{{"tools", {{"listChanged", false}}}, {"resources", {{"listChanged", false}}}};
+    // Resource subscriptions only exist through subscriptions/listen (2026-07-28); the legacy resources/subscribe would
+    // need a standalone GET stream, which this server does not offer.
+    json caps{{"tools", {{"listChanged", false}}},
+              {"resources", {{"listChanged", false}, {"subscribe", c.era == tasks::Era::Modern}}},
+              {"prompts", {{"listChanged", false}}},
+              {"completions", json::object()}};
     if (c.era == tasks::Era::Legacy) caps["tasks"] = tasks::legacy_capability();
     else caps["extensions"] = json{{tasks::kExtensionId, json::object()}};
     return caps;
+}
+
+// Lists are returned in a single page: any cursor is one this server never issued.
+static bool cursor_ok(const json &params) { return !params.contains("cursor") || params["cursor"].is_null(); }
+
+static json notification(const std::string &method, json params) {
+    return json{{"jsonrpc", "2.0"}, {"method", method}, {"params", std::move(params)}};
+}
+
+static const size_t kMaxSubscriptions = 8;
+static std::atomic<size_t> g_subscriptions{0};
+
+// subscriptions/listen: acknowledges the honored filter, then notifies resource updates until the client closes the
+// stream (the transport sets the cancel flag).
+static json listen(const json &id, const json &params, Ctx &c) {
+    if (!c.emit) return rpc_error(id, -32600, "subscriptions/listen needs an SSE response: send Accept: text/event-stream");
+    if (g_subscriptions.load() >= kMaxSubscriptions) return rpc_error(id, -32603, "too many open subscriptions (max 8)");
+    struct Count {
+        Count() { ++g_subscriptions; }
+        ~Count() { --g_subscriptions; }
+    } count;
+    json filter = params.value("notifications", json::object());
+    json honored = json::object();
+    std::vector<std::string> uris;
+    if (filter.is_object() && filter.contains("resourceSubscriptions") && filter["resourceSubscriptions"].is_array()) {
+        for (const auto &u : filter["resourceSubscriptions"])
+            if (u.is_string() && resources::subscribable(u)) uris.push_back(u);
+        honored["resourceSubscriptions"] = uris;
+    }
+    json meta{{kSubscriptionMeta, id}};
+    (*c.emit)(notification("notifications/subscriptions/acknowledged", json{{"notifications", honored}, {"_meta", meta}}));
+    std::map<std::string, uint64_t> seen;
+    std::map<std::string, std::chrono::steady_clock::time_point> last_sent;
+    for (const auto &u : uris) seen[u] = resources::version(u);
+    while (!reqctx::cancelled()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        auto now = std::chrono::steady_clock::now();
+        for (const auto &u : uris) {
+            uint64_t v = resources::version(u);
+            // At most one update per resource and per second (the console can print hundreds of lines per second).
+            if (v == seen[u] || now - last_sent[u] < std::chrono::seconds(1)) continue;
+            seen[u] = v;
+            last_sent[u] = now;
+            (*c.emit)(notification("notifications/resources/updated", json{{"uri", u}, {"_meta", meta}}));
+        }
+    }
+    return rpc_result(id, json{{"_meta", meta}});
+}
+
+// MRTR (2026-07-28): a tool error carrying details.confirm {arg, message} becomes an elicitation request when the
+// client supports it; the client retries with inputResponses.confirm and the server sets args[arg] = true on "accept".
+static json confirm_request(const json &confirm) {
+    json schema{{"type", "object"},
+                {"properties", {{"confirm", {{"type", "boolean"}, {"title", "Allow"}, {"default", false}}}}},
+                {"required", json::array({"confirm"})}};
+    json req{{"method", "elicitation/create"},
+             {"params", {{"mode", "form"}, {"message", confirm.value("message", "Allow this action?")}, {"requestedSchema", schema}}}};
+    return json{{"resultType", "input_required"},
+                {"inputRequests", {{"confirm", req}}},
+                {"requestState", "confirm:" + confirm.value("arg", "")}};
+}
+
+static json call_with_confirmation(const json &id, const std::string &name, json a, const json &params, const Ctx &c) {
+    bool answered = false;
+    if (params.contains("inputResponses") && params["inputResponses"].is_object() && params["inputResponses"].contains("confirm")) {
+        answered = true;
+        const json &resp = params["inputResponses"]["confirm"];
+        std::string state = params.value("requestState", "");
+        bool accepted = resp.is_object() && resp.value("action", "") == "accept" && resp.contains("content") &&
+                        resp["content"].is_object() && resp["content"].value("confirm", false) == true;
+        if (accepted && state.rfind("confirm:", 0) == 0 && state.size() > 8) a[state.substr(8)] = true;
+    }
+    json r = call_tool(name, a);
+    if (!answered && client_supports_elicitation(c) && r.value("isError", false) && r.contains("structuredContent")) {
+        const json &e = r["structuredContent"].value("error", json::object());
+        if (e.contains("details") && e["details"].is_object() && e["details"].contains("confirm") && e["details"]["confirm"].is_object())
+            return rpc_result(id, confirm_request(e["details"]["confirm"]));
+    }
+    return rpc_result(id, r);
+}
+
+static json complete(const json &id, const json &params) {
+    json ref = params.value("ref", json::object());
+    json argument = params.value("argument", json::object());
+    if (!ref.is_object() || !argument.is_object() || !argument.contains("name") || !argument["name"].is_string())
+        return rpc_error(id, -32602, "completion/complete: expected ref and argument {name, value}");
+    std::string argname = argument["name"], value = argument.value("value", "");
+    std::string type = ref.value("type", "");
+    std::vector<std::string> values;
+    if (type == "ref/prompt") values = prompts::complete(ref.value("name", ""), argname, value);
+    else if (type == "ref/resource") values = resources::complete(ref.value("uri", ""), argname, value);
+    else return rpc_error(id, -32602, "completion/complete: unknown ref type '" + type + "'");
+    size_t total = values.size();
+    if (values.size() > 100) values.resize(100);
+    return rpc_result(id, json{{"completion", {{"values", values}, {"total", total}, {"hasMore", total > values.size()}}}});
 }
 
 static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
@@ -207,7 +349,13 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     json params = msg.value("params", json::object());
     if (!params.is_object()) params = json::object();
 
-    if (is_notification) return nullptr;  // notifications/initialized, notifications/cancelled...: nothing to answer
+    if (is_notification) {
+        // Legacy cancellation of an in-flight request (modern clients close the response stream instead).
+        if (method == "notifications/cancelled" && params.contains("requestId")) {
+            if (reqctx::cancel_tracked(params["requestId"].dump())) logx::info("request %s cancelled by the client", params["requestId"].dump().c_str());
+        }
+        return nullptr;
+    }
 
     if (method == "initialize") {
         std::string asked = params.value("protocolVersion", "");
@@ -234,10 +382,11 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
                                    {"capabilities", server_capabilities(modern)},
                                    {"instructions", g_instructions},
                                    {"ttlMs", 0},
-                                   {"cacheScope", "private"},
-                                   {"_meta", {{"io.modelcontextprotocol/serverInfo", server_info()}}}});
+                                   {"cacheScope", "private"}});
     }
     if (method == "ping") return rpc_result(id, json::object());
+    bool is_list = method == "tools/list" || method == "prompts/list" || method == "resources/list" || method == "resources/templates/list";
+    if (is_list && !cursor_ok(params)) return rpc_error(id, -32602, "invalid cursor (this server returns every list in one page)");
     if (method == "tools/list") return rpc_result(id, json{{"tools", tools_list_json(c)}, {"ttlMs", 0}, {"cacheScope", "private"}});
     if (method == "tools/call") {
         if (!params.contains("name") || !params["name"].is_string()) return rpc_error(id, -32602, "missing params.name");
@@ -257,7 +406,7 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
         }
         if (c.era == tasks::Era::Legacy && t->task_support == "required")
             return rpc_error(id, -32600, "Task augmentation required for tools/call requests");
-        return rpc_result(id, call_tool(name, a));
+        return call_with_confirmation(id, name, a, params, c);
     }
     if (method == "tasks/get") return unwrap_rpc(id, tasks::get(params, c.era));
     if (method == "tasks/cancel") return unwrap_rpc(id, tasks::cancel(params, c.era));
@@ -270,9 +419,21 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     if (method == "resources/read") {
         std::string uri = params.value("uri", "");
         json res = resources::read(uri);
-        if (res.is_null()) return rpc_error(id, -32002, "resource not found", json{{"uri", uri}});
-        return rpc_result(id, json{{"contents", json::array({res})}});
+        // Not found: -32602 since 2026-07-28 (-32002 before).
+        if (res.is_null()) return rpc_error(id, c.era == tasks::Era::Modern ? -32602 : -32002, "resource not found", json{{"uri", uri}});
+        if (res.contains("__error"))
+            return rpc_error(id, -32603, res["__error"].value("message", "resource unavailable"), json{{"uri", uri}, {"code", res["__error"]["code"]}});
+        return rpc_result(id, json{{"contents", json::array({res})}, {"ttlMs", 0}, {"cacheScope", "private"}});
     }
+    if (method == "prompts/list") return rpc_result(id, json{{"prompts", prompts::list()}, {"ttlMs", 0}, {"cacheScope", "private"}});
+    if (method == "prompts/get") {
+        std::string err;
+        json r = prompts::get(params.value("name", ""), params.value("arguments", json::object()), err);
+        if (r.is_null()) return rpc_error(id, -32602, err);
+        return rpc_result(id, r);
+    }
+    if (method == "completion/complete") return complete(id, params);
+    if (c.era == tasks::Era::Modern && method == "subscriptions/listen") return listen(id, params, c);
     if (c.era == tasks::Era::Modern) c.http_status = 404;  // modern era: unknown method = 404 + -32601
     return rpc_error(id, -32601, "unknown method: " + method);
 }
@@ -294,22 +455,7 @@ static std::string decode_header_value(const std::string &v) {
     if (v.size() < pre.size() + suf.size() || v.compare(0, pre.size(), pre) != 0 ||
         v.compare(v.size() - suf.size(), suf.size(), suf) != 0)
         return v;
-    std::string b = v.substr(pre.size(), v.size() - pre.size() - suf.size());
-    static const std::string tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    int val = 0, bits = -8;
-    for (char ch : b) {
-        if (ch == '=') break;
-        auto p = tbl.find(ch);
-        if (p == std::string::npos) return v;
-        val = ((val << 6) + (int)p) & 0xFFFFFF;
-        bits += 6;
-        if (bits >= 0) {
-            out.push_back(char((val >> bits) & 0xFF));
-            bits -= 8;
-        }
-    }
-    return out;
+    return util::base64_decode(v.substr(pre.size(), v.size() - pre.size() - suf.size()));
 }
 
 // Maximum JSON nesting depth, checked before parsing: the recursive parser would otherwise overflow the network
@@ -334,42 +480,32 @@ static bool nesting_ok(const std::string &s, int max_depth) {
     return true;
 }
 
-static std::string handle_inner(const std::string &body, const Headers &headers, int &http_status);
+static std::string dump(const json &j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
 
-// Safety net: any unexpected exception becomes a JSON-RPC internal error instead of an empty HTTP 500.
-std::string handle(const std::string &body, const Headers &headers, int &http_status) {
+static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const Headers &headers, std::string &immediate, int &http_status) {
+    auto fail = [&](int status, const json &id, int code, const std::string &msg, json data = nullptr) -> std::shared_ptr<Prepared> {
+        http_status = status;
+        immediate = dump(rpc_error(id, code, msg, std::move(data)));
+        return nullptr;
+    };
+    if (!nesting_ok(body, 64)) return fail(400, nullptr, -32600, "JSON nesting too deep (max 64)");
+    auto p = std::make_shared<Prepared>();
     try {
-        return handle_inner(body, headers, http_status);
-    } catch (const std::exception &e) {
-        http_status = 500;
-        return rpc_error(nullptr, -32603, std::string("internal error: ") + e.what()).dump(-1, ' ', false, json::error_handler_t::replace);
-    }
-}
-
-static std::string handle_inner(const std::string &body, const Headers &headers, int &http_status) {
-    json msg;
-    if (!nesting_ok(body, 64)) {
-        http_status = 400;
-        return rpc_error(nullptr, -32600, "JSON nesting too deep (max 64)").dump();
-    }
-    try {
-        msg = json::parse(body);
+        p->msg = json::parse(body);
     } catch (const std::exception &) {
-        http_status = 400;
-        return rpc_error(nullptr, -32700, "invalid JSON").dump();
+        return fail(400, nullptr, -32700, "invalid JSON");
     }
-    if (msg.is_array()) {
-        http_status = 400;
-        return rpc_error(nullptr, -32600, "JSON-RPC batching is not supported").dump();
-    }
-    if (!msg.is_object()) {
-        http_status = 400;
-        return rpc_error(nullptr, -32600, "a JSON-RPC message must be an object").dump();
-    }
-    json id = msg.is_object() ? msg.value("id", json(nullptr)) : json(nullptr);
-    Ctx c;
+    if (p->msg.is_array()) return fail(400, nullptr, -32600, "JSON-RPC batching is not supported");
+    if (!p->msg.is_object()) return fail(400, nullptr, -32600, "a JSON-RPC message must be an object");
+    json &msg = p->msg;
+    p->id = msg.value("id", json(nullptr));
+    p->notification = !msg.contains("id");
+    p->method = msg.contains("method") && msg["method"].is_string() ? msg["method"].get<std::string>() : "";
+    p->params = msg.contains("params") && msg["params"].is_object() ? msg["params"] : json::object();
+    const json &id = p->id;
+    const json &params = p->params;
+    Ctx &c = p->ctx;
     std::string hv = header(headers, "mcp-protocol-version");
-    json params = msg.is_object() && msg.contains("params") && msg["params"].is_object() ? msg["params"] : json::object();
     json meta = params.value("_meta", json::object());
     std::string mv = meta.is_object() ? meta.value("io.modelcontextprotocol/protocolVersion", "") : "";
     bool is_modern = hv == kModernVersion || !mv.empty();
@@ -380,20 +516,16 @@ static std::string handle_inner(const std::string &body, const Headers &headers,
             bool legacy_known = false;
             for (const char *v : kSupportedVersions) legacy_known = legacy_known || ver == v;
             if (!legacy_known) {
-                http_status = 400;
                 json sup = json::array({kModernVersion});
                 for (const char *v : kSupportedVersions) sup.push_back(v);
-                return rpc_error(id, -32022, "Unsupported protocol version: " + ver, json{{"supported", sup}, {"requested", ver}}).dump();
+                return fail(400, id, -32022, "Unsupported protocol version: " + ver, json{{"supported", sup}, {"requested", ver}});
             }
             is_modern = false;
         }
     }
     if (is_modern) {
-        std::string method = msg.value("method", "");
-        auto mismatch = [&](const std::string &why) {
-            http_status = 400;
-            return rpc_error(id, -32020, "Header mismatch: " + why).dump();
-        };
+        const std::string &method = p->method;
+        auto mismatch = [&](const std::string &why) { return fail(400, id, -32020, "Header mismatch: " + why); };
         if (hv.empty()) return mismatch("missing MCP-Protocol-Version header");
         if (!mv.empty() && hv != mv) return mismatch("MCP-Protocol-Version '" + hv + "' differs from _meta '" + mv + "'");
         std::string hm = header(headers, "mcp-method");
@@ -405,19 +537,101 @@ static std::string handle_inner(const std::string &body, const Headers &headers,
             if (hn.empty()) return mismatch("missing Mcp-Name header");
             if (hn != body_name) return mismatch("Mcp-Name '" + hn + "' differs from '" + body_name + "'");
         }
+        // x-mcp-header on `instance`: when the client mirrors it, both values must agree.
+        if (method == "tools/call" && headers.count("mcp-param-instance")) {
+            std::string hi = decode_header_value(header(headers, "mcp-param-instance"));
+            json a = params.value("arguments", json::object());
+            std::string bi = a.is_object() && a.contains("instance") && a["instance"].is_string() ? a["instance"].get<std::string>() : "";
+            if (hi != bi) return mismatch("Mcp-Param-Instance '" + hi + "' differs from arguments.instance '" + bi + "'");
+        }
         c.era = tasks::Era::Modern;
         c.client_caps = meta.value("io.modelcontextprotocol/clientCapabilities", json::object());
     }
+    // Stream candidates: subscriptions, and tool calls that run in place (not as a task) and either asked for progress
+    // or may run for a while (cancellation = closing the stream).
+    if (!p->notification && c.era == tasks::Era::Modern && p->method == "subscriptions/listen") p->stream_candidate = true;
+    if (!p->notification && p->method == "tools/call" && params.contains("name") && params["name"].is_string()) {
+        const Tool *t = find_tool(params["name"]);
+        json a = params.value("arguments", json::object());
+        if (!a.is_object()) a = json::object();
+        bool task = (c.era == tasks::Era::Legacy && params.contains("task")) || (t && client_supports_tasks(c) && server_wants_task(*t, a));
+        bool progress = meta.is_object() && meta.contains("progressToken");
+        if (t && !task && (progress || !t->task_support.empty())) p->stream_candidate = true;
+    }
+    return p;
+}
+
+std::shared_ptr<Prepared> prepare(const std::string &body, const Headers &headers, std::string &immediate, int &http_status) {
+    try {
+        return prepare_inner(body, headers, immediate, http_status);
+    } catch (const std::exception &e) {
+        http_status = 500;
+        immediate = dump(rpc_error(nullptr, -32603, std::string("internal error: ") + e.what()));
+        return nullptr;
+    }
+}
+
+bool wants_stream(const Prepared &p) { return p.stream_candidate; }
+
+static std::string execute_inner(Prepared &p, int &http_status, const Emit &emit, std::shared_ptr<std::atomic<bool>> cancel) {
+    Ctx &c = p.ctx;
+    c.emit = emit ? &emit : nullptr;
+    reqctx::Ctx rc;
+    if (cancel) rc.cancel = cancel;
+    // Progress notifications (on the response stream) when the client sent a progressToken.
+    json meta = p.params.value("_meta", json::object());
+    if (emit && meta.is_object() && meta.contains("progressToken")) {
+        json token = meta["progressToken"];
+        auto last = std::make_shared<double>(-1.0);
+        auto mu = std::make_shared<std::mutex>();
+        rc.progress = [token, last, mu, &emit](double done, double total, const std::string &message) {
+            std::lock_guard<std::mutex> lk(*mu);
+            if (done <= *last) done = *last + 0.001;  // progress must increase with every notification
+            *last = done;
+            json np{{"progressToken", token}, {"progress", done}};
+            if (total > 0) np["total"] = total;
+            if (!message.empty()) np["message"] = message;
+            emit(notification("notifications/progress", np));
+        };
+    }
+    std::string track_key = p.notification ? "" : p.id.dump();
+    if (!track_key.empty()) reqctx::track(track_key, rc.cancel);
     bool notif = false;
-    json r = handle_message(msg, notif, c);
+    json r;
+    {
+        reqctx::Scope scope(&rc);
+        r = handle_message(p.msg, notif, c);
+    }
+    if (!track_key.empty()) reqctx::untrack(track_key);
     if (notif) {
         http_status = 202;
         return "";
     }
-    if (c.era == tasks::Era::Modern && r.contains("result") && r["result"].is_object() && !r["result"].contains("resultType"))
-        r["result"]["resultType"] = "complete";
+    if (c.era == tasks::Era::Modern && r.contains("result") && r["result"].is_object()) {
+        json &res = r["result"];
+        if (!res.contains("resultType")) res["resultType"] = "complete";
+        // 2026-07-28: servers SHOULD identify themselves in every result.
+        if (!res.contains("_meta") || !res["_meta"].is_object()) res["_meta"] = json::object();
+        res["_meta"]["io.modelcontextprotocol/serverInfo"] = server_info();
+    }
     http_status = c.http_status;
-    return r.dump(-1, ' ', false, json::error_handler_t::replace);
+    return dump(r);
+}
+
+std::string execute(Prepared &p, int &http_status, const Emit &emit, std::shared_ptr<std::atomic<bool>> cancel) {
+    try {
+        return execute_inner(p, http_status, emit, std::move(cancel));
+    } catch (const std::exception &e) {
+        http_status = 500;
+        return dump(rpc_error(p.id, -32603, std::string("internal error: ") + e.what()));
+    }
+}
+
+std::string handle(const std::string &body, const Headers &headers, int &http_status) {
+    std::string immediate;
+    auto p = prepare(body, headers, immediate, http_status);
+    if (!p) return immediate;
+    return execute(*p, http_status, nullptr, nullptr);
 }
 
 }  // namespace mcp

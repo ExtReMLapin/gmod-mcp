@@ -1,5 +1,7 @@
 #include "util.h"
 
+#include <cstdio>
+
 #ifdef _WIN32
 #include <winsock2.h>
 #endif
@@ -92,6 +94,13 @@ std::string hex(const unsigned char *p, size_t n) {
         out += h[p[i] & 15];
     }
     return out;
+}
+
+std::string fmt_num(double v) {
+    char buf[64];
+    if (v == (double)(long long)v) std::snprintf(buf, sizeof buf, "%lld", (long long)v);
+    else std::snprintf(buf, sizeof buf, "%.3g", v);
+    return buf;
 }
 
 }  // namespace util

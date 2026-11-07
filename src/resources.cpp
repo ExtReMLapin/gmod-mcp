@@ -1,6 +1,12 @@
 #include "resources.h"
 
+#include <algorithm>
+
 #include "agent.h"
+#include "console.h"
+#include "platform/platform.h"
+#include "tools.h"
+#include "util.h"
 
 using nlohmann::json;
 
@@ -21,6 +27,11 @@ std::string instructions() {
     s += "Lua files: working directory = " + c.tmp_dir +
          " (lua/mcpagent_tmp/). If you share this disk, write there directly then call lua_exec_file(realm, 'name.lua'); otherwise "
          "use lua_file_write. Errors then point to the real file.\n";
+    s += "Long Lua work (more than a few frames: scans, batches of traces, timed tests): do NOT loop inside lua_exec (it freezes the "
+         "game and hits the 5 s budget). Use lua_job: the script runs as a coroutine resumed every frame and MUST cooperate with the "
+         "`job` object: job:step() in loops, job:progress(done, total, msg) to report progress (shown to the user), "
+         "job:report(value) for intermediate results, job:sleep(s)/job:frames(n)/job:wait(fn), `return` for the result. "
+         "Details: lua_job description, prompt write-lua-job.\n";
     s += "Documentation: api_search (ground truth: what actually exists in each realm), wiki_search / wiki_page "
          "(https://wiki.facepunch.com/gmod/). Full guide: resource mcpagent://guide.\n";
     s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator.";
@@ -58,6 +69,37 @@ The agent runtime (global table `__mcpagent`) is re-injected automatically.
 `lua_exec` returns all return values (`n` = exact count, `nil`s in the middle preserved), serialized to JSON:
 Vector/Angle/Color/Entity/functions/cyclic tables have a `{"__type": ...}` form.
 `print`/`Msg`/`MsgN`/`MsgC` emitted during execution are captured in `output`.
+
+## Long-running Lua: lua_job
+`lua_exec` runs in one go on the main thread (5 s budget, the game is frozen meanwhile). For anything that spans frames,
+use `lua_job`: the script runs as a coroutine resumed once per frame and talks to the agent through `job`:
+
+| call | effect |
+|---|---|
+| `job:progress(done, total, msg)` / `job:progress(msg)` | progress shown to the user (MCP progress, or task status) |
+| `job:step()` | in loops: yields once this frame's slice (`slice_ms`, default 8 ms) is used |
+| `job:yield()`, `job:frames(n)`, `job:sleep(s)` | resume on a later frame |
+| `job:wait(fn, timeout)` | resume once `fn()` is true (checked every frame); false on timeout |
+| `job:report(value [, channel])` | intermediate result: returned at the end, live through `reports_read` (`job:<id>`) |
+| `job.args`, `job:elapsed()` | call arguments, seconds since start |
+| `return ...` | final result |
+
+A resume that runs more than `resume_limit_s` (default 2 s) without yielding is aborted. Cancelling the request stops the
+job at the next frame; a map change destroys it (`realm_reset`). With `timeout_s` >= 15 the call runs as an MCP task.
+
+```lua
+local found = {}
+for i, ent in ipairs(ents.GetAll()) do
+    if ent:GetClass() == "prop_physics" then found[#found + 1] = ent:EntIndex() end
+    if i % 100 == 0 then job:progress(i, #ents.GetAll(), #found .. " props") end
+    job:step()
+end
+return found
+```
+
+## Prompts and resources
+Prompts (slash commands): `write-lua-job`, `debug-errors`, `run-tests`, `check-map`.
+Resources: `gmod://errors` and `gmod://console` (subscribable), templates `gmod://wiki/{page}` and `gmod://lua/{path}`.
 
 ## Structured errors
 Every tool returns `isError: true` and `{"error": {"code", "message", "details"}}`. Common codes:
@@ -107,10 +149,97 @@ json list() {
         json{{"uri", "mcpagent://config"}, {"name", "config"}, {"title", "Instance configuration"},
              {"description", "Absolute paths (game, Lua temporary directory, data), mode, port, instance identifier."},
              {"mimeType", "application/json"}},
+        json{{"uri", "gmod://errors"}, {"name", "errors"}, {"title", "Recent Lua errors"},
+             {"description", "Last 100 Lua errors of every realm (JSON). Subscribable: updated when a new error is captured."},
+             {"mimeType", "application/json"}},
+        json{{"uri", "gmod://console"}, {"name", "console"}, {"title", "Game console"},
+             {"description", "Last 200 console lines. Subscribable: updated when new lines are printed."}, {"mimeType", "text/plain"}},
     });
 }
 
-json templates() { return json::array(); }
+json templates() {
+    return json::array({
+        json{{"uriTemplate", "gmod://wiki/{page}"}, {"name", "wiki-page"}, {"title", "GMod wiki page"},
+             {"description", "Raw markup of a page of https://wiki.facepunch.com/gmod/ (e.g. gmod://wiki/Entity:EmitSound). Cached 7 days."},
+             {"mimeType", "text/plain"}},
+        json{{"uriTemplate", "gmod://lua/{path}"}, {"name", "lua-tmp-file"}, {"title", "Temporary Lua file"},
+             {"description", "A file of the agent's Lua working directory (lua/mcpagent_tmp/), e.g. gmod://lua/test.lua."},
+             {"mimeType", "text/x-lua"}},
+    });
+}
+
+bool subscribable(const std::string &uri) { return uri == "gmod://errors" || uri == "gmod://console"; }
+
+// Version stamp of a subscribable resource: changes whenever its content changes.
+uint64_t version(const std::string &uri) {
+    if (uri == "gmod://errors") return console::errors_cursor();
+    if (uri == "gmod://console") return console::cursor_now();
+    return 0;
+}
+
+static std::string percent_decode(const std::string &s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() && std::isxdigit((unsigned char)s[i + 1]) && std::isxdigit((unsigned char)s[i + 2])) {
+            out.push_back((char)std::stoi(s.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out.push_back(s[i]);
+        }
+    }
+    return out;
+}
+
+static json error(const std::string &code, const std::string &msg) { return json{{"__error", {{"code", code}, {"message", msg}}}}; }
+
+static json read_dynamic(const std::string &uri) {
+    const std::string wiki = "gmod://wiki/", lua = "gmod://lua/";
+    if (uri == "gmod://errors")
+        return json{{"uri", uri}, {"mimeType", "application/json"}, {"text", console::errors_since(0, 100).dump(2, ' ', false, json::error_handler_t::replace)}};
+    if (uri == "gmod://console") {
+        uint64_t now = console::cursor_now();
+        std::string err, text;
+        auto r = console::read(now > 200 ? now - 200 : 0, 200, "", err);
+        for (const auto &l : r.lines) text += l.text + (l.text.empty() || l.text.back() != '\n' ? "\n" : "");
+        return json{{"uri", uri}, {"mimeType", "text/plain"}, {"text", text}};
+    }
+    if (uri.rfind(wiki, 0) == 0) {
+        std::string page = percent_decode(uri.substr(wiki.size()));
+        if (page.empty() || page.size() > 200) return nullptr;
+        json r = tools::wiki_page_tool(json{{"name", page}});
+        if (!r.value("ok", false)) {
+            if (r["error"].value("code", "") == "not_found") return nullptr;
+            return error(r["error"].value("code", "error"), r["error"].value("message", ""));
+        }
+        return json{{"uri", uri}, {"mimeType", "text/plain"}, {"text", r["result"].value("content", "")}};
+    }
+    if (uri.rfind(lua, 0) == 0) {
+        std::string err, path = tools::tmp_path(percent_decode(uri.substr(lua.size())), err);
+        std::string body;
+        if (path.empty() || !plat::read_file(path, body)) return nullptr;
+        return json{{"uri", uri}, {"mimeType", "text/x-lua"}, {"text", body}};
+    }
+    return nullptr;
+}
+
+std::vector<std::string> complete(const std::string &uri_template, const std::string &arg, const std::string &value) {
+    std::vector<std::string> out;
+    std::string v = util::to_lower(value);
+    auto starts = [&](const std::string &x) { return util::to_lower(x).rfind(v, 0) == 0; };
+    if (uri_template == "gmod://wiki/{page}" && arg == "page") {
+        std::vector<std::string> contains;
+        for (const auto &p : tools::pagelist_from_cache()) {
+            if (starts(p)) out.push_back(p);
+            else if (!v.empty() && util::to_lower(p).find(v) != std::string::npos) contains.push_back(p);
+        }
+        out.insert(out.end(), contains.begin(), contains.end());
+    } else if (uri_template == "gmod://lua/{path}" && arg == "path") {
+        for (const auto &f : plat::list_files(agent::config().tmp_dir, true))
+            if (starts(f)) out.push_back(f);
+        std::sort(out.begin(), out.end());
+    }
+    return out;
+}
 
 json read(const std::string &uri) {
     const auto &c = agent::config();
@@ -128,7 +257,7 @@ json read(const std::string &uri) {
                                   {"data_dir", c.data_dir},
                                   {"version", c.version}}
                                  .dump(2)}};
-    return nullptr;
+    return read_dynamic(uri);
 }
 
 }  // namespace resources

@@ -6,6 +6,8 @@
 #include <httplib.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -78,6 +80,65 @@ static void reject(httplib::Response &res, int status, const std::string &code, 
     res.set_content(json{{"error", {{"code", code}, {"message", msg}}}}.dump(), "application/json");
 }
 
+static bool accepts_sse(const httplib::Request &req) {
+    return util::to_lower(req.get_header_value("Accept")).find("text/event-stream") != std::string::npos;
+}
+
+// SSE response: the request runs on a worker thread; its notifications (progress, subscription updates) and then its
+// final response are written as "message" events. A failed write or a closed socket means the client went away
+// (2026-07-28 cancellation): the request is cancelled and finishes on its own.
+struct StreamState {
+    std::mutex m;
+    std::condition_variable cv;
+    std::deque<std::string> queue;
+    bool finished = false;
+};
+
+static std::string sse_event(const std::string &data) { return "event: message\ndata: " + data + "\n\n"; }
+
+static void stream_response(std::shared_ptr<mcp::Prepared> p, httplib::DataSink &sink) {
+    auto st = std::make_shared<StreamState>();
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([p, st, cancel] {
+        mcp::Emit emit = [st](const json &msg) {
+            std::lock_guard<std::mutex> lk(st->m);
+            st->queue.push_back(sse_event(msg.dump(-1, ' ', false, json::error_handler_t::replace)));
+            st->cv.notify_all();
+        };
+        int status = 200;
+        std::string body = mcp::execute(*p, status, emit, cancel);
+        std::lock_guard<std::mutex> lk(st->m);
+        if (!body.empty()) st->queue.push_back(sse_event(body));
+        st->finished = true;
+        st->cv.notify_all();
+    });
+    auto write = [&](const std::string &s) { return sink.is_writable() && sink.write(s.data(), s.size()); };
+    bool alive = write(": stream open\n\n");
+    while (alive) {
+        std::deque<std::string> batch;
+        bool done;
+        {
+            std::unique_lock<std::mutex> lk(st->m);
+            st->cv.wait_for(lk, std::chrono::seconds(10), [&] { return !st->queue.empty() || st->finished; });
+            batch.swap(st->queue);
+            done = st->finished;
+        }
+        if (batch.empty() && !done) {
+            alive = write(": keep-alive\n\n");  // also detects a client that went away
+            continue;
+        }
+        for (const auto &e : batch) alive = alive && write(e);
+        if (done) break;
+    }
+    if (alive) {
+        sink.done();
+        worker.join();
+    } else {
+        cancel->store(true);
+        worker.detach();  // finishes cooperatively; it only touches the shared state
+    }
+}
+
 static void setup_routes(httplib::Server &svr) {
     svr.set_socket_options(socket_options);
     // Long-polls (events_wait, reports_read, tasks/result) hold a worker thread: keep plenty of them.
@@ -112,11 +173,27 @@ static void setup_routes(httplib::Server &svr) {
     svr.Post("/mcp", [](const httplib::Request &req, httplib::Response &res) {
         int status = 200;
         mcp::Headers h;
-        for (const char *k : {"MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"})
+        for (const char *k : {"MCP-Protocol-Version", "Mcp-Method", "Mcp-Name", "Mcp-Param-Instance"})
             if (req.has_header(k)) h[util::to_lower(k)] = req.get_header_value(k);
-        std::string body = mcp::handle(req.body, h, status);
-        res.status = status;
-        if (!body.empty()) res.set_content(body, "application/json");
+        std::string immediate;
+        auto p = mcp::prepare(req.body, h, immediate, status);
+        if (!p) {
+            res.status = status;
+            if (!immediate.empty()) res.set_content(immediate, "application/json");
+            return;
+        }
+        if (!accepts_sse(req) || !mcp::wants_stream(*p)) {
+            std::string body = mcp::execute(*p, status, nullptr, nullptr);
+            res.status = status;
+            if (!body.empty()) res.set_content(body, "application/json");
+            return;
+        }
+        res.status = 200;
+        res.set_header("Cache-Control", "no-cache");
+        res.set_chunked_content_provider("text/event-stream", [p](size_t, httplib::DataSink &sink) {
+            stream_response(p, sink);
+            return true;
+        });
     });
     svr.Get("/mcp", [](const httplib::Request &, httplib::Response &res) {
         res.status = 405;

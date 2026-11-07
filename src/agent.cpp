@@ -386,6 +386,25 @@ static void check_map_loaded() {
                                        {"client_generation", g_gen[realms::CLIENT].load()}});
 }
 
+static std::atomic<bool> g_jobs_active[realms::COUNT];
+
+void jobs_wake(int realm) {
+    if (realm >= 0 && realm < realms::COUNT) g_jobs_active[realm] = true;
+}
+
+// Resumes the lua_job coroutines of every realm that has some (once per frame).
+static void tick_lua_jobs() {
+    for (int r = 0; r < realms::COUNT; ++r) {
+        if (!g_jobs_active[r]) continue;
+        if (!realms::state(r)) {
+            g_jobs_active[r] = false;  // the state is gone, and its jobs with it
+            continue;
+        }
+        json t = call_runtime(r, "job_tick", json::object());
+        if (!t.value("ok", false) || t["result"].value("active", 0) == 0) g_jobs_active[r] = false;
+    }
+}
+
 void pump(lua_State *host) {
     // Re-entrancy guard: user code run by a job may call __mcpagent_pump() itself.
     static bool in_pump = false;
@@ -425,6 +444,7 @@ void pump(lua_State *host) {
     }
     if (fc % 10 == 0) check_map_loaded();
     if (fc % 30 == 0) deliver_notice();
+    tick_lua_jobs();
     // Refreshes the lock state (for status) even without a client call.
     if (g_cfg.mode == Mode::Client && jobs::frame_count() % 15 == 0) client_allowed();
     jobs::pump(50.0);

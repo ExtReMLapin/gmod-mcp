@@ -29,7 +29,4 @@ json list(const json &params);    // legacy only
 json cancel(const json &params, Era era);
 json update(const json &params);  // modern only (no task awaits input: acknowledgement)
 
-// Cooperative cancellation: true if the current task (calling thread) has been cancelled.
-bool should_stop();
-
 }  // namespace tasks

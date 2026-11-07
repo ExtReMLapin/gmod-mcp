@@ -27,6 +27,9 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
 - **Security invariants**, not negotiable: bind 127.0.0.1 only; bearer token; reject `Origin`; client realm lock (no Lua
   in the client state unless the server runs on this machine); no connection to remote servers; the only outbound
   traffic is GET to `https://wiki.facepunch.com/gmod/`.
+- **Long-running tools** (anything that waits or loops) must poll `reqctx::cancelled()` and report
+  `reqctx::progress(done, total, message)`: this feeds MCP progress notifications (SSE), task status messages and
+  cancellation (closed stream, `tasks/cancel`, legacy `notifications/cancelled`).
 - **Error codes** returned by tools (`realm_unavailable`, `client_locked`, `ambiguous_instance`…) are part of the API:
   do not rename them.
 - **Lua sources** contain escape sequences (`"\n"`): edit them with a real editor, not shell heredocs or `sed`, which

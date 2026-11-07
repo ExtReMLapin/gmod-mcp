@@ -10,7 +10,7 @@
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
-#include "tasks.h"
+#include "reqctx.h"
 #include "tools.h"
 
 namespace tools {
@@ -66,6 +66,7 @@ static json map_load_impl(const json &args) {
     // Let the menu's HTML loading screen settle before starting a new load: back-to-back transitions crash the game's
     // embedded Chromium (html_chromium.dll). Wait until the menu is idle, then ~30 frames.
     if (agent::config().mode == agent::Mode::Client) {
+        reqctx::progress(since(t0), 0, "waiting for the menu to be idle");
         auto tw = Clock::now();
         while (since(tw) < 15.0) {
             json idle = agent::rt(realms::MENU, "menu_idle", json::object(), 5.0);
@@ -82,9 +83,10 @@ static json map_load_impl(const json &args) {
     if (args.contains("maxplayers")) p["maxplayers"] = args["maxplayers"];
     json st = agent::rt(host(), "map_start", p);
     if (!st.value("ok", false)) return st;
+    reqctx::progress(since(t0), 0, "loading " + map);
     bool dedicated = agent::config().mode == agent::Mode::Dedicated;
     for (;;) {
-        if (tasks::should_stop()) return agent::err("cancelled", "map_load cancelled (the map may keep loading)");
+        if (reqctx::cancelled()) return agent::err("cancelled", "map_load cancelled (the map may keep loading)");
         double left = timeout - since(t0);
         if (left <= 0)
             return agent::err("timeout", "map not ready after " + std::to_string((int)timeout) + " s",
@@ -92,6 +94,10 @@ static json map_load_impl(const json &args) {
                                    {"client_available", agent::realm_present(realms::CLIENT)},
                                    {"client_lock", agent::lock_status()}});
         json w = events::wait({"map_loaded"}, cursor, std::min(left, 1.0), 10);
+        reqctx::progress(since(t0), 0,
+                         "loading " + map + " (" + std::to_string((int)since(t0)) + " s; server " +
+                             (agent::realm_present(realms::SERVER) ? "up" : "not yet") + ", client " +
+                             (agent::realm_present(realms::CLIENT) ? "up" : "not yet") + ")");
         cursor = w["next_cursor"].get<uint64_t>();
         for (const auto &e : w["events"]) {
             const json &d = e["data"];
@@ -119,7 +125,7 @@ static json disconnect_impl(const json &args) {
         if (!agent::realm_present(realms::CLIENT) && !agent::realm_present(realms::SERVER) && jobs::seconds_since_last_frame() < 1.0)
             return ok(json{{"disconnected", true}, {"was_in_game", was}, {"duration_s", since(t0)},
                            {"realms", {{"client", false}, {"server", false}, {"menu", agent::realm_present(realms::MENU)}}}});
-        if (tasks::should_stop()) return agent::err("cancelled", "disconnect cancelled");
+        if (reqctx::cancelled()) return agent::err("cancelled", "disconnect cancelled");
         plat::sleep_ms(50);
     }
     return agent::err("timeout", "client/server realms still present after " + std::to_string((int)timeout) + " s");
@@ -155,7 +161,7 @@ static json wait_for_tool(const json &args) {
     uint64_t gen0 = agent::generation(r);
     int polls = 0;
     for (;;) {
-        if (tasks::should_stop()) return agent::err("cancelled", "wait_for cancelled");
+        if (reqctx::cancelled()) return agent::err("cancelled", "wait_for cancelled");
         double left = timeout - since(t0);
         json res = agent::rt(r, "eval_cond", json{{"code", code}}, std::max(0.5, std::min(left, 5.0)));
         polls++;
@@ -170,6 +176,7 @@ static json wait_for_tool(const json &args) {
         } else if (res["result"].value("truthy", false)) {
             return ok(json{{"satisfied", true}, {"elapsed_s", since(t0)}, {"polls", polls}, {"value", res["result"]["value"]}});
         }
+        if (polls % 30 == 1) reqctx::progress(since(t0), timeout, "condition still false after " + std::to_string(polls) + " polls");
         if (since(t0) >= timeout)
             return agent::err("timeout", "condition still false after " + std::to_string(timeout) + " s",
                               json{{"polls", polls}, {"last_value", res.value("ok", false) ? res["result"]["value"] : json()}});
@@ -186,11 +193,16 @@ static json wait_frames_tool(const json &args) {
     auto t0 = Clock::now();
     uint64_t n = args["n"].get<uint64_t>();
     double timeout = args.value("timeout_s", 30.0);
-    uint64_t start = jobs::frame_count();
+    uint64_t start = jobs::frame_count(), reported = 0;
     while (jobs::frame_count() < start + n) {
         if (since(t0) > timeout)
             return agent::err("timeout", "only " + std::to_string(jobs::frame_count() - start) + " frames in " + std::to_string(timeout) + " s");
-        if (tasks::should_stop()) return agent::err("cancelled", "wait_frames cancelled");
+        if (reqctx::cancelled()) return agent::err("cancelled", "wait_frames cancelled");
+        uint64_t done = jobs::frame_count() - start;
+        if (n >= 120 && done / 60 != reported / 60) {
+            reported = done;
+            reqctx::progress((double)done, (double)n, "frames");
+        }
         plat::sleep_ms(2);
     }
     return ok(json{{"frames", jobs::frame_count() - start}, {"elapsed_s", since(t0)}});

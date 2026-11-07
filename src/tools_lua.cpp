@@ -8,7 +8,7 @@
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
-#include "tasks.h"
+#include "reqctx.h"
 #include "tools.h"
 
 namespace tools {
@@ -23,12 +23,15 @@ json trace_hook(int realm, const std::string &start_tool, const json &start_args
     uint64_t gen = agent::generation(realm);
     auto t0 = Clock::now();
     while (std::chrono::duration<double>(Clock::now() - t0).count() < duration_s) {
-        if (tasks::should_stop()) break;
+        if (reqctx::cancelled()) break;
         plat::sleep_ms(100);
         if (agent::generation(realm) != gen || !agent::realm_present(realm))
             return agent::err("realm_lost", "the realm was destroyed during the trace (the tracer went away with it)");
         json p = agent::rt(realm, "trace_poll", json{{"id", id}}, 5.0);
-        if (p.value("ok", false) && p["result"].value("recorded", 0) >= max_calls) break;
+        int recorded = p.value("ok", false) ? p["result"].value("recorded", 0) : 0;
+        double el = std::chrono::duration<double>(Clock::now() - t0).count();
+        reqctx::progress(el, duration_s, std::to_string(recorded) + " calls recorded");
+        if (recorded >= max_calls) break;
     }
     return agent::rt(realm, "trace_stop", json{{"id", id}});
 }
@@ -50,7 +53,7 @@ static json perf_hook_cost_tool(const json &args) {
     uint64_t gen = agent::generation(r);
     auto t0 = Clock::now();
     double dur = args.value("duration_s", 5.0);
-    while (std::chrono::duration<double>(Clock::now() - t0).count() < dur && !tasks::should_stop()) {
+    while (std::chrono::duration<double>(Clock::now() - t0).count() < dur && !reqctx::cancelled()) {
         plat::sleep_ms(50);
         if (agent::generation(r) != gen) return agent::err("realm_lost", "the realm was recreated during the measurement");
     }

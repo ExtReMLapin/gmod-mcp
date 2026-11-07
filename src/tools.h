@@ -1,5 +1,6 @@
 #pragma once
 
+#include <set>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -19,6 +20,7 @@ void register_render();
 void register_docs();
 void register_reports();
 void register_lua_tools();
+void register_jobs();
 void register_instances();
 
 // Shared helpers.
@@ -33,5 +35,11 @@ std::string tmp_path(const std::string &name, std::string &err);
 json trace_hook(int realm, const std::string &start_tool, const json &start_args, double duration_s, int max_calls);
 // Path resolution for lua_exec_file/tests_run (relative to tmp_dir or absolute) + chunk name.
 bool resolve_lua_file(const std::string &path, std::string &abs, std::string &chunkname, std::string &err);
+
+// The `job` protocol of lua_job (tool description, also used by the write-lua-job prompt).
+const char *job_protocol();
+// Wiki helpers shared with resources and completion.
+json wiki_page_tool(const json &args);  // {name, format?, refresh?} -> tool result
+std::set<std::string> pagelist_from_cache();  // never hits the network
 
 }  // namespace tools

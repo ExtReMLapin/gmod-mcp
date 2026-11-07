@@ -103,7 +103,7 @@ static json load_pagelist(bool force, std::string &cache_state) {
 }
 
 // Page list from cache only (never hits the network): used to annotate api_search results.
-static std::set<std::string> pagelist_from_cache() {
+std::set<std::string> pagelist_from_cache() {
     {
         std::lock_guard<std::mutex> lk(g_pl_mu);
         if (!g_pagelist.empty()) return std::set<std::string>(g_pagelist.begin(), g_pagelist.end());
@@ -173,7 +173,7 @@ static std::string url_encode_page(const std::string &s) {
     return out;
 }
 
-static json wiki_page_tool(const json &a) {
+json wiki_page_tool(const json &a) {
     std::string name = a["name"];
     std::string fmt = a.value("format", "text");
     std::string url = std::string(kWikiBase) + url_encode_page(name) + "?format=" + fmt;

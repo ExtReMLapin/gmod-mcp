@@ -12,6 +12,7 @@
 #include "log.h"
 #include "mcp.h"
 #include "platform/platform.h"
+#include "reqctx.h"
 #include "util.h"
 
 namespace tasks {
@@ -36,14 +37,13 @@ struct Task {
     int64_t ttl_ms = kDefaultTtlMs;
     json result;  // CallToolResult
     bool is_error = false;
-    std::atomic<bool> cancel{false};
+    std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
     std::mutex m;
     std::condition_variable cv;
 };
 
 static std::mutex g_mu;
 static std::map<std::string, std::shared_ptr<Task>> g_tasks;
-static thread_local Task *t_current = nullptr;
 
 static std::string iso(SysClock::time_point tp) {
     std::time_t t = SysClock::to_time_t(tp);
@@ -103,8 +103,6 @@ json legacy_capability() {
     return json{{"list", json::object()}, {"cancel", json::object()}, {"requests", {{"tools", {{"call", json::object()}}}}}};
 }
 
-bool should_stop() { return t_current && t_current->cancel.load(); }
-
 json create_tool_task(const std::string &tool, const json &args, const json &task_params, Era era) {
     auto t = std::make_shared<Task>();
     unsigned char raw[16];
@@ -133,9 +131,21 @@ json create_tool_task(const std::string &tool, const json &args, const json &tas
     }
     logx::info("task %s created for tool %s (%s)", t->id.c_str(), tool.c_str(), era == Era::Modern ? "extension" : "2025-11-25");
     std::thread([t, tool, args] {
-        t_current = t.get();
-        json r = mcp::call_tool(tool, args);
-        t_current = nullptr;
+        reqctx::Ctx ctx;
+        ctx.cancel = t->cancel;
+        ctx.progress = [t](double done, double total, const std::string &msg) {
+            std::lock_guard<std::mutex> lk(t->m);
+            if (t->state != "working") return;
+            std::string m = msg.empty() ? "Running " + t->tool : msg;
+            if (total > 0) m += " (" + util::fmt_num(done) + "/" + util::fmt_num(total) + ")";
+            t->status_message = m;
+            t->updated = SysClock::now();
+        };
+        json r;
+        {
+            reqctx::Scope scope(&ctx);
+            r = mcp::call_tool(tool, args);
+        }
         {
             std::lock_guard<std::mutex> lk(t->m);
             if (t->state == "cancelled") return;  // stays cancelled even if execution succeeded
@@ -207,7 +217,7 @@ json cancel(const json &params, Era era) {
             if (era == Era::Modern) return json::object();  // cooperative: plain acknowledgement
             return rpc_error(-32602, "Cannot cancel task: already in terminal status '" + status_of(*t, era) + "'");
         }
-        t->cancel = true;
+        t->cancel->store(true);
         t->state = "cancelled";
         t->status_message = "The task was cancelled by request.";
         t->updated = SysClock::now();

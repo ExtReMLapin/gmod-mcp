@@ -197,6 +197,27 @@ Flaws found and fixed by this battery:
 | I-09 | several instances, call without `instance` | `ambiguous_instance` listing the ids; every answer carries `answered_by` | ✅ 2026-11-07 |
 | I-10 | `console_exec connect` to a closed port / to the local srcds | `connect_result.status` = `failed` with the reason and a note about the in-game dialog / `connected` | ✅ 2026-11-07 |
 
+## MCP 2026-07-28 features (v0.2, scripted battery, 63 checks)
+
+Run with a test client speaking both protocol eras (headers `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`), in the
+main menu.
+
+| ID | Procedure | Expected | Last result |
+|---|---|---|---|
+| M-01 | `server/discover`, `tools/list` | capabilities prompts, completions, resources.subscribe; `serverInfo` (with icon) in every result's `_meta`; `outputSchema` on tools; `x-mcp-header: Instance` on `instance` | ✅ 2026-11-07 |
+| M-02 | list with a cursor; `resources/read` unknown URI (modern / legacy) | `-32602` / `-32602` / `-32002`; `ttlMs` + `cacheScope` on reads | ✅ 2026-11-07 |
+| M-03 | `Mcp-Param-Instance` differing from `arguments.instance` | HTTP 400, `-32020` | ✅ 2026-11-07 |
+| M-04 | `prompts/list`, `prompts/get` (each prompt, missing argument, unknown prompt, legacy era) | 4 prompts; text includes the `job` protocol; `-32602` on errors | ✅ 2026-11-07 |
+| M-05 | `completion/complete`: map, realm, temporary Lua file, wiki page, unknown ref | `gm_construct`, `server`, the file, `Entity:EmitSound…`, `-32602` | ✅ 2026-11-07 |
+| M-06 | resource templates `gmod://lua/{path}` (incl. `../` traversal), `gmod://wiki/{page}`, `gmod://errors`, `gmod://console` | contents returned; traversal refused | ✅ 2026-11-07 |
+| M-07 | `subscriptions/listen` without SSE / with SSE on console + errors + a non-subscribable URI, then print and raise an error | error / acknowledged first with the honored filter and `subscriptionId`, then `notifications/resources/updated` for both | ✅ 2026-11-07 |
+| M-08 | `lua_job` with `progressToken` over SSE (60 frames, `job:progress`, `job:report`, `print`) | `text/event-stream`; increasing progress with total 60; result, 3 reports and output | ✅ 2026-11-07 |
+| M-09 | `lua_job`: plain JSON, runtime error, endless loop (`resume_limit_s` 0.5), `job:step` over 3M iterations, syntax error, code + path | result / error with traceback / aborted "without yielding", game responsive / spread over several frames / `lua_syntax_error` / refused | ✅ 2026-11-07 |
+| M-10 | client closes the SSE stream of a running job | the coroutine stops (global counter frozen) | ✅ 2026-11-07 |
+| M-11 | legacy `notifications/cancelled` for a running `wait_for` | 202; the call returns `cancelled` within a second | ✅ 2026-11-07 |
+| M-12 | `lua_job` with `timeout_s` 60 (Tasks extension) then `tasks/get`, and `tasks/cancel` on another one | task; `statusMessage` "phase i (i/40)"; completed with result; cancelled job stops | ✅ 2026-11-07 |
+| M-13 | `convar_set` on an archived convar (`fps_max`) with the elicitation capability: decline, then accept | `input_required` form elicitation / `archived` error / value applied (restored afterwards); without the capability or in legacy era: `archived` error | ✅ 2026-11-07 |
+
 ## Cross-cutting
 
 | ID | Procedure | Expected | Last result |

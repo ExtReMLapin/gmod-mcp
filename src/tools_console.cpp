@@ -168,7 +168,11 @@ static json convar_set_tool(const json &args) {
     for (const auto &f : before["result"].value("flag_names", json::array())) archived = archived || f == "ARCHIVE";
     if (archived && !args.value("persist", false))
         return agent::err("archived", "FCVAR_ARCHIVE convar: changing it would write to the user's cfg/config.cfg. Pass persist=true to accept.",
-                          json{{"current", before["result"].value("value", "")}});
+                          json{{"current", before["result"].value("value", "")},
+                               // Lets the MCP layer ask the user directly (elicitation) when the client supports it.
+                               {"confirm", {{"arg", "persist"},
+                                            {"message", "The agent wants to set the archived convar '" + args["name"].get<std::string>() + "' to '" +
+                                                            value + "'. It will be saved to your cfg/config.cfg. Allow it?"}}}});
     json s = agent::rt(r, "convar_set", json{{"name", args["name"]}, {"value", value}});
     if (!s.value("ok", false)) return s;
     wait_frames(3, 3.0);

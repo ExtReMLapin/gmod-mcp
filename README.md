@@ -16,6 +16,7 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
   - [2. Claude Code side (one command)](#2-claude-code-side-one-command)
   - [Dedicated server](#dedicated-server)
 - [Tools](#tools)
+  - [Long-running Lua jobs](#long-running-lua-jobs)
 - [How it works](#how-it-works)
 - [Several games at once](#several-games-at-once)
 - [Configuration](#configuration)
@@ -78,7 +79,7 @@ in that mode.
 | Area | Tools |
 |---|---|
 | Session | `status`, `map_list`, `map_load`, `disconnect`, `game_quit`, `game_terminate`, `wait_for`, `wait_frames` |
-| Lua | `lua_exec`, `lua_exec_file`, `lua_inspect`, `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
+| Lua | `lua_exec`, `lua_exec_file`, `lua_job` (long work spread over frames, with progress), `lua_inspect`, `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
 | Hooks | `hook_list`, `hook_trace`, `perf_hook_cost` |
 | Console | `console_exec`, `console_read`, `console_buffer`, `convar_get`, `convar_set`, `concommand_list` |
 | Errors | `errors_since`, `errors_clear` (Lua errors from all three realms, with stack) |
@@ -90,8 +91,36 @@ in that mode.
 | Events | `events_wait` (long-poll: `map_loaded`, `lua_error`, `main_thread_stalled`…), `reports_read` / `reports_channels` / `reports_clear` (fed by `mcpagent.report()` from your scripts) |
 | Instances | `instances_list` |
 
-Long operations (`map_load`, long waits and traces) run as MCP Tasks for clients that support them; otherwise they simply
-block until done. A detailed guide for the agent is exposed as an MCP resource (`mcpagent://guide`).
+Besides tools, the server offers:
+
+- **Prompts** (slash commands in Claude Code): `write-lua-job`, `debug-errors`, `run-tests`, `check-map`, with
+  completion of map names, realms and test files.
+- **Resources**: the agent guide (`mcpagent://guide`), `gmod://errors` and `gmod://console` (subscribable: the client is
+  told when they change), and the templates `gmod://wiki/{page}` and `gmod://lua/{path}`.
+- **Progress and cancellation**: long tools report progress while they run, and stop when the client cancels.
+  Long operations (`map_load`, long waits, long jobs) run as background MCP Tasks for clients that support them.
+- **Confirmation**: changing a convar saved in your `config.cfg` asks you first (when the client supports it).
+
+### Long-running Lua jobs
+
+`lua_exec` runs code in one go, and the game is frozen while it runs. For anything longer, `lua_job` runs the script
+as a coroutine resumed once per frame. The script talks back through a `job` object, and its progress shows up in
+Claude Code while it runs:
+
+```lua
+local props = 0
+local all = ents.GetAll()
+for i, ent in ipairs(all) do
+    if ent:GetClass() == "prop_physics" then props = props + 1 end
+    if i % 100 == 0 then job:progress(i, #all, props .. " props so far") end
+    job:step()  -- hands control back to the game once this frame's time slice is used
+end
+return { props = props }
+```
+
+Also available: `job:sleep(seconds)`, `job:frames(n)`, `job:wait(fn, timeout)`, `job:report(value)` for intermediate
+results, and `job.args` for the call's arguments. The agent learns this protocol from the tool description and the
+`write-lua-job` prompt.
 
 ## How it works
 
@@ -188,6 +217,9 @@ tracebacks then point at the real file.
 - The Garry's Mod dedicated server ignores packets from `127.0.0.1`: to join a local dedicated server, connect to this
   machine's LAN address (the client lock recognizes it as local).
 - Lua errors raised by code run through `lua_exec` are returned to the caller, not reported by `errors_since`.
+- A `lua_job` dies with its realm: loading a map ends the jobs running in the client and server states.
+- Progress and cancellation do not cross instances: a call relayed to another game reports neither.
+- MCP logging, sampling and roots (deprecated in the 2026-07-28 specification) are not implemented.
 
 ## Building from source
 

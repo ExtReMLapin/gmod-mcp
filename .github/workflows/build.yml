@@ -22,7 +22,7 @@ jobs:
             platform: linux64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
@@ -54,7 +54,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then 7z a -tzip "$name.zip" "$name" > /dev/null; else zip -qr "$name.zip" "$name"; fi
           sha256sum "$name.zip" > "$name.zip.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: gmod-mcp-${{ matrix.platform }}
           path: |
@@ -68,11 +68,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.zip

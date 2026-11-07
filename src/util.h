@@ -13,5 +13,7 @@ std::string flag_value(const std::vector<std::string> &args, const std::string &
 bool constant_time_eq(const std::string &a, const std::string &b);
 std::string to_lower(std::string s);
 std::string hex(const unsigned char *p, size_t n);
+// Compact number formatting: integers without decimals, otherwise up to 3 significant decimals.
+std::string fmt_num(double v);
 
 }  // namespace util
