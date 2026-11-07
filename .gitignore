@@ -1,0 +1,17 @@
+# Build output
+build*/
+out/
+*.user
+.vs/
+.vscode/
+CMakeUserPresets.json
+
+# Local investigation notes, dumps and scratch files (not published)
+notes/
+*.mdmp
+*.dmp
+*.log
+
+# Secrets
+mcpagent_token*
+token
