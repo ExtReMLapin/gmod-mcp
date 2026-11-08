@@ -194,15 +194,9 @@ flowchart LR
 - If the game holding the base port exits, the others keep running; within a few seconds one of them takes the base port
   over and the rest register with it.
 
-To run two **clients** side by side (for example to split a long test suite), start the extra ones with `-multirun`.
-A small window and a frame cap keep them cheap, and closing them with `game_terminate` instead of `game_quit` keeps
-them from writing their video and `fps_max` settings over your own config:
-
-```
-gmod_win64.exe -multirun -mcp -windowed -w 960 -h 540 +fps_max 45 +fps_max_nofocus 45 +map gm_construct
-```
-
-An unfocused game is capped at 20 fps by default (`fps_max_nofocus`); set it to 0 when a test measures frame times.
+Several **clients** can run side by side too (start the extra ones with `-multirun`); the
+[setup skill](plugin/skills/gmod-mcp/SKILL.md) gives agents the launch line and how to close them without touching
+your config.
 
 ## Configuration
 

@@ -73,6 +73,22 @@ load take longer). Run the wait in the background or in one bounded loop, not as
 so calls work again as soon as the game is back. If they are not in your tool list (the server failed to connect when
 this session started), ask the user to reconnect it with `/mcp` (select `gmod`, Reconnect), or to restart Claude Code.
 
+**Several clients side by side** (for example to split a long test suite): start each extra game with `-multirun`, a
+small window and a frame cap so they stay cheap:
+
+```powershell
+$env:SteamAppId = "4000"; $env:SteamGameId = "4000"
+Start-Process -FilePath "<game folder>\gmod_win64.exe" -WorkingDirectory "<game folder>" `
+  -ArgumentList "-multirun -mcp -windowed -w 960 -h 540 -novid +fps_max 45 +fps_max_nofocus 45 +map gm_construct"
+```
+
+- Each game takes the next port (27081, 27082...) and registers with the one on 27080: keep the single `gmod` entry,
+  call `instances_list`, and pass `instance` to every tool (calls without it are refused with `ambiguous_instance`).
+- Close the extra games with `game_terminate`, not `game_quit`: a clean quit writes their window size and `fps_max`
+  over the user's own config.
+- An unfocused game is capped at 20 fps by default (`fps_max_nofocus`); pass `+fps_max_nofocus 0` when a test measures
+  frame times.
+
 ## 3. Install (or update) the module
 
 Ask the user first; say that it adds two files to the game folder, and that on the first start with `-mcp` the module
