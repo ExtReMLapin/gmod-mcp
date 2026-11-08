@@ -15,6 +15,7 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
   - [1. Garry's Mod side (drag and drop)](#1-garrys-mod-side-drag-and-drop)
   - [2. Claude Code side (one command)](#2-claude-code-side-one-command)
   - [Dedicated server](#dedicated-server)
+  - [Claude Code plugin](#claude-code-plugin)
 - [Tools](#tools)
   - [Long-running Lua jobs](#long-running-lua-jobs)
 - [How it works](#how-it-works)
@@ -29,6 +30,16 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
 ## Install
 
 You need Garry's Mod with the **64-bit** binaries (`gmod_win64.exe`, the default on current Steam builds).
+
+**Quickest, with Claude Code:** install the plugin, then ask Claude to set up gmod-mcp. Its skill downloads and checks
+the release, copies the two files (after asking you), starts the game with `-mcp` and connects Claude Code. Later, when
+the game is closed, Claude knows to start it again instead of giving up:
+
+```
+/plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp
+```
+
+Or by hand, in two steps:
 
 ### 1. Garry's Mod side (drag and drop)
 
@@ -73,6 +84,19 @@ server keeps no session).
 
 Same zip, same drag and drop into the server's folder, and start the server with `-mcp`. Only the server realm exists
 in that mode.
+
+### Claude Code plugin
+
+The repository is also a Claude Code plugin marketplace. The plugin (`plugin/`) holds one skill, no code: it tells
+Claude how to install or update the module, find the game folder, start the game with `-mcp` when the `gmod` server is
+down, wait for it and register it with `claude mcp add`. It asks before touching the game folder and never restarts a
+game you just closed.
+
+```
+/plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp
+```
+
+From a shell: `claude plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp`.
 
 ## Tools
 

@@ -1,0 +1,10 @@
+{
+  "name": "gmod-mcp",
+  "version": "0.2.0",
+  "author": { "name": "ExtReMLapin", "url": "https://github.com/ExtReMLapin" },
+  "homepage": "https://github.com/ExtReMLapin/gmod-mcp",
+  "repository": "https://github.com/ExtReMLapin/gmod-mcp",
+  "license": "MIT",
+  "keywords": ["garrys-mod", "gmod", "mcp", "lua"],
+  "description": "Install gmod-mcp, start Garry's Mod with -mcp when its MCP server is down, and connect Claude Code to it."
+}
