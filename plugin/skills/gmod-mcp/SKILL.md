@@ -1,6 +1,6 @@
 ---
 name: gmod-mcp
-description: Use when a task involves Garry's Mod (GMod, gmod, GLua) and the `gmod` MCP server is missing, failed to connect, or answers "connection refused"; when the user wants to install, update, start or connect gmod-mcp; or before telling the user that the game or its MCP server is unavailable. The MCP server lives inside the game, so it only exists while Garry's Mod runs with -mcp: starting the game is your job, not a dead end.
+description: Use when a task involves Garry's Mod (GMod, gmod, GLua, a GMod dedicated server / srcds) and the `gmod` MCP server is missing, failed to connect, or answers "connection refused"; when the user wants to install, update, start or connect gmod-mcp; or before telling the user that the game or its MCP server is unavailable. The MCP server lives inside the game, so it only exists while Garry's Mod runs with -mcp: starting the game is your job, not a dead end.
 ---
 
 # gmod-mcp: install, start and connect
@@ -118,12 +118,50 @@ Code: tell the user.
 
 In the game console, `mcpagent_setup` prints the same command, plus a `.mcp.json` snippet for other MCP clients.
 
-## Dedicated server (only if the user asks for one)
+## Dedicated server (srcds)
 
-Same two files, in the dedicated server's own `garrysmod` folder. Start it with `-mcp` and a map, for example
-`srcds_win64.exe -console -game garrysmod +maxplayers 2 +map gm_construct -mcp`. With a client game already running, the
-server takes the next port and registers with the game holding 27080: the agent reaches it through the same `gmod` entry
-(`instances_list`, then `instance` on any tool). Only the server realm exists there.
+The same module works in a Garry's Mod dedicated server (Steam app **4020**, a separate install from the game). Use it
+when the user works on a server-side addon or gamemode, or asks for a dedicated server. Only the server realm exists
+there (no menu, no client, no screenshots).
+
+**Install the server** (ask first: it is a download of several GB, and the user picks the folder). With SteamCMD
+(https://developer.valvesoftware.com/wiki/SteamCMD), in a folder of its own:
+
+```bash
+steamcmd +force_install_dir "<server folder>" +login anonymous +app_update 4020 validate +quit
+```
+
+If the user already has a server, use theirs: it is the folder holding `srcds_win64.exe` (Linux: `srcds_run_x64`) and a
+`garrysmod` folder.
+
+**Install the module**: as in section 3, the same two files from the same zip, into `<server folder>/garrysmod/...`.
+A server has no main menu: it needs no `+map gm_construct` "first start", but it needs a map on every start.
+
+**Start it** with the **64-bit** binary (`srcds.exe` and `srcds_run` are 32-bit: the module does not load there):
+
+```powershell
+Start-Process -FilePath "<server folder>\srcds_win64.exe" -WorkingDirectory "<server folder>" `
+  -ArgumentList "-console -mcp -condebug -port 27015 +maxplayers 2 +sv_lan 1 +map gm_construct"
+```
+
+Linux: `./srcds_run_x64 -console -mcp -condebug -port 27015 +maxplayers 2 +sv_lan 1 +map gm_construct` (untested so far).
+
+- `+sv_lan 1` keeps the server off the public server list. Never open or forward its ports. If Windows asks about the
+  firewall, the MCP port needs nothing (it is loopback); allowing private networks is enough to join from this machine.
+- Wait for it as in section 2 (`curl` on 27080, or 27081 when a client game already holds 27080).
+- The token is the same file as the game's (same user), and `mcpagent_setup` works in the server console.
+
+**Reaching it from the agent.** A server alone takes port 27080, so the usual `gmod` entry works. With the client
+game also running, each has its own port and the one holding 27080 relays to the other: keep the single `gmod` entry,
+call `instances_list`, then pass `instance` (`srcds-<pid>`) to any tool. Calls without `instance` are refused with
+`ambiguous_instance` while several games run.
+
+**Joining it from the local game**: `connect <this machine's LAN address>:27015` (in `console_exec`, or the game
+console). A GMod dedicated server ignores connections from `127.0.0.1`, so use the LAN address (`ipconfig` /
+`ip addr`). The client realm stays available because the server runs on this machine.
+
+**Stopping it**: the `game_quit` tool with its `instance`, or `quit` in its console. Leave a server the user started
+themselves running unless they ask.
 
 ## When it still does not answer
 
