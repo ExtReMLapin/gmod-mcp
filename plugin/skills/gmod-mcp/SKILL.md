@@ -97,8 +97,13 @@ also appends a small loader block to `garrysmod/lua/menu/menu.lua` (the original
    - `garrysmod/lua/autorun/server/mcpagent_boot.lua`
 5. Start the game as in section 2, **with `+map gm_construct`** this first time. The game console says
    `main-menu loader installed in lua/menu/menu.lua`.
-6. Optionally, tell the user they can add `-mcp` to the game's Steam launch options, so the server is also up when
-   they start the game themselves.
+6. Optionally, suggest Steam launch options (Garry's Mod → Properties → Launch options), so the server is also up, at
+   full speed, when the user starts the game themselves:
+   `-mcp -windowed +engine_no_focus_sleep 0 +snd_mute_losefocus 0`. `-mcp` starts the server; without
+   `+engine_no_focus_sleep 0` the game throttles itself while another window has the focus (the usual case while
+   the user is in the terminal), so every call that waits on frames gets slower; `+snd_mute_losefocus 0` keeps
+   sounds playing for sound tests. `-windowed` is a preference, so the terminal stays reachable. Do not edit Steam's
+   files to set them: tell the user.
 
 ## 4. Connect Claude Code
 
