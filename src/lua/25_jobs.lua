@@ -56,7 +56,7 @@ function H.job_start(args)
 	if type(args.code) ~= "string" then A.fail("invalid_params", "code: expected a string") end
 	local chunk = args.chunkname or ("=mcpagent:job:" .. A.realm)
 	local fn, cerr = A.compile(args.code, chunk)
-	if not fn then A.fail("lua_syntax_error", tostring(cerr), { chunkname = chunk }) end
+	if not fn then A.fail("lua_syntax_error", tostring(cerr), { chunkname = chunk, line = (A.compile_error_line(cerr)) }) end
 	A.job_seq = A.job_seq + 1
 	local id = A.realm .. "-" .. A.job_seq
 	local job = setmetatable({

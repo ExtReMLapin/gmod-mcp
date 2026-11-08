@@ -8,7 +8,7 @@ function H.lua_exec(args)
 	if type(code) ~= "string" then A.fail("invalid_params", "code: expected a string") end
 	local chunk = args.chunkname or ("=mcpagent:" .. A.realm)
 	local fn, cerr = A.compile(code, chunk)
-	if not fn then A.fail("lua_syntax_error", tostring(cerr), { chunkname = chunk }) end
+	if not fn then A.fail("lua_syntax_error", tostring(cerr), { chunkname = chunk, line = (A.compile_error_line(cerr)) }) end
 	local opts = { depth = args.depth or 4, limit = args.limit or 200 }
 	A.capture_begin()
 	local t0 = SysTime()

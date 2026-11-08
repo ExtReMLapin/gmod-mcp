@@ -69,6 +69,13 @@ static std::string normalize(std::string p) {
     return p;
 }
 
+// Chunk name for a file: path relative to the game folder when inside it (e.g. @lua/mcpagent_tmp/x.lua).
+static std::string chunk_for(const std::string &abs) {
+    std::string na = normalize(abs), game = normalize(agent::config().game_dir) + "/";
+    if (util::to_lower(na).rfind(util::to_lower(game), 0) == 0) return "@" + na.substr(game.size());
+    return "@" + na;
+}
+
 bool resolve_lua_file(const std::string &path, std::string &abs, std::string &chunkname, std::string &err) {
     std::filesystem::path p = std::filesystem::u8path(path);
     if (p.is_absolute()) {
@@ -81,12 +88,7 @@ bool resolve_lua_file(const std::string &path, std::string &abs, std::string &ch
         err = "file not found: " + abs;
         return false;
     }
-    std::string na = normalize(abs), game = normalize(agent::config().game_dir) + "/";
-    std::string la = util::to_lower(na), lg = util::to_lower(game);
-    if (la.rfind(lg, 0) == 0)
-        chunkname = "@" + na.substr(game.size());  // e.g. @lua/mcpagent_tmp/x.lua
-    else
-        chunkname = "@" + na;
+    chunkname = chunk_for(abs);
     return true;
 }
 
@@ -184,6 +186,53 @@ static json lua_exec_file_tool(const json &args) {
     return r;
 }
 
+static json lua_check_tool(const json &args) {
+    constexpr size_t kMaxFiles = 2000, kMaxBytes = 8u << 20;
+    bool has_code = args.contains("code"), has_path = args.contains("path");
+    if (has_code == has_path) return agent::err("invalid_params", "pass exactly one of code or path");
+    json items = json::array();
+    std::string abs;
+    if (has_code) {
+        items.push_back(json{{"file", "code"}, {"chunk", "=mcpagent:lua_check"}, {"code", args["code"]}});
+    } else {
+        std::string path = args["path"], e;
+        if (std::filesystem::u8path(path).is_absolute()) abs = path;
+        else if ((abs = tmp_path(path, e)).empty()) return agent::err("invalid_params", e);
+        std::error_code ec;
+        auto fp = std::filesystem::u8path(abs);
+        std::vector<std::string> files;
+        if (std::filesystem::is_directory(fp, ec)) {
+            std::string base = normalize(abs);
+            while (base.size() > 1 && base.back() == '/') base.pop_back();
+            for (const auto &rel : plat::list_files(abs, true)) {
+                std::string l = util::to_lower(rel);
+                if (l.size() > 4 && l.compare(l.size() - 4, 4, ".lua") == 0) files.push_back(base + "/" + rel);
+            }
+            std::sort(files.begin(), files.end());
+            if (files.empty()) return agent::err("not_found", "no .lua file under: " + abs);
+        } else if (std::filesystem::is_regular_file(fp, ec)) {
+            files.push_back(abs);
+        } else {
+            return agent::err("not_found", "file not found: " + abs);
+        }
+        if (files.size() > kMaxFiles)
+            return agent::err("invalid_params", std::to_string(files.size()) + " .lua files, the limit is " + std::to_string(kMaxFiles) +
+                                                    ": check a subfolder");
+        size_t total = 0;
+        for (const auto &f : files) {
+            std::string code;
+            if (!plat::read_file(f, code)) return agent::err("io_error", "cannot read: " + f);
+            if ((total += code.size()) > kMaxBytes) return agent::err("invalid_params", "more than 8 MB of Lua: check a subfolder");
+            std::string chunk = chunk_for(f);
+            items.push_back(json{{"file", chunk.substr(1)}, {"chunk", chunk}, {"code", std::move(code)}});
+        }
+    }
+    json p{{"items", std::move(items)}, {"globals", args.value("globals", true)}, {"limit", args.value("limit", 200)}};
+    json r = rt_realm(args, "realm", realms::MENU, "lua_check", p, 30.0);
+    if (has_path && r.value("ok", false)) r["result"]["path"] = abs;
+    return r;
+}
+
 static json lua_inspect_tool(const json &args) {
     json p{{"expr", args["expr"]}, {"depth", args.value("depth", 1)}, {"limit", args.value("limit", 100)}};
     return rt_realm(args, "realm", realms::MENU, "lua_inspect", p);
@@ -254,6 +303,23 @@ void register_core() {
                         "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks. First write the file "
                         "directly into tmp_dir (see status) or via lua_file_write.",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
+
+    mcp::register_tool(
+        {"lua_check", "Check Lua without running it",
+         "Compiles Lua with the game's own parser (GLua syntax: !=, &&, ||, !, //, /* */, continue) and runs nothing. "
+         "`code`, or `path`: a file or a whole folder (every .lua under it, e.g. an addon), relative to lua/mcpagent_tmp/ or "
+         "absolute. Returns ok, errors [{file, line, message}] (one per file: the parser stops at the first error), and from "
+         "the bytecode: unknown_globals (globals read but neither defined in the checked files nor present in the realm: "
+         "typos, missing includes, wrong realm) and globals_written (every global assignment, e.g. a forgotten `local`). "
+         "Unknown globals depend on the realm: pick the one the code runs in ('client'/'server' need a map; 'menu' lacks "
+         "most game functions). ENT, SWEP, GM, EFFECT and TOOL are never reported. Errors: realm_unavailable, not_found.",
+         json{{"properties",
+               {{"realm", realm_prop("Lua state whose parser and globals are used: 'menu' (default, always present), 'client' or 'server'.")},
+                {"code", {{"type", "string"}, {"description", "Lua code to check (instead of path)."}}},
+                {"path", {{"type", "string"}, {"description", "File or folder to check (instead of code): relative to lua/mcpagent_tmp/, or an absolute path on the game's disk."}}},
+                {"globals", {{"type", "boolean"}, {"description", "Also list unknown and written globals (default true)."}}},
+                {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}, {"description", "Max entries per list (default 200)."}}}}}},
+         RO, lua_check_tool});
 
     mcp::register_tool({"lua_inspect", "Inspect a Lua value",
                         "Evaluates an expression (expected to be side-effect free) and describes the value: type, value serialized to the given depth, "

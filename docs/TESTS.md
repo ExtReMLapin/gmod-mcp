@@ -102,6 +102,11 @@ Issues found by the campaign and fixed before these two passes:
 | L-21 | `tests_run tests/selftest_pass.lua` | 5 pass, 1 skip, `ok:true` | ✅ 2026-11-07 |
 | L-22 | `tests_run tests/selftest_fail.lua` | 1 pass, 1 fail (`expected 2 to equal 3`), 1 error (line 7) | ✅ 2026-11-07 |
 | L-23 | `tests_run tests/selftest_setup_error.lua` | all cases in `error` "beforeAll: setup failed" | ✅ 2026-11-07 |
+| L-24 | `lua_check` handler: GLua syntax (`!=`, `&&`, `!`, `//`, `continue`) passes; syntax errors in two files | one entry per file with its line (`unexpected symbol near '='` line 2, `'end' expected` line 4) | ✅ 2026-11-08 (Lua runtime, menu) |
+| L-25 | `lua_check` handler: typo `prnit(...)`, `leaked = 1` in a nested function, a global defined in file A and used in file B, `ENT.Type` | `unknown_globals` prnit (line 5); `globals_written` leaked (line 9); nothing for the cross-file global nor ENT | ✅ 2026-11-08 (Lua runtime, menu) |
+| L-26 | `lua_check` handler on a 70 000-line chunk with table constants, 64-bit numbers and a nested function | globals found on lines 300, 69999 and 70002 (4-byte line info), ≈ 55 ms | ✅ 2026-11-08 (Lua runtime, menu) |
+| L-27 | `lua_check {path:"<folder>"}` on a folder of `.lua` files; `{code}` and `{path}` together; missing path | `file` = `lua/mcpagent_tmp/...` for each file; `invalid_params`; `not_found` | ⏳ needs a game restart with the new DLL |
+| L-28 | `lua_exec "local x = = 1"` | `lua_syntax_error` with `details.line` 1 | ⏳ needs a game restart with the new DLL |
 
 ## Console and errors
 
