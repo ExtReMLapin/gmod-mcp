@@ -1,5 +1,9 @@
 # gmod-mcp
 
+---- 
+##### The GMod MCP server that doesn't make you build a sidecar, babysit a polling bridge or inject DLLs into your game: one module, one launch flag, every realm, menu included. Lua, maps, console, errors, screenshots, hook tracing and long-running jobs with progress, straight from inside the game.
+----
+
 **An MCP server that lives inside Garry's Mod.** Drop one native module into your game and an AI coding agent
 (Claude Code or any MCP client) can run Lua in the menu, client and server realms, load maps, read the console and
 errors, inspect and edit the world, take screenshots, trace hooks and look up the documentation — on your own machine.
