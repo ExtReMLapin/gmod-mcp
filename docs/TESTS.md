@@ -258,7 +258,7 @@ fixes below) fails F cancel and dies on F non-string version, the current one pa
 | B-7 | Command without `.exe` in `.mcp.json` on Windows | `fb` resolves to `fb.exe`: one `.mcp.json` for both platforms | ✅ 2026-11-11 |
 | B-8 | Version mismatch: module in the game older than the bridge | instructions start with "Version mismatch ..." | ⏳ needs a module of another version in the game |
 | B-9 | Linux: build of the bridge, `--module-dir`, case A | builds without warnings, 5/5 | ✅ 2026-11-11 (WSL Ubuntu 22.04, g++ 11; a full build at -j 16 leaves ≥ 6.8 GB free) |
-| B-10 | Real update cycle: release N installed, release N+1 published, marketplace refreshed | Claude Code offers / applies the update; new bridge after restart | ⏳ needs two releases |
+| B-10 | Real update cycle: 0.3.0 installed, 0.3.1 published, marketplace refreshed | `claude plugin marketplace update` + `claude plugin update`: 0.3.0 → 0.3.1, installed in its own folder next to 0.3.0 (the running bridge is not replaced; "restart to apply"); module then installed with the fixed skill command from the 0.3.1 plugin | ✅ 2026-11-11 (manual update; the auto-update toggle uses the same path, not exercised) |
 
 ## Test clients (instances_launch) and light instances
 
