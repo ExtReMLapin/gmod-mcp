@@ -12,7 +12,7 @@ function H.lua_exec(args)
 	local opts = { depth = args.depth or 4, limit = args.limit or 200 }
 	A.capture_begin()
 	local t0 = SysTime()
-	local ok, res, err, tb, exceeded = A.run_budget(fn, args.budget or 5)
+	local ok, res, err, tb, exceeded = A.run_budget(fn, args.jit ~= true and (args.budget or 5))
 	local dt = (SysTime() - t0) * 1000
 	local output = A.capture_end()
 	if not ok then

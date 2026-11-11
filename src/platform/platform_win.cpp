@@ -17,10 +17,12 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "user32.lib")
 
 namespace plat {
 
@@ -165,6 +167,38 @@ std::vector<std::string> local_ipv4_addresses() {
         }
     }
     return out;
+}
+
+int process_has_foreground() {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return -1;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId() ? 1 : 0;
+}
+
+// Main game window: a visible, unowned top-level window of this process (the engine's class is "Valve001").
+static BOOL CALLBACK find_main_window(HWND w, LPARAM lp) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    if (pid != GetCurrentProcessId() || !IsWindowVisible(w) || GetWindow(w, GW_OWNER)) return TRUE;
+    HWND *best = reinterpret_cast<HWND *>(lp);
+    char cls[64] = {};
+    GetClassNameA(w, cls, sizeof cls);
+    if (std::strcmp(cls, "Valve001") == 0) {
+        *best = w;
+        return FALSE;
+    }
+    if (!*best) *best = w;
+    return TRUE;
+}
+
+bool send_app_deactivate() {
+    HWND w = nullptr;
+    EnumWindows(find_main_window, reinterpret_cast<LPARAM>(&w));
+    if (!w) return false;
+    SendMessageA(w, WM_ACTIVATEAPP, FALSE, 0);
+    return true;
 }
 
 }  // namespace plat

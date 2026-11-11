@@ -1,4 +1,4 @@
-// Tools: status, lua_exec, lua_exec_file, lua_inspect, lua_file_*.
+// Tools: status, lua_exec, lua_exec_file, lua_reload, lua_check, lua_inspect, lua_file_*.
 #include <algorithm>
 #include <filesystem>
 
@@ -165,12 +165,13 @@ static json status_tool(const json &args) {
 
 static json exec_payload(const json &args, const std::string &code, const std::string &chunk) {
     json p{{"code", code}, {"chunkname", chunk}};
-    for (const char *k : {"budget", "depth", "limit"})
+    for (const char *k : {"budget", "depth", "limit", "jit"})
         if (args.contains(k)) p[k] = args[k];
     return p;
 }
 
-static double exec_timeout(const json &args) { return args.value("budget", 5.0) + 10.0; }
+// With jit: true there is no budget inside the game: wait as long as the longest budget allowed.
+static double exec_timeout(const json &args) { return (args.value("jit", false) ? 120.0 : args.value("budget", 5.0)) + 10.0; }
 
 static json lua_exec_tool(const json &args) {
     return rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec"), exec_timeout(args));
@@ -184,6 +185,83 @@ static json lua_exec_file_tool(const json &args) {
     json r = rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
     if (r.value("ok", false)) r["result"]["file"] = abs;
     return r;
+}
+
+// Finds a Lua file the way include() names it ("autorun/x.lua", "mygm/gamemode/init.lua"), or a path relative to the
+// game folder ("lua/...", "addons/<name>/lua/..."), or an absolute path. Every match is returned, game folder first.
+static std::vector<std::string> find_game_lua(const std::string &path, std::string &err) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    std::error_code ec;
+    if (fs::u8path(path).is_absolute()) {
+        if (fs::is_regular_file(fs::u8path(path), ec)) out.push_back(path);
+        else err = "file not found: " + path;
+        return out;
+    }
+    std::string rel = normalize(path);
+    if (!safe_rel(rel)) {
+        err = "invalid path: relative, characters [A-Za-z0-9_.-/], no '..'";
+        return out;
+    }
+    const std::string game = agent::config().game_dir;
+    auto add = [&](const std::string &p) {
+        if (fs::is_regular_file(fs::u8path(p), ec) && std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
+    };
+    std::string low = util::to_lower(rel);
+    if (low.rfind("lua/", 0) == 0 || low.rfind("addons/", 0) == 0 || low.rfind("gamemodes/", 0) == 0) add(game + "/" + rel);
+    add(game + "/lua/" + rel);
+    add(game + "/gamemodes/" + rel);
+    std::vector<std::string> addons;
+    for (const auto &e : fs::directory_iterator(fs::u8path(game + "/addons"), ec))
+        if (e.is_directory(ec)) addons.push_back(e.path().filename().u8string());
+    std::sort(addons.begin(), addons.end());
+    for (const auto &a : addons) {
+        add(game + "/addons/" + a + "/lua/" + rel);
+        add(game + "/addons/" + a + "/gamemodes/" + rel);
+    }
+    if (out.empty()) err = "no file '" + rel + "' under lua/, gamemodes/ or addons/*/lua|gamemodes/, nor relative to the game folder";
+    return out;
+}
+
+// Realms a file runs in, from GMod's naming conventions (folders server/ client/, prefixes sv_ cl_).
+static std::vector<int> default_realms(const std::string &chunk) {
+    std::string l = util::to_lower(chunk);
+    std::string file = l.substr(l.find_last_of('/') + 1);
+    if (l.find("/server/") != std::string::npos || file.rfind("sv_", 0) == 0 || file == "init.lua") return {realms::SERVER};
+    if (l.find("/client/") != std::string::npos || file.rfind("cl_", 0) == 0 || file == "cl_init.lua") return {realms::CLIENT};
+    if (l.find("lua/menu/") != std::string::npos) return {realms::MENU};
+    return {realms::SERVER, realms::CLIENT};
+}
+
+static json lua_reload_tool(const json &args) {
+    std::string e;
+    auto found = find_game_lua(args["path"], e);
+    if (found.empty()) return agent::err("not_found", e);
+    const std::string &abs = found.front();
+    std::string code;
+    if (!plat::read_file(abs, code)) return agent::err("io_error", "cannot read: " + abs);
+    std::string chunk = chunk_for(abs);
+    std::vector<int> rs;
+    if (args.contains("realms")) {
+        for (const auto &n : args["realms"]) rs.push_back(realms::parse(n.get<std::string>()));
+    } else {
+        rs = default_realms(chunk);
+    }
+    json per = json::object();
+    bool all_ok = true;
+    for (int r : rs) {
+        json res = agent::rt(r, "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
+        bool rok = res.value("ok", false);
+        all_ok = all_ok && rok;
+        per[realms::name(r)] = rok ? res["result"] : json{{"error", res.value("error", json())}};
+    }
+    json out{{"ok", all_ok}, {"file", abs}, {"chunkname", chunk}, {"realms", per}};
+    if (found.size() > 1) {
+        out["other_matches"] = json::array();
+        for (size_t i = 1; i < found.size(); ++i) out["other_matches"].push_back(found[i]);
+        out["warning"] = "several files match this path: the first one was run (pass a longer or absolute path to pick another)";
+    }
+    return ok(out);
 }
 
 static json lua_check_tool(const json &args) {
@@ -283,14 +361,20 @@ void register_core() {
 
     json exec_props = {{"realm", realm_exec},
                        {"budget", {{"type", "number"}, {"minimum", 0.05}, {"maximum", 120},
-                                   {"description", "Time budget in seconds (default 5). Beyond it, execution is interrupted (budget_exceeded)."}}},
+                                   {"description", "Time budget in seconds (default 5, max 120). Beyond it, execution is interrupted (budget_exceeded)."}}},
+                       {"jit", {{"type", "boolean"},
+                                {"description", "Keep the LuaJIT compiler on (default false). By default the compiler is off for this "
+                                                "code and every function it defines (hooks, timers, callbacks), so the budget can "
+                                                "interrupt loops, and timings are several times slower than real. Use jit: true to "
+                                                "measure performance: there is no budget then, and a runaway loop freezes the game "
+                                                "(status reports it, game_terminate ends it)."}}},
                        {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 12}, {"description", "Table serialization depth (default 4)."}}},
                        {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Max number of elements per table (default 200)."}}}};
     json exec_code = exec_props;
     exec_code["code"] = {{"type", "string"}, {"description", "Lua code. Use `return` to return values (several allowed)."}};
     mcp::register_tool({"lua_exec", "Execute Lua",
-                        "Executes Lua code in a realm under xpcall + debug.traceback, with a time budget (debug.sethook; JIT disabled "
-                        "for the chunk). Returns all serialized return values (values, n), captured print/Msg/MsgN/MsgC "
+                        "Executes Lua code in a realm under xpcall + debug.traceback, with a time budget (debug.sethook; the JIT "
+                        "compiler is off for the chunk and the functions it defines, unless jit: true). Returns all serialized return values (values, n), captured print/Msg/MsgN/MsgC "
                         "(output) and the duration. Non-JSON types: {__type: Vector|Angle|Color|Entity|function|cycle|...}. "
                         "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, realm_unavailable, client_locked.",
                         json{{"properties", exec_code}, {"required", {"code"}}}, json{{"destructiveHint", true}}, lua_exec_tool});
@@ -303,6 +387,25 @@ void register_core() {
                         "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks. First write the file "
                         "directly into tmp_dir (see status) or via lua_file_write.",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
+
+    json reload_props = exec_props;
+    reload_props.erase("realm");
+    reload_props["path"] = {{"type", "string"},
+                            {"description", "The file as include() names it (e.g. 'autorun/my_addon.lua', 'my_addon/sh_core.lua'), "
+                                            "a path relative to the game folder ('addons/my_addon/lua/...'), or an absolute path."}};
+    reload_props["realms"] = {{"type", "array"}, {"minItems", 1}, {"uniqueItems", true},
+                              {"items", {{"type", "string"}, {"enum", json::array({"menu", "client", "server"})}}},
+                              {"description", "Realms to run it in. Default from the name: server/ folder, sv_ prefix or init.lua -> "
+                                              "server; client/ folder or cl_ prefix -> client; lua/menu/ -> menu; otherwise "
+                                              "server then client (shared file)."}};
+    mcp::register_tool({"lua_reload", "Reload a Lua file from disk",
+                        "Reads an addon or gamemode file from the disk again and runs it in its realms, to test an edit without "
+                        "reloading the map. Use it instead of include() in lua_exec: on the client, include() runs the copy the "
+                        "server sent when the map loaded, not the file on disk, so an edit is silently ignored. Looks under "
+                        "lua/, gamemodes/, then addons/*/lua|gamemodes/ (other matches are listed). Errors name the real file. "
+                        "Running a file again redefines its functions and hooks; what it built at load time (entities, timers, "
+                        "net strings) is not reset. Returns ok and, per realm, the lua_exec result or its error.",
+                        json{{"properties", reload_props}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_reload_tool});
 
     mcp::register_tool(
         {"lua_check", "Check Lua without running it",

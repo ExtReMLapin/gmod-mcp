@@ -1,5 +1,6 @@
 #include "mcp.h"
 
+#include <algorithm>
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -85,11 +86,58 @@ std::string validate(const json &schema, const json &value, const std::string &)
     return "";
 }
 
+static size_t edit_distance(const std::string &a, const std::string &b) {
+    std::vector<size_t> row(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); ++j) row[j] = j;
+    for (size_t i = 1; i <= a.size(); ++i) {
+        size_t diag = row[0];
+        row[0] = i;
+        for (size_t j = 1; j <= b.size(); ++j) {
+            size_t up = row[j];
+            row[j] = std::min({row[j] + 1, row[j - 1] + 1, diag + (a[i - 1] == b[j - 1] ? 0 : 1)});
+            diag = up;
+        }
+    }
+    return row[b.size()];
+}
+
+// The validator's message alone ("unexpected instance additional property") rarely tells an agent what to send: name
+// the unknown and missing arguments, suggest the closest accepted name, and list what the tool accepts.
+static std::string argument_hint(const Tool &t, const json &value) {
+    const json &props = t.input_schema["properties"];
+    std::string out;
+    if (value.is_object()) {
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            if (props.contains(it.key())) continue;
+            std::string best;
+            size_t best_d = 4;
+            for (auto p = props.begin(); p != props.end(); ++p) {
+                const std::string &k = p.key(), &u = it.key();
+                size_t d = edit_distance(u, k);
+                if (k.find(u) != std::string::npos || u.find(k) != std::string::npos) d = std::min<size_t>(d, 1);
+                if (d < best_d) best_d = d, best = k;
+            }
+            out += " Unknown argument '" + it.key() + "'" + (best.empty() ? "." : " (did you mean '" + best + "'?).");
+        }
+    }
+    json req = t.input_schema.value("required", json::array());
+    for (const auto &r : req)
+        if (!value.is_object() || !value.contains(r.get<std::string>())) out += " Missing required argument '" + r.get<std::string>() + "'.";
+    std::string list;
+    for (auto p = props.begin(); p != props.end(); ++p) {
+        if (!list.empty()) list += ", ";
+        list += p.key();
+        if (p.value().contains("type") && p.value()["type"].is_string()) list += " (" + p.value()["type"].get<std::string>() + ")";
+    }
+    out += " Accepted arguments: " + list + ".";
+    return out;
+}
+
 static std::string validate_tool(const Tool &t, const json &value) {
     try {
         t.validator->validate(value);
     } catch (const std::exception &e) {
-        return std::string("invalid arguments: ") + e.what();
+        return std::string("invalid arguments: ") + e.what() + "." + argument_hint(t, value);
     }
     return "";
 }

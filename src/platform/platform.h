@@ -57,4 +57,11 @@ bool safe_read(const void *addr, void *out, size_t n);
 // IPv4 addresses of this machine's network interfaces (dotted strings, loopback excluded).
 std::vector<std::string> local_ipv4_addresses();
 
+// Window focus (Windows only). 1 = a window of this process is in the foreground, 0 = another process's window is,
+// -1 = unknown (no foreground window, or not supported on this platform).
+int process_has_foreground();
+// Sends WM_ACTIVATEAPP(FALSE) to this process's main game window, as Windows does when another application takes the
+// focus. Returns false if no such window was found (or on other platforms).
+bool send_app_deactivate();
+
 }  // namespace plat

@@ -25,6 +25,8 @@ static const char *kJobProtocol =
     "- job.args: the `args` object of this call. job:elapsed(): seconds since start.\n"
     "- `return value, ...` ends the job: the values are the tool result.\n"
     "A single resume that runs longer than resume_limit_s (default 2 s) without yielding is aborted with an error. "
+    "That limit needs a debug hook and the LuaJIT compiler turned off for the script and the functions it defines: pass "
+    "jit: true for performance measurements (no limit then; a resume that never yields freezes the game). "
     "Cancelling the request (or the task) stops the coroutine at the next frame. The job dies with its realm (map change). "
     "Example:\n"
     "local hits = 0\n"
@@ -53,7 +55,7 @@ static json lua_job_tool(const json &args) {
         return agent::err("invalid_params", "pass `code` or `path`");
     }
     json p{{"code", code}, {"chunkname", chunk}, {"args", args.value("args", json::object())},
-           {"slice_ms", args.value("slice_ms", 8.0)}, {"resume_limit_s", args.value("resume_limit_s", 2.0)}};
+           {"slice_ms", args.value("slice_ms", 8.0)}, {"resume_limit_s", args.value("resume_limit_s", 2.0)}, {"jit", args.value("jit", false)}};
     json start = agent::rt(realm, "job_start", p);
     if (!start.value("ok", false)) return start;
     std::string id = start["result"]["id"];
@@ -123,7 +125,9 @@ void register_jobs() {
                                {"description", "Cancel the job after this many seconds (default 300). 15 s or more: runs as an MCP task when the client supports it."}}},
                 {"slice_ms", {{"type", "number"}, {"minimum", 0.5}, {"maximum", 100}, {"description", "Time per frame before job:step() yields (default 8)."}}},
                 {"resume_limit_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 30},
-                                    {"description", "Abort if a single resume runs this long without yielding (default 2)."}}}}},
+                                    {"description", "Abort if a single resume runs this long without yielding (default 2)."}}},
+                {"jit", {{"type", "boolean"},
+                         {"description", "Keep the LuaJIT compiler on, without resume_limit_s (default false). For timings."}}}}},
               {"oneOf", json::array({json{{"required", {"code"}}}, json{{"required", {"path"}}}})}},
          json{{"destructiveHint", true}}, lua_job_tool});
     mcp::set_task_support("lua_job", "optional");

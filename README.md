@@ -107,7 +107,7 @@ From a shell: `claude plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp
 | Area | Tools |
 |---|---|
 | Session | `status`, `map_list`, `map_load`, `disconnect`, `game_quit`, `game_terminate`, `wait_for`, `wait_frames` |
-| Lua | `lua_exec`, `lua_exec_file`, `lua_check` (syntax and globals of a snippet, file or whole addon, without running it), `lua_job` (long work spread over frames, with progress), `lua_inspect`, `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
+| Lua | `lua_exec`, `lua_exec_file`, `lua_reload` (run an addon file again from the disk, in its realms), `lua_check` (syntax and globals of a snippet, file or whole addon, without running it), `lua_job` (long work spread over frames, with progress), `lua_inspect`, `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
 | Hooks | `hook_list`, `hook_trace`, `perf_hook_cost` |
 | Console | `console_exec`, `console_read`, `console_buffer`, `convar_get`, `convar_set`, `concommand_list` |
 | Errors | `errors_since`, `errors_clear` (Lua errors from all three realms, with stack) |

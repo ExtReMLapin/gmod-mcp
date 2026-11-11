@@ -107,6 +107,11 @@ Issues found by the campaign and fixed before these two passes:
 | L-26 | `lua_check` handler on a 70 000-line chunk with table constants, 64-bit numbers and a nested function | globals found on lines 300, 69999 and 70002 (4-byte line info), ≈ 55 ms | ✅ 2026-11-08 (Lua runtime, menu) |
 | L-27 | `lua_check {path:"<folder>"}` on a folder of `.lua` files; `{code}` and `{path}` together; missing path | `file` = `lua/mcpagent_tmp/...` for each file; `invalid_params`; `not_found` | ⏳ needs a game restart with the new DLL |
 | L-28 | `lua_exec "local x = = 1"` | `lua_syntax_error` with `details.line` 1 | ⏳ needs a game restart with the new DLL |
+| L-29 | `lua_reload {path:"autorun/<file>.lua"}` for a shared addon file edited after the map loaded; then `cl_`, `server/` and an ambiguous name | runs in server then client, the new code is live on both; `cl_` → client only, `server/` → server only; ambiguous → first match + `other_matches` + `warning`; unknown → `not_found` | ⏳ needs the new DLL |
+| L-30 | `lua_exec` loop benchmark with and without `jit: true`; a function defined by a `jit: true` chunk then timed from a timer | `jit: true` several times faster; no `budget_exceeded` possible; default keeps the budget | ⏳ needs the new DLL |
+| L-31 | `lua_job {jit: true}` | runs, no resume limit, result returned | ⏳ needs the new DLL |
+| L-32 | `console_exec {command: "echo hi"}` (wrong name) | `invalid_params` naming `command`, suggesting `cmd`, listing the accepted arguments | ⏳ needs the new DLL |
+| L-33 | client started with `-multirun ... +map gm_construct` from a script while another window keeps the focus | the game does not hold the mouse; console line `told it the focus was lost`; clicking the game still captures the mouse normally | ⏳ needs the new DLL |
 
 ## Console and errors
 

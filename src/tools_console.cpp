@@ -232,7 +232,8 @@ void register_console() {
     mcp::register_tool({"console_exec", "Run a console command",
                         "Runs a console command from a realm (menu: RunConsoleCommand; server: game.ConsoleCommand; client: "
                         "RunConsoleCommand, with automatic fallback to the menu if the command is blocked client-side). Waits "
-                        "a few frames then returns the console lines produced (multi-line output included).",
+                        "a few frames then returns the console lines produced (multi-line output included). Argument: "
+                        "{\"cmd\": \"sv_gravity 600\"}. To change a convar, convar_set is better: it reads the value back.",
                         json{{"properties", {{"cmd", {{"type", "string"}, {"minLength", 1}, {"description", "Command line, e.g. 'echo hello' or 'sv_gravity 600'."}}},
                                              {"realm", realm_p},
                                              {"wait_frames", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600}, {"description", "Frames to wait before reading the output (default 5)."}}},

@@ -68,7 +68,9 @@ function H.job_start(args)
 	}, Job)
 	-- `job` is visible as a global inside the chunk; other global reads and writes go to _G.
 	setfenv(fn, setmetatable({ job = job }, { __index = _G, __newindex = _G }))
-	if jit and jit.off then pcall(jit.off, fn, true) end  -- keep the count hook firing inside the script's loops
+	-- Keep the count hook firing inside the script's loops, unless the caller wants the compiler on (measurements).
+	job.jit = args.jit == true
+	if not job.jit and jit and jit.off then pcall(jit.off, fn, true) end
 	job.co = coroutine.create(function() return fn(job) end)
 	jobs[id] = job
 	return { id = id }
@@ -86,12 +88,14 @@ local function resume(job)
 	local t0 = SysTime()
 	local deadline = t0 + job.limit
 	local oldf, oldmask, oldcount = debug.gethook()
-	debug.sethook(function()
-		if SysTime() > deadline then
-			debug.sethook()
-			error("lua_job: a single resume ran longer than " .. job.limit .. " s without yielding (call job:step() or job:yield() inside long loops)", 2)
-		end
-	end, "", 1000)
+	if not job.jit then
+		debug.sethook(function()
+			if SysTime() > deadline then
+				debug.sethook()
+				error("lua_job: a single resume ran longer than " .. job.limit .. " s without yielding (call job:step() or job:yield() inside long loops)", 2)
+			end
+		end, "", 1000)
+	end
 	job._resume_t0 = t0
 	A.capture_begin()
 	local res = pack(coroutine.resume(job.co))

@@ -12,6 +12,7 @@
 #include "log.h"
 #include "luaapi.h"
 #include "netaddr.h"
+#include "platform/platform.h"
 #include "realms.h"
 #include "util.h"
 
@@ -405,6 +406,33 @@ static void tick_lua_jobs() {
     }
 }
 
+// A game started in the background (for example with +map from a script) can believe it has the focus while another
+// application's window is in front: it then captures the mouse and keeps pulling the cursor to the center of its window.
+// When that state lasts, send the game what Windows sends on a normal focus loss. Gives up after a few tries until the
+// game is in front again, so a build that ignores the message is not spammed.
+static void check_focus() {
+    static int stale = 0, tries = 0;
+    if (plat::process_has_foreground() != 0) {
+        stale = tries = 0;
+        return;
+    }
+    lua_State *menu = realms::state(realms::MENU);
+    std::string out, e;
+    if (!menu || !lua::run(menu, "return tostring(system and system.HasFocus and system.HasFocus())", "=mcpagent:focus", &out, e) ||
+        out != "true") {
+        stale = 0;
+        return;
+    }
+    if (++stale < 2 || tries >= 3) return;
+    stale = 0;
+    ++tries;
+    if (plat::send_app_deactivate()) {
+        logx::info("the game believed it had the focus while another window is in front: told it the focus was lost "
+                   "(releases the mouse)");
+        events::publish("focus_released", json{{"try", tries}});
+    }
+}
+
 void pump(lua_State *host) {
     // Re-entrancy guard: user code run by a job may call __mcpagent_pump() itself.
     static bool in_pump = false;
@@ -446,7 +474,10 @@ void pump(lua_State *host) {
     if (fc % 30 == 0) deliver_notice();
     tick_lua_jobs();
     // Refreshes the lock state (for status) even without a client call.
-    if (g_cfg.mode == Mode::Client && jobs::frame_count() % 15 == 0) client_allowed();
+    if (g_cfg.mode == Mode::Client && jobs::frame_count() % 15 == 0) {
+        client_allowed();
+        check_focus();
+    }
     jobs::pump(50.0);
 }
 

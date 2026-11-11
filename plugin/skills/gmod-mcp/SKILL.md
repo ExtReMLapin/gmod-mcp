@@ -79,9 +79,11 @@ small window and a frame cap so they stay cheap:
 ```powershell
 $env:SteamAppId = "4000"; $env:SteamGameId = "4000"
 Start-Process -FilePath "<game folder>\gmod_win64.exe" -WorkingDirectory "<game folder>" `
-  -ArgumentList "-multirun -mcp -windowed -w 960 -h 540 -novid +fps_max 45 +fps_max_nofocus 45 +map gm_construct"
+  -ArgumentList "-multirun -mcp -windowed -w 960 -h 540 -novid +fps_max 45 +fps_max_nofocus 45"
 ```
 
+- Load the map with `map_load` and its `instance`, not `+map`: a game that loads a map while another window has the
+  focus can grab the mouse.
 - Each game takes the next port (27081, 27082...) and registers with the one on 27080: keep the single `gmod` entry,
   call `instances_list`, and pass `instance` to every tool (calls without it are refused with `ambiguous_instance`).
 - Close the extra games with `game_terminate`, not `game_quit`: a clean quit writes their window size and `fps_max`

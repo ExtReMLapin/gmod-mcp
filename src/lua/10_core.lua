@@ -200,19 +200,25 @@ end
 -- Budgeted execution (debug.sethook): returns ok, results (packed table), err, traceback.
 local function pack(...) return { n = select("#", ...), ... } end
 
+-- budget == false: no count hook and the LuaJIT compiler stays on (performance measurements). The time budget then
+-- cannot interrupt the code. Otherwise the compiler is turned off for fn and every function it defines, because count
+-- hooks never fire inside compiled code.
 function A.run_budget(fn, budget, ...)
+	local hooked = budget ~= false
 	budget = budget or 5
-	if jit and jit.off then pcall(jit.off, fn, true) end
+	if hooked and jit and jit.off then pcall(jit.off, fn, true) end
 	local deadline = SysTime() + budget
 	local oldf, oldmask, oldcount = debug.gethook()
 	local exceeded = false
-	debug.sethook(function()
-		if SysTime() > deadline then
-			exceeded = true
-			debug.sethook()
-			error("execution budget exceeded (" .. budget .. " s)", 2)
-		end
-	end, "", 1000)
+	if hooked then
+		debug.sethook(function()
+			if SysTime() > deadline then
+				exceeded = true
+				debug.sethook()
+				error("execution budget exceeded (" .. budget .. " s)", 2)
+			end
+		end, "", 1000)
+	end
 	local tb
 	local res = pack(xpcall(fn, function(e)
 		if A.is_fail(e) then return e end

@@ -55,7 +55,7 @@ The agent runtime (global table `__mcpagent`) is re-injected automatically.
 ## Workflow
 1. `status`: available realms, map, fps, age of the main thread's last tick.
 2. `map_load {map:"gm_construct"}` waits until client AND server are ready (timeout).
-3. Iterate: `lua_check` (syntax and unknown globals before running anything; `path` takes a whole addon folder), `lua_exec`, `lua_exec_file`, `ents_find`, `trace`, `trace_through`, `screenshot_from`, `debug_draw`...
+3. Iterate: `lua_check` (syntax and unknown globals before running anything; `path` takes a whole addon folder), `lua_reload` after editing an addon file (not include(): the client would run the copy sent at map load), `lua_exec`, `lua_exec_file`, `ents_find`, `trace`, `trace_through`, `screenshot_from`, `debug_draw`...
 4. Check: `errors_since {cursor}` and `console_read {cursor}` (monotonic cursors; `lost` > 0 = lines lost).
 5. Test: `tests_run {realm, path}` (GLuaTest format: `return { groupName=..., cases={ {name=..., func=function() expect(1).to.equal(1) end} } }`).
 
