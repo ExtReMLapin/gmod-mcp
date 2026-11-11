@@ -57,7 +57,7 @@ def isolated_config(with_token):
 class Bridge:
     def __init__(self, port, env=None):
         self.p = subprocess.Popen([BRIDGE, "--port", str(port)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, bufsize=0, env=env)
+                                  stderr=subprocess.PIPE, env=env)  # buffered: unbuffered line reads go byte by byte
         self.lock = threading.Lock()
         self.by_id, self.notes, self.order = {}, [], []
         self.cv = threading.Condition(self.lock)
@@ -349,8 +349,11 @@ def case_f(slow=False):
     check("F stream ending without a response -> JSON-RPC error", r and "error" in r, r)
 
     # 8 MB result.
-    r = b.req("tools/call", {"name": "huge", "arguments": {}}, timeout=30)
-    check("F 8 MB result intact", r and len(r["result"]["structuredContent"]["text"]) == 8 << 20)
+    # The duration is printed: well under a second when the reader is buffered (it took 20 s byte by byte).
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "huge", "arguments": {}}, timeout=60)
+    dt = time.time() - t0
+    check("F 8 MB result intact (%.1f s)" % dt, r and len(r["result"]["structuredContent"]["text"]) == 8 << 20, "no answer after %.0f s" % dt)
 
     # 30 concurrent calls with string ids.
     ids = ["c-%d" % i for i in range(30)]

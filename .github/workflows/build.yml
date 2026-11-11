@@ -135,16 +135,26 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
+      # The release notes are the version's section of CHANGELOG.md (the release fails without one).
+      - name: Release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          python3 cmake/release_notes.py "${GITHUB_REF_NAME}" "$prev" > release-notes.md
       - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.zip
             dist/*.sha256
-          generate_release_notes: true
+          body_path: release-notes.md
 
   # Points the marketplace at the plugin zip of this release (Claude Code then offers the update).
   marketplace:
