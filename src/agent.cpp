@@ -426,7 +426,7 @@ static void check_focus() {
     if (++stale < 2 || tries >= 3) return;
     stale = 0;
     ++tries;
-    if (plat::send_app_deactivate()) {
+    if (plat::send_focus_lost()) {
         logx::info("the game believed it had the focus while another window is in front: told it the focus was lost "
                    "(releases the mouse)");
         events::publish("focus_released", json{{"try", tries}});

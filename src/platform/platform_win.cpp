@@ -193,11 +193,11 @@ static BOOL CALLBACK find_main_window(HWND w, LPARAM lp) {
     return TRUE;
 }
 
-bool send_app_deactivate() {
+bool send_focus_lost() {
     HWND w = nullptr;
     EnumWindows(find_main_window, reinterpret_cast<LPARAM>(&w));
     if (!w) return false;
-    SendMessageA(w, WM_ACTIVATEAPP, FALSE, 0);
+    SendMessageA(w, WM_ACTIVATE, WA_INACTIVE, 0);
     return true;
 }
 

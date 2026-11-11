@@ -178,7 +178,7 @@ std::vector<std::string> local_ipv4_addresses() {
 }
 
 int process_has_foreground() { return -1; }
-bool send_app_deactivate() { return false; }
+bool send_focus_lost() { return false; }
 
 }  // namespace plat
 #endif
