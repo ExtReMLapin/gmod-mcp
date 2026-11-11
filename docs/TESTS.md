@@ -111,7 +111,7 @@ Issues found by the campaign and fixed before these two passes:
 | L-30 | `lua_exec` loop benchmark with and without `jit: true`; a function defined by a `jit: true` chunk then timed from a timer | `jit: true` several times faster; no `budget_exceeded` possible; default keeps the budget | ⏳ needs the new DLL |
 | L-31 | `lua_job {jit: true}` | runs, no resume limit, result returned | ⏳ needs the new DLL |
 | L-32 | `console_exec {command: "echo hi"}` (wrong name) | `invalid_params` naming `command`, suggesting `cmd`, listing the accepted arguments | ⏳ needs the new DLL |
-| L-33 | client started with `-multirun ... +map gm_construct` from a script while another window keeps the focus | the game does not hold the mouse; console line `told it the focus was lost`; clicking the game still captures the mouse normally | ⏳ needs the new DLL |
+| L-33 | client started with `-multirun ... +map gm_construct` from a background script while another application keeps the focus (cursor parked at 40,40 eight times, read back after 150 ms) | the game does not pull the cursor back; console line `told it the focus was lost`; clicking the game still captures the mouse normally | red reproduced 2026-11-11 with the old DLL: `HasFocus` true, pulled back 8/8; sent by hand: `WM_ACTIVATEAPP(FALSE)` 7/8, `WM_ACTIVATE(WA_INACTIVE)` 0/8 and `HasFocus` false. ⏳ green needs the new DLL |
 
 ## Console and errors
 
