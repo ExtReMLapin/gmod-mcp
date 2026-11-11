@@ -195,7 +195,24 @@ static bool start(lua_State *L) {
     return true;
 }
 
+static int open_impl(lua_State *L);
+
+// Entry point. No exception may reach the game: one would end the game process.
 EXPORT int gmod13_open(lua_State *L) {
+    try {
+        return open_impl(L);
+    } catch (const std::exception &ex) {
+        logx::warn("not loaded: unexpected error during start-up: %s", ex.what());
+    } catch (...) {
+        logx::warn("not loaded: unexpected error during start-up");
+    }
+    // Caught, so not a crash: the next start may try again.
+    plat::remove_file(plat::current_directory() + "/garrysmod/data/mcpagent/load_in_progress.txt");
+    g_disabled = true;
+    return 0;
+}
+
+static int open_impl(lua_State *L) {
     logx::init();
     if (g_disabled) return 0;
     std::string e;

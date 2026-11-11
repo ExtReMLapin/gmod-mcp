@@ -80,7 +80,9 @@ if(MSVC)
   target_link_libraries(mcpagent PRIVATE ws2_32 bcrypt)
 else()
   target_compile_options(mcpagent PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fvisibility=hidden)
-  target_link_libraries(mcpagent PRIVATE dl pthread -static-libstdc++ -static-libgcc)
+  # The game process has its own libstdc++: keep the module's statically linked C++ runtime private (not exported, and
+  # bound to itself), otherwise its exception unwinding calls the game's personality routine and aborts.
+  target_link_libraries(mcpagent PRIVATE dl pthread -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
 endif()
 
 # --- Offline snapshot: tools, prompts, resources and instructions built from the module's sources without the game,

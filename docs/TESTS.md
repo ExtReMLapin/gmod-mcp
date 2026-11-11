@@ -284,6 +284,19 @@ the tool description, the skill and the README; the bridge does not touch the us
 | I-11 | session: bridge tools listed offline and live; default instance injected and mirrored in Mcp-Param-Instance; explicit instance wins; null clears; close refuses foreign instances; bad game_dir refused | as described | ✅ 2026-11-11 (11 checks) |
 | I-12 | launch (live): 2 light clients with gm_construct, default instance, close all | ids/pids/ports, map on both, progress, default reached, 640x360, both closed, processes gone | ✅ 2026-11-11 (7/7) |
 
+## Linux module (dedicated server in WSL)
+
+2026-11-11, WSL Ubuntu 22.04, Garry's Mod dedicated server (app 4020, `-beta x86-64`: the default branch has no 64-bit
+server on Linux), `srcds_run_x64 ... +sv_lan 1 +map gm_construct`.
+
+| ID | Check | Result |
+|---|---|---|
+| X-20 | First load of the Linux module | **crashed the server** (abort while unwinding a C++ exception in `gmod13_open`: the module's static unwinder called the game's `libstdc++` personality routine). The crash sentinel then skipped the module on the next start, as designed. Fixed: `-Wl,--exclude-libs,ALL -Wl,-Bsymbolic` keep the module's C++ runtime private; `gmod13_open` can no longer let an exception reach the game |
+| X-21 | Load after the fix | ✅ `active: mode srcds ... http://127.0.0.1:27080/mcp` |
+| X-22 | Bridge suite, live cases (Linux bridge, Linux module) | ✅ 17/17 |
+| X-23 | Direct calls: status (srcds, linux64, map), server Lua, ents_find, console_exec capture, lua_check bytecode reader, syntax error line | ✅ 6/6 |
+| X-24 | Official conformance suite, 2026-07-28 requirements (from Windows through WSL's localhost forwarding) | ✅ 120 passed, the same as on Windows (only the suite's fixture scenarios fail) |
+
 ## Official conformance suite
 
 `@modelcontextprotocol/conformance@0.2.0-alpha.12 server --requirements 2026-07-28`, against a test client (`-multirun`,

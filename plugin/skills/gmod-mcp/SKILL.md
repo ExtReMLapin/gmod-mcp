@@ -138,11 +138,15 @@ there (no menu, no client, no screenshots).
 (https://developer.valvesoftware.com/wiki/SteamCMD), in a folder of its own:
 
 ```bash
-steamcmd +force_install_dir "<server folder>" +login anonymous +app_update 4020 validate +quit
+steamcmd +force_install_dir "<server folder>" +login anonymous +app_update 4020 -beta x86-64 validate +quit
 ```
 
+`-beta x86-64` matters: the module is 64-bit, and on Linux the default branch of the dedicated server only has the
+32-bit `srcds_linux` (no `srcds_run_x64`). This is a separate install, not the user's game.
+
 If the user already has a server, use theirs: it is the folder holding `srcds_win64.exe` (Linux: `srcds_run_x64`) and a
-`garrysmod` folder.
+`garrysmod` folder. If that 64-bit binary is missing, the server is on the 32-bit branch: ask the user before switching
+it to `-beta x86-64`.
 
 **Install the module**: as in section 3, the same two files, into `<server folder>/garrysmod/...`.
 A server has no main menu: it needs no `+map gm_construct` "first start", but it needs a map on every start.
@@ -154,7 +158,9 @@ Start-Process -FilePath "<server folder>\srcds_win64.exe" -WorkingDirectory "<se
   -ArgumentList "-console -mcp -condebug -port 27015 +maxplayers 2 +sv_lan 1 +map gm_construct"
 ```
 
-Linux: `./srcds_run_x64 -console -mcp -condebug -port 27015 +maxplayers 2 +sv_lan 1 +map gm_construct` (untested so far).
+Linux: `./srcds_run_x64 -console -mcp -condebug -port 27015 +maxplayers 2 +sv_lan 1 +map gm_construct`. Keep its standard
+input open when starting it from a script (for example `sleep infinity | ./srcds_run_x64 ...`): with `-console`, an
+end-of-file on standard input can stop it.
 
 - `+sv_lan 1` keeps the server off the public server list. Never open or forward its ports. If Windows asks about the
   firewall, the MCP port needs nothing (it is loopback); allowing private networks is enough to join from this machine.
