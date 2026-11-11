@@ -30,6 +30,8 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <signal.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 #endif
 
@@ -769,7 +771,7 @@ bool file_is(const std::string &p) {
 }
 
 // The game folder: the argument, then what the module reported (status: game_dir), then Steam's libraries.
-std::string find_game_root(const std::string &arg, std::string &how) {
+[[maybe_unused]] std::string find_game_root(const std::string &arg, std::string &how) {
     auto ok = [](std::string d) {
         while (!d.empty() && (d.back() == '/' || d.back() == '\\')) d.pop_back();
         std::string low = d;
@@ -818,7 +820,7 @@ std::string find_game_root(const std::string &arg, std::string &how) {
     return "";
 }
 
-void progress(const json &token, double done, double total, const std::string &message) {
+[[maybe_unused]] void progress(const json &token, double done, double total, const std::string &message) {
     if (token.is_null()) return;
     json p{{"progressToken", token}, {"progress", done}, {"message", message}};
     if (total > 0) p["total"] = total;
@@ -1247,10 +1249,15 @@ DWORD parent_pid() {
     CloseHandle(snap);
     return parent;
 }
-void watch_parent() {
+// Taken first thing in main, before the parent has a chance to exit.
+HANDLE g_parent = nullptr;
+void capture_parent() {
     DWORD pid = parent_pid();
-    HANDLE h = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
-    if (!h) return;  // unknown parent (already gone or no access): rely on end-of-file
+    g_parent = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;  // null: already gone or no access (rely on EOF)
+}
+void watch_parent() {
+    HANDLE h = g_parent;
+    if (!h) return;
     std::thread([h] {
         WaitForSingleObject(h, INFINITE);
         log("the client process is gone: exiting");
@@ -1259,8 +1266,15 @@ void watch_parent() {
     }).detach();
 }
 #else
+pid_t g_parent = 0;
+void capture_parent() {
+    g_parent = getppid();
+    // The kernel signals the bridge when its parent dies (no race from here on); the poll below is a fallback.
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (getppid() != g_parent) std::_Exit(0);  // the parent died between the two calls
+}
 void watch_parent() {
-    pid_t parent = getppid();
+    pid_t parent = g_parent;
     std::thread([parent] {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -1277,6 +1291,10 @@ void watch_parent() {
 }  // namespace
 
 int main(int argc, char **argv) {
+    bool watch = true;
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--no-parent-watch") watch = false;
+    if (watch) capture_parent();
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);

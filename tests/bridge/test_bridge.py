@@ -538,9 +538,11 @@ def alive(pid):
         return False
 
 
-LAUNCHER = """import subprocess, sys
+# The launcher lives half a second, like any real client that started the bridge (not microseconds).
+LAUNCHER = """import subprocess, sys, time
 p = subprocess.Popen(sys.argv[1:], stdin=sys.stdin, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 print(p.pid, flush=True)
+time.sleep(0.5)
 """
 
 
