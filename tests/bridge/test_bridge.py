@@ -5,7 +5,7 @@ exits non-zero on a failure.
 Usage: python test_bridge.py <path to gmod-mcp-bridge> [a] [b] [c]   (default: all cases)"""
 import http.server, json, os, queue, socketserver, subprocess, sys, threading, time, urllib.request
 
-BRIDGE = r"D:\dev\gmod-mcp\build\gmod-mcp-bridge.exe"
+BRIDGE = os.path.abspath(sys.argv[1])
 results = []
 
 def check(name, cond, info=""):
