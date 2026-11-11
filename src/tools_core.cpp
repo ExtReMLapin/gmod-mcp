@@ -61,7 +61,11 @@ std::string tmp_path(const std::string &name, std::string &err) {
         err = "invalid name: relative to mcpagent_tmp, characters [A-Za-z0-9_.-/], no '..'";
         return "";
     }
-    return agent::config().tmp_dir + "/" + name;
+    std::string p = agent::config().tmp_dir + "/" + name;
+#ifdef _WIN32
+    std::replace(p.begin(), p.end(), '/', '\\');  // one separator style in the paths returned to the agent
+#endif
+    return p;
 }
 
 static std::string normalize(std::string p) {

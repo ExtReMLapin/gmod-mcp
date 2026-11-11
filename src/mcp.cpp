@@ -103,6 +103,13 @@ static size_t edit_distance(const std::string &a, const std::string &b) {
     return row[b.size()];
 }
 
+static bool is_subsequence(const std::string &needle, const std::string &hay) {
+    size_t i = 0;
+    for (char c : hay)
+        if (i < needle.size() && std::tolower((unsigned char)c) == std::tolower((unsigned char)needle[i])) ++i;
+    return i == needle.size();
+}
+
 // The validator's message alone ("unexpected instance additional property") rarely tells an agent what to send: name
 // the unknown and missing arguments, suggest the closest accepted name, and list what the tool accepts.
 static std::string argument_hint(const Tool &t, const json &value) {
@@ -117,6 +124,8 @@ static std::string argument_hint(const Tool &t, const json &value) {
                 const std::string &k = p.key(), &u = it.key();
                 size_t d = edit_distance(u, k);
                 if (k.find(u) != std::string::npos || u.find(k) != std::string::npos) d = std::min<size_t>(d, 1);
+                // Abbreviation: the accepted name's letters appear in order in the unknown one ("cmd" in "command").
+                if (k.size() >= 2 && is_subsequence(k, u)) d = std::min<size_t>(d, 2);
                 if (d < best_d) best_d = d, best = k;
             }
             out += " Unknown argument '" + it.key() + "'" + (best.empty() ? "." : " (did you mean '" + best + "'?).");
@@ -139,7 +148,9 @@ static std::string validate_tool(const Tool &t, const json &value) {
     try {
         t.validator->validate(value);
     } catch (const std::exception &e) {
-        return std::string("invalid arguments: ") + e.what() + "." + argument_hint(t, value);
+        std::string what = e.what();
+        while (!what.empty() && (std::isspace((unsigned char)what.back()) || what.back() == '.')) what.pop_back();
+        return "invalid arguments: " + what + "." + argument_hint(t, value);
     }
     return "";
 }
