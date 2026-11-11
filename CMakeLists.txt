@@ -83,9 +83,30 @@ else()
   target_link_libraries(mcpagent PRIVATE dl pthread -static-libstdc++ -static-libgcc)
 endif()
 
+# --- Offline snapshot: tools, prompts, resources and instructions built from the module's sources without the game,
+# embedded into the bridge (served while the game has never answered). The generator is a build tool, not shipped.
+add_executable(gmod-mcp-snapshot src/snapshot/snapshot_main.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+target_include_directories(gmod-mcp-snapshot PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
+target_link_libraries(gmod-mcp-snapshot PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
+if(MSVC)
+  target_compile_options(gmod-mcp-snapshot PRIVATE /utf-8 /EHsc /permissive- /wd4100 /wd4996)
+  target_compile_definitions(gmod-mcp-snapshot PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  target_link_libraries(gmod-mcp-snapshot PRIVATE ws2_32 bcrypt iphlpapi user32)
+else()
+  target_link_libraries(gmod-mcp-snapshot PRIVATE dl pthread)
+endif()
+set(SNAPSHOT_JSON ${CMAKE_BINARY_DIR}/generated/bridge_snapshot.json)
+set(SNAPSHOT_H ${CMAKE_BINARY_DIR}/generated/bridge_snapshot.h)
+add_custom_command(
+  OUTPUT ${SNAPSHOT_H}
+  COMMAND gmod-mcp-snapshot ${SNAPSHOT_JSON}
+  COMMAND ${CMAKE_COMMAND} -DIN=${SNAPSHOT_JSON} -DOUT=${SNAPSHOT_H} -DNAME=bridge_snapshot -P ${CMAKE_SOURCE_DIR}/cmake/embed_file.cmake
+  DEPENDS gmod-mcp-snapshot ${CMAKE_SOURCE_DIR}/cmake/embed_file.cmake
+  COMMENT "Building the bridge's offline snapshot")
+
 # --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
-add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/util.cpp ${PLATFORM_SOURCES})
-target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR})
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/util.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H})
+target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)
 if(MSVC)
   target_compile_options(gmod-mcp-bridge PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)

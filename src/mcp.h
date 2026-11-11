@@ -37,6 +37,9 @@ void register_tool(Tool t);
 // Declares a tool as runnable as an MCP task ("optional").
 void set_task_support(const std::string &name, const std::string &mode);
 const std::vector<Tool> &tools();
+// What the bridge serves while the game has never answered: server info, instructions, capabilities and versions,
+// tool lists of both eras, prompts, resources, templates and the subscribable resources.
+json offline_snapshot();
 const Tool *find_tool(const std::string &name);
 
 // Relevant HTTP headers (lowercase names).

@@ -248,6 +248,8 @@ fixes below) fails F cancel and dies on F non-string version, the current one pa
 | B-17 | orphan: the launcher of the bridge dies without closing the pipe; control with `--no-parent-watch` | bridge exits within 5 s; stays alive with the option | ✅ 2026-11-11 Windows + Linux (WSL) |
 | B-18 | fuzz: 400 random messages (random shapes, ids, params, `_meta`, invalid UTF-8 lines), fake game up | bridge alive, still relays, every stdout line a JSON-RPC 2.0 message | ✅ 2026-11-11 Windows + Linux (WSL) |
 | B-19 | multi repeated 5 times (cross-process lock around the shared cache) | 5/5; without the lock an entry was lost once (read-merge-write race) | ✅ 2026-11-11 Windows |
+| B-20 | A: bridge that never saw the game, empty config folder | full tool list (55), prompts, resources and the module's instructions from the snapshot embedded at build time, prefixed "The game is not running", no machine path | ✅ 2026-11-11 Windows + Linux (WSL) |
+| B-21 | Live game tool list = embedded snapshot (same release) | same names and schemas | ⏳ needs the new DLL |
 | B-15 | Module: 2026-07-28 request without `_meta` protocolVersion or `clientCapabilities` | -32602, HTTP 400 | ⏳ needs the new DLL |
 | B-5 | Plugin assembled like CI (skill, `.mcp.json` with `${CLAUDE_PLUGIN_ROOT}/bin/gmod-mcp-bridge`, bridge, module), installed in an isolated Claude Code 2.1.322 | `claude plugin validate` passes; `claude mcp list`: `plugin:gmod-mcp:gmod ✔ Connected`, also with nothing on the port | ✅ 2026-11-11 (Windows) |
 | B-6 | Marketplace `archive` source pointing at a GitHub release asset (redirected download) | downloaded and unpacked (refused only because that zip is not a plugin) | ✅ 2026-11-11 |

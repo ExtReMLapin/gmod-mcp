@@ -34,6 +34,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include "bridge_snapshot.h"
 #include "mcp_protocol.h"
 #include "platform/platform.h"
 #include "util.h"
@@ -439,13 +440,36 @@ json local_result(const json &msg, json r) {
     return rpc_result(msg["id"], std::move(r));
 }
 
+// The module's offline description, embedded at build time (same release as this bridge): what is served while the
+// game has never answered on this machine, so a fresh install or a registry's build sees every tool.
+const json &snapshot() {
+    static const json s = [] {
+        try {
+            return json::parse(reinterpret_cast<const char *>(bridge_snapshot), reinterpret_cast<const char *>(bridge_snapshot) + bridge_snapshot_size);
+        } catch (...) {
+            return json::object();
+        }
+    }();
+    return s;
+}
+
 std::string offline_instructions() {
     return "gmod-mcp drives a local Garry's Mod instance. The game is not running right now: start it with the -mcp "
            "launch option (the gmod-mcp skill knows how). The tools and the full guide (resource mcpagent://guide) come "
            "back by themselves once it answers.";
 }
 
-json fallback_list(const std::string &method) {
+json fallback_list(const std::string &method, bool modern) {
+    const json &snap = snapshot();
+    const char *key = method == "tools/list" ? (modern ? "tools_modern" : "tools_legacy")
+                      : method == "prompts/list" ? "prompts"
+                      : method == "resources/list" ? "resources"
+                                                   : "resourceTemplates";
+    const char *field = method == "tools/list" ? "tools"
+                        : method == "prompts/list" ? "prompts"
+                        : method == "resources/list" ? "resources"
+                                                     : "resourceTemplates";
+    if (snap.contains(key) && snap[key].is_array()) return json{{field, snap[key]}};
     json r;
     if (method == "tools/list") {
         json status{{"name", "status"},
@@ -542,6 +566,7 @@ void handle_listen(const json &msg) {
         for (const auto &u : f["resourceSubscriptions"])
             if (u.is_string()) asked.push_back(u);
         json known = cache_get("subscribable");
+        if (!known.is_array()) known = snapshot().value("subscribable", json::array());
         for (const auto &u : asked)
             if (known.is_array() && std::find(known.begin(), known.end(), u) != known.end()) s->uris.push_back(u);
         if (g_link != Link::Down && !asked.empty()) {
@@ -678,7 +703,14 @@ void handle_request(const json &msg) {
             }
         }
         res = cache_get(method);
-        if (!res.is_object()) {
+        const json &snap = snapshot();
+        if (!res.is_object() && snap.contains("serverInfo")) {
+            res = json{{"serverInfo", snap["serverInfo"]}, {"instructions", snap.value("instructions", offline_instructions())},
+                       {"capabilities", snap.value(method == "initialize" ? "capabilities_legacy" : "capabilities_modern", json::object())}};
+            if (method == "server/discover") res["supportedVersions"] = snap.value("supportedVersions", all_versions());
+            res["instructions"] = "The game is not running right now: start it with -mcp; the tools come back by themselves.\n\n" +
+                                  res["instructions"].get<std::string>();
+        } else if (!res.is_object()) {
             res = json{{"capabilities", json::object()},
                        {"serverInfo", {{"name", "gmod-mcp"}, {"version", kBridgeVersion}}},
                        {"instructions", offline_instructions()}};
@@ -722,7 +754,7 @@ void handle_request(const json &msg) {
     }
     if (is_list) {
         json cached = cache_get(list_key(msg));
-        json res = cached.is_object() ? cached : fallback_list(method);
+        json res = cached.is_object() ? cached : fallback_list(method, modern_2026(msg));
         res["ttlMs"] = 0;  // the live list replaces it as soon as the game answers
         res["cacheScope"] = "private";
         g_served_offline = true;

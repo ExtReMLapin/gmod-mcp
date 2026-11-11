@@ -295,6 +295,27 @@ static json server_capabilities(const Ctx &c) {
     return caps;
 }
 
+json offline_snapshot() {
+    Ctx legacy, modern;
+    modern.era = tasks::Era::Modern;
+    json versions = json::array({kModernVersion});
+    for (const char *v : kSupportedVersions) versions.push_back(v);
+    json subs = json::array();
+    for (const auto &r : resources::list())
+        if (resources::subscribable(r["uri"].get<std::string>())) subs.push_back(r["uri"]);
+    return json{{"serverInfo", server_info()},
+                {"instructions", g_instructions},
+                {"capabilities_legacy", server_capabilities(legacy)},
+                {"capabilities_modern", server_capabilities(modern)},
+                {"supportedVersions", versions},
+                {"tools_legacy", tools_list_json(legacy)},
+                {"tools_modern", tools_list_json(modern)},
+                {"prompts", prompts::list()},
+                {"resources", resources::list()},
+                {"resourceTemplates", resources::templates()},
+                {"subscribable", subs}};
+}
+
 // Lists are returned in a single page: any cursor is one this server never issued.
 static bool cursor_ok(const json &params) { return !params.contains("cursor") || params["cursor"].is_null(); }
 
