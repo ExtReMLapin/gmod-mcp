@@ -23,8 +23,11 @@
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+#include <tlhelp32.h>
 #else
 #include <limits.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 #endif
 
@@ -48,6 +51,7 @@ const char *kSupported[] = {"2025-11-25", "2025-06-18", "2025-03-26"};
 const double kNoIdleLimit = 7 * 24 * 3600.0;
 
 int g_port = 27080;
+bool g_watch_parent = true;  // --no-parent-watch: for launchers that exit while the client keeps the pipes
 std::string g_dir;  // <user config>/gmod-mcp
 
 // --- Output: one JSON message per line on stdout ---
@@ -80,11 +84,55 @@ void cache_load() {
     } catch (...) {
     }
 }
-// Several bridges (one per client session) share the file: each write merges into what is on disk and replaces the
-// file in one rename, so a reader never sees a half-written file and other bridges' entries are kept.
+// Lock shared by every bridge of this user (one per client session) around the cache read-merge-write. The OS releases
+// it when a bridge dies, so a crash never leaves a stale lock.
+class CacheLock {
+#ifdef _WIN32
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+
+  public:
+    CacheLock() {
+        std::string p = g_dir + "/bridge-cache.lock";
+        h_ = CreateFileA(p.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+        OVERLAPPED ov{};
+        if (h_ != INVALID_HANDLE_VALUE && !LockFileEx(h_, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov)) {
+            CloseHandle(h_);
+            h_ = INVALID_HANDLE_VALUE;
+        }
+    }
+    ~CacheLock() {
+        if (h_ == INVALID_HANDLE_VALUE) return;
+        OVERLAPPED ov{};
+        UnlockFileEx(h_, 0, 1, 0, &ov);
+        CloseHandle(h_);
+    }
+#else
+    int fd_ = -1;
+
+  public:
+    CacheLock() {
+        fd_ = ::open((g_dir + "/bridge-cache.lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd_ >= 0 && ::flock(fd_, LOCK_EX) != 0) {
+            ::close(fd_);
+            fd_ = -1;
+        }
+    }
+    ~CacheLock() {
+        if (fd_ < 0) return;
+        ::flock(fd_, LOCK_UN);
+        ::close(fd_);
+    }
+#endif
+};
+
+// Several bridges share the file: under the lock, each write merges into what is on disk and replaces the file in one
+// rename, so a reader never sees a half-written file and no bridge loses another's entries.
 void cache_put(const std::string &key, const json &v) {
     std::lock_guard<std::mutex> lk(g_cache_mu);
     if (g_cache.value(key, json()) == v) return;
+    plat::make_dirs(g_dir);
+    CacheLock file_lock;
     std::string s;
     if (plat::read_file(cache_path(), s)) {
         try {
@@ -94,7 +142,6 @@ void cache_put(const std::string &key, const json &v) {
         }
     }
     g_cache[key] = v;
-    plat::make_dirs(g_dir);
     std::string tmp = cache_path() + "." + std::to_string(plat::process_id()) + ".tmp";
     if (!plat::write_file(tmp, g_cache.dump())) return;
     std::error_code ec;
@@ -731,6 +778,49 @@ void watcher() {
     }
 }
 
+// Orphan guard. Some clients leave their stdio servers running when the session ends, or the pipe breaks without an
+// end-of-file: an orphaned bridge would keep probing the game forever. The bridge exits when the process that started
+// it is gone.
+#ifdef _WIN32
+DWORD parent_pid() {
+    DWORD me = GetCurrentProcessId(), parent = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32 e{};
+    e.dwSize = sizeof e;
+    for (BOOL ok = Process32First(snap, &e); ok; ok = Process32Next(snap, &e))
+        if (e.th32ProcessID == me) {
+            parent = e.th32ParentProcessID;
+            break;
+        }
+    CloseHandle(snap);
+    return parent;
+}
+void watch_parent() {
+    DWORD pid = parent_pid();
+    HANDLE h = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
+    if (!h) return;  // unknown parent (already gone or no access): rely on end-of-file
+    std::thread([h] {
+        WaitForSingleObject(h, INFINITE);
+        log("the client process is gone: exiting");
+        std::_Exit(0);
+    }).detach();
+}
+#else
+void watch_parent() {
+    pid_t parent = getppid();
+    std::thread([parent] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (getppid() != parent) {  // reparented: the client is gone
+                log("the client process is gone: exiting");
+                std::_Exit(0);
+            }
+        }
+    }).detach();
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -742,6 +832,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--port" && i + 1 < argc) g_port = std::atoi(argv[++i]);
+        else if (a == "--no-parent-watch") g_watch_parent = false;
         else if (a == "--version") {
             std::printf("gmod-mcp-bridge %s\n", kBridgeVersion);
             return 0;
@@ -754,6 +845,7 @@ int main(int argc, char **argv) {
     if (g_port <= 0 || g_port > 65535) g_port = 27080;
     g_dir = plat::user_config_dir() + "/gmod-mcp";
     cache_load();
+    if (g_watch_parent) watch_parent();
     std::thread(watcher).detach();
 
     std::string line;

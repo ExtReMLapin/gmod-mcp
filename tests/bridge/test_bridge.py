@@ -11,14 +11,17 @@ Cases (default: a f):
          annotations kept
   multi  6 bridges at once (one per client session) sharing the config folder: each is told when the game appears,
          the shared cache stays valid under concurrent writes, no temporary file left behind
+  orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
+         --no-parent-watch)
+  fuzz   400 random messages (random JSON shapes, ids, params, invalid UTF-8): the bridge survives and still answers
   fslow  the fake server keeps a stream silent for 65 s (a client request has no idle limit)
   b      live game on 27080, read-only calls (needs the game and the user's token)
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
-import base64, http.server, json, os, queue, select, socket, socketserver, subprocess, sys, tempfile, threading, time
+import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
 
 BRIDGE = os.path.abspath(sys.argv[1])
@@ -500,11 +503,95 @@ def case_multi():
         ok = "tools/list|legacy" in cache and "tools/list|modern" in cache
     except Exception as e:
         cache, ok = str(e), False
-    check("MULTI shared cache valid JSON with the entries of both eras", ok, cache if not ok else "")
+    check("MULTI shared cache valid JSON with the entries of both eras", ok, sorted(cache) if isinstance(cache, dict) else cache)
     leftovers = [f for f in os.listdir(folder) if f.endswith(".tmp")]
     check("MULTI no temporary file left behind", not leftovers, leftovers)
     for b in bs: b.close()
     srv.stop()
+
+
+def alive(pid):
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h: return False
+        code = ctypes.c_ulong()
+        k.GetExitCodeProcess(h, ctypes.byref(code)); k.CloseHandle(h)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0); return True
+    except OSError:
+        return False
+
+
+LAUNCHER = """import subprocess, sys
+p = subprocess.Popen(sys.argv[1:], stdin=sys.stdin, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+print(p.pid, flush=True)
+"""
+
+
+def orphan_run(extra):
+    env = isolated_config(with_token=False)
+    l = subprocess.Popen([sys.executable, "-c", LAUNCHER, BRIDGE, "--port", str(free_port())] + extra,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+    pid = int(l.stdout.readline())
+    l.wait(5)  # the launcher is gone; this script still holds the bridge's stdin: no end-of-file
+    end = time.time() + 5
+    while time.time() < end and alive(pid): time.sleep(0.2)
+    still = alive(pid)
+    if still and os.name == "nt": subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+    elif still: os.kill(pid, 9)
+    l.stdin.close()
+    return still
+
+
+def case_orphan():
+    print("== ORPHAN: the process that started the bridge dies", flush=True)
+    check("ORPHAN bridge exits within 5 s of its parent dying (pipe still open)", not orphan_run([]))
+    check("ORPHAN with --no-parent-watch it stays (control)", orphan_run(["--no-parent-watch"]))
+
+
+def case_fuzz():
+    print("== FUZZ: 400 random messages", flush=True)
+    rnd = random.Random(1234)
+    port, env = free_port(), isolated_config(with_token=True)
+    srv = FakeServer(port, version=bridge_version())
+    b = Bridge(port, env)
+    methods = ["initialize", "server/discover", "tools/list", "tools/call", "prompts/get", "resources/read",
+               "subscriptions/listen", "notifications/cancelled", "ping", "completion/complete", "nope", "", None, 7]
+    def junk(depth=0):
+        k = rnd.randrange(8 if depth < 3 else 5)
+        if k == 0: return None
+        if k == 1: return rnd.random() < 0.5
+        if k == 2: return rnd.randint(-2**63, 2**63)
+        if k == 3: return rnd.random() * 1e308
+        if k == 4: return "x" * rnd.randrange(50)
+        if k == 5: return [junk(depth + 1) for _ in range(rnd.randrange(4))]
+        if k == 6:
+            keys = ["_meta", "name", "arguments", "requestId", "notifications", "io.modelcontextprotocol/protocolVersion", "a"]
+            return {rnd.choice(keys): junk(depth + 1) for _ in range(rnd.randrange(4))}
+        return {"_meta": {"io.modelcontextprotocol/protocolVersion": rnd.choice([MODERN, "2025-06-18", 5, None]),
+                          "io.modelcontextprotocol/clientCapabilities": junk(depth + 1)}}
+    for i in range(400):
+        r = rnd.random()
+        if r < 0.1:
+            b.p.stdin.write(bytes(rnd.randrange(256) for _ in range(rnd.randrange(1, 60))).replace(b"\n", b" ") + b"\n")
+            b.p.stdin.flush()
+            continue
+        m = {"jsonrpc": rnd.choice(["2.0", "1.0", None])}
+        if rnd.random() < 0.8: m["method"] = rnd.choice(methods)
+        if rnd.random() < 0.7: m["id"] = rnd.choice([i, "s%d" % i, None, 1.5, [1], {"a": 1}])
+        if rnd.random() < 0.8: m["params"] = junk()
+        b.raw(json.dumps(m))
+    time.sleep(2)
+    r = b.req("ping", timeout=10)
+    check("FUZZ bridge alive and answering after 400 random messages", r is not None and b.p.poll() is None, r)
+    r = b.req("tools/call", {"name": "echo", "arguments": {"ok": 1}}, timeout=10)
+    check("FUZZ still relays to the game", r and r.get("result", {}).get("structuredContent", {}).get("args", {}).get("ok") == 1, r)
+    with b.lock: bad = [m for m in b.order if not isinstance(m, dict) or m.get("jsonrpc") != "2.0"]
+    check("FUZZ every line written to stdout is a JSON-RPC 2.0 message", not bad, bad[:2])
+    b.close(); srv.stop()
 
 
 def case_b():
@@ -593,8 +680,8 @@ def case_c():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c}
-for c in sys.argv[2:] or ["a", "f", "m", "multi"]:
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))
