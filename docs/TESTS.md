@@ -272,7 +272,14 @@ caused by the relay itself (it sent two Host headers), not by the server.
 | `Mcp-Param-Instance`: invalid Base64, non-alphabet characters, value in the body without the header → -32020 + 400 | accepted | fixed (needs the new DLL) |
 | Discover, serverInfo, unsupported version, unknown method 404, subscriptions (ack, id, filter), caching hints, lists, completion, resource not found, SSE multiple streams, standard header validation | pass | — |
 | tools-call-*, prompts-get-*, resources-read-*, input-required-*, json-schema-2020-12, logging and missing-capability checks | the suite's own fixture tools and resources (`test_simple_text`, `json_schema_2020_12_tool`...) do not exist here; the suite reports them "not found" / "untestable" | not applicable |
-| Tasks extension (not scored), 2025-11-25 requirements | ⏳ to run | |
+| Tasks extension (forced): `tasks/get`, `tasks/update`, `tasks/cancel` from a client that did not declare the extension → -32021 + 400 with `requiredCapabilities` | -32602 (task not found) | fixed (needs the new DLL) |
+| Tasks extension: every other check | drives the suite's fixture tools (`slow_compute`, `greet`, `failing_job`, `confirm_delete`, `multi_input`...) | not applicable without fixtures |
+| 2025-11-25 requirements: initialize, ping, lists, completion, session lifecycle, SSE streams | pass (37 checks) | — |
+| 2025-11-25: `logging/setLevel`, legacy `resources/subscribe` / `unsubscribe` | -32601: not offered by design (no logging capability; legacy subscriptions would need a GET stream, the 2026-07-28 ones are offered) | by design |
+| 2025-11-25: tools-call-*, prompts-get-*, resources-read-*, elicitation-*, json-schema-2020-12 | fixture tools and resources | not applicable |
+
+Constants: `tests/protocol/check_constants.py` checks every error code and `_meta` key of `src/mcp_protocol.h` against the
+official 2026-07-28 schema (pinned commit, SHA-256 verified); runs in CI. Mutation check: changing -32020 to -32021 fails.
 
 ## Cross-cutting
 

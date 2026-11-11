@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "agent.h"
+#include "mcp_protocol.h"
 #include "log.h"
 #include "prompts.h"
 #include "reqctx.h"
@@ -16,8 +17,9 @@
 
 namespace mcp {
 
-const char *kProtocolVersion = "2025-11-25";
-static const char *kSupportedVersions[] = {"2025-11-25", "2025-06-18", "2025-03-26"};
+const char *kProtocolVersion = mcpproto::kLegacy[0];
+static const auto &kSupportedVersions = mcpproto::kLegacy;
+namespace err = mcpproto::err;
 
 static std::vector<Tool> g_tools;
 static std::map<std::string, size_t> g_index;
@@ -229,8 +231,8 @@ static json server_info() {
                 {"icons", icons()}};
 }
 
-static const char *kModernVersion = "2026-07-28";
-static const char *kSubscriptionMeta = "io.modelcontextprotocol/subscriptionId";
+static const char *kModernVersion = mcpproto::kModern;
+static const char *kSubscriptionMeta = mcpproto::kMetaSubscriptionId;
 
 // Request context: protocol era and capabilities declared by the client (modern era: per request).
 struct Ctx {
@@ -306,8 +308,8 @@ static std::atomic<size_t> g_subscriptions{0};
 // subscriptions/listen: acknowledges the honored filter, then notifies resource updates until the client closes the
 // stream (the transport sets the cancel flag).
 static json listen(const json &id, const json &params, Ctx &c) {
-    if (!c.emit) return rpc_error(id, -32600, "subscriptions/listen needs an SSE response: send Accept: text/event-stream");
-    if (g_subscriptions.load() >= kMaxSubscriptions) return rpc_error(id, -32603, "too many open subscriptions (max 8)");
+    if (!c.emit) return rpc_error(id, err::kInvalidRequest, "subscriptions/listen needs an SSE response: send Accept: text/event-stream");
+    if (g_subscriptions.load() >= kMaxSubscriptions) return rpc_error(id, err::kInternalError, "too many open subscriptions (max 8)");
     struct Count {
         Count() { ++g_subscriptions; }
         ~Count() { --g_subscriptions; }
@@ -376,13 +378,13 @@ static json complete(const json &id, const json &params) {
     json ref = params.value("ref", json::object());
     json argument = params.value("argument", json::object());
     if (!ref.is_object() || !argument.is_object() || !argument.contains("name") || !argument["name"].is_string())
-        return rpc_error(id, -32602, "completion/complete: expected ref and argument {name, value}");
+        return rpc_error(id, err::kInvalidParams, "completion/complete: expected ref and argument {name, value}");
     std::string argname = argument["name"], value = argument.value("value", "");
     std::string type = ref.value("type", "");
     std::vector<std::string> values;
     if (type == "ref/prompt") values = prompts::complete(ref.value("name", ""), argname, value);
     else if (type == "ref/resource") values = resources::complete(ref.value("uri", ""), argname, value);
-    else return rpc_error(id, -32602, "completion/complete: unknown ref type '" + type + "'");
+    else return rpc_error(id, err::kInvalidParams, "completion/complete: unknown ref type '" + type + "'");
     size_t total = values.size();
     if (values.size() > 100) values.resize(100);
     return rpc_result(id, json{{"completion", {{"values", values}, {"total", total}, {"hasMore", total > values.size()}}}});
@@ -392,7 +394,7 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     is_notification = !msg.contains("id");
     json id = msg.value("id", json(nullptr));
     if (!msg.is_object() || msg.value("jsonrpc", "") != "2.0" || !msg.contains("method") || !msg["method"].is_string())
-        return rpc_error(id, -32600, "invalid JSON-RPC request");
+        return rpc_error(id, err::kInvalidRequest, "invalid JSON-RPC request");
     std::string method = msg["method"];
     json params = msg.value("params", json::object());
     if (!params.is_object()) params = json::object();
@@ -405,10 +407,10 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
         return nullptr;
     }
 
-    // Removed in 2026-07-28: answered as unknown methods (HTTP 404, -32601).
+    // Removed in 2026-07-28: answered as unknown methods (HTTP 404, err::kMethodNotFound).
     if (c.era == tasks::Era::Modern && (method == "initialize" || method == "ping")) {
         c.http_status = 404;
-        return rpc_error(id, -32601, "method not found in protocol version 2026-07-28: " + method);
+        return rpc_error(id, err::kMethodNotFound, std::string("method not found in protocol version ") + mcpproto::kModern + ": " + method);
     }
     if (method == "initialize") {
         std::string asked = params.value("protocolVersion", "");
@@ -425,8 +427,8 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     if (method == "server/discover") {
         json meta = params.value("_meta", json::object());
         logx::info("server/discover: client=%s capabilities=%s",
-                   meta.value("io.modelcontextprotocol/clientInfo", json::object()).dump().c_str(),
-                   meta.value("io.modelcontextprotocol/clientCapabilities", json::object()).dump().c_str());
+                   meta.value(mcpproto::kMetaClientInfo, json::object()).dump().c_str(),
+                   meta.value(mcpproto::kMetaClientCapabilities, json::object()).dump().c_str());
         Ctx modern = c;
         modern.era = tasks::Era::Modern;
         json versions = json::array({kModernVersion});
@@ -439,27 +441,36 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     }
     if (method == "ping") return rpc_result(id, json::object());
     bool is_list = method == "tools/list" || method == "prompts/list" || method == "resources/list" || method == "resources/templates/list";
-    if (is_list && !cursor_ok(params)) return rpc_error(id, -32602, "invalid cursor (this server returns every list in one page)");
+    if (is_list && !cursor_ok(params)) return rpc_error(id, err::kInvalidParams, "invalid cursor (this server returns every list in one page)");
     if (method == "tools/list") return rpc_result(id, json{{"tools", tools_list_json(c)}, {"ttlMs", 0}, {"cacheScope", "private"}});
     if (method == "tools/call") {
-        if (!params.contains("name") || !params["name"].is_string()) return rpc_error(id, -32602, "missing params.name");
+        if (!params.contains("name") || !params["name"].is_string()) return rpc_error(id, err::kInvalidParams, "missing params.name");
         std::string name = params["name"];
         const Tool *t = find_tool(name);
-        if (!t) return rpc_error(id, -32602, "unknown tool: " + name);
+        if (!t) return rpc_error(id, err::kInvalidParams, "unknown tool: " + name);
         json a = params.value("arguments", json::object());
         if (a.is_null()) a = json::object();
         bool legacy_task = c.era == tasks::Era::Legacy && params.contains("task") && params["task"].is_object();
         bool modern_task = client_supports_tasks(c) && server_wants_task(*t, a);
         if (legacy_task && (t->task_support.empty() || t->task_support == "forbidden"))
-            return rpc_error(id, -32601, "tool " + name + " does not support task execution (execution.taskSupport absent)");
+            return rpc_error(id, err::kMethodNotFound, "tool " + name + " does not support task execution (execution.taskSupport absent)");
         if (legacy_task || modern_task) {
             std::string verr = validate_tool(*t, a);
             if (!verr.empty()) return rpc_result(id, to_call_result(agent::err("invalid_params", verr)));
             return unwrap_rpc(id, tasks::create_tool_task(name, a, params.value("task", json::object()), c.era));
         }
         if (c.era == tasks::Era::Legacy && t->task_support == "required")
-            return rpc_error(id, -32600, "Task augmentation required for tools/call requests");
+            return rpc_error(id, err::kInvalidRequest, "Task augmentation required for tools/call requests");
         return call_with_confirmation(id, name, a, params, c);
+    }
+    // 2026-07-28: the tasks methods belong to the Tasks extension; a client that did not declare it gets
+    // MissingRequiredClientCapability (-32021, HTTP 400) naming the capability.
+    if (c.era == tasks::Era::Modern && !client_supports_tasks(c) &&
+        (method == "tasks/get" || method == "tasks/cancel" || method == "tasks/update")) {
+        c.http_status = 400;
+        return rpc_error(id, err::kMissingRequiredClientCapability,
+                         method + " needs the client capability extensions." + tasks::kExtensionId,
+                         json{{"requiredCapabilities", {{"extensions", {{tasks::kExtensionId, json::object()}}}}}});
     }
     if (method == "tasks/get") return unwrap_rpc(id, tasks::get(params, c.era));
     if (method == "tasks/cancel") return unwrap_rpc(id, tasks::cancel(params, c.era));
@@ -472,23 +483,23 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     if (method == "resources/read") {
         std::string uri = params.value("uri", "");
         json res = resources::read(uri);
-        // Not found: -32602 since 2026-07-28 (-32002 before).
-        if (res.is_null()) return rpc_error(id, c.era == tasks::Era::Modern ? -32602 : -32002, "resource not found", json{{"uri", uri}});
+        // Not found: err::kInvalidParams since 2026-07-28 (err::kResourceNotFoundLegacy before).
+        if (res.is_null()) return rpc_error(id, c.era == tasks::Era::Modern ? err::kInvalidParams : err::kResourceNotFoundLegacy, "resource not found", json{{"uri", uri}});
         if (res.contains("__error"))
-            return rpc_error(id, -32603, res["__error"].value("message", "resource unavailable"), json{{"uri", uri}, {"code", res["__error"]["code"]}});
+            return rpc_error(id, err::kInternalError, res["__error"].value("message", "resource unavailable"), json{{"uri", uri}, {"code", res["__error"]["code"]}});
         return rpc_result(id, json{{"contents", json::array({res})}, {"ttlMs", 0}, {"cacheScope", "private"}});
     }
     if (method == "prompts/list") return rpc_result(id, json{{"prompts", prompts::list()}, {"ttlMs", 0}, {"cacheScope", "private"}});
     if (method == "prompts/get") {
         std::string err;
         json r = prompts::get(params.value("name", ""), params.value("arguments", json::object()), err);
-        if (r.is_null()) return rpc_error(id, -32602, err);
+        if (r.is_null()) return rpc_error(id, err::kInvalidParams, err);
         return rpc_result(id, r);
     }
     if (method == "completion/complete") return complete(id, params);
     if (c.era == tasks::Era::Modern && method == "subscriptions/listen") return listen(id, params, c);
     if (c.era == tasks::Era::Modern) c.http_status = 404;  // modern era: unknown method = 404 + -32601
-    return rpc_error(id, -32601, "unknown method: " + method);
+    return rpc_error(id, err::kMethodNotFound, "unknown method: " + method);
 }
 
 static json unwrap_rpc(const json &id, const json &r) {
@@ -567,15 +578,15 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
         immediate = dump(rpc_error(id, code, msg, std::move(data)));
         return nullptr;
     };
-    if (!nesting_ok(body, 64)) return fail(400, nullptr, -32600, "JSON nesting too deep (max 64)");
+    if (!nesting_ok(body, 64)) return fail(400, nullptr, err::kInvalidRequest, "JSON nesting too deep (max 64)");
     auto p = std::make_shared<Prepared>();
     try {
         p->msg = json::parse(body);
     } catch (const std::exception &) {
-        return fail(400, nullptr, -32700, "invalid JSON");
+        return fail(400, nullptr, err::kParseError, "invalid JSON");
     }
-    if (p->msg.is_array()) return fail(400, nullptr, -32600, "JSON-RPC batching is not supported");
-    if (!p->msg.is_object()) return fail(400, nullptr, -32600, "a JSON-RPC message must be an object");
+    if (p->msg.is_array()) return fail(400, nullptr, err::kInvalidRequest, "JSON-RPC batching is not supported");
+    if (!p->msg.is_object()) return fail(400, nullptr, err::kInvalidRequest, "a JSON-RPC message must be an object");
     json &msg = p->msg;
     p->id = msg.value("id", json(nullptr));
     p->notification = !msg.contains("id");
@@ -586,12 +597,12 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
     Ctx &c = p->ctx;
     std::string hv = header(headers, "mcp-protocol-version");
     json meta = params.value("_meta", json::object());
-    std::string mv = meta.is_object() ? meta.value("io.modelcontextprotocol/protocolVersion", "") : "";
+    std::string mv = meta.is_object() ? meta.value(mcpproto::kMetaProtocolVersion, "") : "";
     bool is_modern = hv == kModernVersion || !mv.empty();
     if (is_modern) {
         // 2026-07-28 era. A header contradicting _meta is a HeaderMismatch, whatever the versions are.
         if (!mv.empty() && !hv.empty() && hv != mv)
-            return fail(400, id, -32020, "Header mismatch: MCP-Protocol-Version '" + hv + "' differs from _meta '" + mv + "'");
+            return fail(400, id, err::kHeaderMismatch, "Header mismatch: MCP-Protocol-Version '" + hv + "' differs from _meta '" + mv + "'");
         // The version must be supported.
         std::string ver = !mv.empty() ? mv : hv;
         if (ver != kModernVersion) {
@@ -600,14 +611,14 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
             if (!legacy_known) {
                 json sup = json::array({kModernVersion});
                 for (const char *v : kSupportedVersions) sup.push_back(v);
-                return fail(400, id, -32022, "Unsupported protocol version: " + ver, json{{"supported", sup}, {"requested", ver}});
+                return fail(400, id, err::kUnsupportedProtocolVersion, "Unsupported protocol version: " + ver, json{{"supported", sup}, {"requested", ver}});
             }
             is_modern = false;
         }
     }
     if (is_modern) {
         const std::string &method = p->method;
-        auto mismatch = [&](const std::string &why) { return fail(400, id, -32020, "Header mismatch: " + why); };
+        auto mismatch = [&](const std::string &why) { return fail(400, id, err::kHeaderMismatch, "Header mismatch: " + why); };
         if (hv.empty()) return mismatch("missing MCP-Protocol-Version header");
         if (!mv.empty() && hv != mv) return mismatch("MCP-Protocol-Version '" + hv + "' differs from _meta '" + mv + "'");  // (also checked above)
         std::string hm = header(headers, "mcp-method");
@@ -634,14 +645,14 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
                 if (!in_body || hi != bi) return mismatch("Mcp-Param-Instance '" + hi + "' differs from arguments.instance '" + bi + "'");
             }
         }
-        // Required per-request fields (2026-07-28 base protocol): -32602 and HTTP 400 when missing.
+        // Required per-request fields (2026-07-28 base protocol): err::kInvalidParams and HTTP 400 when missing.
         if (!p->notification) {
-            if (mv.empty()) return fail(400, id, -32602, "missing _meta io.modelcontextprotocol/protocolVersion");
-            if (!meta.contains("io.modelcontextprotocol/clientCapabilities") || !meta["io.modelcontextprotocol/clientCapabilities"].is_object())
-                return fail(400, id, -32602, "missing _meta io.modelcontextprotocol/clientCapabilities");
+            if (mv.empty()) return fail(400, id, err::kInvalidParams, std::string("missing _meta ") + mcpproto::kMetaProtocolVersion);
+            if (!meta.contains(mcpproto::kMetaClientCapabilities) || !meta[mcpproto::kMetaClientCapabilities].is_object())
+                return fail(400, id, err::kInvalidParams, std::string("missing _meta ") + mcpproto::kMetaClientCapabilities);
         }
         c.era = tasks::Era::Modern;
-        c.client_caps = meta.value("io.modelcontextprotocol/clientCapabilities", json::object());
+        c.client_caps = meta.value(mcpproto::kMetaClientCapabilities, json::object());
     }
     // Stream candidates: subscriptions, and tool calls that run in place (not as a task) and either asked for progress
     // or may run for a while (cancellation = closing the stream).
@@ -662,7 +673,7 @@ std::shared_ptr<Prepared> prepare(const std::string &body, const Headers &header
         return prepare_inner(body, headers, immediate, http_status);
     } catch (const std::exception &e) {
         http_status = 500;
-        immediate = dump(rpc_error(nullptr, -32603, std::string("internal error: ") + e.what()));
+        immediate = dump(rpc_error(nullptr, err::kInternalError, std::string("internal error: ") + e.what()));
         return nullptr;
     }
 }
@@ -708,7 +719,7 @@ static std::string execute_inner(Prepared &p, int &http_status, const Emit &emit
         if (!res.contains("resultType")) res["resultType"] = "complete";
         // 2026-07-28: servers SHOULD identify themselves in every result.
         if (!res.contains("_meta") || !res["_meta"].is_object()) res["_meta"] = json::object();
-        res["_meta"]["io.modelcontextprotocol/serverInfo"] = server_info();
+        res["_meta"][mcpproto::kMetaServerInfo] = server_info();
     }
     http_status = c.http_status;
     return dump(r);
@@ -719,7 +730,7 @@ std::string execute(Prepared &p, int &http_status, const Emit &emit, std::shared
         return execute_inner(p, http_status, emit, std::move(cancel));
     } catch (const std::exception &e) {
         http_status = 500;
-        return dump(rpc_error(p.id, -32603, std::string("internal error: ") + e.what()));
+        return dump(rpc_error(p.id, err::kInternalError, std::string("internal error: ") + e.what()));
     }
 }
 

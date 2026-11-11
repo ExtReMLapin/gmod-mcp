@@ -43,6 +43,12 @@ jobs:
           py=$(command -v python3 || command -v python)
           "$py" -u tests/bridge/test_bridge.py "$bridge"
 
+      - name: Protocol constants vs the official MCP schema
+        shell: bash
+        run: |
+          py=$(command -v python3 || command -v python)
+          "$py" tests/protocol/check_constants.py
+
       - name: Package
         shell: bash
         run: |

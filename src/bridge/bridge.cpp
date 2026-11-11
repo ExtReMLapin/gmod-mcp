@@ -34,6 +34,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include "mcp_protocol.h"
 #include "platform/platform.h"
 #include "util.h"
 
@@ -42,12 +43,13 @@ using json = nlohmann::json;
 namespace {
 
 const char *kBridgeVersion = GMOD_MCP_VERSION;
-const char *kModernVersion = "2026-07-28";
-const char *kMetaVersion = "io.modelcontextprotocol/protocolVersion";
-const char *kMetaCaps = "io.modelcontextprotocol/clientCapabilities";
-const char *kMetaServerInfo = "io.modelcontextprotocol/serverInfo";
-const char *kMetaSubscription = "io.modelcontextprotocol/subscriptionId";
-const char *kSupported[] = {"2025-11-25", "2025-06-18", "2025-03-26"};
+const char *kModernVersion = mcpproto::kModern;
+const char *kMetaVersion = mcpproto::kMetaProtocolVersion;
+const char *kMetaCaps = mcpproto::kMetaClientCapabilities;
+const char *kMetaServerInfo = mcpproto::kMetaServerInfo;
+const char *kMetaSubscription = mcpproto::kMetaSubscriptionId;
+const auto &kSupported = mcpproto::kLegacy;
+namespace err = mcpproto::err;
 const double kNoIdleLimit = 7 * 24 * 3600.0;
 
 int g_port = 27080;
@@ -409,17 +411,17 @@ json modern_error(const json &msg) {
     json id = msg.value("id", json());
     json meta = params_of(msg).value("_meta", json::object());
     if (!meta.is_object() || !meta.contains(kMetaVersion) || !meta[kMetaVersion].is_string())
-        return rpc_error(id, -32602, std::string("missing _meta ") + kMetaVersion);
+        return rpc_error(id, err::kInvalidParams, std::string("missing _meta ") + kMetaVersion);
     std::string v = meta[kMetaVersion];
     bool known = v == kModernVersion;
     for (const char *s : kSupported) known = known || v == s;
     if (!known) {
-        json e = rpc_error(id, -32022, "Unsupported protocol version: " + v);
+        json e = rpc_error(id, err::kUnsupportedProtocolVersion, "Unsupported protocol version: " + v);
         e["error"]["data"] = json{{"supported", all_versions()}, {"requested", v}};
         return e;
     }
     if (v == kModernVersion && (!meta.contains(kMetaCaps) || !meta[kMetaCaps].is_object()))
-        return rpc_error(id, -32602, std::string("missing _meta ") + kMetaCaps);
+        return rpc_error(id, err::kInvalidParams, std::string("missing _meta ") + kMetaCaps);
     return nullptr;
 }
 
@@ -618,7 +620,7 @@ void handle_request(const json &msg) {
         return;
     }
     if (modern_2026(msg) && (method == "initialize" || method == "ping")) {  // removed in 2026-07-28
-        out(rpc_error(id, -32601, "method not found in protocol version 2026-07-28: " + method));
+        out(rpc_error(id, err::kMethodNotFound, std::string("method not found in protocol version ") + kModernVersion + ": " + method));
         return;
     }
     std::string key = id.dump();
@@ -707,7 +709,7 @@ void handle_request(const json &msg) {
         return;
     }
     if (r.reached) {
-        out(rpc_error(id, -32603, "the game answered HTTP " + std::to_string(r.status) + " without a JSON-RPC response"));
+        out(rpc_error(id, err::kInternalError, "the game answered HTTP " + std::to_string(r.status) + " without a JSON-RPC response"));
         return;
     }
     // Game unreachable: the bridge answers, with the checks the game would make.
@@ -733,7 +735,7 @@ void handle_request(const json &msg) {
                                    {"structuredContent", {{"error", {{"code", "game_not_running"}, {"message", not_running_text()}}}}},
                                    {"isError", true}}));
     } else {
-        out(rpc_error(id, -32603, not_running_text()));
+        out(rpc_error(id, err::kInternalError, not_running_text()));
     }
 }
 
@@ -861,11 +863,11 @@ int main(int argc, char **argv) {
         try {
             msg = json::parse(line);
         } catch (...) {
-            out(rpc_error(nullptr, -32700, "invalid JSON"));
+            out(rpc_error(nullptr, err::kParseError, "invalid JSON"));
             continue;
         }
         if (!msg.is_object()) {
-            out(rpc_error(nullptr, -32600, "JSON-RPC batching is not supported"));
+            out(rpc_error(nullptr, err::kInvalidRequest, "JSON-RPC batching is not supported"));
             continue;
         }
         if (!msg.contains("method")) continue;  // a response: this server never sends requests
@@ -876,7 +878,7 @@ int main(int argc, char **argv) {
                 else handle_notification(msg);
             } catch (const std::exception &e) {
                 log(std::string("internal error: ") + e.what());
-                if (msg.contains("id")) out(rpc_error(msg["id"], -32603, std::string("gmod-mcp-bridge internal error: ") + e.what()));
+                if (msg.contains("id")) out(rpc_error(msg["id"], err::kInternalError, std::string("gmod-mcp-bridge internal error: ") + e.what()));
             }
         }).detach();
     }

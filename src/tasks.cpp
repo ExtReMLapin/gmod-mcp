@@ -1,3 +1,4 @@
+#include "mcp_protocol.h"
 #include "tasks.h"
 
 #include <atomic>
@@ -106,7 +107,7 @@ json legacy_capability() {
 json create_tool_task(const std::string &tool, const json &args, const json &task_params, Era era) {
     auto t = std::make_shared<Task>();
     unsigned char raw[16];
-    if (!plat::random_bytes(raw, sizeof raw)) return rpc_error(-32603, "failed to generate identifier");
+    if (!plat::random_bytes(raw, sizeof raw)) return rpc_error(mcpproto::err::kInternalError, "failed to generate identifier");
     t->id = util::hex(raw, sizeof raw);  // 128 bits: not guessable
     t->tool = tool;
     t->created = t->updated = SysClock::now();
@@ -126,7 +127,7 @@ json create_tool_task(const std::string &tool, const json &args, const json &tas
             std::lock_guard<std::mutex> lk2(kv.second->m);
             if (kv.second->state == "working") active++;
         }
-        if (active >= kMaxActive) return rpc_error(-32603, "too many active tasks (max 32)");
+        if (active >= kMaxActive) return rpc_error(mcpproto::err::kInternalError, "too many active tasks (max 32)");
         g_tasks[t->id] = t;
     }
     logx::info("task %s created for tool %s (%s)", t->id.c_str(), tool.c_str(), era == Era::Modern ? "extension" : "2025-11-25");
@@ -180,13 +181,13 @@ static std::shared_ptr<Task> find(const json &params) {
 
 json get(const json &params, Era era) {
     auto t = find(params);
-    if (!t) return rpc_error(-32602, "Failed to retrieve task: Task not found");
+    if (!t) return rpc_error(mcpproto::err::kInvalidParams, "Failed to retrieve task: Task not found");
     return task_json(*t, era, true);
 }
 
 json result(const json &params) {
     auto t = find(params);
-    if (!t) return rpc_error(-32602, "Failed to retrieve task: Task not found");
+    if (!t) return rpc_error(mcpproto::err::kInvalidParams, "Failed to retrieve task: Task not found");
     std::unique_lock<std::mutex> lk(t->m);
     t->cv.wait(lk, [&] { return t->state != "working"; });
     json r;
@@ -210,12 +211,12 @@ json list(const json &) {
 
 json cancel(const json &params, Era era) {
     auto t = find(params);
-    if (!t) return rpc_error(-32602, "Failed to retrieve task: Task not found");
+    if (!t) return rpc_error(mcpproto::err::kInvalidParams, "Failed to retrieve task: Task not found");
     {
         std::lock_guard<std::mutex> lk(t->m);
         if (t->state != "working") {
             if (era == Era::Modern) return json::object();  // cooperative: plain acknowledgement
-            return rpc_error(-32602, "Cannot cancel task: already in terminal status '" + status_of(*t, era) + "'");
+            return rpc_error(mcpproto::err::kInvalidParams, "Cannot cancel task: already in terminal status '" + status_of(*t, era) + "'");
         }
         t->cancel->store(true);
         t->state = "cancelled";
@@ -230,7 +231,7 @@ json cancel(const json &params, Era era) {
 
 json update(const json &params) {
     auto t = find(params);
-    if (!t) return rpc_error(-32602, "Failed to retrieve task: Task not found");
+    if (!t) return rpc_error(mcpproto::err::kInvalidParams, "Failed to retrieve task: Task not found");
     return json::object();  // our tasks never request input: responses are ignored
 }
 
