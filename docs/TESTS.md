@@ -105,13 +105,13 @@ Issues found by the campaign and fixed before these two passes:
 | L-24 | `lua_check` handler: GLua syntax (`!=`, `&&`, `!`, `//`, `continue`) passes; syntax errors in two files | one entry per file with its line (`unexpected symbol near '='` line 2, `'end' expected` line 4) | ✅ 2026-11-08 (Lua runtime, menu) |
 | L-25 | `lua_check` handler: typo `prnit(...)`, `leaked = 1` in a nested function, a global defined in file A and used in file B, `ENT.Type` | `unknown_globals` prnit (line 5); `globals_written` leaked (line 9); nothing for the cross-file global nor ENT | ✅ 2026-11-08 (Lua runtime, menu) |
 | L-26 | `lua_check` handler on a 70 000-line chunk with table constants, 64-bit numbers and a nested function | globals found on lines 300, 69999 and 70002 (4-byte line info), ≈ 55 ms | ✅ 2026-11-08 (Lua runtime, menu) |
-| L-27 | `lua_check {path:"<folder>"}` on a folder of `.lua` files; `{code}` and `{path}` together; missing path | `file` = `lua/mcpagent_tmp/...` for each file; `invalid_params`; `not_found` | ⏳ needs a game restart with the new DLL |
-| L-28 | `lua_exec "local x = = 1"` | `lua_syntax_error` with `details.line` 1 | ⏳ needs a game restart with the new DLL |
-| L-29 | `lua_reload {path:"autorun/<file>.lua"}` for a shared addon file edited after the map loaded; then `cl_`, `server/` and an ambiguous name | runs in server then client, the new code is live on both; `cl_` → client only, `server/` → server only; ambiguous → first match + `other_matches` + `warning`; unknown → `not_found` | ⏳ needs the new DLL |
-| L-30 | `lua_exec` loop benchmark with and without `jit: true`; a function defined by a `jit: true` chunk then timed from a timer | `jit: true` several times faster; no `budget_exceeded` possible; default keeps the budget | ⏳ needs the new DLL |
-| L-31 | `lua_job {jit: true}` | runs, no resume limit, result returned | ⏳ needs the new DLL |
-| L-32 | `console_exec {command: "echo hi"}` (wrong name) | `invalid_params` naming `command`, suggesting `cmd`, listing the accepted arguments | ⏳ needs the new DLL |
-| L-33 | client started with `-multirun ... +map gm_construct` from a background script while another application keeps the focus (cursor parked at 40,40 eight times, read back after 150 ms) | the game does not pull the cursor back; console line `told it the focus was lost`; clicking the game still captures the mouse normally | red reproduced 2026-11-11 with the old DLL: `HasFocus` true, pulled back 8/8; sent by hand: `WM_ACTIVATEAPP(FALSE)` 7/8, `WM_ACTIVATE(WA_INACTIVE)` 0/8 and `HasFocus` false. ⏳ green needs the new DLL |
+| L-27 | `lua_check {path:"<folder>"}` on a folder of `.lua` files; `{code}` and `{path}` together; missing path | `file` = `lua/mcpagent_tmp/...` for each file; `invalid_params`; `not_found` | ✅ 2026-11-11: 3 files, the syntax error with its file and line, `prnit` unknown, `SHARED_X` written in one file and read in another not reported; code+path → invalid_params; missing → not_found |
+| L-28 | `lua_exec "local x = = 1"` | `lua_syntax_error` with `details.line` 1 | ✅ 2026-11-11: `details.line` 1 |
+| L-29 | `lua_reload {path:"autorun/<file>.lua"}` for a shared addon file edited after the map loaded; then `cl_`, `server/` and an ambiguous name | runs in server then client, the new code is live on both; `cl_` → client only, `server/` → server only; ambiguous → first match + `other_matches` + `warning`; unknown → `not_found` | ✅ 2026-11-11 (files in lua/mcpagent_tmp): shared → server + client, `cl_` → client, `server/` → server, unknown → not_found; edited on disk then reloaded → v2 on both sides |
+| L-30 | `lua_exec` loop benchmark with and without `jit: true`; a function defined by a `jit: true` chunk then timed from a timer | `jit: true` several times faster; no `budget_exceeded` possible; default keeps the budget | ✅ 2026-11-11: same loop 249 ms default, 48 ms with jit; a function defined by a jit chunk timed later 55 ms; default budget still interrupts |
+| L-31 | `lua_job {jit: true}` | runs, no resume limit, result returned | ✅ 2026-11-11 (menu realm): 55 ms with jit, 11.6 s spread over frames without |
+| L-32 | `console_exec {command: "echo hi"}` (wrong name) | `invalid_params` naming `command`, suggesting `cmd`, listing the accepted arguments | ✅ 2026-11-11: "Unknown argument 'command' (did you mean 'cmd'?)", missing and accepted arguments listed |
+| L-33 | client started with `-multirun ... +map gm_construct` from a background script while another application keeps the focus (cursor parked at 40,40 eight times, read back after 150 ms) | the game does not pull the cursor back; console line `told it the focus was lost`; clicking the game still captures the mouse normally | ✅ 2026-11-11 green, new DLL, same conditions as the red run: HasFocus false, pulled back 0/8, the guard's console line present |
 
 ## Console and errors
 
@@ -249,8 +249,9 @@ fixes below) fails F cancel and dies on F non-string version, the current one pa
 | B-18 | fuzz: 400 random messages (random shapes, ids, params, `_meta`, invalid UTF-8 lines), fake game up | bridge alive, still relays, every stdout line a JSON-RPC 2.0 message | ✅ 2026-11-11 Windows + Linux (WSL) |
 | B-19 | multi repeated 5 times (cross-process lock around the shared cache) | 5/5; without the lock an entry was lost once (read-merge-write race) | ✅ 2026-11-11 Windows |
 | B-20 | A: bridge that never saw the game, empty config folder | full tool list (55), prompts, resources and the module's instructions from the snapshot embedded at build time, prefixed "The game is not running", no machine path | ✅ 2026-11-11 Windows + Linux (WSL) |
-| B-21 | Live game tool list = embedded snapshot (same release) | same names and schemas | ⏳ needs the new DLL |
-| B-15 | Module: 2026-07-28 request without `_meta` protocolVersion or `clientCapabilities` | -32602, HTTP 400 | ⏳ needs the new DLL |
+| B-21 | Live game tool list = embedded snapshot (same release) | same names and schemas | ✅ 2026-11-11: 55 tools, identical in both eras |
+| B-22 | End to end in Claude Code 2.1.322: plugin installed from a local marketplace, session started with the game closed, then the game started | tools listed while closed, `status` says the game is not running; after the game starts, `status` answers through the bridge with no /mcp reconnect | ✅ 2026-11-11 |
+| B-15 | Module: 2026-07-28 request without `_meta` protocolVersion or `clientCapabilities` | -32602, HTTP 400 | ✅ 2026-11-11 (conformance suite, new DLL) |
 | B-5 | Plugin assembled like CI (skill, `.mcp.json` with `${CLAUDE_PLUGIN_ROOT}/bin/gmod-mcp-bridge`, bridge, module), installed in an isolated Claude Code 2.1.322 | `claude plugin validate` passes; `claude mcp list`: `plugin:gmod-mcp:gmod ✔ Connected`, also with nothing on the port | ✅ 2026-11-11 (Windows) |
 | B-6 | Marketplace `archive` source pointing at a GitHub release asset (redirected download) | downloaded and unpacked (refused only because that zip is not a plugin) | ✅ 2026-11-11 |
 | B-7 | Command without `.exe` in `.mcp.json` on Windows | `fb` resolves to `fb.exe`: one `.mcp.json` for both platforms | ✅ 2026-11-11 |
@@ -262,19 +263,20 @@ fixes below) fails F cancel and dies on F non-string version, the current one pa
 
 `@modelcontextprotocol/conformance@0.2.0-alpha.12 server --requirements 2026-07-28`, against a test client (`-multirun`,
 no map) through a local relay that adds the bearer token (the suite cannot send one) and logs the traffic. Run on
-2026-11-11 with the **old** module (before the fixes below): 103 checks passed, 73 failed. A first run had 101 failures
+2026-11-11 with the **old** module (before the fixes below): 103 checks passed, 73 failed. With the new module: 120
+passed; server-stateless 24/28 (the 4 left need the suite's diagnostic tools), dns-rebinding 2/2, custom headers 10/10. A first run had 101 failures
 caused by the relay itself (it sent two Host headers), not by the server.
 
 | Area | Result with the old module | Status |
 |---|---|---|
-| Missing `_meta`, `protocolVersion` or `clientCapabilities` → -32602 + 400 | accepted | fixed (needs the new DLL) |
-| `MCP-Protocol-Version` header ≠ `_meta` version → -32020 + 400 | -32022 (version checked first) | fixed (needs the new DLL) |
+| Missing `_meta`, `protocolVersion` or `clientCapabilities` → -32602 + 400 | accepted | fixed, confirmed with the new DLL |
+| `MCP-Protocol-Version` header ≠ `_meta` version → -32020 + 400 | -32022 (version checked first) | fixed, confirmed with the new DLL |
 | `initialize` / `ping` in 2026-07-28 → 404 + -32601 | answered | fixed in the module and the bridge (bridge tested) |
 | Local `Origin` (`http://localhost`) accepted | 403 for any Origin | fixed: local origins accepted, others 403 (needs the new DLL) |
-| `Mcp-Param-Instance`: invalid Base64, non-alphabet characters, value in the body without the header → -32020 + 400 | accepted | fixed (needs the new DLL) |
+| `Mcp-Param-Instance`: invalid Base64, non-alphabet characters, value in the body without the header → -32020 + 400 | accepted | fixed, confirmed with the new DLL |
 | Discover, serverInfo, unsupported version, unknown method 404, subscriptions (ack, id, filter), caching hints, lists, completion, resource not found, SSE multiple streams, standard header validation | pass | — |
 | tools-call-*, prompts-get-*, resources-read-*, input-required-*, json-schema-2020-12, logging and missing-capability checks | the suite's own fixture tools and resources (`test_simple_text`, `json_schema_2020_12_tool`...) do not exist here; the suite reports them "not found" / "untestable" | not applicable |
-| Tasks extension (forced): `tasks/get`, `tasks/update`, `tasks/cancel` from a client that did not declare the extension → -32021 + 400 with `requiredCapabilities` | -32602 (task not found) | fixed (needs the new DLL) |
+| Tasks extension (forced): `tasks/get`, `tasks/update`, `tasks/cancel` from a client that did not declare the extension → -32021 + 400 with `requiredCapabilities` | -32602 (task not found) | fixed, confirmed with the new DLL |
 | Tasks extension: every other check | drives the suite's fixture tools (`slow_compute`, `greet`, `failing_job`, `confirm_delete`, `multi_input`...) | not applicable without fixtures |
 | 2025-11-25 requirements: initialize, ping, lists, completion, session lifecycle, SSE streams | pass (37 checks) | — |
 | 2025-11-25: `logging/setLevel`, legacy `resources/subscribe` / `unsubscribe` | -32601: not offered by design (no logging capability; legacy subscriptions would need a GET stream, the 2026-07-28 ones are offered) | by design |
