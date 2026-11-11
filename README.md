@@ -35,9 +35,10 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
 
 You need Garry's Mod with the **64-bit** binaries (`gmod_win64.exe`, the default on current Steam builds).
 
-**Quickest, with Claude Code:** install the plugin, then ask Claude to set up gmod-mcp. Its skill downloads and checks
-the release, copies the two files (after asking you), starts the game with `-mcp` and connects Claude Code. Later, when
-the game is closed, Claude knows to start it again instead of giving up:
+**Quickest, with Claude Code:** install the plugin, then ask Claude to set up gmod-mcp. The plugin brings the module
+and connects Claude Code by itself; its skill copies the two files into the game (after asking you) and starts the game
+with `-mcp`. Claude Code stays connected while the game is closed: the tools say so, Claude starts the game again
+instead of giving up, and they work again as soon as it is up, no reconnection needed:
 
 ```
 /plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp
@@ -80,9 +81,11 @@ claude mcp add --transport http gmod http://127.0.0.1:27080/mcp --header "Author
 
 Restart Claude Code. That's it. The same output also shows a `.mcp.json` snippet for other MCP clients (Streamable
 HTTP + bearer token). The token is created once in `%APPDATA%\gmod-mcp\token` (Linux: `~/.config/gmod-mcp/token`), never
-changes, and is only printed when you ask for it — keep it private. You can quit and restart the game while Claude Code
-stays open: calls fail with "connection refused" while the game is closed and work again as soon as it is back (the
-server keeps no session).
+changes, and is only printed when you ask for it — keep it private.
+
+Without the plugin, Claude Code only connects if the game is already running when it starts; otherwise use `/mcp`,
+Reconnect, once the game is up. The plugin avoids that (see below). Other MCP clients can do the same with
+`gmod-mcp-bridge` from the release zip, a stdio server that stays up while the game is closed.
 
 ### Dedicated server
 
@@ -91,10 +94,18 @@ in that mode.
 
 ### Claude Code plugin
 
-The repository is also a Claude Code plugin marketplace. The plugin (`plugin/`) holds one skill, no code: it tells
-Claude how to install or update the module, find the game folder, start the game with `-mcp` when the `gmod` server is
-down, wait for it and register it with `claude mcp add`. It asks before touching the game folder and never restarts a
-game you just closed.
+The repository is also a Claude Code plugin marketplace. The plugin holds:
+
+- the `gmod` MCP server: `gmod-mcp-bridge`, a small stdio program Claude Code starts by itself. It relays to the game,
+  stays connected while the game is closed (tools then answer `game_not_running`), and tells Claude Code when the game
+  is back. It reads the token from its file, so nothing secret lands in Claude Code's settings;
+- the module of the same version, for the game;
+- one skill: how to install or update the module, find the game folder, start the game with `-mcp`, run several games,
+  set up a dedicated server. It asks before touching the game folder and never restarts a game you just closed.
+
+Each release publishes the plugin as one zip (`gmod-mcp-plugin.zip`, pinned by its SHA-256 in the marketplace), so the
+repository holds no binaries. If you added the server by hand earlier (`claude mcp add ... gmod`), remove that entry:
+the plugin replaces it.
 
 ```
 /plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp

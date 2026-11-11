@@ -228,6 +228,23 @@ main menu.
 | M-12 | `lua_job` with `timeout_s` 60 (Tasks extension) then `tasks/get`, and `tasks/cancel` on another one | task; `statusMessage` "phase i (i/40)"; completed with result; cancelled job stops | ✅ 2026-11-07 |
 | M-13 | `convar_set` on an archived convar (`fps_max`) with the elicitation capability: decline, then accept | `input_required` form elicitation / `archived` error / value applied (restored afterwards); without the capability or in legacy era: `archived` error | ✅ 2026-11-07 |
 
+## Bridge and plugin (gmod-mcp-bridge)
+
+`tests/bridge/test_bridge.py <bridge> [a] [b] [c]`; case A also runs in CI on both platforms.
+
+| ID | Check | Expected | Result |
+|---|---|---|---|
+| B-1 | A: nothing listening on the port: `initialize`, `tools/list`, `tools/call status`, `ping` | answered by the bridge; `tools.listChanged` true; cached or fallback list; call → `isError` + `game_not_running` | ✅ 2026-11-11 (Windows) |
+| B-2 | B: live game, legacy era: `initialize`, `tools/list`, `instances_list`, `wait_frames n=240` with a progressToken | game's instructions and >40 tools relayed; progress notifications arrive before the result | ✅ 2026-11-11 (Windows) |
+| B-3 | B: modern era (`_meta` protocolVersion 2026-07-28): `server/discover`, `tools/call status` | headers derived by the bridge accepted; `resultType` complete | ✅ 2026-11-11 (Windows) |
+| B-4 | C: game appears mid-session (local relay started after the first list), then leaves | `notifications/tools/list_changed` within 2 s; live list; after it leaves, calls say `game_not_running` | ✅ 2026-11-11 (Windows) |
+| B-5 | Plugin assembled like CI (skill, `.mcp.json` with `${CLAUDE_PLUGIN_ROOT}/bin/gmod-mcp-bridge`, bridge, module), installed in an isolated Claude Code 2.1.322 | `claude plugin validate` passes; `claude mcp list`: `plugin:gmod-mcp:gmod ✔ Connected`, also with nothing on the port | ✅ 2026-11-11 (Windows) |
+| B-6 | Marketplace `archive` source pointing at a GitHub release asset (redirected download) | downloaded and unpacked (refused only because that zip is not a plugin) | ✅ 2026-11-11 |
+| B-7 | Command without `.exe` in `.mcp.json` on Windows | `fb` resolves to `fb.exe`: one `.mcp.json` for both platforms | ✅ 2026-11-11 |
+| B-8 | Version mismatch: module in the game older than the bridge | instructions start with "Version mismatch ..." | ⏳ needs a module of another version in the game |
+| B-9 | Linux: build of the bridge, `--module-dir`, case A | builds without warnings, 5/5 | ⏳ |
+| B-10 | Real update cycle: release N installed, release N+1 published, marketplace refreshed | Claude Code offers / applies the update; new bridge after restart | ⏳ needs two releases |
+
 ## Cross-cutting
 
 | ID | Procedure | Expected | Last result |

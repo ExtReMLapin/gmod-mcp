@@ -35,6 +35,14 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
+      - name: Bridge test (no game)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bridge=$(find build -name "gmod-mcp-bridge" -type f -o -name "gmod-mcp-bridge.exe" -type f | head -n 1)
+          py=$(command -v python3 || command -v python)
+          "$py" -u tests/bridge/test_bridge.py "$bridge" a
+
       - name: Package
         shell: bash
         run: |
@@ -50,6 +58,13 @@ jobs:
           sed "s/@MCPAGENT_DLL_CRC@/$crc/" loader/mcpagent_boot.lua > "dist/$name/garrysmod/lua/autorun/server/mcpagent_boot.lua"
           grep -q "\"$crc\"" "dist/$name/garrysmod/lua/autorun/server/mcpagent_boot.lua"
           cp README.md LICENSE THIRD_PARTY_NOTICES.md "dist/$name/"
+          # Pieces of the Claude Code plugin, assembled by the plugin job: the module tree and the bridge.
+          mkdir -p "plugin-part/module/${{ matrix.platform }}" plugin-part/bin
+          cp -r "dist/$name/garrysmod" "plugin-part/module/${{ matrix.platform }}/"
+          bridge=$(find build -name "gmod-mcp-bridge" -type f -o -name "gmod-mcp-bridge.exe" -type f | head -n 1)
+          cp "$bridge" plugin-part/bin/
+          # The bridge also goes in the module zip, for MCP clients other than Claude Code (outside garrysmod/).
+          cp "$bridge" "dist/$name/"
           cd dist
           if [ "$RUNNER_OS" = "Windows" ]; then 7z a -tzip "$name.zip" "$name" > /dev/null; else zip -qr "$name.zip" "$name"; fi
           sha256sum "$name.zip" > "$name.zip.sha256"
@@ -61,9 +76,55 @@ jobs:
             dist/*.zip
             dist/*.sha256
 
+      - uses: actions/upload-artifact@v6
+        with:
+          name: plugin-part-${{ matrix.platform }}
+          path: plugin-part/
+
+  # The Claude Code plugin: skill + MCP server declaration + bridge and module for both platforms, in one zip.
+  plugin:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: plugin-part-*
+          path: parts
+          merge-multiple: true
+      - name: Assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^project(gmod_mcp VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          mkdir -p dist/plugin
+          cp -r plugin/. dist/plugin/
+          cp -r parts/bin parts/module dist/plugin/
+          chmod +x dist/plugin/bin/gmod-mcp-bridge
+          cp LICENSE THIRD_PARTY_NOTICES.md dist/plugin/
+          # The plugin's MCP server: the bridge, found without extension on Windows too.
+          printf '%s\n' '{ "mcpServers": { "gmod": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/gmod-mcp-bridge" } } }' > dist/plugin/.mcp.json
+          # Same version as the module and the bridge.
+          py=$(command -v python3)
+          "$py" - "$version" <<'PY'
+          import json, sys
+          p = "dist/plugin/.claude-plugin/plugin.json"
+          j = json.load(open(p)); j["version"] = sys.argv[1]
+          open(p, "w").write(json.dumps(j, indent=2) + "\n")
+          PY
+          (cd dist/plugin && zip -qr ../gmod-mcp-plugin.zip .)
+          (cd dist && sha256sum gmod-mcp-plugin.zip > gmod-mcp-plugin.zip.sha256)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: gmod-mcp-plugin
+          path: |
+            dist/gmod-mcp-plugin.zip
+            dist/gmod-mcp-plugin.zip.sha256
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, plugin]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -78,3 +139,42 @@ jobs:
             dist/*.zip
             dist/*.sha256
           generate_release_notes: true
+
+  # Points the marketplace at the plugin zip of this release (Claude Code then offers the update).
+  marketplace:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/download-artifact@v7
+        with:
+          name: gmod-mcp-plugin
+          path: dist
+      - name: Update marketplace.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          sha=$(cut -d' ' -f1 dist/gmod-mcp-plugin.zip.sha256)
+          python3 - "$tag" "$sha" <<'PY'
+          import json, sys
+          tag, sha = sys.argv[1], sys.argv[2]
+          p = ".claude-plugin/marketplace.json"
+          j = json.load(open(p))
+          for e in j["plugins"]:
+              if e["name"] == "gmod-mcp":
+                  e["source"] = {"source": "archive", "sha256": sha,
+                                 "url": f"https://github.com/${{ github.repository }}/releases/download/{tag}/gmod-mcp-plugin.zip"}
+                  e["version"] = tag.lstrip("v")
+          open(p, "w").write(json.dumps(j, indent=2) + "\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .claude-plugin/marketplace.json
+          git diff --cached --quiet || git commit -m "Marketplace: plugin ${tag}"
+          git push origin HEAD:main

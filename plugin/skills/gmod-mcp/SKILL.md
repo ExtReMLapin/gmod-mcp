@@ -1,13 +1,15 @@
 ---
 name: gmod-mcp
-description: Use when a task involves Garry's Mod (GMod, gmod, GLua, a GMod dedicated server / srcds) and the `gmod` MCP server is missing, failed to connect, or answers "connection refused"; when the user wants to install, update, start or connect gmod-mcp; or before telling the user that the game or its MCP server is unavailable. The MCP server lives inside the game, so it only exists while Garry's Mod runs with -mcp: starting the game is your job, not a dead end.
+description: Use when a task involves Garry's Mod (GMod, gmod, GLua, a GMod dedicated server / srcds) and the `gmod` tools answer `game_not_running`, are missing, or the game is not running; when the user wants to install, update, start or connect gmod-mcp; or before telling the user that the game or its MCP server is unavailable. The MCP server lives inside the game, so it only answers while Garry's Mod runs with -mcp: starting the game is your job, not a dead end.
 ---
 
 # gmod-mcp: install, start and connect
 
 gmod-mcp is an MCP server **inside** Garry's Mod (a native module, https://github.com/ExtReMLapin/gmod-mcp). It only
-exists while the game runs with the `-mcp` launch option. When the `gmod` MCP server is down, the usual reason is simply
-that the game is not running: start it yourself (section 2) instead of reporting a dead end.
+answers while the game runs with the `-mcp` launch option. This plugin starts a small bridge as the `gmod` MCP server:
+it stays connected while the game is closed (its tools then answer `game_not_running`) and relays to the game as soon as
+it answers, so the tools come back by themselves, with no reconnection. When the tools say `game_not_running`, start
+the game yourself (section 2) instead of reporting a dead end.
 
 Once the server is connected, its own instructions (sent by the server) take over: follow them for everything else.
 
@@ -22,7 +24,9 @@ Once the server is connected, its own instructions (sent by the server) take ove
 
 ## 1. Find out where things stand
 
-1. **Is the `gmod` MCP server configured?** `claude mcp get gmod`. If it is not, finish section 3 or 4 first.
+1. **One `gmod` server only.** The plugin provides it. An older install may also have a manual entry: if
+   `claude mcp get gmod` shows an `http://127.0.0.1:27080/mcp` server, tell the user it duplicates the plugin's and
+   remove it with their agreement (`claude mcp remove gmod`, adding `--scope` if it lives in another scope).
 2. **Is a game listening?** Any HTTP answer means yes (401 without the token is the expected one):
 
    ```bash
@@ -69,9 +73,9 @@ If `gmod_win64.exe` is missing, the game is on 32-bit binaries: tell the user (t
 Then wait for the server: check the URL from section 1 every 2 seconds, for up to 2 minutes (the first start and a map
 load take longer). Run the wait in the background or in one bounded loop, not as many separate calls.
 
-**When it answers**: if the `gmod` tools were already in your tool list, call them again: the server keeps no session,
-so calls work again as soon as the game is back. If they are not in your tool list (the server failed to connect when
-this session started), ask the user to reconnect it with `/mcp` (select `gmod`, Reconnect), or to restart Claude Code.
+**When it answers**: call the `gmod` tools again. The bridge notices the game within 2 seconds and Claude Code
+fetches the live tool list by itself; the guide is the resource `mcpagent://guide`. If the server instructions say the
+module and the plugin versions differ, tell the user and offer section 3 (update).
 
 **Several clients side by side** (for example to split a long test suite): start each extra game with `-multirun`, a
 small window and a frame cap so they stay cheap:
@@ -93,29 +97,26 @@ Start-Process -FilePath "<game folder>\gmod_win64.exe" -WorkingDirectory "<game 
 
 ## 3. Install (or update) the module
 
-Ask the user first; say that it adds two files to the game folder, and that on the first start with `-mcp` the module
-also appends a small loader block to `garrysmod/lua/menu/menu.lua` (the original is saved as
-`menu.lua.mcpagent.bak`; the game console command `mcpagent_uninstall` removes it).
+The plugin ships the module of its own version. Ask the user first; say that it adds two files to the game folder, and
+that on the first start with `-mcp` the module also appends a small loader block to `garrysmod/lua/menu/menu.lua` (the
+original is saved as `menu.lua.mcpagent.bak`; the game console command `mcpagent_uninstall` removes it).
 
 1. Quit the game first if it is running (an update cannot replace a loaded DLL): ask the user to quit it, or use the
-   `game_quit` tool if it is connected.
-2. Download the latest release, Windows `gmod-mcp-win64.zip`, Linux `gmod-mcp-linux64.zip`, and its `.sha256`, into a
-   new empty temporary folder:
+   `game_quit` tool.
+2. Find the module shipped with the plugin. The plugin's `bin/` folder is on the PATH of the Bash tool:
 
    ```bash
-   base=https://github.com/ExtReMLapin/gmod-mcp/releases/latest/download
-   curl -fsSLO "$base/gmod-mcp-win64.zip" && curl -fsSLO "$base/gmod-mcp-win64.zip.sha256"
+   src=$(gmod-mcp-bridge --module-dir)      # e.g. .../plugins/cache/.../bin/../module/win64
+   ls "$src/garrysmod/lua/bin" "$src/garrysmod/lua/autorun/server"
    ```
 
-3. Check the checksum (`sha256sum gmod-mcp-win64.zip` against the hash in the `.sha256` file; PowerShell:
-   `Get-FileHash -Algorithm SHA256`). Stop if it differs.
-4. Unzip it. It holds `gmod-mcp-win64/garrysmod/...`: copy these two files into the game folder at the same relative
-   paths, creating `lua/bin` if needed, and nothing else:
+3. Copy these two files into the game folder at the same relative paths, creating `lua/bin` if needed, and nothing
+   else:
    - `garrysmod/lua/bin/gmsv_mcpagent_win64.dll` (Linux: `gmsv_mcpagent_linux64.dll`)
    - `garrysmod/lua/autorun/server/mcpagent_boot.lua`
-5. Start the game as in section 2, **with `+map gm_construct`** this first time. The game console says
-   `main-menu loader installed in lua/menu/menu.lua`.
-6. Optionally, suggest Steam launch options (Garry's Mod → Properties → Launch options), so the server is also up, at
+4. Start the game as in section 2, **with `+map gm_construct`** this first time. The game console says
+   `main-menu loader installed in lua/menu/menu.lua`. The `gmod` tools come back by themselves.
+5. Optionally, suggest Steam launch options (Garry's Mod → Properties → Launch options), so the server is also up, at
    full speed, when the user starts the game themselves:
    `-mcp -windowed +engine_no_focus_sleep 0 +snd_mute_losefocus 0`. `-mcp` starts the server; without
    `+engine_no_focus_sleep 0` the game throttles itself while another window has the focus (the usual case while
@@ -123,23 +124,12 @@ also appends a small loader block to `garrysmod/lua/menu/menu.lua` (the original
    sounds playing for sound tests. `-windowed` is a preference, so the terminal stays reachable. Do not edit Steam's
    files to set them: tell the user.
 
-## 4. Connect Claude Code
+If `gmod-mcp-bridge` is not found, the plugin is an old version without the bridge: ask the user to update it
+(`/plugin`, Marketplaces, update gmod-mcp) and restart Claude Code.
 
-The module creates its token on its first start with `-mcp`: `%APPDATA%\gmod-mcp\token` on Windows,
-`~/.config/gmod-mcp/token` on Linux. With the game started once, register the server for every project of this user,
-reading the token from the file without echoing it:
-
-```bash
-# Windows (Git Bash): token file "$APPDATA/gmod-mcp/token"; Linux: ~/.config/gmod-mcp/token
-claude mcp add --scope user --transport http gmod http://127.0.0.1:27080/mcp \
-  --header "Authorization: Bearer $(tr -d '\r\n' < "$APPDATA/gmod-mcp/token")"
-```
-
-If a `gmod` entry already exists (`claude mcp get gmod`) with a different URL or token, `claude mcp remove gmod` first
-(add `--scope` if it lives in another scope). The new server shows up after `/mcp` → Reconnect, or a restart of Claude
-Code: tell the user.
-
-In the game console, `mcpagent_setup` prints the same command, plus a `.mcp.json` snippet for other MCP clients.
+**Other MCP clients** (not Claude Code): in the game console, `mcpagent_setup` prints an HTTP configuration with the
+token. The bridge also works for them as a stdio server: the command `gmod-mcp-bridge` (from the plugin, or from the
+release), with `--port <n>` or the `GMOD_MCP_PORT` variable for another base port.
 
 ## Dedicated server (srcds)
 
@@ -157,7 +147,7 @@ steamcmd +force_install_dir "<server folder>" +login anonymous +app_update 4020 
 If the user already has a server, use theirs: it is the folder holding `srcds_win64.exe` (Linux: `srcds_run_x64`) and a
 `garrysmod` folder.
 
-**Install the module**: as in section 3, the same two files from the same zip, into `<server folder>/garrysmod/...`.
+**Install the module**: as in section 3, the same two files, into `<server folder>/garrysmod/...`.
 A server has no main menu: it needs no `+map gm_construct` "first start", but it needs a map on every start.
 
 **Start it** with the **64-bit** binary (`srcds.exe` and `srcds_run` are 32-bit: the module does not load there):
@@ -174,7 +164,7 @@ Linux: `./srcds_run_x64 -console -mcp -condebug -port 27015 +maxplayers 2 +sv_la
 - Wait for it as in section 2 (`curl` on 27080, or 27081 when a client game already holds 27080).
 - The token is the same file as the game's (same user), and `mcpagent_setup` works in the server console.
 
-**Reaching it from the agent.** A server alone takes port 27080, so the usual `gmod` entry works. With the client
+**Reaching it from the agent.** A server alone takes port 27080, so the usual `gmod` server works. With the client
 game also running, each has its own port and the one holding 27080 relays to the other: keep the single `gmod` entry,
 call `instances_list`, then pass `instance` (`srcds-<pid>`) to any tool. Calls without `instance` are refused with
 `ambiguous_instance` while several games run.
@@ -194,5 +184,6 @@ themselves running unless they ask.
 - No `[mcpagent]` line at all on the very first start: the module only loads with a map; start again with
   `+map gm_construct`.
 - The process is running but the URL gives `000`: wait for the main menu or the map load to finish.
-- Another program holds port 27080: the module takes the next free one (the `active:` line names it). Point the `gmod`
-  entry at it only if no other game is running.
+- Another program holds port 27080: the module takes the next free one (the `active:` line names it). The bridge
+  only talks to the base port: ask the user to set the `GMOD_MCP_PORT` environment variable to that port and restart
+  Claude Code, or better, to free port 27080.

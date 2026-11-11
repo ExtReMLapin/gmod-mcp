@@ -22,7 +22,7 @@ struct Config {
     std::string tmp_dir;   // .../garrysmod/lua/mcpagent_tmp (absolute)
     std::string data_dir;  // .../garrysmod/data/mcpagent (absolute)
     std::string instance_id;
-    std::string version = "0.2.0";
+    std::string version = GMOD_MCP_VERSION;
 };
 
 Config &config();

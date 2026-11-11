@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(gmod_mcp CXX)
+project(gmod_mcp VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,6 +51,8 @@ FetchContent_Declare(garrysmod_common
 FetchContent_MakeAvailable(httplib nlohmann_json json_schema_validator garrysmod_common)
 
 set(PLATFORM_SOURCES src/platform/platform_win.cpp src/platform/platform_posix.cpp)
+# One version for the module and the bridge (the bridge reports a module of another version).
+add_compile_definitions(GMOD_MCP_VERSION="${PROJECT_VERSION}")
 
   # Embedded Lua runtime: each src/lua/*.lua file becomes a byte array in embedded_lua.h.
   file(GLOB LUA_RUNTIME_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/lua/*.lua)
@@ -79,4 +81,17 @@ if(MSVC)
 else()
   target_compile_options(mcpagent PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fvisibility=hidden)
   target_link_libraries(mcpagent PRIVATE dl pthread -static-libstdc++ -static-libgcc)
+endif()
+
+# --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/util.cpp ${PLATFORM_SOURCES})
+target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR})
+target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)
+if(MSVC)
+  target_compile_options(gmod-mcp-bridge PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)
+  target_compile_definitions(gmod-mcp-bridge PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  target_link_libraries(gmod-mcp-bridge PRIVATE ws2_32 bcrypt iphlpapi user32)
+else()
+  target_compile_options(gmod-mcp-bridge PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  target_link_libraries(gmod-mcp-bridge PRIVATE pthread -static-libstdc++ -static-libgcc)
 endif()
