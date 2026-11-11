@@ -1,12 +1,20 @@
 {
   "name": "gmod-mcp",
-  "owner": { "name": "ExtReMLapin", "url": "https://github.com/ExtReMLapin" },
+  "owner": {
+    "name": "ExtReMLapin",
+    "url": "https://github.com/ExtReMLapin"
+  },
   "description": "gmod-mcp: an MCP server inside Garry's Mod, and the Claude Code skill that installs, starts and connects it.",
   "plugins": [
     {
       "name": "gmod-mcp",
-      "source": "./plugin",
-      "description": "Teaches Claude Code to install gmod-mcp, start Garry's Mod with -mcp when its MCP server is down, and connect to it."
+      "source": {
+        "source": "archive",
+        "sha256": "2e934a364309f3a12e67d608fd5127c908f4e8873c86f491a53439c90c793ee1",
+        "url": "https://github.com/ExtReMLapin/gmod-mcp/releases/download/v0.3.0/gmod-mcp-plugin.zip"
+      },
+      "description": "Teaches Claude Code to install gmod-mcp, start Garry's Mod with -mcp when its MCP server is down, and connect to it.",
+      "version": "0.3.0"
     }
   ]
 }
