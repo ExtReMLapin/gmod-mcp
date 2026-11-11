@@ -592,6 +592,12 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
             std::string bi = a.is_object() && a.contains("instance") && a["instance"].is_string() ? a["instance"].get<std::string>() : "";
             if (hi != bi) return mismatch("Mcp-Param-Instance '" + hi + "' differs from arguments.instance '" + bi + "'");
         }
+        // Required per-request fields (2026-07-28 base protocol): -32602 and HTTP 400 when missing.
+        if (!p->notification) {
+            if (mv.empty()) return fail(400, id, -32602, "missing _meta io.modelcontextprotocol/protocolVersion");
+            if (!meta.contains("io.modelcontextprotocol/clientCapabilities") || !meta["io.modelcontextprotocol/clientCapabilities"].is_object())
+                return fail(400, id, -32602, "missing _meta io.modelcontextprotocol/clientCapabilities");
+        }
         c.era = tasks::Era::Modern;
         c.client_caps = meta.value("io.modelcontextprotocol/clientCapabilities", json::object());
     }

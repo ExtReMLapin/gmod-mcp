@@ -230,7 +230,9 @@ main menu.
 
 ## Bridge and plugin (gmod-mcp-bridge)
 
-`tests/bridge/test_bridge.py <bridge> [a] [b] [c]`; case A also runs in CI on both platforms.
+`tests/bridge/test_bridge.py <bridge> [a] [f] [m] [fslow] [b] [c]`. Cases a, f, m and multi (the default) need no game and run in CI on both
+platforms; f and m use a fake gmod-mcp server run by the script. Mutation check: the bridge of 319a536 (before the
+fixes below) fails F cancel and dies on F non-string version, the current one passes everything.
 
 | ID | Check | Expected | Result |
 |---|---|---|---|
@@ -238,6 +240,12 @@ main menu.
 | B-2 | B: live game, legacy era: `initialize`, `tools/list`, `instances_list`, `wait_frames n=240` with a progressToken | game's instructions and >40 tools relayed; progress notifications arrive before the result | ✅ 2026-11-11 (Windows) |
 | B-3 | B: modern era (`_meta` protocolVersion 2026-07-28): `server/discover`, `tools/call status` | headers derived by the bridge accepted; `resultType` complete | ✅ 2026-11-11 (Windows) |
 | B-4 | C: game appears mid-session (local relay started after the first list), then leaves | `notifications/tools/list_changed` within 2 s; live list; after it leaves, calls say `game_not_running` | ✅ 2026-11-11 (Windows) |
+| B-11 | F (fake): progress order; cancel of a silent stream; stream ending without a response; 8 MB result; 30 concurrent calls with string ids; non-ASCII header values (base64 sentinel); non-string `_meta` version; invalid JSON, batch, blank line, `initialize` without params; stdin closed during a call; rejected token; version mismatch; game appearing mid-session | progress 1,2,3 before the result; connection closed < 1 s, no response, notification forwarded (legacy); JSON-RPC error; intact; every id answered; decodes back; answered, bridge alive; -32700 / -32600 / ignored / answered; exit < 3 s; message names the token; instructions start "Version mismatch"; list_changed | ✅ 2026-11-11 Windows + Linux (WSL), 25 checks |
+| B-12 | M (fake, 2026-07-28 client): offline `server/discover`, list, call; missing `clientCapabilities`; unsupported version; `subscriptions/listen` (tools + prompts) while closed then the game appears; resource subscription honored subset, relayed, reopened after a game restart, cancelled; cancel of a call | `resultType` complete + serverInfo, `ttlMs` 0; -32602; -32022 with `supported`; acknowledged first with the subscription id; list_changed only on the subscription, none outside; only `gmod://` URIs; updates carry the id; reopened; game stream closed, nothing more; stream closed, no notification forwarded; tool annotations kept, fallback `status` read-only | ✅ 2026-11-11 Windows + Linux (WSL), 16 checks |
+| B-13 | B/C/C2 (live game, old module): listen through the bridge to the real game; 2026-07-28 client while the game appears | `gmod://console` honored, `gmod://nope` not; list_changed on the subscription; live list | ✅ 2026-11-11 Windows |
+| B-14 | fslow: stream silent for 65 s | result delivered (no idle limit on client requests) | ✅ 2026-11-11 Windows (65 s) |
+| B-16 | multi: 6 bridges sharing one config folder (3 legacy sessions, 3 sessions of 2026-07-28 with a subscription), game appears, then 18 concurrent list requests | each bridge tells its session (plain notification or on the subscription); shared cache valid JSON with both eras' entries; no temporary file left | ✅ 2026-11-11 Windows |
+| B-15 | Module: 2026-07-28 request without `_meta` protocolVersion or `clientCapabilities` | -32602, HTTP 400 | ⏳ needs the new DLL |
 | B-5 | Plugin assembled like CI (skill, `.mcp.json` with `${CLAUDE_PLUGIN_ROOT}/bin/gmod-mcp-bridge`, bridge, module), installed in an isolated Claude Code 2.1.322 | `claude plugin validate` passes; `claude mcp list`: `plugin:gmod-mcp:gmod ✔ Connected`, also with nothing on the port | ✅ 2026-11-11 (Windows) |
 | B-6 | Marketplace `archive` source pointing at a GitHub release asset (redirected download) | downloaded and unpacked (refused only because that zip is not a plugin) | ✅ 2026-11-11 |
 | B-7 | Command without `.exe` in `.mcp.json` on Windows | `fb` resolves to `fb.exe`: one `.mcp.json` for both platforms | ✅ 2026-11-11 |

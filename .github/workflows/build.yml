@@ -35,13 +35,13 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Bridge test (no game)
+      - name: Bridge tests (no game - closed, fake server, 2026-07-28 client)
         shell: bash
         run: |
           set -euo pipefail
           bridge=$(find build -name "gmod-mcp-bridge" -type f -o -name "gmod-mcp-bridge.exe" -type f | head -n 1)
           py=$(command -v python3 || command -v python)
-          "$py" -u tests/bridge/test_bridge.py "$bridge" a
+          "$py" -u tests/bridge/test_bridge.py "$bridge"
 
       - name: Package
         shell: bash
