@@ -11,15 +11,19 @@ Cases (default: a f):
          annotations kept
   multi  6 bridges at once (one per client session) sharing the config folder: each is told when the game appears,
          the shared cache stays valid under concurrent writes, no temporary file left behind
+  session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
+         explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
   fuzz   400 random messages (random JSON shapes, ids, params, invalid UTF-8): the bridge survives and still answers
   fslow  the fake server keeps a stream silent for 65 s (a client request has no idle limit)
+  launch live: instances_launch of 2 light clients with a map, default instance, instances_close (Windows, Steam,
+         no other game; the game saves their window size as its video setting)
   b      live game on 27080, read-only calls (needs the game and the user's token)
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -186,7 +190,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
                                         "serverInfo": {"name": "gmod-mcp", "version": srv.version},
                                         "instructions": "fake instructions"}))
         if method == "tools/list":
-            tools = [{"name": n, "inputSchema": {"type": "object"}} for n in
+            tools = [{"name": n, "inputSchema": {"type": "object", "properties": {"instance": {"type": "string"}}}} for n in
                      ("echo", "progress", "idle", "nofinal", "huge", "silent_hang")]
             tools[0]["annotations"] = {"title": "Echo", "readOnlyHint": True, "destructiveHint": False,
                                        "idempotentHint": True, "openWorldHint": False}
@@ -603,6 +607,69 @@ def case_fuzz():
     b.close(); srv.stop()
 
 
+def case_session():
+    print("== SESSION: the bridge's own tools (no game launched)", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env)
+    r = b.req("tools/list")
+    names = [t["name"] for t in (r or {}).get("result", {}).get("tools", [])]
+    check("SESSION offline list has instances_launch, instances_close, instance_select", all(n in names for n in ("instances_launch", "instances_close", "instance_select")), names[-4:])
+    srv = FakeServer(port, version=bridge_version())
+    b.wait_notif("notifications/tools/list_changed", 6)
+    r = b.req("tools/list")
+    names = [t["name"] for t in (r or {}).get("result", {}).get("tools", [])]
+    check("SESSION live list = game tools + bridge tools", "echo" in names and "instances_launch" in names, names)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("SESSION no default: nothing injected", r and "instance" not in r["result"]["structuredContent"]["args"], r)
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": "client-42"}})
+    check("SESSION instance_select answers", r and r["result"]["structuredContent"].get("default_instance") == "client-42", r)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("SESSION default injected into calls without instance", r and r["result"]["structuredContent"]["args"].get("instance") == "client-42", r)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}, "_meta": modern_meta()})
+    h = (r or {}).get("result", {}).get("structuredContent", {})
+    check("SESSION 2026-07-28: injected value mirrored in Mcp-Param-Instance", h.get("args", {}).get("instance") == "client-42" and h.get("headers", {}).get("mcp-param-instance") == "client-42", h)
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-7"}})
+    check("SESSION an explicit instance wins over the default", r and r["result"]["structuredContent"]["args"].get("instance") == "client-7", r)
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": None}})
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("SESSION null clears the default", r and "instance" not in r["result"]["structuredContent"]["args"], r)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"instances": ["client-1234"]}})
+    check("SESSION instances_close refuses an instance this session did not start", r and r["result"].get("isError") and "client-1234" in json.dumps(r["result"]["structuredContent"].get("refused")), r)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {}})
+    check("SESSION instances_close without targets -> invalid_params", r and "invalid_params" in json.dumps(r), r)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"game_dir": "C:/definitely/not/here"}})
+    check("SESSION instances_launch with a wrong game_dir -> game_not_found, nothing started", r and "game_not_found" in json.dumps(r) or "unsupported" in json.dumps(r), r)
+    b.close(); srv.stop()
+
+
+def case_launch():
+    """Live (Windows, Steam running, no other game): starts 2 light clients with a map, uses the default instance,
+    closes them. Note: the game saves their window size as its video setting (documented)."""
+    print("== LAUNCH: instances_launch / instance_select / instances_close (live)", flush=True)
+    b = Bridge(27080)
+    rid = b.start("tools/call", {"name": "instances_launch", "arguments": {"count": 2, "map": "gm_construct"}, "_meta": {"progressToken": "L"}})
+    r = b.wait(rid, 300)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    ins = sc.get("instances", [])
+    check("LAUNCH 2 clients answered with ids, pids and ports", len(ins) == 2 and all(i.get("instance") and i.get("pid") for i in ins), sc)
+    check("LAUNCH map loaded on both", all(i.get("map") == "gm_construct" for i in ins), ins)
+    with b.lock: progs = [m for m in b.notes if m.get("method") == "notifications/progress" and m["params"]["progressToken"] == "L"]
+    check("LAUNCH progress reported", len(progs) >= 2, len(progs))
+    if len(ins) == 2:
+        target = ins[1]["instance"]
+        b.req("tools/call", {"name": "instance_select", "arguments": {"instance": target}})
+        r = b.req("tools/call", {"name": "status", "arguments": {}}, 20)
+        check("LAUNCH a call without instance reaches the default one", r and r["result"]["structuredContent"].get("answered_by") == target, r)
+        r = b.req("tools/call", {"name": "lua_exec", "arguments": {"realm": "client", "code": "return ScrW(), ScrH()"}}, 20)
+        check("LAUNCH light preset window is 640x360", r and r["result"]["structuredContent"].get("values") == [640, 360], r)
+    pids = [i.get("pid") for i in ins]
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 30)
+    check("LAUNCH instances_close all closes both", r and len(r["result"]["structuredContent"].get("closed", [])) == 2, r)
+    time.sleep(2)
+    check("LAUNCH their processes are gone", not any(alive(p) for p in pids if p), [p for p in pids if p and alive(p)])
+    b.close()
+
+
 def case_b():
     print("== B: live game on 27080 (read-only)", flush=True)
     b = Bridge(27080)
@@ -689,8 +756,8 @@ def case_c():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "orphan", "fuzz"]:
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))

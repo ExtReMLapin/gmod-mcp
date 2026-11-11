@@ -205,9 +205,15 @@ flowchart LR
 - If the game holding the base port exits, the others keep running; within a few seconds one of them takes the base port
   over and the rest register with it.
 
-Several **clients** can run side by side too (start the extra ones with `-multirun`); the
-[setup skill](plugin/skills/gmod-mcp/SKILL.md) gives agents the launch line and how to close them without touching
-your config.
+Several **clients** can run side by side too. With the Claude Code plugin, the `instances_launch` tool starts 1 to 8
+test clients (small window, frame cap, Windows for now), `instances_close` closes them, and `instance_select` sets the
+default instance of a session. Its description gives the measured cost: about 1.5 GB of RAM and a fifth of a CPU core
+per client.
+
+> **Your resolution after test clients.** Garry's Mod saves the window size it was started with as its video setting,
+> as soon as it starts. After an agent has run test clients, your next normal start of the game opens at their small
+> size: set your resolution back in the video options. (Closing them with `game_terminate` or `instances_close` avoids
+> the other settings a clean quit would save, but not this one.)
 
 ## Configuration
 

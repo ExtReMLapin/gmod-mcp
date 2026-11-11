@@ -77,23 +77,20 @@ load take longer). Run the wait in the background or in one bounded loop, not as
 fetches the live tool list by itself; the guide is the resource `mcpagent://guide`. If the server instructions say the
 module and the plugin versions differ, tell the user and offer section 3 (update).
 
-**Several clients side by side** (for example to split a long test suite): start each extra game with `-multirun`, a
-small window and a frame cap so they stay cheap:
+**Several clients side by side** (for example to split a long test suite): use the `instances_launch` tool (Windows),
+which works even while no game runs. It starts 1 to 8 clients with the right options (`-multirun`, a small window, a
+frame cap, no `+map`), waits until each answers, loads the map with `map_load`, and returns their ids. Then pass
+`instance` to every tool, or `instance_select` to make one the session's default (with several games running, calls
+without `instance` are refused with `ambiguous_instance`). Close them with `instances_close`; they also close when the
+session ends. Its description lists the measured cost per client and the limits (memory is what runs out first).
 
-```powershell
-$env:SteamAppId = "4000"; $env:SteamGameId = "4000"
-Start-Process -FilePath "<game folder>\gmod_win64.exe" -WorkingDirectory "<game folder>" `
-  -ArgumentList "-multirun -mcp -windowed -w 960 -h 540 -novid +fps_max 45 +fps_max_nofocus 45"
-```
-
-- Load the map with `map_load` and its `instance`, not `+map`: a game that loads a map while another window has the
-  focus can grab the mouse.
-- Each game takes the next port (27081, 27082...) and registers with the one on 27080: keep the single `gmod` entry,
-  call `instances_list`, and pass `instance` to every tool (calls without it are refused with `ambiguous_instance`).
-- Close the extra games with `game_terminate`, not `game_quit`: a clean quit writes their window size and `fps_max`
-  over the user's own config.
-- An unfocused game is capped at 20 fps by default (`fps_max_nofocus`); pass `+fps_max_nofocus 0` when a test measures
-  frame times.
+- **Tell the user before launching**: Garry's Mod saves the window size of these clients as its own video setting, so
+  their next normal start opens at that size until they set their resolution back in the video options. Closing the
+  clients does not undo it.
+- If the tool cannot find the game, pass `game_dir` (see "Finding the game folder" above).
+- On Linux, start extra clients by hand with `-multirun` and load maps with `map_load` and the client's `instance`
+  (not `+map`: a game that loads a map while another window has the focus can grab the mouse).
+- An unfocused game is capped at 20 fps by default (`fps_max_nofocus`); the launched clients set their own cap.
 
 ## 3. Install (or update) the module
 

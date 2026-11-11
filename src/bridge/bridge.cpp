@@ -15,6 +15,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <regex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -635,6 +637,386 @@ void announce_lists_changed() {
     }
 }
 
+// --- The bridge's own tools: test clients it launches and closes, and the session's default instance. They live in
+// the bridge because it runs before any game does (the module cannot start the first one) and holds one session.
+struct Launched {
+    uint32_t pid = 0;
+    std::string id;
+    bool keep = false;
+#ifdef _WIN32
+    HANDLE h = nullptr;
+#endif
+};
+std::mutex g_launch_mu;
+std::vector<Launched> g_launched;
+std::mutex g_default_mu;
+std::string g_default_instance;
+std::mutex g_itools_mu;
+std::set<std::string> g_instance_tools;  // game tools that take an `instance` argument
+
+void learn_instance_tools(const json &tools) {
+    if (!tools.is_array()) return;
+    std::lock_guard<std::mutex> lk(g_itools_mu);
+    for (const auto &t : tools) {
+        const json &props = t.value("inputSchema", json::object()).value("properties", json::object());
+        if (props.is_object() && props.contains("instance")) g_instance_tools.insert(t.value("name", ""));
+    }
+}
+
+bool takes_instance(const std::string &tool) {
+    std::lock_guard<std::mutex> lk(g_itools_mu);
+    return g_instance_tools.count(tool) > 0;
+}
+
+const char *kLaunchName = "instances_launch";
+const char *kCloseName = "instances_close";
+const char *kSelectName = "instance_select";
+
+json bridge_tools() {
+    json launch{
+        {"name", kLaunchName},
+        {"title", "Launch test clients"},
+        {"description",
+         "Starts 1 to 8 extra Garry's Mod clients for tests, and works while no game runs (the first one then becomes the "
+         "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, waits until it answers, "
+         "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
+         "Returns their instance ids: pass one as `instance`, or make it this session's default with instance_select. "
+         "They close when this session ends unless keep is true; close them earlier with instances_close (not game_quit: "
+         "a clean quit writes their window size over the user's own config). The game is found through Steam; pass "
+         "game_dir (the folder holding gmod_win64.exe) if it is elsewhere. Windows only for now.\n"
+         "Presets: 'light' (default: 640x360, 20 fps; for most tests) and 'normal' (640x360, 30 fps; for rendering checks, "
+         "screenshots and frame-time sensitive tests).\n"
+         "Tell the user beforehand: the game saves the window size of these clients as its own video setting, so their next "
+         "normal start of Garry's Mod opens at that size until they set their resolution back in the video options.\n"
+         "Measured cost per client on gm_construct (16-core PC, the game and its 4 browser subprocesses): light about 19% "
+         "of one core and 1.5 GB of RAM; normal 24% and 1.5 GB. Eight clients: about 1.5 cores and 12 GB. Memory is the "
+         "limit, not CPU. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
+         "size barely matters, and a client narrower than 640 pixels crashes while loading a map (integer division by zero "
+         "in client.dll at client Lua startup: seen at 480x270 and 320x240; it only survived with the HUD turned off). "
+         "-textmode and lower graphics settings were measured: no real gain (and graphics settings would be saved into the "
+         "user's own), so neither is offered."},
+        {"inputSchema",
+         {{"type", "object"},
+          {"properties",
+           {{"count", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}, {"description", "How many clients (default 1)."}}},
+            {"map", {{"type", "string"}, {"pattern", "^[A-Za-z0-9_.-]{1,64}$"}, {"description", "Map to load on each, e.g. gm_construct. Default: stay at the main menu."}}},
+            {"maxplayers", {{"type", "integer"}, {"minimum", 1}, {"maximum", 128}, {"description", "For map_load (default 1: singleplayer)."}}},
+            {"preset", {{"type", "string"}, {"enum", json::array({"light", "normal"})}, {"description", "Default light."}}},
+            {"sound", {{"type", "boolean"}, {"description", "Keep sound on (default true). false saves CPU when sound does not matter."}}},
+            {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
+            {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe), if Steam does not know it."}}},
+            {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
+          {"additionalProperties", false}}},
+        {"annotations", {{"title", "Launch test clients"}, {"readOnlyHint", false}, {"destructiveHint", false}, {"openWorldHint", false}}}};
+    json close{
+        {"name", kCloseName},
+        {"title", "Close test clients"},
+        {"description",
+         "Closes clients this session started with instances_launch, at once and without writing their config. Other "
+         "games (the user's own, another session's) are refused: close those only if the user asks, with game_terminate."},
+        {"inputSchema",
+         {{"type", "object"},
+          {"properties",
+           {{"instances", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Instance ids to close."}}},
+            {"all", {{"type", "boolean"}, {"description", "Close every client this session started."}}}}},
+          {"additionalProperties", false}}},
+        {"annotations", {{"title", "Close test clients"}, {"readOnlyHint", false}, {"destructiveHint", true}, {"openWorldHint", false}}}};
+    json select{
+        {"name", kSelectName},
+        {"title", "Set the default instance"},
+        {"description",
+         "Makes `instance` this session's default: tool calls without an `instance` argument go to it (useful with several "
+         "games running, where they would otherwise be refused as ambiguous). null clears it. Lasts until the session ends."},
+        {"inputSchema",
+         {{"type", "object"},
+          {"properties", {{"instance", {{"type", json::array({"string", "null"})}, {"description", "Instance id (see instances_list), or null."}}}}},
+          {"required", json::array({"instance"})},
+          {"additionalProperties", false}}},
+        {"annotations", {{"title", "Set the default instance"}, {"readOnlyHint", false}, {"destructiveHint", false}, {"idempotentHint", true}, {"openWorldHint", false}}}};
+    return json::array({launch, close, select});
+}
+
+bool is_bridge_tool(const std::string &name) { return name == kLaunchName || name == kCloseName || name == kSelectName; }
+
+json tool_text(json structured, bool error) {
+    std::string t = structured.dump(-1, ' ', false, json::error_handler_t::replace);
+    return json{{"content", json::array({json{{"type", "text"}, {"text", t}}})}, {"structuredContent", std::move(structured)}, {"isError", error}};
+}
+json tool_error(const std::string &code, const std::string &message) {
+    return tool_text(json{{"error", {{"code", code}, {"message", message}}}}, true);
+}
+
+// A tool of the game, called by the bridge itself (legacy era, no stream). Returns its structuredContent, or
+// {"error": ...} when the game is unreachable or the call failed.
+json game_call(const std::string &tool, json args, double timeout_s) {
+    json m{{"jsonrpc", "2.0"}, {"id", "gmod-mcp-bridge-internal"}, {"method", "tools/call"},
+           {"params", {{"name", tool}, {"arguments", std::move(args)}}}};
+    Relay r = relay(m, timeout_s);
+    if (!r.reached) return json{{"error", {{"code", "game_not_running"}, {"message", why_down()}}}};
+    if (!r.response.contains("result")) return json{{"error", {{"code", "rpc_error"}, {"message", r.response.value("error", json::object()).value("message", "no result")}}}};
+    return r.response["result"].value("structuredContent", json::object());
+}
+
+std::string parent_of(std::string p) {
+    while (!p.empty() && (p.back() == '/' || p.back() == '\\')) p.pop_back();
+    size_t s = p.find_last_of("/\\");
+    return s == std::string::npos ? p : p.substr(0, s);
+}
+
+bool file_is(const std::string &p) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(std::filesystem::u8path(p), ec);
+}
+
+// The game folder: the argument, then what the module reported (status: game_dir), then Steam's libraries.
+std::string find_game_root(const std::string &arg, std::string &how) {
+    auto ok = [](std::string d) {
+        while (!d.empty() && (d.back() == '/' || d.back() == '\\')) d.pop_back();
+        std::string low = d;
+        for (auto &c : low) c = (char)std::tolower((unsigned char)c);
+        if (low.size() >= 9 && low.compare(low.size() - 9, 9, "garrysmod") == 0 && !file_is(d + "/gmod_win64.exe")) d = parent_of(d);
+        return file_is(d + "/gmod_win64.exe") ? d : std::string();
+    };
+    if (!arg.empty()) {
+        how = "game_dir argument";
+        return ok(arg);
+    }
+    json cached = cache_get("game_root");
+    if (cached.is_string() && !ok(cached.get<std::string>()).empty()) {
+        how = "reported by the game earlier";
+        return ok(cached.get<std::string>());
+    }
+#ifdef _WIN32
+    char buf[1024] = {};
+    DWORD n = sizeof buf;
+    if (RegGetValueA(HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath", RRF_RT_REG_SZ, nullptr, buf, &n) == ERROR_SUCCESS) {
+        std::string steam = buf;
+        std::vector<std::string> libs{steam};
+        std::string vdf;
+        if (plat::read_file(steam + "/steamapps/libraryfolders.vdf", vdf)) {
+            std::regex re("\"path\"\\s+\"([^\"]+)\"");
+            for (std::sregex_iterator it(vdf.begin(), vdf.end(), re), end; it != end; ++it) {
+                std::string p = (*it)[1];
+                std::string un;
+                for (size_t i = 0; i < p.size(); ++i) {
+                    if (p[i] == '\\' && i + 1 < p.size() && p[i + 1] == '\\') ++i;
+                    un += p[i];
+                }
+                libs.push_back(un);
+            }
+        }
+        for (const auto &l : libs) {
+            std::string d = ok(l + "/steamapps/common/GarrysMod");
+            if (!d.empty()) {
+                how = "Steam library " + l;
+                return d;
+            }
+        }
+    }
+#endif
+    how = "not found";
+    return "";
+}
+
+void progress(const json &token, double done, double total, const std::string &message) {
+    if (token.is_null()) return;
+    json p{{"progressToken", token}, {"progress", done}, {"message", message}};
+    if (total > 0) p["total"] = total;
+    out(json{{"jsonrpc", "2.0"}, {"method", "notifications/progress"}, {"params", p}});
+}
+
+json launch_tool(const json &args, const json &token) {
+#ifndef _WIN32
+    (void)args;
+    (void)token;
+    return tool_error("unsupported", "instances_launch is Windows only for now: on Linux start the client with steam -applaunch 4000 -mcp -multirun ...");
+#else
+    int count = args.value("count", 1);
+    std::string preset = args.value("preset", "light");
+    bool sound = args.value("sound", true), keep = args.value("keep", false);
+    double timeout = args.value("timeout_s", 180.0);
+    std::string map = args.value("map", "");
+    std::string how, root = find_game_root(args.value("game_dir", ""), how);
+    if (root.empty())
+        return tool_error("game_not_found", "Garry's Mod not found (" + how + "): pass game_dir, the folder holding gmod_win64.exe (the gmod-mcp skill explains how to find it)");
+    // Fixed option set (no free arguments). The light preset comes from measurements of what actually saves CPU and
+    // memory per client.
+    std::string opts = "-multirun -mcp -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
+    if (preset == "normal") opts += " -w 640 -h 360 +fps_max 30 +fps_max_nofocus 30";
+    // No graphics options: the video ones (-dxlevel, mat_*) are saved into the user's own settings, for little gain.
+    else opts += " -w 640 -h 360 +fps_max 20 +fps_max_nofocus 20";  // narrower than 640 crashes the client
+    if (!sound) opts += " -nosound";
+    SetEnvironmentVariableA("SteamAppId", "4000");
+    SetEnvironmentVariableA("SteamGameId", "4000");
+    std::string exe = root + "\\gmod_win64.exe";
+    for (auto &c : exe)
+        if (c == '/') c = '\\';
+    std::vector<Launched> started;
+    for (int i = 0; i < count; ++i) {
+        std::string cmd = "\"" + exe + "\" " + opts;
+        std::wstring wcmd(cmd.begin(), cmd.end()), wdir(root.begin(), root.end());
+        STARTUPINFOW si{};
+        si.cb = sizeof si;
+        PROCESS_INFORMATION pi{};
+        if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, 0, nullptr, wdir.c_str(), &si, &pi)) {
+            for (auto &l : started) TerminateProcess(l.h, 0);
+            return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(GetLastError()) + ") for " + exe);
+        }
+        CloseHandle(pi.hThread);
+        Launched l;
+        l.pid = pi.dwProcessId;
+        l.h = pi.hProcess;
+        l.keep = keep;
+        started.push_back(l);
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_launch_mu);
+        for (auto &l : started) g_launched.push_back(l);
+    }
+    progress(token, 0, count, std::to_string(count) + " client(s) started, waiting for them to answer");
+    // Wait until each one has registered with the main instance (instances_list gives its id and port).
+    auto t0 = std::chrono::steady_clock::now();
+    auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    json found = json::object();
+    while ((int)found.size() < count && elapsed() < timeout) {
+        json lst = game_call("instances_list", json::object(), 5);
+        for (const auto &in : lst.value("instances", json::array()))
+            for (auto &l : started)
+                if (in.value("pid", 0u) == l.pid && !found.contains(std::to_string(l.pid))) {
+                    found[std::to_string(l.pid)] = in;
+                    l.id = in.value("id", "");
+                    progress(token, (double)found.size(), count, l.id + " answers");
+                }
+        for (auto &l : started)
+            if (WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0 && !found.contains(std::to_string(l.pid)))
+                return tool_error("launch_failed", "client pid " + std::to_string(l.pid) + " exited during startup (Steam not running? see garrysmod/console.log)");
+        if ((int)found.size() < count) std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_launch_mu);
+        for (auto &g : g_launched)
+            for (auto &l : started)
+                if (g.pid == l.pid) g.id = l.id;
+    }
+    if ((int)found.size() < count)
+        return tool_error("timeout", std::to_string(found.size()) + " of " + std::to_string(count) + " clients answered within " +
+                                         std::to_string((int)timeout) + " s (still starting: see instances_list later, or close them with instances_close {all: true})");
+    // Maps, all at once.
+    json results = json::array();
+    std::vector<json> map_res(started.size());
+    if (!map.empty()) {
+        progress(token, 0, count, "loading " + map);
+        std::vector<std::thread> th;
+        for (size_t i = 0; i < started.size(); ++i)
+            th.emplace_back([&, i] {
+                json a{{"map", map}, {"instance", started[i].id}, {"timeout_s", std::max(30.0, timeout - elapsed())}};
+                if (args.contains("maxplayers")) a["maxplayers"] = args["maxplayers"];
+                map_res[i] = game_call("map_load", a, std::max(40.0, timeout - elapsed() + 10));
+            });
+        for (auto &t : th) t.join();
+    }
+    bool all_ok = true;
+    for (size_t i = 0; i < started.size(); ++i) {
+        const json &in = found[std::to_string(started[i].pid)];
+        json e{{"instance", started[i].id}, {"pid", started[i].pid}, {"port", in.value("port", 0)}};
+        if (!map.empty()) {
+            bool ok = !map_res[i].contains("error");
+            all_ok = all_ok && ok;
+            e["map"] = ok ? json(map) : json(nullptr);
+            if (!ok) e["map_error"] = map_res[i]["error"];
+        }
+        results.push_back(e);
+    }
+    json res{{"instances", results}, {"game_dir", root}, {"found_by", how}, {"preset", preset}, {"keep", keep},
+             {"next", "Pass `instance` to target one, or instance_select to make one the default; instances_close when done."}};
+    return tool_text(res, !all_ok);
+#endif
+}
+
+json close_tool(const json &args) {
+    bool all = args.value("all", false);
+    json ids = args.value("instances", json::array());
+    if (!all && ids.empty()) return tool_error("invalid_params", "pass instances: [ids] or all: true");
+    std::vector<Launched> todo;
+    json refused = json::array();
+    {
+        std::lock_guard<std::mutex> lk(g_launch_mu);
+        if (all) {
+            todo = g_launched;
+            g_launched.clear();
+        } else {
+            for (const auto &idj : ids) {
+                std::string id = idj.is_string() ? idj.get<std::string>() : "";
+                auto it = std::find_if(g_launched.begin(), g_launched.end(), [&](const Launched &l) { return !id.empty() && l.id == id; });
+                if (it == g_launched.end()) {
+                    refused.push_back(id);
+                    continue;
+                }
+                todo.push_back(*it);
+                g_launched.erase(it);
+            }
+        }
+    }
+    json closed = json::array();
+    for (auto &l : todo) {
+        if (!l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
+#ifdef _WIN32
+        if (WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
+        CloseHandle(l.h);
+#endif
+        closed.push_back(l.id.empty() ? json(l.pid) : json(l.id));
+        std::lock_guard<std::mutex> lk(g_default_mu);
+        if (g_default_instance == l.id) g_default_instance.clear();
+    }
+    json res{{"closed", closed}};
+    if (!refused.empty()) {
+        res["refused"] = refused;
+        res["why_refused"] = "not started by this session: close those only if the user asks (game_terminate)";
+    }
+    return tool_text(res, !refused.empty() && closed.empty());
+}
+
+json select_tool(const json &args) {
+    std::lock_guard<std::mutex> lk(g_default_mu);
+    std::string prev = g_default_instance;
+    const json &v = args.contains("instance") ? args["instance"] : json();
+    g_default_instance = v.is_string() ? v.get<std::string>() : "";
+    return tool_text(json{{"default_instance", g_default_instance.empty() ? json(nullptr) : json(g_default_instance)},
+                          {"previous", prev.empty() ? json(nullptr) : json(prev)}},
+                     false);
+}
+
+// Closes the clients this session launched (unless kept), when the session ends.
+void close_launched_on_exit() {
+    std::lock_guard<std::mutex> lk(g_launch_mu);
+    for (auto &l : g_launched) {
+        if (l.keep) continue;
+#ifdef _WIN32
+        TerminateProcess(l.h, 0);  // immediate: like game_terminate, nothing is written to the user's config
+#endif
+    }
+    g_launched.clear();
+}
+
+void handle_bridge_tool(const json &msg) {
+    json p = params_of(msg);
+    std::string name = p.value("name", "");
+    json args = p.value("arguments", json::object());
+    if (!args.is_object()) args = json::object();
+    json token = p.value("_meta", json::object()).value("progressToken", json());
+    json res;
+    if (name == kLaunchName) res = launch_tool(args, token);
+    else if (name == kCloseName) res = close_tool(args);
+    else res = select_tool(args);
+    out(local_result(msg, res));
+}
+
+// Tool lists the bridge serves: the game's, plus its own tools.
+void add_bridge_tools(json &result) {
+    if (!result.is_object() || !result.contains("tools") || !result["tools"].is_array()) return;
+    for (const auto &t : bridge_tools()) result["tools"].push_back(t);
+}
+
 void handle_request(const json &msg) {
     json id = msg["id"];
     std::string method = msg.value("method", "");
@@ -648,6 +1030,25 @@ void handle_request(const json &msg) {
         out(rpc_error(id, err::kMethodNotFound, std::string("method not found in protocol version ") + kModernVersion + ": " + method));
         return;
     }
+    std::string tool = method == "tools/call" ? params_of(msg).value("name", "") : "";
+    if (is_bridge_tool(tool)) {
+        if (is_modern(msg)) {
+            json e = modern_error(msg);
+            if (!e.is_null()) {
+                out(e);
+                return;
+            }
+        }
+        handle_bridge_tool(msg);
+        return;
+    }
+    json fwd = msg;
+    if (!tool.empty() && takes_instance(tool)) {
+        std::lock_guard<std::mutex> lk(g_default_mu);
+        json &a = fwd["params"]["arguments"];
+        if (!a.is_object()) a = json::object();
+        if (!g_default_instance.empty() && !a.contains("instance")) a["instance"] = g_default_instance;
+    }
     std::string key = id.dump();
     auto cancel = std::make_shared<Inflight>();
     cancel->legacy = !modern_2026(msg);
@@ -658,7 +1059,7 @@ void handle_request(const json &msg) {
     bool is_list = method == "tools/list" || method == "prompts/list" || method == "resources/list" || method == "resources/templates/list";
     // No idle limit on client requests: a tool call or tasks/result may stay silent for a long time. The client ends
     // them by cancelling (the bridge then closes the HTTP request).
-    Relay r = relay(msg, kNoIdleLimit, cancel, [](const json &m) { out(m); });
+    Relay r = relay(fwd, kNoIdleLimit, cancel, [](const json &m) { out(m); });
     {
         std::lock_guard<std::mutex> lk(g_cancel_mu);
         g_cancel.erase(key);
@@ -737,6 +1138,15 @@ void handle_request(const json &msg) {
             stored.erase("_meta");
             stored.erase("resultType");
             cache_put(list_key(msg), stored);
+            if (method == "tools/list") {
+                learn_instance_tools(stored.value("tools", json::array()));
+                add_bridge_tools(r.response["result"]);
+            }
+        }
+        // Remember where the game is (instances_launch can then start more without asking).
+        if (tool == "status" && r.response.contains("result")) {
+            json sc = r.response["result"].value("structuredContent", json::object());
+            if (sc.contains("game_dir") && sc["game_dir"].is_string()) cache_put("game_root", parent_of(sc["game_dir"].get<std::string>()));
         }
         out(r.response);
         return;
@@ -758,6 +1168,7 @@ void handle_request(const json &msg) {
         json res = cached.is_object() ? cached : fallback_list(method, modern_2026(msg));
         res["ttlMs"] = 0;  // the live list replaces it as soon as the game answers
         res["cacheScope"] = "private";
+        if (method == "tools/list") add_bridge_tools(res);
         g_served_offline = true;
         out(local_result(msg, res));
     } else if (method == "ping") {
@@ -843,6 +1254,7 @@ void watch_parent() {
     std::thread([h] {
         WaitForSingleObject(h, INFINITE);
         log("the client process is gone: exiting");
+        close_launched_on_exit();
         std::_Exit(0);
     }).detach();
 }
@@ -854,6 +1266,7 @@ void watch_parent() {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             if (getppid() != parent) {  // reparented: the client is gone
                 log("the client process is gone: exiting");
+                close_launched_on_exit();
                 std::_Exit(0);
             }
         }
@@ -885,6 +1298,7 @@ int main(int argc, char **argv) {
     if (g_port <= 0 || g_port > 65535) g_port = 27080;
     g_dir = plat::user_config_dir() + "/gmod-mcp";
     cache_load();
+    learn_instance_tools(snapshot().value("tools_legacy", json::array()));
     if (g_watch_parent) watch_parent();
     std::thread(watcher).detach();
 
@@ -916,5 +1330,6 @@ int main(int argc, char **argv) {
         }).detach();
     }
     std::fflush(stdout);
+    close_launched_on_exit();
     std::_Exit(0);  // detached threads may still be waiting on the game
 }

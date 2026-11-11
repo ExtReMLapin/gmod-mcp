@@ -259,6 +259,31 @@ fixes below) fails F cancel and dies on F non-string version, the current one pa
 | B-9 | Linux: build of the bridge, `--module-dir`, case A | builds without warnings, 5/5 | ✅ 2026-11-11 (WSL Ubuntu 22.04, g++ 11; a full build at -j 16 leaves ≥ 6.8 GB free) |
 | B-10 | Real update cycle: release N installed, release N+1 published, marketplace refreshed | Claude Code offers / applies the update; new bridge after restart | ⏳ needs two releases |
 
+## Test clients (instances_launch) and light instances
+
+Measured 2026-11-11 on gm_construct, one client at a time (16-core PC; CPU in % of one core, the game and its 4
+browser subprocesses; private memory):
+
+| Options | CPU | Memory | Note |
+|---|---|---|---|
+| 640x360, 30 fps (the old skill line) | 24.1 % | 1465 MB | |
+| 640x360, 20 fps | 19.1 % | 1475 MB | **light preset** |
+| 640x360, 20 fps, low graphics (-dxlevel 90, mat_picmip 2, shadows/3D sky/detail props/specular off, no HUD) | 18.4 % | 1338 MB | graphics settings are saved into the user's own: not offered |
+| 480x270, 20 fps, low graphics | 17.8 % | 1325 MB | |
+| 640x360, 20 fps, low graphics, -nosound | 16.2 % | 1336 MB | `sound: false` |
+| 640x360, 20 fps, -textmode | 17.7 % | 1470 MB | no gain: not offered |
+
+Crashes: 320x240 and 480x270 with the default HUD crash while loading a map (integer division by zero in client.dll at
+client Lua startup; 5 dumps); the same sizes survived with the HUD off. Minimum width: 640.
+**Side effect**: any client started with `-w/-h` saves that size as the game's video setting (registry
+`HKCU\Software\Valve\Source\garrysmod\Settings`) as soon as it starts, even when closed by game_terminate. Documented in
+the tool description, the skill and the README; the bridge does not touch the user's settings.
+
+| ID | Check | Expected | Result |
+|---|---|---|---|
+| I-11 | session: bridge tools listed offline and live; default instance injected and mirrored in Mcp-Param-Instance; explicit instance wins; null clears; close refuses foreign instances; bad game_dir refused | as described | ✅ 2026-11-11 (11 checks) |
+| I-12 | launch (live): 2 light clients with gm_construct, default instance, close all | ids/pids/ports, map on both, progress, default reached, 640x360, both closed, processes gone | ✅ 2026-11-11 (7/7) |
+
 ## Official conformance suite
 
 `@modelcontextprotocol/conformance@0.2.0-alpha.12 server --requirements 2026-07-28`, against a test client (`-multirun`,
