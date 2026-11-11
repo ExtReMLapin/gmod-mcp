@@ -103,7 +103,8 @@ original is saved as `menu.lua.mcpagent.bak`; the game console command `mcpagent
 2. Find the module shipped with the plugin. The plugin's `bin/` folder is on the PATH of the Bash tool:
 
    ```bash
-   src=$(gmod-mcp-bridge --module-dir)      # e.g. .../plugins/cache/.../bin/../module/win64
+   # Windows: name the .exe (the bin/ folder also holds the Linux binary, which Git Bash would pick first and fail on)
+   src=$(gmod-mcp-bridge.exe --module-dir | tr -d '\r')   # Linux: src=$(gmod-mcp-bridge --module-dir)
    ls "$src/garrysmod/lua/bin" "$src/garrysmod/lua/autorun/server"
    ```
 

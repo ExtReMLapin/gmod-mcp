@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1
+
+### Fixes
+
+- **Setup skill, Windows**: the command that finds the module shipped with the plugin called `gmod-mcp-bridge`, which
+  Git Bash resolves to the Linux build of the bridge (same folder, no extension), so it failed with "Exec format error".
+  It now calls `gmod-mcp-bridge.exe` on Windows. Found by an end-to-end run of the published 0.3.0 plugin: install from
+  the marketplace, module installed from the plugin, game started, tools through the bridge, `instances_launch`.
+
+### Upgrading
+
+- Update the plugin (`/plugin`, Marketplaces, update gmod-mcp, or wait for the auto-update) and restart Claude Code.
+- Then update the module in the game (quit it first): ask Claude to update gmod-mcp. Until then the bridge reports a
+  version mismatch (module 0.3.0, plugin 0.3.1); the module itself has no functional change.
+
 ## 0.3.0
 
 ### Highlights
