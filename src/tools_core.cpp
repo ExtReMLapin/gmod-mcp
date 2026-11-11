@@ -56,16 +56,17 @@ static bool safe_rel(const std::string &name) {
     return true;
 }
 
+// A path as shown to the agent: the platform's separators, "." / ".." / doubled separators resolved.
+static std::string native_path(const std::string &p) {
+    return std::filesystem::u8path(p).lexically_normal().make_preferred().u8string();
+}
+
 std::string tmp_path(const std::string &name, std::string &err) {
     if (!safe_rel(name)) {
         err = "invalid name: relative to mcpagent_tmp, characters [A-Za-z0-9_.-/], no '..'";
         return "";
     }
-    std::string p = agent::config().tmp_dir + "/" + name;
-#ifdef _WIN32
-    std::replace(p.begin(), p.end(), '/', '\\');  // one separator style in the paths returned to the agent
-#endif
-    return p;
+    return native_path(agent::config().tmp_dir + "/" + name);
 }
 
 static std::string normalize(std::string p) {
@@ -259,7 +260,7 @@ static json lua_reload_tool(const json &args) {
         all_ok = all_ok && rok;
         per[realms::name(r)] = rok ? res["result"] : json{{"error", res.value("error", json())}};
     }
-    json out{{"ok", all_ok}, {"file", abs}, {"chunkname", chunk}, {"realms", per}};
+    json out{{"ok", all_ok}, {"file", native_path(abs)}, {"chunkname", chunk}, {"realms", per}};
     if (found.size() > 1) {
         out["other_matches"] = json::array();
         for (size_t i = 1; i < found.size(); ++i) out["other_matches"].push_back(found[i]);

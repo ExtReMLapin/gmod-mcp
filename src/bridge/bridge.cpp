@@ -702,8 +702,9 @@ void handle_request(const json &msg) {
                 return;
             }
         }
-        res = cache_get(method);
+        // The embedded description first: the cached one names the last game's instance and paths, stale by now.
         const json &snap = snapshot();
+        res = snap.contains("serverInfo") ? json() : cache_get(method);
         if (!res.is_object() && snap.contains("serverInfo")) {
             res = json{{"serverInfo", snap["serverInfo"]}, {"instructions", snap.value("instructions", offline_instructions())},
                        {"capabilities", snap.value(method == "initialize" ? "capabilities_legacy" : "capabilities_modern", json::object())}};
