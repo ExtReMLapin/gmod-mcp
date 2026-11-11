@@ -405,6 +405,11 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
         return nullptr;
     }
 
+    // Removed in 2026-07-28: answered as unknown methods (HTTP 404, -32601).
+    if (c.era == tasks::Era::Modern && (method == "initialize" || method == "ping")) {
+        c.http_status = 404;
+        return rpc_error(id, -32601, "method not found in protocol version 2026-07-28: " + method);
+    }
     if (method == "initialize") {
         std::string asked = params.value("protocolVersion", "");
         logx::info("initialize: client=%s protocol=%s capabilities=%s", params.value("clientInfo", json::object()).dump().c_str(),
@@ -497,13 +502,39 @@ static std::string header(const Headers &h, const char *name) {
     return it == h.end() ? "" : it->second;
 }
 
-// Decodes the "=?base64?...?=" sentinel of the Mcp-Name / Mcp-Param-* headers.
-static std::string decode_header_value(const std::string &v) {
+// Strict Base64 (standard alphabet, padded): what the "=?base64?...?=" sentinel must carry.
+static bool base64_strict(const std::string &b) {
+    if (b.size() % 4 != 0) return false;
+    size_t pad = 0;
+    for (size_t i = 0; i < b.size(); ++i) {
+        char c = b[i];
+        if (c == '=') {
+            if (i + 2 < b.size()) return false;  // padding only in the last two positions
+            ++pad;
+            continue;
+        }
+        if (pad) return false;  // data after padding
+        if (!(std::isalnum((unsigned char)c) || c == '+' || c == '/')) return false;
+    }
+    return pad <= 2;
+}
+
+// Decodes an Mcp-Name / Mcp-Param-* header value (plain, or the "=?base64?...?=" sentinel). Returns false when the
+// value is malformed: invalid Base64 in the sentinel, or a plain value with characters a client must encode.
+static bool decode_header_value(const std::string &v, std::string &out) {
     const std::string pre = "=?base64?", suf = "?=";
-    if (v.size() < pre.size() + suf.size() || v.compare(0, pre.size(), pre) != 0 ||
-        v.compare(v.size() - suf.size(), suf.size(), suf) != 0)
-        return v;
-    return util::base64_decode(v.substr(pre.size(), v.size() - pre.size() - suf.size()));
+    if (v.size() >= pre.size() + suf.size() && v.compare(0, pre.size(), pre) == 0 &&
+        v.compare(v.size() - suf.size(), suf.size(), suf) == 0) {
+        std::string b = v.substr(pre.size(), v.size() - pre.size() - suf.size());
+        if (!base64_strict(b)) return false;
+        out = util::base64_decode(b);
+        return true;
+    }
+    for (unsigned char c : v)
+        if (c < 0x20 || c > 0x7e) return false;
+    if (!v.empty() && (v.front() == ' ' || v.back() == ' ')) return false;
+    out = v;
+    return true;
 }
 
 // Maximum JSON nesting depth, checked before parsing: the recursive parser would otherwise overflow the network
@@ -558,7 +589,10 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
     std::string mv = meta.is_object() ? meta.value("io.modelcontextprotocol/protocolVersion", "") : "";
     bool is_modern = hv == kModernVersion || !mv.empty();
     if (is_modern) {
-        // 2026-07-28 era: the version must be supported.
+        // 2026-07-28 era. A header contradicting _meta is a HeaderMismatch, whatever the versions are.
+        if (!mv.empty() && !hv.empty() && hv != mv)
+            return fail(400, id, -32020, "Header mismatch: MCP-Protocol-Version '" + hv + "' differs from _meta '" + mv + "'");
+        // The version must be supported.
         std::string ver = !mv.empty() ? mv : hv;
         if (ver != kModernVersion) {
             bool legacy_known = false;
@@ -575,22 +609,30 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
         const std::string &method = p->method;
         auto mismatch = [&](const std::string &why) { return fail(400, id, -32020, "Header mismatch: " + why); };
         if (hv.empty()) return mismatch("missing MCP-Protocol-Version header");
-        if (!mv.empty() && hv != mv) return mismatch("MCP-Protocol-Version '" + hv + "' differs from _meta '" + mv + "'");
+        if (!mv.empty() && hv != mv) return mismatch("MCP-Protocol-Version '" + hv + "' differs from _meta '" + mv + "'");  // (also checked above)
         std::string hm = header(headers, "mcp-method");
         if (hm.empty()) return mismatch("missing Mcp-Method header");
         if (hm != method) return mismatch("Mcp-Method '" + hm + "' differs from method '" + method + "'");
         if (method == "tools/call" || method == "resources/read" || method == "prompts/get") {
             std::string body_name = params.value(method == "resources/read" ? "uri" : "name", "");
-            std::string hn = decode_header_value(header(headers, "mcp-name"));
-            if (hn.empty()) return mismatch("missing Mcp-Name header");
+            std::string hn;
+            if (!headers.count("mcp-name")) return mismatch("missing Mcp-Name header");
+            if (!decode_header_value(header(headers, "mcp-name"), hn)) return mismatch("malformed Mcp-Name header value");
             if (hn != body_name) return mismatch("Mcp-Name '" + hn + "' differs from '" + body_name + "'");
         }
-        // x-mcp-header on `instance`: when the client mirrors it, both values must agree.
-        if (method == "tools/call" && headers.count("mcp-param-instance")) {
-            std::string hi = decode_header_value(header(headers, "mcp-param-instance"));
+        // x-mcp-header on `instance`: a value in the body requires the header, and both must agree (null or absent:
+        // no header expected).
+        if (method == "tools/call") {
             json a = params.value("arguments", json::object());
-            std::string bi = a.is_object() && a.contains("instance") && a["instance"].is_string() ? a["instance"].get<std::string>() : "";
-            if (hi != bi) return mismatch("Mcp-Param-Instance '" + hi + "' differs from arguments.instance '" + bi + "'");
+            bool in_body = a.is_object() && a.contains("instance") && !a["instance"].is_null();
+            bool in_header = headers.count("mcp-param-instance") > 0;
+            if (in_body && !in_header) return mismatch("missing Mcp-Param-Instance header (arguments.instance is set)");
+            if (in_header) {
+                std::string hi;
+                if (!decode_header_value(header(headers, "mcp-param-instance"), hi)) return mismatch("malformed Mcp-Param-Instance header value");
+                std::string bi = in_body && a["instance"].is_string() ? a["instance"].get<std::string>() : "";
+                if (!in_body || hi != bi) return mismatch("Mcp-Param-Instance '" + hi + "' differs from arguments.instance '" + bi + "'");
+            }
         }
         // Required per-request fields (2026-07-28 base protocol): -32602 and HTTP 400 when missing.
         if (!p->notification) {

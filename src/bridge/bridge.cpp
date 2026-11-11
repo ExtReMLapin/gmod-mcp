@@ -194,7 +194,8 @@ std::map<std::string, std::shared_ptr<Inflight>> g_cancel;
 bool needs_encoding(const std::string &v) {
     for (unsigned char c : v)
         if (c < 0x20 || c > 0x7e) return true;
-    return !v.empty() && (v.front() == ' ' || v.back() == ' ');
+    // Leading/trailing spaces, and a plain value that looks like the sentinel itself, are encoded too (2026-07-28).
+    return !v.empty() && (v.front() == ' ' || v.back() == ' ' || v.rfind("=?base64?", 0) == 0);
 }
 std::string header_value(const std::string &v) { return needs_encoding(v) ? "=?base64?" + util::base64_encode(v) + "?=" : v; }
 
@@ -614,6 +615,10 @@ void handle_request(const json &msg) {
     if (method == "initialize") g_client_legacy = true;
     if (method == "subscriptions/listen" && is_modern(msg)) {
         handle_listen(msg);
+        return;
+    }
+    if (modern_2026(msg) && (method == "initialize" || method == "ping")) {  // removed in 2026-07-28
+        out(rpc_error(id, -32601, "method not found in protocol version 2026-07-28: " + method));
         return;
     }
     std::string key = id.dump();

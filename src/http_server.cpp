@@ -75,6 +75,34 @@ bool host_allowed(const std::string &host, int /*unused*/) {
     return pn == g_main.port || (g_extra.svr && pn == g_extra.port);
 }
 
+// A browser Origin of this machine: http(s)://localhost | 127.0.0.1 | [::1], with an optional numeric port.
+static bool origin_allowed(const std::string &origin) {
+    std::string o = util::to_lower(origin), rest;
+    if (o.rfind("http://", 0) == 0) rest = o.substr(7);
+    else if (o.rfind("https://", 0) == 0) rest = o.substr(8);
+    else return false;
+    std::string name = rest, port;
+    if (!rest.empty() && rest[0] == '[') {
+        auto e = rest.find(']');
+        if (e == std::string::npos) return false;
+        name = rest.substr(0, e + 1);
+        if (e + 1 < rest.size()) {
+            if (rest[e + 1] != ':') return false;
+            port = rest.substr(e + 2);
+            if (port.empty()) return false;
+        }
+    } else {
+        auto c = rest.find(':');
+        if (c != std::string::npos) {
+            name = rest.substr(0, c);
+            port = rest.substr(c + 1);
+            if (port.empty()) return false;
+        }
+    }
+    if (name != "localhost" && name != "127.0.0.1" && name != "[::1]") return false;
+    return port.size() <= 5 && port.find_first_not_of("0123456789") == std::string::npos;
+}
+
 static void reject(httplib::Response &res, int status, const std::string &code, const std::string &msg) {
     res.status = status;
     res.set_content(json{{"error", {{"code", code}, {"message", msg}}}}.dump(), "application/json");
@@ -149,9 +177,9 @@ static void setup_routes(httplib::Server &svr) {
     svr.set_write_timeout(60, 0);
     svr.set_payload_max_length(32 * 1024 * 1024);
     svr.set_pre_routing_handler([](const httplib::Request &req, httplib::Response &res) {
-        // 1. Origin: any request carrying a browser Origin is rejected (DNS rebinding).
-        if (req.has_header("Origin")) {
-            reject(res, 403, "origin_forbidden", "requests with an Origin header are refused");
+        // 1. Origin (DNS rebinding): only a local origin is valid. The token is required anyway.
+        if (req.has_header("Origin") && !origin_allowed(req.get_header_value("Origin"))) {
+            reject(res, 403, "origin_forbidden", "Origin not allowed: only a local origin (localhost, 127.0.0.1, [::1])");
             return httplib::Server::HandlerResponse::Handled;
         }
         // 2. Host: loopback on our ports only.

@@ -256,6 +256,24 @@ fixes below) fails F cancel and dies on F non-string version, the current one pa
 | B-9 | Linux: build of the bridge, `--module-dir`, case A | builds without warnings, 5/5 | ✅ 2026-11-11 (WSL Ubuntu 22.04, g++ 11; a full build at -j 16 leaves ≥ 6.8 GB free) |
 | B-10 | Real update cycle: release N installed, release N+1 published, marketplace refreshed | Claude Code offers / applies the update; new bridge after restart | ⏳ needs two releases |
 
+## Official conformance suite
+
+`@modelcontextprotocol/conformance@0.2.0-alpha.12 server --requirements 2026-07-28`, against a test client (`-multirun`,
+no map) through a local relay that adds the bearer token (the suite cannot send one) and logs the traffic. Run on
+2026-11-11 with the **old** module (before the fixes below): 103 checks passed, 73 failed. A first run had 101 failures
+caused by the relay itself (it sent two Host headers), not by the server.
+
+| Area | Result with the old module | Status |
+|---|---|---|
+| Missing `_meta`, `protocolVersion` or `clientCapabilities` → -32602 + 400 | accepted | fixed (needs the new DLL) |
+| `MCP-Protocol-Version` header ≠ `_meta` version → -32020 + 400 | -32022 (version checked first) | fixed (needs the new DLL) |
+| `initialize` / `ping` in 2026-07-28 → 404 + -32601 | answered | fixed in the module and the bridge (bridge tested) |
+| Local `Origin` (`http://localhost`) accepted | 403 for any Origin | fixed: local origins accepted, others 403 (needs the new DLL) |
+| `Mcp-Param-Instance`: invalid Base64, non-alphabet characters, value in the body without the header → -32020 + 400 | accepted | fixed (needs the new DLL) |
+| Discover, serverInfo, unsupported version, unknown method 404, subscriptions (ack, id, filter), caching hints, lists, completion, resource not found, SSE multiple streams, standard header validation | pass | — |
+| tools-call-*, prompts-get-*, resources-read-*, input-required-*, json-schema-2020-12, logging and missing-capability checks | the suite's own fixture tools and resources (`test_simple_text`, `json_schema_2020_12_tool`...) do not exist here; the suite reports them "not found" / "untestable" | not applicable |
+| Tasks extension (not scored), 2025-11-25 requirements | ⏳ to run | |
+
 ## Cross-cutting
 
 | ID | Procedure | Expected | Last result |

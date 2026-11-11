@@ -414,6 +414,8 @@ def case_m():
     check("M fallback status tool is annotated read-only", st.get("annotations", {}).get("readOnlyHint") is True, st)
     r = mreq(b, "tools/call", {"name": "status", "arguments": {}})
     check("M offline call: resultType complete + game_not_running", r and r["result"].get("resultType") == "complete" and "game_not_running" in json.dumps(r), r)
+    r = mreq(b, "ping")
+    check("M ping (removed in 2026-07-28) -> -32601", r and r.get("error", {}).get("code") == -32601, r)
     bad = modern_meta(); del bad["io.modelcontextprotocol/clientCapabilities"]
     r = mreq(b, "tools/list", meta=bad)
     check("M missing clientCapabilities -> -32602", r and r.get("error", {}).get("code") == -32602, r)
