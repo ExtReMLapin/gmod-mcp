@@ -272,7 +272,7 @@ caused by the relay itself (it sent two Host headers), not by the server.
 | Missing `_meta`, `protocolVersion` or `clientCapabilities` → -32602 + 400 | accepted | fixed, confirmed with the new DLL |
 | `MCP-Protocol-Version` header ≠ `_meta` version → -32020 + 400 | -32022 (version checked first) | fixed, confirmed with the new DLL |
 | `initialize` / `ping` in 2026-07-28 → 404 + -32601 | answered | fixed in the module and the bridge (bridge tested) |
-| Local `Origin` (`http://localhost`) accepted | 403 for any Origin | fixed: local origins accepted, others 403 (needs the new DLL) |
+| Local `Origin` (`http://localhost`) accepted | 403 for any Origin | fixed: local origins accepted, others 403; confirmed with the new DLL (dns-rebinding 2/2) |
 | `Mcp-Param-Instance`: invalid Base64, non-alphabet characters, value in the body without the header → -32020 + 400 | accepted | fixed, confirmed with the new DLL |
 | Discover, serverInfo, unsupported version, unknown method 404, subscriptions (ack, id, filter), caching hints, lists, completion, resource not found, SSE multiple streams, standard header validation | pass | — |
 | tools-call-*, prompts-get-*, resources-read-*, input-required-*, json-schema-2020-12, logging and missing-capability checks | the suite's own fixture tools and resources (`test_simple_text`, `json_schema_2020_12_tool`...) do not exist here; the suite reports them "not found" / "untestable" | not applicable |
