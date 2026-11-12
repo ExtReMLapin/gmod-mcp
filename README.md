@@ -1,23 +1,24 @@
 # gmod-mcp
 
 ---- 
-##### The GMod MCP server that doesn't make you build a sidecar, babysit a polling bridge or inject DLLs into your game: one module, one launch flag, every realm, menu included. Lua, maps, console, errors, screenshots, hook tracing and long-running jobs with progress, straight from inside the game.
+##### The GMod MCP server that runs inside the game: one module, one launch flag, every realm, menu included. Lua, maps, console, errors, screenshots, hook tracing, test clients and long-running jobs with progress, straight from inside the game.
 ----
 
 **An MCP server that lives inside Garry's Mod.** Drop one native module into your game and an AI coding agent
 (Claude Code or any MCP client) can run Lua in the menu, client and server realms, load maps, read the console and
 errors, inspect and edit the world, take screenshots, trace hooks and look up the documentation — on your own machine.
 
-- **Self-contained**: one DLL and one small Lua file, both in the release zip. No Python, no Node, no sidecar process.
-- **Local only**: listens on `127.0.0.1` with a bearer token, refuses browser origins, inactive unless the game is
-  started with `-mcp`.
+- **Self-contained**: one DLL and one small Lua file in the game. With Claude Code, the plugin installs them and adds a
+  small bridge that Claude Code starts by itself. No Python, no Node, nothing to run yourself.
+- **Local only**: listens on `127.0.0.1` with a bearer token, refuses pages from other sites, inactive unless the game
+  is started with `-mcp`.
 - **Safe by default**: never touches the client realm while you are connected to someone else's server.
 
 ## Contents
 
 - [Install](#install)
   - [1. Garry's Mod side (drag and drop)](#1-garrys-mod-side-drag-and-drop)
-  - [2. Claude Code side (one command)](#2-claude-code-side-one-command)
+  - [2. MCP client side](#2-mcp-client-side)
   - [Dedicated server](#dedicated-server)
   - [Claude Code plugin](#claude-code-plugin)
 - [Tools](#tools)
@@ -35,16 +36,20 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
 
 You need Garry's Mod with the **64-bit** binaries (`gmod_win64.exe`, the default on current Steam builds).
 
-**Quickest, with Claude Code:** install the plugin, then ask Claude to set up gmod-mcp. The plugin brings the module
-and connects Claude Code by itself; its skill copies the two files into the game (after asking you) and starts the game
-with `-mcp`. Claude Code stays connected while the game is closed: the tools say so, Claude starts the game again
-instead of giving up, and they work again as soon as it is up, no reconnection needed:
+**Quickest, with Claude Code:** two commands in Claude Code, a restart, then ask Claude to *set up gmod-mcp*.
 
 ```
-/plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp
+/plugin marketplace add ExtReMLapin/gmod-mcp
+/plugin install gmod-mcp@gmod-mcp
 ```
 
-Or by hand, in two steps:
+The plugin brings the module and connects Claude Code by itself; its skill copies the two files into the game (after
+asking you) and starts the game with `-mcp`. Claude Code stays connected while the game is closed: the tools say so,
+Claude starts the game again instead of giving up, and they work again as soon as it is up, no reconnection needed.
+Updates: `/plugin`, Marketplaces, `gmod-mcp`, enable auto-update (off by default for marketplaces other than
+Anthropic's), then ask Claude to update gmod-mcp so the module in the game follows.
+
+Or by hand (other MCP clients, or without the plugin), in two steps:
 
 ### 1. Garry's Mod side (drag and drop)
 
@@ -65,7 +70,7 @@ Or by hand, in two steps:
    then on it starts at the main menu every time. The console says
    `[mcpagent] main-menu loader installed …`.
 
-### 2. Claude Code side (one command)
+### 2. MCP client side
 
 Open the game console (`~`) and type:
 
@@ -73,7 +78,8 @@ Open the game console (`~`) and type:
 mcpagent_setup
 ```
 
-It prints the exact command for your machine, token included. Paste it in a terminal:
+It prints the exact setup for your machine, token included. For Claude Code without the plugin, paste this in a
+terminal:
 
 ```
 claude mcp add --transport http gmod http://127.0.0.1:27080/mcp --header "Authorization: Bearer <token>"
@@ -90,7 +96,8 @@ Reconnect, once the game is up. The plugin avoids that (see below). Other MCP cl
 ### Dedicated server
 
 Same zip, same drag and drop into the server's folder, and start the server with `-mcp`. Only the server realm exists
-in that mode.
+in that mode. The module is 64-bit: start `srcds_win64.exe` (Linux: `srcds_run_x64`). On Linux the default branch of
+the dedicated server has no 64-bit binary: install it with `+app_update 4020 -beta x86-64`.
 
 ### Claude Code plugin
 
@@ -108,10 +115,12 @@ repository holds no binaries. If you added the server by hand earlier (`claude m
 the plugin replaces it.
 
 ```
-/plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp
+/plugin marketplace add ExtReMLapin/gmod-mcp
+/plugin install gmod-mcp@gmod-mcp
 ```
 
-From a shell: `claude plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp`.
+From a shell: `claude plugin marketplace add ExtReMLapin/gmod-mcp`, then `claude plugin install gmod-mcp@gmod-mcp`.
+Remove it with `/plugin uninstall gmod-mcp@gmod-mcp`.
 
 ## Tools
 
@@ -128,7 +137,7 @@ From a shell: `claude plugin install gmod-mcp --marketplace ExtReMLapin/gmod-mcp
 | Performance | `perf_snapshot` |
 | Documentation | `api_search` (what really exists in each realm), `wiki_search`, `wiki_page` (wiki.facepunch.com, cached) |
 | Events | `events_wait` (long-poll: `map_loaded`, `lua_error`, `main_thread_stalled`…), `reports_read` / `reports_channels` / `reports_clear` (fed by `mcpagent.report()` from your scripts) |
-| Instances | `instances_list` |
+| Instances | `instances_list`; with the plugin (Windows): `instances_launch` (1 to 8 test clients), `instances_close`, `instance_select` (the session's default instance) |
 
 Besides tools, the server offers:
 
@@ -185,6 +194,11 @@ flowchart LR
 All Lua runs on the game's main thread; the network thread only queues work, so a frozen game can still be inspected
 (`status`) and killed (`game_terminate`).
 
+With the plugin, Claude Code does not talk to the game directly: it starts `gmod-mcp-bridge` (stdio) and the bridge
+relays every message to the game over that same HTTP connection. The bridge listens on nothing, answers while the game
+is closed (every tool listed, calls saying the game is not running), tells Claude Code when the game is back, and holds
+the tools that must work without a game: `instances_launch`, `instances_close`, `instance_select`.
+
 ## Several games at once
 
 Each game process (a client, a dedicated server…) has **its own** MCP server on its own port: 27080, then 27081,
@@ -222,13 +236,16 @@ per client.
 | `-mcp` | Required. Without it the module prints one line and does nothing (and never touches any file). |
 | `-mcpport <n>` | Base port (default `27080`). If it is taken, the next free port is used. |
 
+The bridge talks to the base port: `--port <n>` or the `GMOD_MCP_PORT` environment variable if it is not `27080`.
+
 Scratch Lua files for the agent go to `garrysmod/lua/mcpagent_tmp/` (`status` gives the absolute path); errors and
 tracebacks then point at the real file.
 
 ## Security
 
-- Binds to `127.0.0.1` only. Every request needs the bearer token; requests with an `Origin` header (browsers) are
-  rejected and the `Host` header must be loopback with the right port (DNS rebinding).
+- Binds to `127.0.0.1` only. Every request needs the bearer token; a browser `Origin` other than a local one
+  (`localhost`, `127.0.0.1`, `[::1]`) is refused, and the `Host` header must be loopback with the right port (DNS
+  rebinding). The bridge opens no port at all.
 - The only outbound traffic is HTTPS GET requests to `wiki.facepunch.com`, through the game's own HTTP client.
 - **Client realm lock.** Running Lua in the client state bypasses `sv_allowcslua`, like a cheat would. The module refuses
   to touch the client realm unless the server runs on your own machine: the game hosts it (singleplayer, listen server),
@@ -256,10 +273,12 @@ tracebacks then point at the real file.
 1. In the game console: `mcpagent_uninstall` (removes the block from `menu.lua`, byte-identical to the original).
 2. Delete `garrysmod/lua/bin/gmsv_mcpagent_win64.dll` and `garrysmod/lua/autorun/server/mcpagent_boot.lua`.
 3. Optionally delete `garrysmod/data/mcpagent`, `garrysmod/lua/mcpagent_tmp` and `%APPDATA%\gmod-mcp`.
+4. With the plugin: `/plugin uninstall gmod-mcp@gmod-mcp`.
 
 ## Limitations
 
-- Tested on Windows x64. The Linux x64 build compiles in CI but has not been run against a Linux game yet.
+- Tested on Windows x64 (game and dedicated server) and in a Linux x64 dedicated server. The Linux client game has not
+  been tested. `instances_launch` is Windows only.
 - The very first start needs one map load (to install the main-menu loader).
 - Screenshots need a loaded map (the menu state has no capture function).
 - `hook_trace` adds a temporary hook: if another hook returns a value first, that call is not seen.
@@ -280,7 +299,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-The output is `gmsv_mcpagent_win64.dll` (or `_linux64.dll`) in `build/`; `loader/mcpagent_boot.lua` is the autorun file.
+The output in `build/` is the module, `gmsv_mcpagent_win64.dll` (or `_linux64.dll`), and the bridge,
+`gmod-mcp-bridge`; `loader/mcpagent_boot.lua` is the autorun file. The build also runs `gmod-mcp-snapshot`, which writes
+the module's tool descriptions into the bridge (served while the game has never answered).
+
+Tests without a game: `python tests/bridge/test_bridge.py <bridge>` (a fake game server covers the protocol and the
+odd cases) and `python tests/protocol/check_constants.py` (protocol constants against the official schema). CI runs
+both on Windows and Linux.
 The test matrix is in [docs/TESTS.md](docs/TESTS.md); notes on the engine interfaces used are in
 [docs/REVERSE.md](docs/REVERSE.md).
 

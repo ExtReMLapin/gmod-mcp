@@ -1,10 +1,18 @@
 {
   "name": "gmod-mcp",
   "version": "0.3.1",
-  "author": { "name": "ExtReMLapin", "url": "https://github.com/ExtReMLapin" },
+  "author": {
+    "name": "ExtReMLapin",
+    "url": "https://github.com/ExtReMLapin"
+  },
   "homepage": "https://github.com/ExtReMLapin/gmod-mcp",
   "repository": "https://github.com/ExtReMLapin/gmod-mcp",
   "license": "MIT",
-  "keywords": ["garrys-mod", "gmod", "mcp", "lua"],
-  "description": "Install gmod-mcp, start Garry's Mod with -mcp when its MCP server is down, and connect Claude Code to it."
+  "keywords": [
+    "garrys-mod",
+    "gmod",
+    "mcp",
+    "lua"
+  ],
+  "description": "gmod-mcp for Claude Code: the MCP server for Garry's Mod (a bridge that stays connected while the game is closed, test clients on demand), the module for the game, and the skill that installs, starts and updates it."
 }
