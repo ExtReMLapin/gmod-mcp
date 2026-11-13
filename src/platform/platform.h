@@ -27,6 +27,9 @@ std::string current_directory();
 // Immediate process termination, callable from any thread.
 [[noreturn]] void terminate_process(int code);
 
+// Start stamp of a process (changes when a pid is reused): 0 = no such process, 1 = alive but unreadable.
+uint64_t process_start_stamp(uint32_t pid);
+
 // Platform identifier ("win64", "linux64", "osx64").
 const char *platform_tag();
 // Current pid.

@@ -35,6 +35,13 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
+      - name: Native unit tests (no game)
+        shell: bash
+        run: |
+          set -euo pipefail
+          t=$(find build -name "gmod-mcp-unittests" -type f -o -name "gmod-mcp-unittests.exe" -type f | head -n 1)
+          "$t"
+
       - name: Bridge tests (no game - closed, fake server, 2026-07-28 client)
         shell: bash
         run: |

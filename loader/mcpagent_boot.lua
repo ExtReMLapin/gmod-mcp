@@ -3,10 +3,6 @@
 -- on the first map after installation, after which the module installs its own loader into the main menu.
 -- Does nothing if the module is missing; the module itself stays inactive unless the game runs with -mcp.
 pcall(function()
-	if file.Exists("mcpagent/load_in_progress.txt", "DATA") then
-		MsgN("[mcpagent] not loaded: the previous load did not finish (crash?). Delete garrysmod/data/mcpagent/load_in_progress.txt to retry.")
-		return
-	end
 	local suffix = (system.IsWindows() and "win" or system.IsLinux() and "linux" or "osx") .. (jit.arch == "x64" and "64" or (system.IsWindows() and "32" or ""))
 	local path = "lua/bin/gmsv_mcpagent_" .. suffix .. ".dll"
 	local f = file.Open(path, "rb", "GAME")

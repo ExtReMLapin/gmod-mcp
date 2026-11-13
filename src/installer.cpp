@@ -15,13 +15,9 @@ static const char *kEnd = "-- MCPAGENT END";
 //  - everything runs inside pcall: a missing or broken module never breaks the menu;
 //  - a quick sanity check of the file (binary signature, minimum size) avoids the blocking Windows "bad image" dialog
 //    for an obviously wrong or empty file;
-//  - the module is skipped while the crash sentinel of an interrupted load is present (no crash loop).
-static const char *kBlockSource = R"LUA(-- MCPAGENT BEGIN v6 (written by the gmod-mcp module; anything inside this block is overwritten)
+//  - the crash guard (no crash loop) lives in the module itself: see crashguard.h.
+static const char *kBlockSource = R"LUA(-- MCPAGENT BEGIN v7 (written by the gmod-mcp module; anything inside this block is overwritten)
 pcall( function()
-	if ( file.Exists( "mcpagent/load_in_progress.txt", "DATA" ) ) then
-		MsgN( "[mcpagent] not loaded: the previous load did not finish (crash?). Delete garrysmod/data/mcpagent/load_in_progress.txt to retry." )
-		return
-	end
 	local suffix = ( system.IsWindows() and "win" or system.IsLinux() and "linux" or "osx" ) .. ( jit.arch == "x64" and "64" or ( system.IsWindows() and "32" or "" ) )
 	local path = "lua/bin/gmsv_mcpagent_" .. suffix .. ".dll"
 	local f = file.Open( path, "rb", "GAME" )

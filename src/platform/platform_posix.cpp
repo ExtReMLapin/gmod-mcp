@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -80,6 +81,22 @@ void terminate_process(int code) {
 }
 
 uint32_t process_id() { return (uint32_t)getpid(); }
+
+uint64_t process_start_stamp(uint32_t pid) {
+    if (pid == 0 || pid > 0x7FFFFFFFu) return 0;
+    if (kill((pid_t)pid, 0) != 0 && errno != EPERM) return 0;
+    // Field 22 of /proc/<pid>/stat: start time in clock ticks since boot (fields after the command name, which may
+    // contain spaces and parentheses, hence the last ')').
+    std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
+    std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    size_t p = s.rfind(')');
+    if (p == std::string::npos) return 1;
+    std::istringstream in(s.substr(p + 1));
+    std::string tok;
+    for (int field = 3; field <= 22 && (in >> tok); ++field)
+        if (field == 22) return std::strtoull(tok.c_str(), nullptr, 10) + 2;  // never 0 or 1
+    return 1;
+}
 
 bool read_file(const std::string &path, std::string &out) {
     std::ifstream f(path, std::ios::binary);

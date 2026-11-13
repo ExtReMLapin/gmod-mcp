@@ -76,6 +76,19 @@ void terminate_process(int code) {
 const char *platform_tag() { return "win64"; }
 uint32_t process_id() { return (uint32_t)GetCurrentProcessId(); }
 
+uint64_t process_start_stamp(uint32_t pid) {
+    if (pid == 0) return 0;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (!h) return GetLastError() == ERROR_ACCESS_DENIED ? 1 : 0;
+    uint64_t r = 0;
+    if (WaitForSingleObject(h, 0) == WAIT_TIMEOUT) {
+        FILETIME c, e, k, u;
+        r = GetProcessTimes(h, &c, &e, &k, &u) ? ((((uint64_t)c.dwHighDateTime << 32) | c.dwLowDateTime) | 2) : 1;
+    }
+    CloseHandle(h);
+    return r;
+}
+
 bool read_file(const std::string &path, std::string &out) {
     FILE *f = nullptr;
     if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return false;

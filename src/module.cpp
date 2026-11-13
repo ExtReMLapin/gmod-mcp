@@ -4,6 +4,7 @@
 #include "agent.h"
 #include "console.h"
 #include "coordinator.h"
+#include "crashguard.h"
 #include "events.h"
 #include "http_server.h"
 #include "installer.h"
@@ -206,15 +207,35 @@ EXPORT int gmod13_open(lua_State *L) {
     } catch (...) {
         logx::warn("not loaded: unexpected error during start-up");
     }
-    // Caught, so not a crash: the next start may try again.
-    plat::remove_file(plat::current_directory() + "/garrysmod/data/mcpagent/load_in_progress.txt");
+    // Caught, so not a crash: the crash guard's marker is already gone (unwinding), the next start may try again.
     g_disabled = true;
     return 0;
 }
 
+// Removes this process's crash-guard marker when the first load is over, by any path except a crash.
+struct CrashGuardEnd {
+    std::string dir;
+    ~CrashGuardEnd() {
+        if (!dir.empty()) crashguard::end(dir, plat::process_id());
+    }
+};
+
 static int open_impl(lua_State *L) {
     logx::init();
     if (g_disabled) return 0;
+    CrashGuardEnd guard;
+    if (!g_started && util::has_flag(util::split_args(command_line()), "-mcp")) {
+        // If the game crashes during the first load, the next launch skips the module once (no crash loop). One marker
+        // per process: test clients started together do not take each other's load for a crash.
+        std::string dir = plat::current_directory() + "/garrysmod/data/mcpagent";
+        auto r = crashguard::begin(dir, plat::process_id(), plat::process_start_stamp);
+        for (const auto &n : r.notes) logx::warn("%s", n.c_str());
+        if (r.skip) {
+            g_disabled = true;
+            return 0;
+        }
+        guard.dir = dir;
+    }
     std::string e;
     if (!lua::load(e) || !realms::init(e)) {
         logx::warn("initialization failed: %s", e.c_str());
@@ -222,15 +243,8 @@ static int open_impl(lua_State *L) {
         return 0;
     }
     if (!g_started) {
-        // Crash sentinel: present only while the first load is in progress. If the game crashes here, the main-menu
-        // loader sees it at the next start and skips the module (no crash loop).
-        std::string sentinel_dir = plat::current_directory() + "/garrysmod/data/mcpagent";
-        std::string sentinel = sentinel_dir + "/load_in_progress.txt";
-        plat::make_dirs(sentinel_dir);
-        plat::write_file(sentinel, "gmod-mcp load in progress\n");
         bool ok = start(L);
         if (ok) register_pump(g_host_L);
-        plat::remove_file(sentinel);
         if (!ok) {
             g_disabled = true;
             return 0;
