@@ -1,8 +1,25 @@
 # gmod-mcp
 
 ---- 
-##### The GMod MCP server that runs inside the game: one module, one launch flag, every realm, menu included. Lua, maps, console, errors, screenshots, hook tracing, test clients and long-running jobs with progress, straight from inside the game.
+##### The GMod MCP server that runs inside the game: Lua in every realm, maps, console, errors, screenshots, hook tracing, test clients and long-running jobs, straight from inside the game.
 ----
+
+> [!TIP]
+> ## Quick start (Claude Code, Windows)
+>
+> **1.** In Claude Code, run:
+>
+> ```
+> /plugin marketplace add ExtReMLapin/gmod-mcp
+> /plugin install gmod-mcp@gmod-mcp
+> ```
+>
+> **2.** Restart Claude Code.
+>
+> **3.** Ask Claude: **`set up gmod-mcp`**
+>
+> That's it. Claude installs the module in your game (it asks first) and starts Garry's Mod with `-mcp`.
+> Other MCP clients, Linux or a dedicated server: see [Install](#install).
 
 **An MCP server that lives inside Garry's Mod.** Drop one native module into your game and an AI coding agent
 (Claude Code or any MCP client) can run Lua in the menu, client and server realms, load maps, read the console and
@@ -36,15 +53,9 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
 
 You need Garry's Mod with the **64-bit** binaries (`gmod_win64.exe`, the default on current Steam builds).
 
-**Quickest, with Claude Code:** two commands in Claude Code, a restart, then ask Claude to *set up gmod-mcp*.
-
-```
-/plugin marketplace add ExtReMLapin/gmod-mcp
-/plugin install gmod-mcp@gmod-mcp
-```
-
-The plugin brings the module and connects Claude Code by itself; its skill copies the two files into the game (after
-asking you) and starts the game with `-mcp`. Claude Code stays connected while the game is closed: the tools say so,
+**With Claude Code**: the Quick start at the top of this page. The plugin brings the module and
+connects Claude Code by itself; its skill copies the two files into the game (after asking you) and starts the game with
+`-mcp`. Claude Code stays connected while the game is closed: the tools say so,
 Claude starts the game again instead of giving up, and they work again as soon as it is up, no reconnection needed.
 Updates: `/plugin`, Marketplaces, `gmod-mcp`, enable auto-update (off by default for marketplaces other than
 Anthropic's), then ask Claude to update gmod-mcp so the module in the game follows.
