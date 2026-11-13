@@ -120,7 +120,7 @@ else()
 endif()
 
 # --- Native unit tests (no game): run by the CI ---
-add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp src/crashguard.cpp ${PLATFORM_SOURCES})
+add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES})
 target_include_directories(gmod-mcp-unittests PRIVATE src)
 if(MSVC)
   target_compile_options(gmod-mcp-unittests PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)

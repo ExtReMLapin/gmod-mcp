@@ -10,16 +10,7 @@
 
 namespace fs = std::filesystem;
 
-static int g_fail = 0, g_pass = 0;
-#define CHECK(cond)                                                              \
-    do {                                                                         \
-        if (cond) {                                                              \
-            ++g_pass;                                                            \
-        } else {                                                                 \
-            ++g_fail;                                                            \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);          \
-        }                                                                        \
-    } while (0)
+#include "check.h"
 
 // Simulated process table: pid -> start stamp (absent = dead).
 static std::map<uint32_t, uint64_t> g_procs;
@@ -43,7 +34,7 @@ static void write(const fs::path &p, const std::string &s) {
 
 static std::string marker(uint32_t pid) { return "loading/" + std::to_string(pid) + ".txt"; }
 
-int main() {
+void test_crashguard() {
     // 1. Nothing on disk: load, and the marker exists until end().
     {
         g_procs = {{100, 5000}};
@@ -138,7 +129,4 @@ int main() {
         write(d / marker(me), std::to_string(me) + " " + std::to_string(plat::process_start_stamp(me)) + "\n");
         CHECK(!crashguard::begin(d.u8string(), 0x7FFFFFF1u, plat::process_start_stamp).skip);
     }
-
-    std::printf("crashguard: %d passed, %d failed\n", g_pass, g_fail);
-    return g_fail ? 1 : 0;
 }

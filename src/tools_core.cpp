@@ -6,6 +6,7 @@
 #include "console.h"
 #include "coordinator.h"
 #include "jobs.h"
+#include "ljdump.h"
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
@@ -379,6 +380,67 @@ static json lua_inspect_tool(const json &args) {
     return rt_realm(args, "realm", realms::MENU, "lua_inspect", p);
 }
 
+static std::string decode_dump(const json &r) {
+    std::string d = r.value("dump", "");
+    if (r.value("encoding", "") == "base64") return util::base64_decode(d);
+    std::string out;
+    for (size_t i = 0; i + 1 < d.size(); i += 2) out += (char)std::stoi(d.substr(i, 2), nullptr, 16);
+    return out;
+}
+
+// Is the function running in the game the code of the file on disk? Compares the function's bytecode with the file
+// compiled again from disk, in the same realm (same parser), debug info aside.
+static json lua_function_source_tool(const json &args) {
+    int realm = realm_of(args, "realm", realms::MENU);
+    if (realm < 0) return agent::err("invalid_params", "unknown realm");
+    json a = agent::rt(realm, "function_dump", json{{"expr", args["expr"]}});
+    if (!a.value("ok", false)) return a;
+    const json &fi = a["result"];
+    std::string src = fi.value("source", "");
+    json out{{"source", src}, {"linedefined", fi.value("linedefined", 0)}, {"lastlinedefined", fi.value("lastlinedefined", 0)}};
+    if (src.empty() || src[0] != '@') {
+        out["matches_disk"] = nullptr;
+        out["note"] = "defined by code that has no file (lua_exec, RunString, CompileString): nothing to compare";
+        return ok(out);
+    }
+    std::string abs, e;
+    if (!resolve_lua_path(src.substr(1), false, abs, e)) {
+        out["matches_disk"] = nullptr;
+        out["note"] = "the file is not on disk (inside a .gma, or only on the server that sent it): " + e;
+        return ok(out);
+    }
+    out["file"] = abs;
+    std::error_code ec;
+    auto mt = std::filesystem::last_write_time(std::filesystem::u8path(abs), ec);
+    if (!ec) out["file_age_s"] = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(std::filesystem::file_time_type::clock::now() - mt).count();
+    if (fi.contains("dump_error")) return agent::err("dump_failed", "string.dump failed: " + fi.value("dump_error", ""), out);
+    std::string code;
+    if (!plat::read_file(abs, code)) return agent::err("io_error", "cannot read: " + abs);
+    json d = agent::rt(realm, "chunk_dump", json{{"code", code}, {"chunkname", src}});
+    if (!d.value("ok", false)) {
+        if (d["error"].value("code", "") == "lua_syntax_error") {
+            out["matches_disk"] = false;
+            out["note"] = "the file on disk no longer compiles: " + d["error"].value("message", "");
+            return ok(out);
+        }
+        return d;
+    }
+    std::vector<ljdump::Proto> live, disk;
+    if (!ljdump::parse(decode_dump(fi), live, e) || !ljdump::parse(decode_dump(d["result"]), disk, e))
+        return agent::err("dump_unreadable", e, out);
+    auto m = ljdump::find(live, disk);
+    out["matches_disk"] = m.found;
+    if (!m.found) {
+        out["note"] = "the running function is NOT the code in the file: the file was edited after it was loaded, or the "
+                      "function came from another copy. lua_reload the file (or reload the map) to run the current code.";
+    } else {
+        out["line_on_disk"] = m.disk_line;
+        if (m.disk_line != (uint32_t)fi.value("linedefined", 0))
+            out["note"] = "same code, but lines were added or removed above it: it now starts at line " + std::to_string(m.disk_line);
+    }
+    return ok(out);
+}
+
 static json file_write(const json &args) {
     std::string e, p = tmp_path(args["name"], e);
     if (p.empty()) return agent::err("invalid_params", e);
@@ -507,6 +569,18 @@ void register_core() {
                                {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}, {"description", "Max number of keys (default 100)."}}}}},
                              {"required", {"expr"}}},
                         RO, lua_inspect_tool});
+
+    mcp::register_tool({"lua_function_source", "Is this function the code on disk?",
+                        "Tells where a function was defined and whether the game runs the current code of that file: its "
+                        "bytecode is compared with the file compiled again from disk, in the same realm. Use it before "
+                        "trusting a test result after an edit (a map that was not reloaded, a file the client got from the "
+                        "server, another copy of the addon). Returns source, linedefined, file, file_age_s, matches_disk "
+                        "(true, false, or null when there is no file to compare), line_on_disk and a note.",
+                        json{{"properties",
+                              {{"realm", realm_exec},
+                               {"expr", {{"type", "string"}, {"description", "Lua expression giving the function, e.g. 'MyAddon.Update' or 'hook.GetTable().Think.MyHook'."}}}}},
+                             {"required", {"expr"}}},
+                        RO, lua_function_source_tool});
 
     json name_prop = {{"type", "string"}, {"description", "Name relative to the lua/mcpagent_tmp/ directory (e.g. 'scan.lua', 'lib/util.lua')."}};
     mcp::register_tool({"lua_file_write", "Write a temporary Lua file",

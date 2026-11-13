@@ -68,6 +68,35 @@ function H.lua_inspect(args)
 	return out
 end
 
+-- Bytecode dumps for lua_function_source: the C side compares the live function with the file compiled from disk.
+local function encode_dump(d)
+	if util and util.Base64Encode then return util.Base64Encode(d, true), "base64" end
+	return (string.gsub(d, ".", function(c) return string.format("%02x", string.byte(c)) end)), "hex"
+end
+
+function H.function_dump(args)
+	local fn, cerr = A.compile("return " .. tostring(args.expr), "=mcpagent:function_source")
+	if not fn then A.fail("lua_syntax_error", tostring(cerr)) end
+	local ok, res, err, tb = A.run_budget(fn, 2)
+	if not ok then A.fail("lua_error", tostring(err), { traceback = tb }) end
+	local f = res[1]
+	if type(f) ~= "function" then A.fail("invalid_params", "the expression gives a " .. type(f) .. ", not a function") end
+	local info = debug.getinfo(f, "S")
+	if info.what == "C" then A.fail("not_lua", "a C function: it has no Lua source") end
+	local out = { source = info.source, linedefined = info.linedefined, lastlinedefined = info.lastlinedefined }
+	local okd, d = pcall(string.dump, f)
+	if okd then out.dump, out.encoding = encode_dump(d) else out.dump_error = tostring(d) end
+	return out
+end
+
+function H.chunk_dump(args)
+	local f, cerr = A.compile(args.code, args.chunkname)
+	if not f then A.fail("lua_syntax_error", tostring(cerr)) end
+	local out = {}
+	out.dump, out.encoding = encode_dump(string.dump(f))
+	return out
+end
+
 -- Realm-specific status.
 function H.status(args)
 	local s = { realm = A.realm, generation = A.generation, lua_memory_kb = collectgarbage("count"), runtime_age_s = SysTime() - A.injected_at }
