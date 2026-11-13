@@ -130,3 +130,5 @@ else()
   target_compile_options(gmod-mcp-unittests PRIVATE -Wall -Wextra -Wno-unused-parameter)
   target_link_libraries(gmod-mcp-unittests PRIVATE dl pthread)
 endif()
+# Stand-in for the game in the bridge tests (a client in which gmod-mcp never loads).
+add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)

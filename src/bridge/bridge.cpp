@@ -644,6 +644,7 @@ void announce_lists_changed() {
 struct Launched {
     uint32_t pid = 0;
     std::string id;
+    std::string owner;  // free label given at launch (a sub-agent's name): instances_close {owner} closes only those
     bool keep = false;
 #ifdef _WIN32
     HANDLE h = nullptr;
@@ -682,12 +683,18 @@ json bridge_tools() {
          "Starts 1 to 8 extra Garry's Mod clients for tests, and works while no game runs (the first one then becomes the "
          "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, waits until it answers, "
          "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
-         "Returns their instance ids: pass one as `instance`, or make it this session's default with instance_select. "
+         "Returns their instance ids and pids: pass an id as `instance` on every call. "
          "They close when this session ends unless keep is true; close them earlier with instances_close (not game_quit: "
-         "a clean quit writes their window size over the user's own config). The game is found through Steam; pass "
+         "a clean quit writes their window size over the user's own config). Sub-agents of one Claude Code session share "
+         "this bridge: give each one's clients an `owner` label and close them with instances_close {owner}, never "
+         "{all: true}, which would close the other sub-agents' clients too. The game is found through Steam; pass "
          "game_dir (the folder holding gmod_win64.exe) if it is elsewhere. Windows only for now.\n"
-         "Presets: 'light' (default: 640x360, 20 fps; for most tests) and 'normal' (640x360, 30 fps; for rendering checks, "
-         "screenshots and frame-time sensitive tests).\n"
+         "Presets: 'light' (default: 640x360, 20 fps; for most tests, NOT for performance measurements: the 20 fps cap "
+         "hides per-frame cost) and 'normal' (640x360, 30 fps; for rendering checks, screenshots and frame-time sensitive "
+         "tests). sound: false (-nosound) changes what the engine reports about sounds: SoundDuration of compressed "
+         "(ADPCM) WAV files differs (0.49 s instead of 1.24 s seen); keep sound on for sound tests.\n"
+         "All clients share the game folder with the user's own game: same addons, cfg, data/ and cookies (sv.db/cl.db). "
+         "A test that writes cookies, data files or archived convars changes the user's game too: clean up after it.\n"
          "Tell the user beforehand: the game saves the window size of these clients as its own video setting, so their next "
          "normal start of Garry's Mod opens at that size until they set their resolution back in the video options.\n"
          "Measured cost per client on gm_construct (16-core PC, the game and its 4 browser subprocesses): light about 19% "
@@ -706,6 +713,7 @@ json bridge_tools() {
             {"preset", {{"type", "string"}, {"enum", json::array({"light", "normal"})}, {"description", "Default light."}}},
             {"sound", {{"type", "boolean"}, {"description", "Keep sound on (default true). false saves CPU when sound does not matter."}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
+            {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
             {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
           {"additionalProperties", false}}},
@@ -714,13 +722,17 @@ json bridge_tools() {
         {"name", kCloseName},
         {"title", "Close test clients"},
         {"description",
-         "Closes clients this session started with instances_launch, at once and without writing their config. Other "
-         "games (the user's own, another session's) are refused: close those only if the user asks, with game_terminate."},
+         "Closes clients this session started with instances_launch, at once and without writing their config, by "
+         "instance id, by pid (also for a client that never answered, e.g. gmod-mcp did not load in it) or by owner label. "
+         "Other games (the user's own, another session's) are refused: close those only if the user asks, with "
+         "game_terminate. Sub-agents of one Claude Code session share it: all: true closes their clients too."},
         {"inputSchema",
          {{"type", "object"},
           {"properties",
            {{"instances", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Instance ids to close."}}},
-            {"all", {{"type", "boolean"}, {"description", "Close every client this session started."}}}}},
+            {"pids", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"description", "Process ids to close (as returned by instances_launch)."}}},
+            {"owner", {{"type", "string"}, {"description", "Close every client launched with this owner label."}}},
+            {"all", {{"type", "boolean"}, {"description", "Close every client this session started, other sub-agents' included."}}}}},
           {"additionalProperties", false}}},
         {"annotations", {{"title", "Close test clients"}, {"readOnlyHint", false}, {"destructiveHint", true}, {"openWorldHint", false}}}};
     json select{
@@ -728,7 +740,9 @@ json bridge_tools() {
         {"title", "Set the default instance"},
         {"description",
          "Makes `instance` this session's default: tool calls without an `instance` argument go to it (useful with several "
-         "games running, where they would otherwise be refused as ambiguous). null clears it. Lasts until the session ends."},
+         "games running, where they would otherwise be refused as ambiguous). null clears it. Lasts until the session ends. "
+         "Do not use it with sub-agents: they all share this session, so a default set by one applies to every other's "
+         "calls too (they would act on its game). Pass `instance` on every call instead."},
         {"inputSchema",
          {{"type", "object"},
           {"properties", {{"instance", {{"type", json::array({"string", "null"})}, {"description", "Instance id (see instances_list), or null."}}}}},
@@ -838,6 +852,7 @@ json launch_tool(const json &args, const json &token) {
     bool sound = args.value("sound", true), keep = args.value("keep", false);
     double timeout = args.value("timeout_s", 180.0);
     std::string map = args.value("map", "");
+    std::string owner = args.value("owner", "");
     std::string how, root = find_game_root(args.value("game_dir", ""), how);
     if (root.empty())
         return tool_error("game_not_found", "Garry's Mod not found (" + how + "): pass game_dir, the folder holding gmod_win64.exe (the gmod-mcp skill explains how to find it)");
@@ -869,6 +884,7 @@ json launch_tool(const json &args, const json &token) {
         l.pid = pi.dwProcessId;
         l.h = pi.hProcess;
         l.keep = keep;
+        l.owner = owner;
         started.push_back(l);
     }
     {
@@ -900,9 +916,19 @@ json launch_tool(const json &args, const json &token) {
             for (auto &l : started)
                 if (g.pid == l.pid) g.id = l.id;
     }
-    if ((int)found.size() < count)
-        return tool_error("timeout", std::to_string(found.size()) + " of " + std::to_string(count) + " clients answered within " +
-                                         std::to_string((int)timeout) + " s (still starting: see instances_list later, or close them with instances_close {all: true})");
+    if ((int)found.size() < count) {
+        json silent = json::array();
+        for (auto &l : started)
+            if (!found.contains(std::to_string(l.pid))) silent.push_back(l.pid);
+        return tool_text(json{{"error", {{"code", "timeout"},
+                                         {"message", std::to_string(found.size()) + " of " + std::to_string(count) +
+                                                         " clients answered within " + std::to_string((int)timeout) +
+                                                         " s (still starting, or gmod-mcp did not load in them: see "
+                                                         "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
+                                                         "the silent ones with instances_close {pids}."}}},
+                              {"silent_pids", silent}},
+                         true);
+    }
     // Maps, all at once.
     json results = json::array();
     std::vector<json> map_res(started.size());
@@ -921,6 +947,7 @@ json launch_tool(const json &args, const json &token) {
     for (size_t i = 0; i < started.size(); ++i) {
         const json &in = found[std::to_string(started[i].pid)];
         json e{{"instance", started[i].id}, {"pid", started[i].pid}, {"port", in.value("port", 0)}};
+        if (!owner.empty()) e["owner"] = owner;
         if (!map.empty()) {
             bool ok = !map_res[i].contains("error");
             all_ok = all_ok && ok;
@@ -938,7 +965,10 @@ json launch_tool(const json &args, const json &token) {
 json close_tool(const json &args) {
     bool all = args.value("all", false);
     json ids = args.value("instances", json::array());
-    if (!all && ids.empty()) return tool_error("invalid_params", "pass instances: [ids] or all: true");
+    json pids = args.value("pids", json::array());
+    std::string owner = args.value("owner", "");
+    if (!all && ids.empty() && pids.empty() && owner.empty())
+        return tool_error("invalid_params", "pass instances: [ids], pids: [pids], owner: \"label\" or all: true");
     std::vector<Launched> todo;
     json refused = json::array();
     {
@@ -947,15 +977,25 @@ json close_tool(const json &args) {
             todo = g_launched;
             g_launched.clear();
         } else {
-            for (const auto &idj : ids) {
-                std::string id = idj.is_string() ? idj.get<std::string>() : "";
-                auto it = std::find_if(g_launched.begin(), g_launched.end(), [&](const Launched &l) { return !id.empty() && l.id == id; });
-                if (it == g_launched.end()) {
-                    refused.push_back(id);
-                    continue;
-                }
+            auto take = [&](auto pred) {
+                auto it = std::find_if(g_launched.begin(), g_launched.end(), pred);
+                if (it == g_launched.end()) return false;
                 todo.push_back(*it);
                 g_launched.erase(it);
+                return true;
+            };
+            for (const auto &idj : ids) {
+                std::string id = idj.is_string() ? idj.get<std::string>() : "";
+                if (!take([&](const Launched &l) { return !id.empty() && l.id == id; })) refused.push_back(id);
+            }
+            for (const auto &pj : pids) {
+                uint32_t pid = pj.is_number_unsigned() ? pj.get<uint32_t>() : 0;
+                if (!take([&](const Launched &l) { return pid != 0 && l.pid == pid; })) refused.push_back(pj);
+            }
+            if (!owner.empty()) {
+                bool any = false;
+                while (take([&](const Launched &l) { return l.owner == owner; })) any = true;
+                if (!any) refused.push_back("owner:" + owner);
             }
         }
     }
@@ -966,14 +1006,17 @@ json close_tool(const json &args) {
         if (WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
         CloseHandle(l.h);
 #endif
-        closed.push_back(l.id.empty() ? json(l.pid) : json(l.id));
+        json c{{"pid", l.pid}};
+        if (!l.id.empty()) c["instance"] = l.id;
+        if (!l.owner.empty()) c["owner"] = l.owner;
+        closed.push_back(c);
         std::lock_guard<std::mutex> lk(g_default_mu);
         if (g_default_instance == l.id) g_default_instance.clear();
     }
     json res{{"closed", closed}};
     if (!refused.empty()) {
         res["refused"] = refused;
-        res["why_refused"] = "not started by this session: close those only if the user asks (game_terminate)";
+        res["why_refused"] = "not started by this session (or already closed): close a game this session did not start only if the user asks (game_terminate)";
     }
     return tool_text(res, !refused.empty() && closed.empty());
 }

@@ -23,7 +23,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -647,6 +647,43 @@ def case_session():
     b.close(); srv.stop()
 
 
+def case_orphans():
+    """instances_launch with a stand-in game in which gmod-mcp never loads (RETEX 2026-11-13: such clients could only
+    be killed by hand): the timeout lists their pids, instances_close closes them by pid and by owner label."""
+    print("== ORPHANS: clients that never answer, closed by pid and by owner", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("ORPHANS stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 3, "owner": "fork-a", "timeout_s": 10, "game_dir": game}}, 40)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    pids = sc.get("silent_pids", [])
+    check("ORPHANS timeout names the silent clients' pids", r and r["result"].get("isError") and len(pids) == 3 and all(alive(p) for p in pids), sc)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"pids": [pids[0] if pids else 0, 4]}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("ORPHANS close by pid: closed, and a pid this session did not start is refused",
+          [c.get("pid") for c in sc.get("closed", [])] == pids[:1] and sc.get("refused") == [4], sc)
+    time.sleep(1)
+    check("ORPHANS the closed one is gone, the others still run", pids and not alive(pids[0]) and all(alive(p) for p in pids[1:]), [alive(p) for p in pids])
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "nobody"}}, 20)
+    check("ORPHANS an unknown owner closes nothing", r and r["result"].get("isError") and not r["result"]["structuredContent"].get("closed"), r)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "fork-a"}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("ORPHANS close by owner closes the rest, labelled", sorted(c.get("pid") for c in sc.get("closed", [])) == sorted(pids[1:]) and all(c.get("owner") == "fork-a" for c in sc.get("closed", [])), sc)
+    time.sleep(1)
+    check("ORPHANS no stand-in left running", not any(alive(p) for p in pids), [p for p in pids if alive(p)])
+    b.close()
+    shutil.rmtree(game, ignore_errors=True)
+
+
 def case_launch():
     """Live (Windows, Steam running, no other game): starts 2 light clients with a map, uses the default instance,
     closes them. Note: the game saves their window size as its video setting (documented)."""
@@ -761,8 +798,8 @@ def case_c():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphan", "fuzz"]:
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))

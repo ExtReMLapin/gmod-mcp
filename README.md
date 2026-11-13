@@ -231,9 +231,13 @@ flowchart LR
   over and the rest register with it.
 
 Several **clients** can run side by side too. With the Claude Code plugin, the `instances_launch` tool starts 1 to 8
-test clients (small window, frame cap, Windows for now), `instances_close` closes them, and `instance_select` sets the
-default instance of a session. Its description gives the measured cost: about 1.5 GB of RAM and a fifth of a CPU core
-per client.
+test clients (small window, frame cap, Windows for now), `instances_close` closes them (by id, pid or owner label),
+and `instance_select` sets the default instance of a session. Its description gives the measured cost: about 1.5 GB of
+RAM and a fifth of a CPU core per client. Sub-agents of one Claude Code session share that session: each one labels its
+clients with `owner` and closes only those.
+
+The clients share the game folder with your own game, including `data/` and the cookies (`sv.db`/`cl.db`): a test
+that writes there changes your game too.
 
 > **Your resolution after test clients.** Garry's Mod saves the window size it was started with as its video setting,
 > as soon as it starts. After an agent has run test clients, your next normal start of the game opens at their small

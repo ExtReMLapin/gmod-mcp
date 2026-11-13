@@ -79,10 +79,20 @@ module and the plugin versions differ, tell the user and offer section 3 (update
 
 **Several clients side by side** (for example to split a long test suite): use the `instances_launch` tool (Windows),
 which works even while no game runs. It starts 1 to 8 clients with the right options (`-multirun`, a small window, a
-frame cap, no `+map`), waits until each answers, loads the map with `map_load`, and returns their ids. Then pass
-`instance` to every tool, or `instance_select` to make one the session's default (with several games running, calls
-without `instance` are refused with `ambiguous_instance`). Close them with `instances_close`; they also close when the
-session ends. Its description lists the measured cost per client and the limits (memory is what runs out first).
+frame cap, no `+map`), waits until each answers, loads the map with `map_load`, and returns their ids and pids. Then
+pass `instance` to every tool, or `instance_select` to make one the session's default (with several games running,
+calls without `instance` are refused with `ambiguous_instance`). Close them with `instances_close`; they also close
+when the session ends. Its description lists the measured cost per client and the limits (memory is what runs out
+first).
+
+- **With sub-agents**: they all share one bridge, so one session. Never use `instance_select` (its default would apply
+  to every sub-agent's calls) and never `instances_close {all: true}` (it would close the others' clients). Tell each
+  sub-agent in its brief to launch with an `owner` label of its own, pass `instance` on every call, and close with
+  `instances_close {owner}`.
+- A client that never answers (gmod-mcp did not load in it): `instances_launch` returns its pid in `silent_pids`;
+  close it with `instances_close {pids}`.
+- The clients share the game folder with the user's own game: addons, cfg, `data/` and cookies (`sv.db`/`cl.db`). A
+  test that writes cookies, data files or archived convars changes the user's game too: clean up after it.
 
 - **Tell the user before launching**: Garry's Mod saves the window size of these clients as its own video setting, so
   their next normal start opens at that size until they set their resolution back in the video options. Closing the
