@@ -284,6 +284,24 @@ the tool description, the skill and the README; the bridge does not touch the us
 |---|---|---|---|
 | I-11 | session: bridge tools listed offline and live; default instance injected and mirrored in Mcp-Param-Instance; explicit instance wins; null clears; close refuses foreign instances; bad game_dir refused | as described | ✅ 2026-11-11 (11 checks) |
 | I-12 | launch (live): 2 light clients with gm_construct, default instance, close all | ids/pids/ports, map on both, progress, default reached, 640x360, both closed, processes gone | ✅ 2026-11-11 (7/7) |
+| I-13 | orphans: a stand-in game in which gmod-mcp never loads (`gmod-mcp-fakegame`), 3 clients with an owner label, 10 s timeout | timeout lists the 3 `silent_pids`; close by pid closes that one only and refuses a foreign pid; an unknown owner closes nothing; close by owner closes the other two; no process left | ✅ 2026-11-13 (6/6, no game) |
+| I-14 | Live: 4 clients launched at once (light), all with gmod-mcp | the 4 answer (before 0.3.2, a client could take another's load in progress for a crash and skip gmod-mcp) | ⏳ needs the game |
+| I-15 | Live: crash during the first load (kill a client while its marker exists), then 3 launches | exactly one launch skips gmod-mcp (`last_crash.txt` written), the next ones load it | ⏳ needs the game |
+| I-16 | Live: instances_list health fields on 2 clients | agent_version, uptime_s, fps, main_thread_stalled, lua_errors per instance | ⏳ needs the game |
+
+## Native unit tests (no game)
+
+`gmod-mcp-unittests` and `gmod-mcp-coretests`, run by the CI on Windows and Linux.
+
+| ID | Check | Result |
+|---|---|---|
+| U-1 | Crash guard: no marker; another instance loading (live pid); crashed load (dead pid) skips once; pid reused by another process; unreadable stamp; legacy marker removed; garbage and own stale marker; 5 launches at once with one old crash: exactly one skips; real process table (this pid alive, absurd pid dead) | ✅ 2026-11-13, 21 checks, Windows and Linux (WSL) |
+| U-2 | Lua path lookup: mcpagent_tmp first; `addons/x/lua` (file or folder, trailing slash, backslashes); include()-style names in lua/, addons/*/lua/, gamemodes/; absolute; folder refused where a file is needed; misses list every place tried; escapes refused; chunk name | ✅ 2026-11-13, Windows and Linux |
+| U-3 | `fields` projection: keeps only the named keys of returned tables, leaves other values, errors and calls without fields untouched | ✅ 2026-11-13 |
+| U-4 | LuaJIT dump reader: debug info excluded from bodies; function found in place, after lines added above, not found when it or a nested function is edited; same code twice prefers the loaded line; stripped dumps; malformed input (empty, foreign, unknown version, truncated, every prefix, oversized lengths) refused without reading past the end | ✅ 2026-11-13, 20 checks, dumps built from the format |
+| U-5 | Live: `lua_function_source` on an addon function: unchanged file, line added above, function edited without reloading, then lua_reload; a lua_exec-defined function; a C function; client realm (copy sent by the server) | ⏳ needs the game (also checks that `string.dump` and `util.Base64Encode` exist in each realm) |
+| U-6 | Live: `convar_set volume_sfx 0.25` from the client realm | the value takes, `via: engine` | ⏳ needs the game |
+| U-7 | Live: `lua_check {path: "addons/<addon>/lua"}`, `lua_exec_file` and `lua_job` with an absolute path and `fields` | resolved, only the fields come back | ⏳ needs the game |
 
 ## Linux module (dedicated server in WSL)
 

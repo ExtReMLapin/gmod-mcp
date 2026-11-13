@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+From the field feedback of agents that ran up to 17 test clients in parallel.
+
+### Fixes
+
+- **Test clients started together could lose gmod-mcp.** The crash guard was one marker file shared by every game: a
+  client that started while another was loading took that for a crash and skipped gmod-mcp, and a real crash blocked
+  every later launch until someone deleted the file. Each process now has its own marker, checked by the module: a
+  load in progress elsewhere is ignored, and a real crash skips gmod-mcp for exactly one launch.
+- **Sub-agents closed each other's clients.** Sub-agents of one Claude Code session share one bridge, so
+  `instances_close {all: true}` closed all their clients and `instance_select` redirected all their calls.
+  `instances_launch` takes an `owner` label, `instances_close {owner}` closes only those, and the descriptions and the
+  skill say not to use `all` or `instance_select` with sub-agents.
+- **Clients in which gmod-mcp never loaded could only be killed by hand.** `instances_launch` names them
+  (`silent_pids`) when it times out, and `instances_close {pids}` closes them.
+- `convar_set` retries through the engine console when Lua is silently ignored (`volume_sfx`), and says which way
+  worked.
+- `lua_check`, `lua_exec_file` and `lua_job` find relative paths in the game folder too (`addons/x/lua`), and a miss
+  lists every place tried.
+- The text of `mcpagent_setup` gives the right plugin install commands.
+
+### New
+
+- `lua_function_source`: tells whether a function running in the game is the code of its file on disk (bytecode
+  compared with the file compiled again), and where it now starts in the file. For test results after an edit.
+- `fields` on `lua_exec`, `lua_exec_file` and `lua_job`: only these keys of returned tables come back.
+- `instances_list` gives each instance's version, uptime, fps, a stalled flag and its Lua error count.
+- `instances_launch` documents what its presets change (the 20 fps cap hides per-frame cost; `-nosound` changes
+  `SoundDuration` of compressed WAVs) and that clients share `data/` and cookies with the user's game.
+
+### Tests
+
+- Native unit tests without a game (`gmod-mcp-unittests`, `gmod-mcp-coretests`), and a stand-in game for the bridge
+  tests, all in CI on Windows and Linux.
+
 ## 0.3.1
 
 ### Fixes
