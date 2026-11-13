@@ -178,20 +178,38 @@ static json convar_set_tool(const json &args) {
     wait_frames(3, 3.0);
     json g = agent::rt(r, "convar_get", json{{"name", args["name"]}});
     if (!g.value("ok", false)) return g;
-    std::string now = g["result"].value("value", "");
-    if (now != value) {
-        // Numeric normalization (e.g. "1" vs "1.0").
-        bool same = false;
+    auto same_value = [&](const std::string &now) {
+        if (now == value) return true;
         try {
-            same = std::stod(now) == std::stod(value);
+            return std::stod(now) == std::stod(value);  // numeric normalization (e.g. "1" vs "1.0")
         } catch (...) {
+            return false;
         }
-        if (!same)
-            return agent::err("set_refused", "the convar did not take the requested value (cheat without sv_cheats, server convar, or blocked command)",
-                              json{{"requested", value}, {"current", now}, {"flags", g["result"]["flag_names"]}});
+    };
+    std::string now = g["result"].value("value", "");
+    std::string via = "lua";
+    bool plain = value.find_first_of("\";\r\n") == std::string::npos;  // nothing that could end the command line
+    if (!same_value(now) && plain && agent::config().mode == agent::Mode::Client) {
+        // Some convars are silently ignored when Lua sets them (e.g. volume_sfx): retry through the engine console.
+        json e = agent::rt(realms::MENU, "engine_cmd", json{{"cmd", args["name"].get<std::string>() + " \"" + value + "\""}});
+        if (e.value("ok", false)) {
+            wait_frames(3, 3.0);
+            json g2 = agent::rt(r, "convar_get", json{{"name", args["name"]}});
+            if (g2.value("ok", false)) {
+                g = g2;
+                now = g["result"].value("value", "");
+                via = "engine";
+            }
+        }
     }
+    if (!same_value(now))
+        return agent::err("set_refused", "the convar did not take the requested value, from Lua nor from the engine console "
+                                         "(cheat without sv_cheats, server convar, or blocked command)",
+                          json{{"requested", value}, {"current", now}, {"flags", g["result"]["flag_names"]}});
     json out = g["result"];
     out["previous"] = s["result"]["previous"];
+    out["via"] = via;
+    if (via == "engine") out["note"] = "ignored when set from Lua: set through the engine console";
     return ok(out);
 }
 

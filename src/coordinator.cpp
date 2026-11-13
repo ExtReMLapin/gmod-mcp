@@ -20,6 +20,7 @@
 #include "agent.h"
 #include "console.h"
 #include "http_server.h"
+#include "jobs.h"
 #include "log.h"
 #include "mcp.h"
 #include "platform/platform.h"
@@ -54,8 +55,13 @@ static json self_info() {
     const auto &c = agent::config();
     json realms_j = json::object();
     for (int r = 0; r < realms::COUNT; ++r) realms_j[realms::name(r)] = agent::realm_present(r);
+    // Health at a glance (sent with every heartbeat): agents pick a usable instance without one status call each.
+    json fps = jobs::frame_stats()["fps"];
+    double since = jobs::seconds_since_last_frame();
     return json{{"id", c.instance_id}, {"mode", agent::mode_name()}, {"port", c.port}, {"pid", plat::process_id()},
-                {"map", agent::current_map()}, {"realms", realms_j}};
+                {"map", agent::current_map()}, {"realms", realms_j}, {"agent_version", c.version},
+                {"uptime_s", (int64_t)console::uptime()}, {"fps", fps.is_number() ? json((int)(fps.get<double>() + 0.5)) : json(nullptr)},
+                {"main_thread_stalled", since > 5.0}, {"lua_errors", console::errors_cursor()}};
 }
 
 static void purge_locked() {

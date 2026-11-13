@@ -95,7 +95,7 @@ static json lua_job_tool(const json &args) {
                      {"reports", s.value("reports", json::array())}, {"output", s.value("output", "")},
                      {"frames", s["frames"]}, {"resumes", s["resumes"]}, {"cpu_ms", s["cpu_ms"]}, {"elapsed_s", s["elapsed_s"]}};
             if (s.value("reports_dropped", 0) > 0) out["reports_dropped"] = s["reports_dropped"];
-            return ok(out);
+            return project_values(ok(out), args);
         }
         if (state == "failed") {
             json e = s.value("error", json::object());
@@ -119,7 +119,11 @@ void register_jobs() {
                {{"realm", realm_prop("Realm (default server).")},
                 {"code", {{"type", "string"}, {"description", "Lua source. Use the `job` object described above."}}},
                 {"path", {{"type", "string"},
-                          {"description", "Instead of code: file relative to lua/mcpagent_tmp/ or absolute (errors then point to the file)."}}},
+                          {"description", "Instead of code: a file, absolute (e.g. in your git worktree) or relative (lua/mcpagent_tmp/, "
+                                          "then the game folder, then lua/, gamemodes/, addons/*/lua/). Errors then point to the file. "
+                                          "Prefer it to pasting a file's content into code."}}},
+                {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
+                            {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"])."}}},
                 {"args", {{"type", "object"}, {"description", "Arbitrary data exposed to the script as job.args."}}},
                 {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600},
                                {"description", "Cancel the job after this many seconds (default 300). 15 s or more: runs as an MCP task when the client supports it."}}},

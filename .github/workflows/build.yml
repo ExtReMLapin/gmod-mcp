@@ -39,8 +39,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          t=$(find build -name "gmod-mcp-unittests" -type f -o -name "gmod-mcp-unittests.exe" -type f | head -n 1)
-          "$t"
+          for name in gmod-mcp-unittests gmod-mcp-coretests; do
+            t=$(find build -name "$name" -type f -o -name "$name.exe" -type f | head -n 1)
+            "$t"
+          done
 
       - name: Bridge tests (no game - closed, fake server, 2026-07-28 client)
         shell: bash

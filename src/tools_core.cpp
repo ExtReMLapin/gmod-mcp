@@ -81,20 +81,79 @@ static std::string chunk_for(const std::string &abs) {
     return "@" + na;
 }
 
-bool resolve_lua_file(const std::string &path, std::string &abs, std::string &chunkname, std::string &err) {
-    std::filesystem::path p = std::filesystem::u8path(path);
-    if (p.is_absolute()) {
-        abs = path;
-    } else {
-        abs = tmp_path(path, err);
-        if (abs.empty()) return false;
+// Where a relative path may be, in this order: the temporary directory (lua/mcpagent_tmp/), the game folder
+// (garrysmod/<path>), then where include() looks (lua/, gamemodes/, addons/*/lua/, addons/*/gamemodes/).
+static std::vector<std::string> lua_candidates(const std::string &rel) {
+    namespace fs = std::filesystem;
+    const auto &c = agent::config();
+    std::vector<std::string> out{c.tmp_dir + "/" + rel, c.game_dir + "/" + rel, c.game_dir + "/lua/" + rel, c.game_dir + "/gamemodes/" + rel};
+    std::error_code ec;
+    std::vector<std::string> addons;
+    for (const auto &e : fs::directory_iterator(fs::u8path(c.game_dir + "/addons"), ec))
+        if (e.is_directory(ec)) addons.push_back(e.path().filename().u8string());
+    std::sort(addons.begin(), addons.end());
+    for (const auto &a : addons) {
+        out.push_back(c.game_dir + "/addons/" + a + "/lua/" + rel);
+        out.push_back(c.game_dir + "/addons/" + a + "/gamemodes/" + rel);
     }
-    if (!plat::file_exists(abs)) {
-        err = "file not found: " + abs;
+    for (auto &o : out) o = native_path(o);
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+// Resolves a Lua path given by the agent: absolute, or relative (see lua_candidates). With allow_dir, a folder matches
+// too. On failure, err lists every place that was tried.
+bool resolve_lua_path(const std::string &path_in, bool allow_dir, std::string &abs, std::string &err) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto fits = [&](const std::string &p) {
+        fs::path fp = fs::u8path(p);
+        return fs::is_regular_file(fp, ec) || (allow_dir && fs::is_directory(fp, ec));
+    };
+    if (fs::u8path(path_in).is_absolute()) {
+        abs = native_path(path_in);
+        if (fits(abs)) return true;
+        err = std::string(allow_dir ? "file or folder" : "file") + " not found: " + abs;
         return false;
     }
+    std::string rel = normalize(path_in);
+    while (rel.size() > 2 && rel.compare(0, 2, "./") == 0) rel.erase(0, 2);
+    while (!rel.empty() && rel.back() == '/') rel.pop_back();
+    if (!safe_rel(rel)) {
+        err = "invalid path: absolute, or relative with characters [A-Za-z0-9_.-/] and no '..'";
+        return false;
+    }
+    std::vector<std::string> tried = lua_candidates(rel);
+    for (const auto &c : tried)
+        if (fits(c)) {
+            abs = c;
+            return true;
+        }
+    err = std::string(allow_dir ? "file or folder" : "file") + " '" + rel + "' not found; tried:";
+    for (const auto &c : tried) err += "\n  " + c;
+    return false;
+}
+
+bool resolve_lua_file(const std::string &path, std::string &abs, std::string &chunkname, std::string &err) {
+    if (!resolve_lua_path(path, false, abs, err)) return false;
     chunkname = chunk_for(abs);
     return true;
+}
+
+// `fields`: keeps only these keys of each returned table (e.g. a test's verdict out of a large result).
+json project_values(json r, const json &args) {
+    if (!args.contains("fields") || !r.value("ok", false) || !r.contains("result")) return r;
+    json &res = r["result"];
+    if (!res.contains("values") || !res["values"].is_array()) return r;
+    for (auto &v : res["values"]) {
+        if (!v.is_object()) continue;
+        json kept = json::object();
+        for (const auto &f : args["fields"])
+            if (f.is_string() && v.contains(f.get<std::string>())) kept[f.get<std::string>()] = v[f.get<std::string>()];
+        v = std::move(kept);
+    }
+    res["projected"] = args["fields"];
+    return r;
 }
 
 static json status_tool(const json &args) {
@@ -179,7 +238,7 @@ static json exec_payload(const json &args, const std::string &code, const std::s
 static double exec_timeout(const json &args) { return (args.value("jit", false) ? 120.0 : args.value("budget", 5.0)) + 10.0; }
 
 static json lua_exec_tool(const json &args) {
-    return rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec"), exec_timeout(args));
+    return project_values(rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec"), exec_timeout(args)), args);
 }
 
 static json lua_exec_file_tool(const json &args) {
@@ -189,7 +248,7 @@ static json lua_exec_file_tool(const json &args) {
     if (!plat::read_file(abs, code)) return agent::err("io_error", "cannot read: " + abs);
     json r = rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
     if (r.value("ok", false)) r["result"]["file"] = abs;
-    return r;
+    return project_values(std::move(r), args);
 }
 
 // Finds a Lua file the way include() names it ("autorun/x.lua", "mygm/gamemode/init.lua"), or a path relative to the
@@ -278,9 +337,8 @@ static json lua_check_tool(const json &args) {
     if (has_code) {
         items.push_back(json{{"file", "code"}, {"chunk", "=mcpagent:lua_check"}, {"code", args["code"]}});
     } else {
-        std::string path = args["path"], e;
-        if (std::filesystem::u8path(path).is_absolute()) abs = path;
-        else if ((abs = tmp_path(path, e)).empty()) return agent::err("invalid_params", e);
+        std::string e;
+        if (!resolve_lua_path(args["path"], true, abs, e)) return agent::err("not_found", e);
         std::error_code ec;
         auto fp = std::filesystem::u8path(abs);
         std::vector<std::string> files;
@@ -375,22 +433,31 @@ void register_core() {
                                                 "(status reports it, game_terminate ends it)."}}},
                        {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 12}, {"description", "Table serialization depth (default 4)."}}},
                        {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Max number of elements per table (default 200)."}}}};
+    exec_props["fields"] = {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
+                            {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"]): the rest "
+                                            "of a large result is dropped before it reaches you."}};
     json exec_code = exec_props;
     exec_code["code"] = {{"type", "string"}, {"description", "Lua code. Use `return` to return values (several allowed)."}};
     mcp::register_tool({"lua_exec", "Execute Lua",
                         "Executes Lua code in a realm under xpcall + debug.traceback, with a time budget (debug.sethook; the JIT "
                         "compiler is off for the chunk and the functions it defines, unless jit: true). Returns all serialized return values (values, n), captured print/Msg/MsgN/MsgC "
                         "(output) and the duration. Non-JSON types: {__type: Vector|Angle|Color|Entity|function|cycle|...}. "
-                        "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, realm_unavailable, client_locked.",
+                        "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, realm_unavailable, client_locked. "
+                        "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
+                        "Some convars cannot be set from Lua (RunConsoleCommand is refused for protected ones, e.g. "
+                        "volume_sfx, silently): use convar_set or console_exec, then read the value back.",
                         json{{"properties", exec_code}, {"required", {"code"}}}, json{{"destructiveHint", true}}, lua_exec_tool});
 
     json exec_file = exec_props;
     exec_file["path"] = {{"type", "string"},
-                         {"description", "Path relative to the lua/mcpagent_tmp/ temporary directory (e.g. 'test.lua'), or an absolute path on the game's disk."}};
+                         {"description", "Absolute path on the game's disk (e.g. a file in your git worktree), or relative: looked up in "
+                                         "lua/mcpagent_tmp/, then the game folder ('addons/x/lua/y.lua'), then lua/, gamemodes/ and "
+                                         "addons/*/lua/ (include() style)."}};
     mcp::register_tool({"lua_exec_file", "Execute a Lua file",
                         "Like lua_exec but reads the code from a file on the game's disk. The chunk is named after the real path "
-                        "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks. First write the file "
-                        "directly into tmp_dir (see status) or via lua_file_write.",
+                        "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks. Prefer it to pasting a file "
+                        "into lua_exec's code: it saves the tokens of the file on every call. With `fields`, only the "
+                        "test's verdict comes back.",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
 
     json reload_props = exec_props;
@@ -415,8 +482,8 @@ void register_core() {
     mcp::register_tool(
         {"lua_check", "Check Lua without running it",
          "Compiles Lua with the game's own parser (GLua syntax: !=, &&, ||, !, //, /* */, continue) and runs nothing. "
-         "`code`, or `path`: a file or a whole folder (every .lua under it, e.g. an addon), relative to lua/mcpagent_tmp/ or "
-         "absolute. Returns ok, errors [{file, line, message}] (one per file: the parser stops at the first error), and from "
+         "`code`, or `path`: a file or a whole folder (every .lua under it, e.g. an addon), absolute or relative to the "
+         "game folder or lua/mcpagent_tmp/. Returns ok, errors [{file, line, message}] (one per file: the parser stops at the first error), and from "
          "the bytecode: unknown_globals (globals read but neither defined in the checked files nor present in the realm: "
          "typos, missing includes, wrong realm) and globals_written (every global assignment, e.g. a forgotten `local`). "
          "Unknown globals depend on the realm: pick the one the code runs in ('client'/'server' need a map; 'menu' lacks "
@@ -424,7 +491,8 @@ void register_core() {
          json{{"properties",
                {{"realm", realm_prop("Lua state whose parser and globals are used: 'menu' (default, always present), 'client' or 'server'.")},
                 {"code", {{"type", "string"}, {"description", "Lua code to check (instead of path)."}}},
-                {"path", {{"type", "string"}, {"description", "File or folder to check (instead of code): relative to lua/mcpagent_tmp/, or an absolute path on the game's disk."}}},
+                {"path", {{"type", "string"}, {"description", "File or folder to check (instead of code): absolute, or relative (looked up in lua/mcpagent_tmp/, the game folder "
+                                                           "e.g. 'addons/my_addon/lua', then lua/, gamemodes/, addons/*/lua/)."}}},
                 {"globals", {{"type", "boolean"}, {"description", "Also list unknown and written globals (default true)."}}},
                 {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}, {"description", "Max entries per list (default 200)."}}}}}},
          RO, lua_check_tool});

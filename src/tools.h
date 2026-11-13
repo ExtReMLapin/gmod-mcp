@@ -35,6 +35,10 @@ std::string tmp_path(const std::string &name, std::string &err);
 json trace_hook(int realm, const std::string &start_tool, const json &start_args, double duration_s, int max_calls);
 // Path resolution for lua_exec_file/tests_run (relative to tmp_dir or absolute) + chunk name.
 bool resolve_lua_file(const std::string &path, std::string &abs, std::string &chunkname, std::string &err);
+// Same lookup for a file, or with allow_dir a folder too (lua_check). err lists the places tried.
+bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs, std::string &err);
+// Applies the `fields` argument (lua_exec, lua_exec_file, lua_job): keeps only these keys of each returned table.
+json project_values(json result, const json &args);
 
 // The `job` protocol of lua_job (tool description, also used by the write-lua-job prompt).
 const char *job_protocol();

@@ -132,3 +132,15 @@ else()
 endif()
 # Stand-in for the game in the bridge tests (a client in which gmod-mcp never loads).
 add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
+
+# Module helpers that need no game (links the module's sources like the snapshot generator).
+add_executable(gmod-mcp-coretests tests/native/test_core.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
+target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
+if(MSVC)
+  target_compile_options(gmod-mcp-coretests PRIVATE /utf-8 /EHsc /permissive- /wd4100 /wd4996)
+  target_compile_definitions(gmod-mcp-coretests PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  target_link_libraries(gmod-mcp-coretests PRIVATE ws2_32 bcrypt iphlpapi user32)
+else()
+  target_link_libraries(gmod-mcp-coretests PRIVATE dl pthread)
+endif()
