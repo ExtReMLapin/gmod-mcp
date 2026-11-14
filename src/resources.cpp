@@ -123,6 +123,23 @@ return found
 contains `lua/`). From then on every Lua lookup of that game looks in the folder FIRST, then in the game and its addons.
 Other games (other test clients, the user's own game) are not affected. Windows game clients only (not srcds, not Linux).
 
+Example. The worktree `D:/dev/my-addon-wt` is a copy of the addon installed as `garrysmod/addons/my_addon`.
+`lua_mount {path: "D:/dev/my-addon-wt"}` (or `"D:/dev/my-addon-wt/lua"`: same result), then `map_load`:
+
+| File on disk | What this game does with it | Source name (`debug.getinfo`) |
+|---|---|---|
+| `D:/dev/my-addon-wt/lua/autorun/my_addon.lua` | runs as the autorun file `autorun/my_addon.lua` at every map load (instead of the installed one) | `@lua/autorun/my_addon.lua` |
+| `D:/dev/my-addon-wt/lua/my_addon/core.lua` | what `include("my_addon/core.lua")` loads; hides `garrysmod/addons/my_addon/lua/my_addon/core.lua` | `@lua/my_addon/core.lua` |
+| `D:/dev/my-addon-wt/lua/my_addon/new.lua` (only in your branch) | `include("my_addon/new.lua")` finds it | `@lua/my_addon/new.lua` |
+| `garrysmod/addons/my_addon/lua/my_addon/old.lua` (deleted in your branch) | STILL loaded from the installed addon if something includes it | `@addons/my_addon/lua/my_addon/old.lua` |
+| `D:/dev/my-addon-wt/gamemodes/mygm/gamemode/shared.lua` | the gamemode file `mygm/gamemode/shared.lua` | `@gamemodes/mygm/gamemode/shared.lua` |
+| `D:/dev/my-addon-wt/materials/...`, `sound/...`, `models/...` | NOT mounted: the game keeps the installed copies | - |
+| `D:/dev/my-addon-wt/.git/`, `README.md`, anything outside `lua/` and `gamemodes/` | ignored | - |
+
+Refused paths: a relative path, a folder without `lua/` (e.g. `D:/dev`, or a folder holding several addons), a folder
+inside the game folder (`garrysmod/` or an installed addon: the engine already searches it), a path with `"`, `;` or a
+line break.
+
 When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
 set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it
 (`path: null`) also applies from the next map load. `instances_launch {lua_mount}` starts a client with it from its first

@@ -205,6 +205,18 @@ lua_function_source {realm: "server", expr: "MyAddon.Update"}   -> source: the w
   (from the next map load).
 - The engine caches Lua files by name and file time; `lua_mount` empties that cache when it changes (so an addon file
   and its worktree copy with the same name and time cannot be mixed up).
+Example: the worktree `D:/dev/my-addon-wt` of the addon installed as `garrysmod/addons/my_addon`, mounted with
+`lua_mount {path: "D:/dev/my-addon-wt"}` then `map_load`:
+
+| File on disk | What this game does with it |
+|---|---|
+| `D:/dev/my-addon-wt/lua/autorun/my_addon.lua` | runs as `autorun/my_addon.lua` (instead of the installed one) |
+| `D:/dev/my-addon-wt/lua/my_addon/core.lua` | what `include("my_addon/core.lua")` loads |
+| `D:/dev/my-addon-wt/lua/my_addon/new.lua` (only in the branch) | found by `include("my_addon/new.lua")` |
+| `garrysmod/addons/my_addon/lua/my_addon/old.lua` (deleted in the branch) | still loaded from the installed addon |
+| `D:/dev/my-addon-wt/gamemodes/<gm>/...` | gamemode files |
+| `materials/`, `sound/`, `models/`, anything else | not mounted |
+
 - What sees the mounted folder (checked in game): autorun files, `include()`, `AddCSLuaFile` (the client gets the
   folder's copy), the console's `lua_openscript` / `lua_openscript_cl`, `file.Read` / `file.Find` with `"LUA"`, and
   gmod-mcp's `lua_exec_file`, `lua_job {path}`, `lua_check`, `lua_reload` and `lua_function_source`, which look in the

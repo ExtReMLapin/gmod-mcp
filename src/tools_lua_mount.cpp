@@ -35,7 +35,12 @@ void register_lua_mount() {
          "AddCSLuaFile (the client gets the folder's copy), lua_openscript, file.Read/Find with \"LUA\", and gmod-mcp's "
          "own lua_exec_file / lua_job {path} / lua_check / lua_reload / lua_function_source. A file in the folder hides "
          "the installed addon's file of the same Lua path; files only in the game are still loaded. Other games are "
-         "not affected. IT TAKES EFFECT AT THE NEXT MAP LOAD: call map_load right after (code already running stays "
+         "not affected. Example: path \"D:/dev/my-addon-wt\" (a worktree of the addon installed as addons/my_addon): "
+         "D:/dev/my-addon-wt/lua/autorun/my_addon.lua runs as autorun/my_addon.lua; "
+         "D:/dev/my-addon-wt/lua/my_addon/core.lua is what include(\"my_addon/core.lua\") loads, instead of "
+         "addons/my_addon/lua/my_addon/core.lua; D:/dev/my-addon-wt/gamemodes/<gm>/... are gamemode files; "
+         "materials/, sound/, models/ and everything outside lua/ and gamemodes/ are not mounted. "
+         "IT TAKES EFFECT AT THE NEXT MAP LOAD: call map_load right after (code already running stays "
          "until loaded again). No autorefresh: after an edit, lua_reload {path} or map_load; check with "
          "lua_function_source. The engine names the folder's files from the folder's root (debug.getinfo source "
          "\"@lua/my_addon/x.lua\", not \"@addons/my_addon/lua/my_addon/x.lua\"). Only Lua (not materials, sounds, "
@@ -47,7 +52,10 @@ void register_lua_mount() {
          "section \"Mounted Lua folder\".",
          json{{"properties",
                {{"path", {{"type", json::array({"string", "null"})},
-                          {"description", "Mounted folder (absolute), or null / \"\" to remove it. Omit to read the current state."}}},
+                          {"description", "Absolute path of the folder to mount: the addon's root, i.e. the folder that contains lua/ "
+                                         "(e.g. \"D:/dev/my-addon-wt\"), or that lua/ folder itself (same result). Must be "
+                                         "outside the game folder. null or \"\" unmounts it (from the next map load). Omit "
+                                         "it to read the current state."}}},
                 {"empty_cache", {{"type", "boolean"}, {"description", "Empty the engine's Lua file cache after the change (default true)."}}}}}},
          json{{"destructiveHint", false}, {"idempotentHint", true}}, lua_mount_tool});
 }
