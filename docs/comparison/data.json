@@ -2294,7 +2294,8 @@
           "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L589"
         },
         "auth": {
-          "v": "unverified"
+          "v": "yes",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/index.ts#L18"
         },
         "no_inject": {
           "v": "yes",
