@@ -1211,6 +1211,15 @@ def case_version():
     check("VERSION the first text the agent reads is the warning, with what to do",
           first.startswith("WARNING") and "0.0.1" in first and "skill" in first, first[:300])
     check("VERSION the tool's own answer is still there", sc.get("args") == {} and any(c.get("text") == "echo" for c in res.get("content", [])), res)
+    # The bridge's own tools too (seen in a real update, 2026-11-14: "launch an instance" went through instances_launch
+    # and the agent never saw the warning).
+    for name, args in (("instance_select", {"instance": None}), ("instances_close", {"owner": "nobody"})):
+        r = b.req("tools/call", {"name": name, "arguments": args})
+        res = (r or {}).get("result", {})
+        first = (res.get("content") or [{}])[0].get("text", "")
+        check("VERSION the bridge's own %s carries the warning too" % name,
+              first.startswith("WARNING") and "0.0.1" in res.get("structuredContent", {}).get("version_warning", ""), res)
+    check("VERSION the warning explains tools missing from the list", "listed" in first or "list" in first, first[:400])
     fake.stop(); b.close()
     # Same version: no warning.
     port, env = free_port(), isolated_config(with_token=True)
@@ -1234,6 +1243,9 @@ def case_version_live():
     ins = ((r or {}).get("result", {}).get("structuredContent", {}).get("instances") or [{}])
     inst = ins[0].get("instance")
     check("VERSION LIVE client launched", inst, r)
+    lres = (r or {}).get("result", {})
+    check("VERSION LIVE the instances_launch answer itself starts with the warning",
+          (lres.get("content") or [{}])[0].get("text", "").startswith("WARNING"), str(lres)[:300])
     time.sleep(4)
     r = b.req("tools/call", {"name": "status", "arguments": {"instance": inst} if inst else {}}, 30)
     res = (r or {}).get("result", {})

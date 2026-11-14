@@ -448,8 +448,10 @@ std::string version_warning() {
     if (g_module_version.empty() || g_module_version == kBridgeVersion) return "";
     return std::string("WARNING: version mismatch. The gmod-mcp module running in Garry's Mod is ") + g_module_version +
            ", this Claude Code plugin is " + kBridgeVersion + ". Tools may behave differently from their descriptions or "
-           "miss features. Tell the user now. To fix it: quit every game that runs gmod-mcp, then ask the gmod-mcp skill to "
-           "update the module (it installs the module shipped with this plugin into the game).";
+           "miss features: the tool list shown while the game was closed is this plugin's, the live one is the game "
+           "module's, so tools listed earlier can be missing now. Tell the user now. To fix it: quit every game that runs "
+           "gmod-mcp, then ask the gmod-mcp skill to update the module (it installs the module shipped with this plugin "
+           "into the game).";
 }
 
 // Adds the warning to a tools/call result: first text item and structuredContent.version_warning.
@@ -1140,6 +1142,8 @@ void close_launched_on_exit() {
     g_launched.clear();
 }
 
+void probe_module_version();
+
 void handle_bridge_tool(const json &msg) {
     json p = params_of(msg);
     std::string name = p.value("name", "");
@@ -1157,9 +1161,17 @@ void handle_bridge_tool(const json &msg) {
             }
         }
     json res;
-    if (name == kLaunchName) res = launch_tool(args, token);
-    else if (name == kCloseName) res = close_tool(args);
-    else res = select_tool(args);
+    if (name == kLaunchName) {
+        res = launch_tool(args, token);
+        // The clients just started may run another module version than the one seen before (or none was seen yet):
+        // ask now rather than at the next periodic check, so this very answer carries the warning.
+        probe_module_version();
+    } else if (name == kCloseName) {
+        res = close_tool(args);
+    } else {
+        res = select_tool(args);
+    }
+    add_version_warning(res);
     out(local_result(msg, res));
 }
 
