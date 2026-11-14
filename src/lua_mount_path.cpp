@@ -19,6 +19,15 @@ bool normalize_root(const std::string &in, std::string &root, std::string &err) 
         err = "invalid character in the path (quote, ';' or line break)";
         return false;
     }
+    // The engine's file system does not find files under a non-ASCII path: such a folder is accepted into its search
+    // paths but none of its files load (seen live 2026-11-14). Refuse it, with the way out.
+    for (unsigned char c : in)
+        if (c >= 0x80) {
+            err = "the folder path has non-ASCII characters, which the game's file system cannot read (the folder would be "
+                  "mounted but none of its files would load). Use an ASCII-only path, e.g. a junction: mklink /J "
+                  "C:\\gmod-wt \"<your folder>\", then mount C:\\gmod-wt";
+            return false;
+        }
     fs::path p = fs::u8path(in);
     if (!p.is_absolute()) {
         err = "the folder to mount must be an absolute path (e.g. D:/dev/my-addon-worktree): " + in;

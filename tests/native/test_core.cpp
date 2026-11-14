@@ -474,9 +474,11 @@ static void test_edge_cases() {
     fs::create_directories(t / "garrysmod" / "addons" / "pba" / "lua");
     std::ofstream(t / "afile.txt") << "x";
     std::string root, err;
-    CHECK(lua_mount::normalize_root((t / "\xC3\xA9t\xC3\xA9 wt").u8string(), root, err));
-    CHECK(lua_mount::normalize_root((t / "\xC3\xA9t\xC3\xA9 wt" / "lua").u8string() + "/", root, err) &&
-          fs::u8path(root) == (t / "\xC3\xA9t\xC3\xA9 wt").make_preferred());
+    // The engine's file system does not find files under a non-ASCII path (seen live 2026-11-14: a mounted folder with
+    // accents was listed in the search paths but none of its files loaded): refused, with the way out.
+    CHECK(!lua_mount::normalize_root((t / "\xC3\xA9t\xC3\xA9 wt").u8string(), root, err) && err.find("ASCII") != std::string::npos &&
+          err.find("mklink /J") != std::string::npos);
+    CHECK(!lua_mount::normalize_root((t / "\xC3\xA9t\xC3\xA9 wt" / "lua").u8string() + "/", root, err));
     CHECK(!lua_mount::normalize_root((t / "afile.txt").u8string(), root, err) && err.find("not a folder") != std::string::npos);
     CHECK(!lua_mount::normalize_root("\\\\nosuchserver\\share\\wt", root, err));
     CHECK(!lua_mount::normalize_root(t.u8string() + "/does-not-exist", root, err) && err.find("not found") != std::string::npos);

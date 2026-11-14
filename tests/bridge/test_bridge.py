@@ -758,13 +758,14 @@ def case_lua_mount():
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     time.sleep(1)
     check("LUA_MOUNT stand-in closed", not any(alive(p) for p in pids), pids)
-    # A non-ASCII folder must reach the client byte for byte (the command line is built in UTF-16 from UTF-8).
+    # A non-ASCII folder: the game's file system lists it but loads none of its files (seen live 2026-11-14), so it is
+    # refused before anything starts, with the way out (an ASCII junction).
     os.remove(argv_file)
     res = launch(wt_u)
     sc = res.get("structuredContent", {})
     pids = sc.get("silent_pids", [])
-    line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
-    check("LUA_MOUNT non-ASCII folder: the client got the exact path", ('-mcp_lua_mount "%s"' % wt_u) in line, ascii(line[-60:]) + " expected " + ascii(wt_u[-12:]))
+    check("LUA_MOUNT non-ASCII folder refused before launching, with the way out",
+          res.get("isError") and "ASCII" in json.dumps(sc) and "mklink" in json.dumps(sc) and not os.path.exists(argv_file), sc)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     b.close()
     shutil.rmtree(game, ignore_errors=True)
@@ -787,7 +788,7 @@ def case_lua_mount_verify():
     game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
     shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
     work = tempfile.mkdtemp(prefix="gmcp-mount-")
-    wt = os.path.join(work, "ov A \u00e9 \u0436\u4e2d")
+    wt = os.path.join(work, "ov A wt")
     os.makedirs(os.path.join(wt, "lua"))
     pid_file = os.path.join(work, "pid.txt")
     port, env = free_port(), isolated_config(with_token=True)
@@ -1132,7 +1133,7 @@ def case_edge_live():
 
     # Mounted folder corner cases.
     base = tempfile.mkdtemp(prefix="gmcp-edge-")
-    ova = os.path.join(base, "ov A é")
+    ova = os.path.join(base, "ov A")
     ovb = os.path.join(base, "ovB")
     for d, tag in ((ova, "edgeA"), (ovb, "edgeB")):
         os.makedirs(os.path.join(d, "lua", "mcpagent_tmp"))
@@ -1508,9 +1509,81 @@ def case_convar_crash():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "orphan", "edge", "version", "feedback", "fuzz"]:
+def case_fixes_live():
+    """Live checks of the review fixes (Windows, Steam running, no other game): connect not alone refused; Lua errors
+    raised by autorun files while a map loads belong to that map (since_map_load); async job ids after a map change;
+    a lua_mount folder with non-ASCII characters is really active."""
+    print("== FIXES LIVE: review fixes in a real game", flush=True)
+    import shutil
+    base = tempfile.mkdtemp(prefix="gmcp-fixes-")
+    mount = os.path.join(base, "wt fixes")
+    for rel, text in (("lua/autorun/zz_mcp_err.lua", 'error("mcp shared autorun error")\n'),
+                      ("lua/autorun/server/zz_mcp_err.lua", 'error("mcp server autorun error")\n'),
+                      ("lua/autorun/server/aaa_mcp_err.lua", 'error("mcp early server autorun error")\n')):
+        os.makedirs(os.path.dirname(os.path.join(mount, rel)), exist_ok=True)
+        with open(os.path.join(mount, rel), "w") as f: f.write(text)
+    b = Bridge(27080)
+
+    def call(tool, args, timeout=300):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    # A non-ASCII folder: the engine lists it but loads none of its files (seen live), so it is refused up front.
+    odd = os.path.join(base, "wt é ж中")
+    os.makedirs(os.path.join(odd, "lua"))
+    sc, err = call("instances_launch", {"count": 1, "owner": "fixes", "lua_mount": odd})
+    check("FIXES a non-ASCII lua_mount folder is refused before launching, with the way out",
+          err and "ASCII" in json.dumps(sc) and not sc.get("instances"), sc)
+    sc, err = call("instances_launch", {"count": 1, "map": "gm_construct", "owner": "fixes", "sound": False, "lua_mount": mount})
+    ins = (sc.get("instances") or [{}])[0]
+    inst = ins.get("instance")
+    check("FIXES client launched with the lua_mount folder, reported active", inst and (ins.get("lua_mount") or {}).get("active") is True, sc)
+    if not inst: b.close(); return
+    I = {"instance": inst}
+    sc, err = call("console_exec", dict(I, cmd="echo x; connect 127.0.0.1:27016"))
+    check("FIXES 'echo x; connect ...' refused, nothing sent", err and "connect must be alone" in json.dumps(sc), sc)
+    sc, err = call("status", dict(I, fields=["map"]))
+    check("FIXES still on its map after the refused connect", sc.get("map") == "gm_construct", sc)
+    # Errors of the first map load, then a second load: since_map_load keeps the autorun errors of the current map.
+    call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
+    con, _ = call("console_read", dict(I, regex="mcp .*autorun|not loaded|mcpagent", limit=40))
+    print("   console:", [l.get("text") for l in con.get("lines", [])][-12:], flush=True)
+    sc, err = call("errors_since", dict(I, cursor=0, since_map_load=True))
+    msgs = [e.get("message", "") for e in sc.get("errors", [])]
+    cur = sc.get("map_load")
+    check("FIXES since_map_load lists the autorun errors raised while this map loaded",
+          all(any(t in m for m in msgs) for t in ("mcp shared autorun error", "mcp server autorun error", "mcp early server autorun error"))
+          and all(e.get("map_load") == cur for e in sc.get("errors", [])), {"map_load": cur, "messages": msgs})
+    sc_all, _ = call("errors_since", dict(I, cursor=0))
+    n_all = len([e for e in sc_all.get("errors", []) if "mcp server autorun error" in e.get("message", "")])
+    n_cur = len([m for m in msgs if "mcp server autorun error" in m])
+    check("FIXES the previous map's copy of the error is not in since_map_load", n_all >= 2 and n_cur == 1, {"all": n_all, "current": n_cur})
+    # Async job ids across a map change.
+    sc, err = call("lua_job", dict(I, realm="server", code="job:sleep(600) return 1", **{"async": True}))
+    old = sc.get("job_id", "")
+    check("FIXES async job id carries the generation", "-g" in old, sc)
+    call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
+    sc, err = call("lua_job", dict(I, realm="server", code="return 2", **{"async": True}))
+    new = sc.get("job_id", "")
+    check("FIXES the new map's first job has another id", new and new != old, [old, new])
+    sc, err = call("lua_job_status", dict(I, id=old))
+    check("FIXES the old id answers realm_reset", err and "realm_reset" in json.dumps(sc), sc)
+    sc, err = call("lua_job_cancel", dict(I, id=old))
+    check("FIXES cancelling the old id answers realm_reset too", err and "realm_reset" in json.dumps(sc), sc)
+    sc, err = call("lua_job_status", dict(I, id=new, wait_s=10))
+    check("FIXES the new job is untouched and returns", sc.get("values") == [2], sc)
+    call("instances_close", {"owner": "fixes"}, 60)
+    b.close()
+    shutil.rmtree(base, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "orphan", "edge", "version", "feedback", "fuzz"]
+for c in sys.argv[2:] or DEFAULT:
+    t_case = time.time()
     CASES[c]()
+    print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))
 sys.exit(0 if passed == len(results) else 1)
