@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`errors_since {since_map_load: true}` kept the wrong errors.** A map load now starts when the new server Lua state
+  appears (the module is required in it by the autorun loader), in client and srcds modes, instead of when the pump later
+  noticed the realm: errors raised while the map loaded were stamped with the previous map, and on a dedicated server the
+  number never grew after the first map. Errors raised between the old server state closing and the new one opening
+  (shared autorun files) are re-stamped to the new load. The `realm` and `since_map_load` filters now apply before
+  `limit`: with more than `limit` older errors kept, the current map's errors were returned as an empty list.
+
 ## 0.3.4
 
 ### New

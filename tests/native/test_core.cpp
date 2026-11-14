@@ -128,6 +128,98 @@ static void test_errors_map_tags() {
     CHECK(cur.value("map_load", 0) == all["errors"][1].value("map_load", -1));
 }
 
+// errors_since: the since_map_load filter applies before the limit (a limit smaller than the number of older errors
+// kept used to hide the current map's errors).
+static void test_errors_filter_before_limit() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_old");
+    for (int i = 0; i < 150; ++i) console::push_error(json{{"realm", "server"}, {"message", "old " + std::to_string(i)}});
+    agent::note_map_load_start("gm_cur");
+    console::push_error(json{{"realm", "server"}, {"message", "current 1"}});
+    console::push_error(json{{"realm", "client"}, {"message", "current 2"}});
+    json r = mcp::call_tool("errors_since", json{{"cursor", 0}, {"limit", 100}, {"since_map_load", true}}).value("structuredContent", json::object());
+    CHECK(r["errors"].size() == 2 && r["errors"][0].value("message", "") == "current 1");
+    // The limit counts kept errors only, and next_cursor lets the caller continue exactly after the last one returned.
+    json r1 = mcp::call_tool("errors_since", json{{"cursor", 0}, {"limit", 1}, {"since_map_load", true}}).value("structuredContent", json::object());
+    CHECK(r1["errors"].size() == 1 && r1["errors"][0].value("message", "") == "current 1");
+    json r2 = mcp::call_tool("errors_since", json{{"cursor", r1.value("next_cursor", 0)}, {"limit", 1}, {"since_map_load", true}}).value("structuredContent", json::object());
+    CHECK(r2["errors"].size() == 1 && r2["errors"][0].value("message", "") == "current 2");
+    // The realm filter too.
+    json rc = mcp::call_tool("errors_since", json{{"cursor", 0}, {"limit", 1}, {"realm", "client"}}).value("structuredContent", json::object());
+    CHECK(rc["errors"].size() == 1 && rc["errors"][0].value("message", "") == "current 2");
+}
+
+static json errs_current(const char *realm = nullptr) {
+    json a{{"cursor", 0}, {"since_map_load", true}};
+    if (realm) a["realm"] = realm;
+    return mcp::call_tool("errors_since", a).value("structuredContent", json::object());
+}
+static bool has_msg(const json &r, const std::string &m) {
+    for (const auto &e : r["errors"])
+        if (e.value("message", "") == m) return true;
+    return false;
+}
+
+// A map load starts when the NEW server Lua state appears, not when the pump later notices it: the server autorun runs
+// inside the load, before the next frame. These are the calls the module makes (module.cpp gmod13_open/close in the
+// server state, agent::pump), in the order the game produces them.
+static void test_errors_load_stamp_order() {
+    // Client mode. Map 1 loads: the autorun loader requires the module in the new server state, an autorun errors after it.
+    console::errors_clear();
+    agent::on_server_state_open();
+    uint64_t l1 = agent::map_load_seq();
+    console::push_error(json{{"realm", "server"}, {"message", "m1 autorun"}});
+    agent::server_realm_appeared();  // the pump sees the server realm: same load, no new number
+    CHECK(agent::map_load_seq() == l1);
+    console::push_error(json{{"realm", "server"}, {"message", "m1 later"}});
+    // Map change. The old server state closes, then the new one is created: a shared autorun file (lua/autorun/*.lua) and
+    // server autorun files sorted before the loader run BEFORE the module is required in the new state.
+    agent::on_server_state_close();
+    console::push_error(json{{"realm", "server"}, {"message", "m2 early autorun"}});
+    console::push_error(json{{"realm", "menu"}, {"message", "menu error"}});
+    agent::on_server_state_open();
+    CHECK(agent::map_load_seq() == l1 + 1);
+    console::push_error(json{{"realm", "server"}, {"message", "m2 autorun"}});
+    console::push_error(json{{"realm", "client"}, {"message", "m2 client"}});
+    agent::server_realm_appeared();  // the pump finds the realm back later: still the same load
+    CHECK(agent::map_load_seq() == l1 + 1);
+    json cur = errs_current();
+    CHECK(cur["errors"].size() == 3);
+    CHECK(has_msg(cur, "m2 early autorun") && has_msg(cur, "m2 autorun") && has_msg(cur, "m2 client"));
+    CHECK(!has_msg(cur, "m1 autorun") && !has_msg(cur, "m1 later") && !has_msg(cur, "menu error"));
+    CHECK(errs_current("server")["errors"].size() == 2);
+    // Pump first, loader after (the pump ran between the state's creation and the autorun): still one number per map.
+    agent::on_server_state_close();
+    agent::server_realm_appeared();
+    uint64_t l3 = agent::map_load_seq();
+    CHECK(l3 == l1 + 2);
+    console::push_error(json{{"realm", "server"}, {"message", "m3 first"}});
+    agent::on_server_state_open();
+    CHECK(agent::map_load_seq() == l3);
+    console::push_error(json{{"realm", "server"}, {"message", "m3 second"}});
+    json c3 = errs_current();
+    CHECK(c3["errors"].size() == 2 && has_msg(c3, "m3 first") && has_msg(c3, "m3 second"));
+
+    // Dedicated server: the pump runs from the server state, so it never sees the realm absent; only the module's
+    // open/close in each server state tell. The number must still grow with every map.
+    console::errors_clear();
+    agent::on_server_state_open();
+    uint64_t d1 = agent::map_load_seq();
+    agent::server_realm_appeared();  // first pump of the first state
+    console::push_error(json{{"realm", "server"}, {"message", "d1"}});
+    for (int i = 2; i <= 3; ++i) {
+        agent::on_server_state_close();
+        console::push_error(json{{"realm", "server"}, {"message", "d" + std::to_string(i) + " early"}});
+        agent::on_server_state_open();  // the pump is re-registered in the new state, it does not see an absence
+        CHECK(agent::map_load_seq() == d1 + (uint64_t)(i - 1));
+        console::push_error(json{{"realm", "server"}, {"message", "d" + std::to_string(i)}});
+    }
+    json d = errs_current();
+    CHECK(d["errors"].size() == 2 && has_msg(d, "d3 early") && has_msg(d, "d3"));
+    json all = mcp::call_tool("errors_since", json{{"cursor", 0}}).value("structuredContent", json::object());
+    CHECK(all["errors"].size() == 5);
+}
+
 // B6: small things agents tripped on.
 static void test_small_b6() {
     // sweep: read-only tools that answer the same on every instance work without `instance`.
@@ -432,6 +524,8 @@ int main() {
     test_cmdline();
     test_console_wait();
     test_errors_map_tags();
+    test_errors_filter_before_limit();
+    test_errors_load_stamp_order();
     test_small_b6();
     test_srcds_error_parsing();
     test_console_never_throws();

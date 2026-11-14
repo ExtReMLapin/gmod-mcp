@@ -389,7 +389,7 @@ void push_error(const json &e) {
     while (g_errors.size() > kErrCapacity) g_errors.pop_front();
 }
 
-json errors_since(uint64_t cursor, size_t limit) {
+json errors_since(uint64_t cursor, size_t limit, const std::function<bool(const json &)> &keep) {
     std::lock_guard<std::mutex> lk(g_emu);
     json out = json::array();
     uint64_t oldest = g_errors.empty() ? g_err_next : g_errors.front()["seq"].get<uint64_t>();
@@ -399,12 +399,22 @@ json errors_since(uint64_t cursor, size_t limit) {
     for (const auto &e : g_errors) {
         uint64_t s = e["seq"].get<uint64_t>();
         if (s < cursor) continue;
+        if (keep && !keep(e)) continue;
         if (out.size() >= limit) break;
         out.push_back(e);
         next = s + 1;
     }
     if (out.size() < limit) next = g_err_next;
     return json{{"errors", out}, {"next_cursor", next}, {"lost", lost}};
+}
+
+void errors_restamp(uint64_t from_seq, uint64_t map_load) {
+    std::lock_guard<std::mutex> lk(g_emu);
+    for (auto &e : g_errors) {
+        if (e["seq"].get<uint64_t>() < from_seq) continue;
+        std::string realm = e.value("realm", "");
+        if (realm == "server" || realm == "client") e["map_load"] = map_load;
+    }
 }
 
 uint64_t errors_cursor() {

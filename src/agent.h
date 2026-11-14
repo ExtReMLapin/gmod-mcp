@@ -56,6 +56,15 @@ std::string current_map();
 // Lua errors are tagged with it, so errors_since can keep only the current map's.
 void note_map_load_start(const std::string &map);
 uint64_t map_load_seq();
+// A map load starts when a NEW server Lua state appears. The module learns it as early as it can: gmod13_open runs in
+// every new server state (the autorun loader requires the module), in client and srcds modes alike, before the map's
+// other autorun files when it can; gmod13_close runs in the old one. The pump seeing the server realm come up
+// (server_realm_appeared) is the fallback when the loader is missing, and never counts a load twice. Errors raised
+// between the close of the old server state and the open of the new one (shared autorun files, autorun files sorted
+// before the loader) belong to the new load: on_server_state_open re-stamps them.
+void on_server_state_open();
+void on_server_state_close();
+void server_realm_appeared();
 // Map of a given map load ("" if not known yet).
 std::string map_of_load(uint64_t seq);
 // Queues a one-time notice shown in game to the local player once the client realm is ready (client mode only).
