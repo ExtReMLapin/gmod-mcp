@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.3
+
+### Fixes
+
+- **The version warning was missing from the bridge's own tools.** Seen in a real update from 0.3.1: "launch an
+  instance" went through `instances_launch`, a tool of the bridge itself, whose answers did not carry the warning, so
+  the agent only saw it later in a `status`. `instances_launch`, `instances_close` and `instance_select` now carry it,
+  `instances_launch` checks the version of the clients it just started before answering, and the warning explains why
+  tools listed while the game was closed can be missing (that list is the plugin's, the live one is the module's).
+- CI: the Linux build ran every compile at once and the runner killed it; it now runs 4 at a time.
+
+### Upgrading
+
+- Update the plugin (auto-update, or `claude plugin update gmod-mcp@gmod-mcp`), restart Claude Code, then let Claude
+  update the module in the game (quit it first) when the warning asks for it.
+
 ## 0.3.2
 
 From the field feedback of agents that ran up to 17 test clients in parallel, then checked in game on a Windows
