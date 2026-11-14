@@ -74,8 +74,12 @@ Then wait for the server: check the URL from section 1 every 2 seconds, for up t
 load take longer). Run the wait in the background or in one bounded loop, not as many separate calls.
 
 **When it answers**: call the `gmod` tools again. The bridge notices the game within 2 seconds and Claude Code
-fetches the live tool list by itself; the guide is the resource `mcpagent://guide`. If the server instructions say the
-module and the plugin versions differ, tell the user and offer section 3 (update).
+fetches the live tool list by itself; the guide is the resource `mcpagent://guide`.
+
+**Version warning**: when a tool result starts with `WARNING: version mismatch` (or the server instructions say so), the
+module running in the game and this plugin differ: Claude Code updated the plugin, not the module in the game. Tell the
+user at once and offer section 3 (update the module; the game must be quit first). Until then, tools may lack features
+their descriptions mention.
 
 **Several clients side by side** (for example to split a long test suite): use the `instances_launch` tool (Windows),
 which works even while no game runs. It starts 1 to 8 clients with the right options (`-multirun`, a small window, a

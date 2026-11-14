@@ -19,6 +19,11 @@
 > **3.** Ask Claude: **`set up gmod-mcp`**
 >
 > That's it. Claude installs the module in your game (it asks first) and starts Garry's Mod with `-mcp`.
+>
+> **4. Turn on updates (recommended):** `/plugin` → **Marketplaces** → `gmod-mcp` → **Enable auto-update**. Claude Code
+> keeps auto-update off for marketplaces other than Anthropic's, and no command can turn it on for you. See
+> [Updates](#updates).
+>
 > Other MCP clients, Linux or a dedicated server: see [Install](#install).
 
 **An MCP server that lives inside Garry's Mod.** Drop one native module into your game and an AI coding agent
@@ -38,6 +43,7 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
   - [2. MCP client side](#2-mcp-client-side)
   - [Dedicated server](#dedicated-server)
   - [Claude Code plugin](#claude-code-plugin)
+- [Updates](#updates)
 - [Tools](#tools)
   - [Long-running Lua jobs](#long-running-lua-jobs)
   - [Testing a branch: the mounted Lua folder](#testing-a-branch-the-mounted-lua-folder)
@@ -58,8 +64,7 @@ You need Garry's Mod with the **64-bit** binaries (`gmod_win64.exe`, the default
 connects Claude Code by itself; its skill copies the two files into the game (after asking you) and starts the game with
 `-mcp`. Claude Code stays connected while the game is closed: the tools say so,
 Claude starts the game again instead of giving up, and they work again as soon as it is up, no reconnection needed.
-Updates: `/plugin`, Marketplaces, `gmod-mcp`, enable auto-update (off by default for marketplaces other than
-Anthropic's), then ask Claude to update gmod-mcp so the module in the game follows.
+Updates: see [Updates](#updates).
 
 Or by hand (other MCP clients, or without the plugin), in two steps:
 
@@ -133,6 +138,20 @@ the plugin replaces it.
 
 From a shell: `claude plugin marketplace add ExtReMLapin/gmod-mcp`, then `claude plugin install gmod-mcp@gmod-mcp`.
 Remove it with `/plugin uninstall gmod-mcp@gmod-mcp`.
+
+## Updates
+
+- **What updates by itself.** With auto-update on (`/plugin` → **Marketplaces** → `gmod-mcp` → **Enable auto-update**),
+  Claude Code updates the plugin a few minutes after a session starts; the new version runs from the next start of
+  Claude Code (or after `/reload-plugins`). Without it, update by hand: `claude plugin update gmod-mcp@gmod-mcp` in a
+  shell, then restart Claude Code.
+- **What is in the plugin**: the bridge Claude Code talks to, the skill, and a copy of the module for the game.
+- **What does not update by itself: the module loaded by the game** (`garrysmod/lua/bin/gmsv_mcpagent_*.dll`). After a
+  plugin update, quit Garry's Mod and ask Claude **`update gmod-mcp`**: the skill copies the new module into the game.
+  Until then, every tool result starts with a warning that names both versions, so neither you nor Claude can miss it.
+- **What the commands download**: `/plugin marketplace add` clones this repository (to read its
+  `.claude-plugin/marketplace.json`); `/plugin install` and updates download only the release zip of that version
+  (`gmod-mcp-plugin.zip`, checked against its SHA-256), not the source code.
 
 ## Tools
 
