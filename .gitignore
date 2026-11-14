@@ -15,3 +15,6 @@ notes/
 # Secrets
 mcpagent_token*
 token
+
+# Python bytecode
+__pycache__/
