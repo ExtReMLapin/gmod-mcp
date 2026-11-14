@@ -1,5 +1,8 @@
 // Unit tests of the module's tool helpers that need no game: Lua path lookup and the `fields` projection.
 // Built as gmod-mcp-coretests (links the module's sources like gmod-mcp-snapshot), run by the CI.
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -60,6 +63,16 @@ static void test_cmdline() {
     // What GMod really prints (seen live 2026-11-14 in the menu, client and server realms, French client too).
     CHECK(cmdline::unknown_commands({"Unknown command: pba_typo_xyz", "Unknown command: Other_One"}) == (V{"pba_typo_xyz", "other_one"}));
     CHECK(cmdline::unknown_commands({"Unknown command:", "Unknown command: ", "an Unknown command \"y\" inside", "Unknown command: x y", "fine"}) == (V{"x"}));
+    // console_exec: connect must be the only statement ("echo x; connect ..." used to skip the check and the disconnect).
+    CHECK(!cmdline::connect_not_alone(cmdline::split_statements("connect 127.0.0.1")));
+    CHECK(!cmdline::connect_not_alone(cmdline::split_statements("  connect 127.0.0.1:27016 ;")));
+    CHECK(cmdline::connect_not_alone(cmdline::split_statements("echo x; connect 127.0.0.1:27016")));
+    CHECK(cmdline::connect_not_alone(cmdline::split_statements("connect a; echo b")));
+    CHECK(cmdline::connect_not_alone(cmdline::split_statements("Connect a\nECHO b")));
+    CHECK(!cmdline::connect_not_alone(cmdline::split_statements("CONNECT 1.2.3.4")));
+    CHECK(!cmdline::connect_not_alone(cmdline::split_statements("echo \"x; connect y\"; echo z")));  // quoted ';' is no statement
+    CHECK(!cmdline::connect_not_alone(cmdline::split_statements("echo a; echo b")));
+    CHECK(!cmdline::connect_not_alone({}));
     CHECK(cmdline::own_log_line("[mcpagent] initialize (protocol 2026-07-28)"));
     CHECK(!cmdline::own_log_line("x [mcpagent] y"));
     CHECK(!cmdline::own_log_line("pba_enable = 1"));
@@ -208,6 +221,77 @@ static void test_srcds_error_parsing() {
     CHECK(r.size() == 3 && r[2]["addon"] == "my_addon");
 }
 
+// Engine print callbacks must never throw (a C++ exception through the engine kills the game), and error parsing
+// must not run a regex on a huge line.
+static void test_console_never_throws() {
+    console::errors_clear();
+    uint64_t c0 = console::errors_cursor();
+    console::set_parse_errors_from_console(true);
+    bool threw = false;
+    try {
+        console::push_line("message", "[ERROR] mcpagent:lua_exec:1: head one");
+        console::push_line("message", "  1. fn - lua/a.lua:3");
+        console::push_line("message", "  99999999999999999999999999999999999999999. fn - lua/a.lua:4");  // 40-digit frame number
+        console::push_line("message", "  2. fn - lua/a.lua:99999999999999999999999999999999999999999");  // 40-digit line number
+        console::push_line("message", "  3. fn - lua/a.lua:5");
+        console::push_line("message", "[ERROR] " + std::string(65536, 'x') + ":1: " + std::string(65536, 'y'));  // 64 KB line
+        console::push_line("message", std::string(65536, ' ') + "1. fn - " + std::string(65536, 'f') + ":1");
+        console::push_line("message", "[ERROR] mcpagent:lua_exec:2: head two");
+        console::push_line("message", "flush");
+    } catch (...) {
+        threw = true;
+    }
+    console::set_parse_errors_from_console(false);
+    CHECK(!threw);
+    json r = console::errors_since(c0, 100)["errors"];
+    // The two real errors are recorded; the 64 KB line is no error; the garbage frames are not recorded as frames.
+    CHECK(r.size() == 2);
+    CHECK(r.size() == 2 && r[0]["message"] == "mcpagent:lua_exec:1: head one");
+    CHECK(r.size() == 2 && r[0]["stack"].size() == 2 && r[0]["stack"][0]["line"] == 3 && r[0]["stack"][1]["line"] == 5);
+    CHECK(r.size() == 2 && r[1]["message"] == "mcpagent:lua_exec:2: head two");
+    console::errors_clear();
+}
+
+// console::read used to run the caller's regex while holding the lock every engine print takes.
+static void test_console_read_regex_outside_lock() {
+    size_t cap = console::capacity();
+    console::set_capacity(200000);
+    uint64_t c0 = console::cursor_now();
+    // Lines that make std::regex take a long time (quadratic backtracking) with the pattern below, without hitting its
+    // own complexity limit.
+    for (int i = 0; i < 400; ++i) console::push_line("message", "RXL " + std::string(300, 'x') + " " + std::to_string(i));
+    std::atomic<bool> started{false}, done{false};
+    console::ReadResult rr{{}, 0, 0, 0};
+    std::string err;
+    std::thread reader([&] {
+        started = true;
+        rr = console::read(c0, 1000, "x.*y.*z", err);
+        done = true;
+    });
+    while (!started) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    bool still_scanning = !done;
+    double worst = 0;
+    for (int i = 0; i < 5; ++i) {
+        auto t0 = std::chrono::steady_clock::now();
+        console::push_line("message", "PRINT DURING SCAN " + std::to_string(i));
+        worst = std::max(worst, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(still_scanning);  // otherwise the test proves nothing: make the lines costlier
+    CHECK(worst < 50.0);
+    if (worst >= 50.0) std::printf("  push_line blocked %.0f ms during a regex scan\n", worst);
+    reader.join();
+    CHECK(err.empty() && rr.lines.empty());
+    // Semantics unchanged: limit, next_cursor, lost, oldest.
+    std::string e2;
+    console::ReadResult a = console::read(c0, 2, "^RXL", e2);
+    CHECK(a.lines.size() == 2 && a.lines[0].seq == c0 && a.lines[1].seq == c0 + 1 && a.next_cursor == c0 + 2 && a.lost == 0);
+    console::ReadResult b = console::read(c0, 100000, "^PRINT", e2);
+    CHECK(!b.lines.empty() && b.next_cursor == console::cursor_now());
+    console::set_capacity(cap);
+}
+
 // Edge cases (2026-11-14).
 static void test_edge_cases() {
     using V = std::vector<std::string>;
@@ -350,6 +434,8 @@ int main() {
     test_errors_map_tags();
     test_small_b6();
     test_srcds_error_parsing();
+    test_console_never_throws();
+    test_console_read_regex_outside_lock();
     test_edge_cases();
     test_argcheck();
     test_lua_mount_paths();

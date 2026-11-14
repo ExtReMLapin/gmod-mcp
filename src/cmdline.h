@@ -13,6 +13,9 @@ std::vector<std::string> split_statements(const std::string &line);
 // First word of a statement, lower case ("" if none).
 std::string command_name(const std::string &statement);
 
+// True when one of the statements is `connect` and it is not the only statement (connect must be alone on its line).
+bool connect_not_alone(const std::vector<std::string> &statements);
+
 // Names (lower case) of the commands the engine reported as unknown in these console lines
 // (the engine prints: Unknown command "name").
 std::vector<std::string> unknown_commands(const std::vector<std::string> &lines);

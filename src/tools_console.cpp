@@ -85,8 +85,11 @@ static json console_exec_tool(const json &args) {
     int frames = args.value("wait_frames", 5);
     uint64_t c0 = console::cursor_now();
     uint64_t ev0 = events::cursor_now();
-    bool is_connect = cmdline::command_name(stmts[0]) == "connect" && agent::config().mode == agent::Mode::Client;
-    if (is_connect && stmts.size() > 1) return agent::err("invalid_params", "connect must be alone on its command line");
+    bool client = agent::config().mode == agent::Mode::Client;
+    // Any statement (not only the first) that is `connect`, next to others, is refused: "echo x; connect ..." used to be
+    // sent as is, without leaving the current game first.
+    if (client && cmdline::connect_not_alone(stmts)) return agent::err("invalid_params", "connect must be alone on its command line");
+    bool is_connect = client && cmdline::command_name(stmts[0]) == "connect";
     // Connecting while this game still runs (or hosts) a map crashes the engine: leave the current game first.
     if (is_connect && (agent::realm_present(realms::SERVER) || agent::realm_present(realms::CLIENT))) {
         // Internal call: target this instance explicitly (otherwise the ambiguous_instance guard would refuse it).

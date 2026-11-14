@@ -42,6 +42,13 @@ std::string command_name(const std::string &statement) {
     return parts.empty() ? "" : util::to_lower(parts[0]);
 }
 
+bool connect_not_alone(const std::vector<std::string> &statements) {
+    if (statements.size() < 2) return false;
+    for (const auto &st : statements)
+        if (command_name(st) == "connect") return true;
+    return false;
+}
+
 std::vector<std::string> unknown_commands(const std::vector<std::string> &lines) {
     // GMod prints `Unknown command: name` (seen in every realm); Source 2013 prints `Unknown command "name"`.
     static const std::string colon = "Unknown command: ", quoted = "Unknown command \"";

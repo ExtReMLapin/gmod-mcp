@@ -150,8 +150,8 @@ static bool start(lua_State *L) {
     cfg.base_port = std::atoi(pstr.c_str());
     if (cfg.base_port <= 0 || cfg.base_port > 65000) cfg.base_port = 27080;
 
-    std::string cm = console::install(util::has_flag(args, "-condebug") ? cfg.game_dir + "/console.log" : "");
-    if (cfg.mode == agent::Mode::Dedicated) console::set_parse_errors_from_console(true);
+    // The line observer is set BEFORE the capture is installed: once installed, the engine prints from any thread and
+    // calls the observer (a std::function) concurrently; assigning it afterwards would be a data race.
     // Connection failures are shown by a native engine dialog the agent cannot click: surface them as events.
     console::set_line_observer([](const std::string &line) {
         static const std::string a = "Disconnected: ", b = "Connection failed";
@@ -159,6 +159,8 @@ static bool start(lua_State *L) {
         else if (line.rfind(b, 0) == 0 || line.find("Bad server address") != std::string::npos)
             events::publish("connection_failed", nlohmann::json{{"message", line}});
     });
+    std::string cm = console::install(util::has_flag(args, "-condebug") ? cfg.game_dir + "/console.log" : "");
+    if (cfg.mode == agent::Mode::Dedicated) console::set_parse_errors_from_console(true);
 
     tools::register_all();
 
