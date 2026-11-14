@@ -13,6 +13,7 @@ Cases (default: a f):
          the shared cache stays valid under concurrent writes, no temporary file left behind
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
+  lua_mount_verify instances_launch {lua_mount}: the result reports the mount each engine really has (fake game server)
   lua_mount instances_launch {lua_mount}: -mcp_lua_mount passed to the client (stand-in game), bad folders refused
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
@@ -24,11 +25,13 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
 
+try: sys.stdout.reconfigure(errors="replace")  # failure details may hold non-ASCII paths
+except Exception: pass
 BRIDGE = os.path.abspath(sys.argv[1])
 results = []
 TOKEN = "test-token-0123456789abcdef0123456789abcdef"
@@ -235,6 +238,17 @@ class Fake(http.server.BaseHTTPRequestHandler):
             self.sse_start(); self.sse(prog(1)); return  # stream ends without the response (game crashed)
         if name == "huge":
             return self.reply_json(text("x" * args.get("n", 8 << 20)))
+        if name == "instances_list" and srv.pid_file:
+            # The stand-in game (GMCP_FAKE_PID) wrote its pid: the fake module lists it as a registered instance.
+            try: pid = int(open(srv.pid_file).read().strip() or 0)
+            except (OSError, ValueError): pid = 0
+            sc = {"instances": [{"id": "fake-%d" % pid, "pid": pid, "port": 1, "mode": "client"}] if pid else []}
+            return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "lua_mount" and srv.lua_mount_answer:
+            with srv.lock: srv.lua_mount_calls.append(args)
+            sc = srv.lua_mount_answer(args)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc,
+                                        "isError": "error" in sc}))
         if name == "silent_hang":
             self.sse_start()
             t0 = time.time()
@@ -256,6 +270,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.lock, self.seen, self.disconnects, self.listens, self.conns = threading.Lock(), [], [], 0, []
         self.version, self.token = version, token
         self.instructions = "fake instructions"
+        self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     def handle_error(self, request, client_address):
@@ -719,6 +734,8 @@ def case_lua_mount():
     wt = os.path.join(work, "my addon wt")
     os.makedirs(os.path.join(wt, "lua", "autorun"))
     os.makedirs(os.path.join(work, "nolua"))
+    wt_u = os.path.join(work, "ov A \u00e9 \u0436\u4e2d")  # accent, Cyrillic and CJK: not in any single ANSI code page
+    os.makedirs(os.path.join(wt_u, "lua"))
     argv_file = os.path.join(work, "argv.txt")
     port, env = free_port(), isolated_config(with_token=True)
     env["GMCP_FAKE_ARGV"] = argv_file
@@ -735,13 +752,98 @@ def case_lua_mount():
     res = launch(os.path.join(wt, "lua"))
     sc = res.get("structuredContent", {})
     pids = sc.get("silent_pids", [])
-    line = open(argv_file, encoding="mbcs", errors="replace").read() if os.path.exists(argv_file) else ""
+    line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
     check("LUA_MOUNT the client got -mcp_lua_mount with the addon root, quoted (spaces kept)", ('-mcp_lua_mount "%s"' % wt) in line, line)
     check("LUA_MOUNT the timeout answer names the mounted folder", sc.get("lua_mount") == wt, sc)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     time.sleep(1)
     check("LUA_MOUNT stand-in closed", not any(alive(p) for p in pids), pids)
+    # A non-ASCII folder must reach the client byte for byte (the command line is built in UTF-16 from UTF-8).
+    os.remove(argv_file)
+    res = launch(wt_u)
+    sc = res.get("structuredContent", {})
+    pids = sc.get("silent_pids", [])
+    line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+    check("LUA_MOUNT non-ASCII folder: the client got the exact path", ('-mcp_lua_mount "%s"' % wt_u) in line, ascii(line[-60:]) + " expected " + ascii(wt_u[-12:]))
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     b.close()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def case_lua_mount_verify():
+    """instances_launch {lua_mount} (B2): the launch result says what each client's engine really has, from the game's
+    own lua_mount answer. A mount that is not active (folder missing from the answer, error, base Lua missing) is a
+    top-level warning naming the instances and isError, never a silent success."""
+    print("== LUA_MOUNT_VERIFY: the launch reports the mount the engine has, not the one requested", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("LUA_MOUNT_VERIFY stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-mount-")
+    wt = os.path.join(work, "ov A \u00e9 \u0436\u4e2d")
+    os.makedirs(os.path.join(wt, "lua"))
+    pid_file = os.path.join(work, "pid.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_PID"] = pid_file
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    b = Bridge(port, env)
+    answers = {}
+    srv.lua_mount_answer = lambda a: answers["now"](a)
+
+    def launch(mount):
+        if os.path.exists(pid_file): os.remove(pid_file)
+        args = {"count": 1, "owner": "ovv", "timeout_s": 20, "game_dir": game}
+        if mount: args["lua_mount"] = mount
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, 60)
+        res = (r or {}).get("result", {})
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ovv"}}, 20)
+        return res, res.get("structuredContent", {})
+
+    # 1. the engine has the folder: active, no warning.
+    answers["now"] = lambda a: {"lua_mount": wt.replace("\\", "/"), "base_lua_mounted": True}
+    res, sc = launch(wt)
+    inst = (sc.get("instances") or [{}])[0]
+    check("LUA_MOUNT_VERIFY the launch asked the game with lua_mount and no path", srv.lua_mount_calls and "path" not in srv.lua_mount_calls[-1] and srv.lua_mount_calls[-1].get("instance") == inst.get("instance"), srv.lua_mount_calls)
+    m = inst.get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY active only because the game says so (requested, active, base_lua_mounted)",
+          not res.get("isError") and m.get("active") is True and m.get("requested") == wt and m.get("base_lua_mounted") is True and "warning" not in sc, sc)
+    # 2. the game answers without the folder (module ignored it): clear warning, isError.
+    answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}
+    res, sc = launch(wt)
+    inst = (sc.get("instances") or [{}])[0]
+    m = inst.get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY the game has no mount: not active, isError, warning names the instance",
+          res.get("isError") and m.get("active") is False and m.get("requested") == wt and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    # 3. another folder mounted: not active.
+    answers["now"] = lambda a: {"lua_mount": "D:\\other", "base_lua_mounted": True}
+    res, sc = launch(wt)
+    m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY a different folder mounted: not active", res.get("isError") and m.get("active") is False, sc)
+    # 4. the game errors.
+    answers["now"] = lambda a: {"error": {"code": "unsupported_platform", "message": "nope"}}
+    res, sc = launch(wt)
+    m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY the game answers an error: not active, the error is reported",
+          res.get("isError") and m.get("active") is False and "nope" in json.dumps(m.get("error")), sc)
+    # 5. folder mounted but the base Lua is missing: unusable client, said clearly.
+    answers["now"] = lambda a: {"lua_mount": wt, "base_lua_mounted": False}
+    res, sc = launch(wt)
+    m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY base Lua missing: isError and warning", res.get("isError") and m.get("base_lua_mounted") is False and "base" in sc.get("warning", "").lower(), sc)
+    # 6. no mount requested: the game is not asked.
+    n = len(srv.lua_mount_calls)
+    answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}
+    res, sc = launch(None)
+    check("LUA_MOUNT_VERIFY no lua_mount requested: no check, no warning", not res.get("isError") and len(srv.lua_mount_calls) == n and "warning" not in sc, sc)
+    b.close(); srv.stop()
     shutil.rmtree(game, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
 
@@ -1406,8 +1508,8 @@ def case_convar_crash():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "version", "feedback", "fuzz"]:
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "orphan", "edge", "version", "feedback", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))

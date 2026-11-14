@@ -166,7 +166,10 @@ static bool start(lua_State *L) {
     tools::register_all();
 
     // -mcp_lua_mount "<folder>": a test client started on a worktree's code (instances_launch {lua_mount}).
-    std::string ov = util::flag_value(args, "-mcp_lua_mount", "");
+    // The game's own command line is ANSI (tier0): a folder with characters outside the code page would arrive damaged.
+    // The process's wide command line (UTF-8) is exact; the game's copy stays the fallback.
+    std::string ov = util::flag_value(util::split_args(plat::process_command_line()), "-mcp_lua_mount", "");
+    if (ov.empty()) ov = util::flag_value(args, "-mcp_lua_mount", "");
     if (!ov.empty()) {
         std::string root, oerr, why;
         if (!lua_mount::normalize_root(ov, root, oerr)) logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());

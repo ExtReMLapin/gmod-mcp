@@ -38,6 +38,7 @@ static const int kFailuresBeforeElection = 3;
 struct Member {
     json info;  // id, mode, port, pid, map, realms
     Clock::time_point last_seen;
+    uint64_t stamp = 0;  // plat::process_start_stamp(pid) taken while it answered: tells the process from a later pid reuse
 };
 
 static std::mutex g_mu;
@@ -68,6 +69,7 @@ static json self_info() {
 struct Gone {
     uint32_t pid;
     Clock::time_point when;
+    uint64_t stamp;
 };
 static std::map<std::string, Gone> g_gone;
 
@@ -77,7 +79,7 @@ static void purge_locked() {
         double age = std::chrono::duration<double>(now - it->second.last_seen).count();
         if (age > kDeadAfterS) {
             logx::info("instance %s removed (no heartbeat for %.0f s)", it->first.c_str(), age);
-            g_gone[it->first] = Gone{it->second.info.value("pid", 0u), it->second.last_seen};
+            g_gone[it->first] = Gone{it->second.info.value("pid", 0u), it->second.last_seen, it->second.stamp};
             if (g_gone.size() > 200) g_gone.erase(g_gone.begin());
             it = g_members.erase(it);
         } else {
@@ -122,10 +124,20 @@ static json on_heartbeat(const json &in) {
     std::string id = in["id"];
     if (id == agent::config().instance_id) return json{{"ok", true}};
     std::lock_guard<std::mutex> lk(g_mu);
-    bool fresh = g_members.find(id) == g_members.end();
-    g_members[id] = Member{in, Clock::now()};
+    auto old = g_members.find(id);
+    bool fresh = old == g_members.end();
+    // The stamp is taken at registration, while the process surely runs: after its death it can no longer be read.
+    uint64_t stamp = fresh ? 0 : old->second.stamp;
+    if (stamp == 0) stamp = plat::process_start_stamp(in.value("pid", 0u));
+    g_members[id] = Member{in, Clock::now(), stamp};
     if (fresh) logx::info("instance %s registered (port %d, %s)", id.c_str(), in.value("port", 0), in.value("mode", "?").c_str());
     return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
+}
+
+bool same_process_running(uint64_t now, uint64_t recorded) {
+    if (now == 0) return false;
+    if (now == 1 || recorded == 0 || recorded == 1) return true;  // unreadable or never recorded: cannot tell
+    return now == recorded;                                       // another stamp: the pid was reused
 }
 
 std::string gone_message(const std::string &id, uint32_t pid, double seconds_ago, bool process_alive) {
@@ -148,6 +160,7 @@ static json relay(const std::string &instance, const std::string &tool, const js
     if (!is_coordinator()) return wrap_err("not_coordinator", "this instance is not the coordinator: call the coordinator (base port)");
     int port = 0;
     uint32_t pid = 0;
+    uint64_t stamp = 0;
     Clock::time_point last_seen = Clock::now();
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -157,19 +170,21 @@ static json relay(const std::string &instance, const std::string &tool, const js
             auto g = g_gone.find(instance);
             if (g != g_gone.end()) {
                 double ago = std::chrono::duration<double>(Clock::now() - g->second.when).count();
-                return wrap_err("instance_gone", gone_message(instance, g->second.pid, ago, plat::process_start_stamp(g->second.pid) != 0));
+                return wrap_err("instance_gone", gone_message(instance, g->second.pid, ago,
+                                                                      same_process_running(plat::process_start_stamp(g->second.pid), g->second.stamp)));
             }
             return wrap_err("unknown_instance", "unknown instance: " + instance + " (see instances_list)");
         }
         port = it->second.info.value("port", 0);
         pid = it->second.info.value("pid", 0u);
+        stamp = it->second.stamp;
         last_seen = it->second.last_seen;
     }
     auto cli = client(port, 900);
     json req{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", args}}}};
     auto res = cli->Post("/mcp", req.dump(), "application/json");
     if (!res) {
-        bool alive = pid && plat::process_start_stamp(pid) != 0;
+        bool alive = pid && same_process_running(plat::process_start_stamp(pid), stamp);
         double ago = std::chrono::duration<double>(Clock::now() - last_seen).count();
         return wrap_err(alive ? "instance_unreachable" : "instance_gone", gone_message(instance, pid, ago, alive));
     }

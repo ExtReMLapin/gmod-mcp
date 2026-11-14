@@ -55,9 +55,17 @@ bool patch_pointer(void **slot, void *value) {
     return true;
 }
 
+// UTF-8 of the process's wide command line: the ANSI one loses every character outside the active code page (a folder
+// passed with -mcp_lua_mount may be named in any script).
 std::string process_command_line() {
-    const char *c = GetCommandLineA();
-    return c ? c : "";
+    const wchar_t *w = GetCommandLineW();
+    if (!w || !*w) return "";
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return "";
+    std::string out((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), n, nullptr, nullptr);
+    out.resize((size_t)n - 1);
+    return out;
 }
 
 std::string process_exe_name() {

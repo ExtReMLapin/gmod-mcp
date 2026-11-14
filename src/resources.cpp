@@ -154,7 +154,8 @@ line break.
 When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
 set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it
 (`path: null`) also applies from the next map load. `instances_launch {lua_mount}` starts a client with it from its first
-map.
+map, then asks each client's engine what it really has: `instances[i].lua_mount` is `{requested, active, base_lua_mounted,
+error?}` and a mount that is not active is a top-level `warning` with `isError: true` (never trust a test on that client).
 
 Which file is used, per Lua path (e.g. `my_addon/core.lua`):
 - in the folder (`<folder>/lua/my_addon/core.lua`): the folder's copy, even if the installed addon has one;
