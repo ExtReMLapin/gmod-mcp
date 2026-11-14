@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Starting a game could crash another game that was finishing a map load** (Garry's Mod issue 7137, issue #2).
+  Starting any `gmod_win64.exe` makes every other running game release and restore its graphics resources for 2-10 s;
+  a map load ending in that window crashes the game in `shaderapidx9`. The bridges of all your Claude sessions now
+  share a lock: `instances_launch` waits while any game loads a map, and `map_load` waits while a game is being
+  started and for 15 s after the last start. The wait is bounded by the call's `timeout_s` (error `map_load_in_progress`
+  / `launch_in_progress`), reported as progress, and in the result (`waited_s`, `waited_reason`). A game started by
+  hand is not seen. Set `GMOD_MCP_FP7137_WORKAROUND=0` to turn it off. Everything is in `src/bridge/fp7137.*` and
+  tagged `FP7137`, to be removed when the engine is fixed: see `docs/FP7137.md`.
+
 ## 0.3.5
 
 A crash fix, then the findings of an independent review of everything since 0.3.1, each with a test seen failing

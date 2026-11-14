@@ -14,6 +14,7 @@ Cases (default: a f):
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
   lua_mount_verify instances_launch {lua_mount}: the result reports the mount each engine really has (fake game server)
+  fp7137 launch / map_load lock shared by the bridges (FP7137, docs/FP7137.md): waits, expiry, dead bridge, kill switch
   lua_mount instances_launch {lua_mount}: -mcp_lua_mount passed to the client (stand-in game), bad folders refused
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
@@ -25,7 +26,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify fp7137 orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -244,6 +245,23 @@ class Fake(http.server.BaseHTTPRequestHandler):
             except (OSError, ValueError): pid = 0
             sc = {"instances": [{"id": "fake-%d" % pid, "pid": pid, "port": 1, "mode": "client"}] if pid else []}
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "instances_list" and srv.pid_dir:  # FP7137 tests: one pid file per stand-in game
+            pids = []
+            for f in os.listdir(srv.pid_dir):
+                try: pids.append(int(open(os.path.join(srv.pid_dir, f)).read().strip()))
+                except (OSError, ValueError): pass
+            sc = {"instances": [{"id": "fake-%d" % p, "pid": p, "port": 1, "mode": "client"} for p in pids]}
+            return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "map_load" and srv.map_hold is not None:  # FP7137 tests: a map load that takes srv.map_hold[map] s
+            t0 = time.time()
+            with srv.lock:
+                srv.map_active += 1; srv.map_max = max(srv.map_max, srv.map_active); srv.map_log.append([args.get("map"), t0, None])
+                entry = srv.map_log[-1]
+            time.sleep(srv.map_hold.get(args.get("map"), srv.map_hold.get("*", 0.5)))
+            with srv.lock:
+                srv.map_active -= 1; entry[2] = time.time()
+            sc = {"map": args.get("map"), "duration_s": time.time() - t0}
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": False}))
         if name == "lua_mount" and srv.lua_mount_answer:
             with srv.lock: srv.lua_mount_calls.append(args)
             sc = srv.lua_mount_answer(args)
@@ -271,6 +289,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.version, self.token = version, token
         self.instructions = "fake instructions"
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
+        self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     def handle_error(self, request, client_address):
@@ -847,6 +866,194 @@ def case_lua_mount_verify():
     b.close(); srv.stop()
     shutil.rmtree(game, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
+
+
+# --- FP7137: the launch / map_load lock shared by every bridge (docs/FP7137.md). Removed with the workaround. ---
+def fp_setup(settle_ms=2500, workaround=None, hold=None):
+    """A fake game server, a config folder shared by the bridges of the scenario, a folder where each stand-in game
+    drops its pid file."""
+    env = isolated_config(with_token=True)
+    env["GMOD_MCP_FP7137_SETTLE_MS"] = str(settle_ms)
+    if workaround is not None: env["GMOD_MCP_FP7137_WORKAROUND"] = workaround
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    srv.map_hold = hold or {"*": 0.5}
+    srv.pid_dir = tempfile.mkdtemp(prefix="gmcp-fp-pids-")
+    env["GMCP_FAKE_PID_DIR"] = srv.pid_dir
+    return port, env, srv
+
+
+def fp_state_file(env):
+    return os.path.join(env["_TEST_CONFIG_DIR"], "gmod-mcp", "fp7137.state")
+
+
+def fp_seed(env, entries, last_start=0):
+    """entries: (kind, pid, seconds until expiry, tag). The bridge's own state file format (src/bridge/fp7137.h)."""
+    lines = ["S %d" % last_start] + ["E %s %d 0 %d %s" % (k, pid, int(time.time() * 1000) + int(sec * 1000), tag) for k, pid, sec, tag in entries]
+    with open(fp_state_file(env), "w") as f: f.write("\n".join(lines) + "\n")
+
+
+def fp_call(b, tool, args, timeout, token=None):
+    params = {"name": tool, "arguments": args}
+    if token: params["_meta"] = {"progressToken": token}
+    return b.start("tools/call", params)
+
+
+def fp_result(b, rid, timeout):
+    r = b.wait(rid, timeout)
+    res = (r or {}).get("result", {})
+    return res, res.get("structuredContent", {})
+
+
+def fp_dead_pid():
+    p = subprocess.Popen([sys.executable, "-c", "pass"]); p.wait()
+    return p.pid
+
+
+def fp_progress(b, token):
+    with b.lock: return [m["params"].get("message", "") for m in b.notes if m.get("method") == "notifications/progress" and m["params"].get("progressToken") == token]
+
+
+def case_fp7137():
+    """FP7137 (B4): launch and map_load wait for each other through a state shared by every bridge of the user. Pieces
+    that need no game run everywhere (seeded state file); the real launches use the stand-in game (Windows)."""
+    print("== FP7137: launch / map_load lock shared by the bridges", flush=True)
+    import shutil
+    me = os.getpid()
+    # 1. A launch in progress (seeded, owner alive): map_load waits, says so, goes ahead when it ends.
+    port, env, srv = fp_setup()
+    b = Bridge(port, env)
+    fp_seed(env, [("L", me, 60, "launch")])
+    t0 = time.time()
+    rid = fp_call(b, "map_load", {"map": "gm_a", "timeout_s": 30}, 30, token="P1")
+    time.sleep(1.5)
+    with b.lock: early = json.dumps(rid) in b.by_id
+    check("FP7137 map_load waits while a launch is in progress (nothing sent to the game)", not early and not srv.map_log, srv.map_log)
+    check("FP7137 the wait is reported as progress notifications", any("waiting" in m and "launch" in m for m in fp_progress(b, "P1")), fp_progress(b, "P1"))
+    os.remove(fp_state_file(env))
+    res, sc = fp_result(b, rid, 10)
+    check("FP7137 once the launch ends, map_load goes ahead and reports waited_s and the reason",
+          not res.get("isError") and sc.get("map") == "gm_a" and sc.get("waited_s", 0) >= 1.0 and "launch" in sc.get("waited_reason", "")
+          and json.loads(res["content"][0]["text"]).get("waited_s") == sc.get("waited_s"), res)
+    check("FP7137 the game saw the load only after the wait", srv.map_log and srv.map_log[0][1] - t0 >= 1.3, srv.map_log)
+    # 2. The wait would outlast the call's timeout: clean error, the game is never asked.
+    fp_seed(env, [("L", me, 60, "launch")])
+    t1 = time.time()
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_never", "timeout_s": 5}, 5), 30)
+    check("FP7137 a wait longer than timeout_s fails with launch_in_progress and waited_s",
+          res.get("isError") and sc.get("error", {}).get("code") == "launch_in_progress" and 4 <= sc.get("waited_s", 0) <= 9 and time.time() - t1 < 12, sc)
+    check("FP7137 ... and the game was never asked", all(m[0] != "gm_never" for m in srv.map_log), srv.map_log)
+    # 3. The bridge that held the lock is gone (pid does not exist), expiry far away: no deadlock, no wait.
+    fp_seed(env, [("L", fp_dead_pid(), 3600, "launch"), ("M", fp_dead_pid(), 3600, "map:ghost")])
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_b", "timeout_s": 30}, 30), 10)
+    check("FP7137 an entry of a dead bridge is ignored: no wait, no waited_s", not res.get("isError") and sc.get("map") == "gm_b" and "waited_s" not in sc, sc)
+    check("FP7137 ... and it is removed from the shared state", "ghost" not in open(fp_state_file(env)).read(), open(fp_state_file(env)).read())
+    # 4. An entry of a live process past its expiry does not count.
+    fp_seed(env, [("L", me, -5, "launch")])
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_c", "timeout_s": 30}, 30), 10)
+    check("FP7137 an expired entry is ignored", not res.get("isError") and "waited_s" not in sc, sc)
+    b.close(); srv.stop()
+    # 5. Settle delay longer than timeout_s: refused at once instead of waiting in vain.
+    port, env, srv = fp_setup(settle_ms=8000)
+    b = Bridge(port, env)
+    fp_seed(env, [], last_start=int(time.time() * 1000))
+    t1 = time.time()
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_d", "timeout_s": 5}, 5), 20)
+    check("FP7137 a game started 0 s ago and settle 8 s > timeout_s 5: refused at once", res.get("isError") and sc.get("error", {}).get("code") == "launch_in_progress" and time.time() - t1 < 3, sc)
+    b.close(); srv.stop()
+    # 6. Settle delay shorter than the timeout: waits for it, then loads.
+    port, env, srv = fp_setup(settle_ms=2500)
+    b = Bridge(port, env)
+    fp_seed(env, [], last_start=int(time.time() * 1000))
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_e", "timeout_s": 30}, 30), 20)
+    check("FP7137 map_load waits for the settle delay after the last start", not res.get("isError") and 1.5 <= sc.get("waited_s", 0) <= 4, sc)
+    b.close(); srv.stop()
+    # 7. Kill switch: GMOD_MCP_FP7137_WORKAROUND=0 -> no wait whatever the state says.
+    port, env, srv = fp_setup(workaround="0")
+    b = Bridge(port, env)
+    fp_seed(env, [("L", me, 60, "launch")], last_start=int(time.time() * 1000))
+    t1 = time.time()
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_f", "timeout_s": 30}, 30), 10)
+    check("FP7137 kill switch off: no wait, no waited_s", not res.get("isError") and "waited_s" not in sc and time.time() - t1 < 2, sc)
+    b.close(); srv.stop()
+
+    if os.name != "nt":
+        print("   (the launch scenarios are Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("FP7137 stand-in game built next to the bridge", False, fake)
+        return
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    launch_args = lambda **kw: dict({"count": 1, "owner": "fp", "timeout_s": 40, "game_dir": game}, **kw)
+
+    def pid_times(srv):
+        return sorted(os.path.getmtime(os.path.join(srv.pid_dir, f)) for f in os.listdir(srv.pid_dir))
+
+    # 8. Two bridges: B loads a map, A launches meanwhile -> the launch waits for the load; then B loads again right
+    # after the launch -> that load waits for the settle delay.
+    port, env, srv = fp_setup(hold={"*": 3.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    rid_b = fp_call(b, "map_load", {"map": "gm_g", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    check("FP7137 the first load reached the game", bool(srv.map_log))
+    rid_a = fp_call(a, "instances_launch", launch_args(), 60, token="L1")
+    res_a, sc_a = fp_result(a, rid_a, 60)
+    res_b, sc_b = fp_result(b, rid_b, 10)
+    load_end = srv.map_log[0][2] or 0
+    first_pid = (pid_times(srv) or [0])[0]
+    check("FP7137 a launch waits for a map load running in another bridge", not res_a.get("isError") and first_pid >= load_end - 0.05 and sc_a.get("waited_s", 0) >= 1.5 and "map" in sc_a.get("waited_reason", ""),
+          {"first_pid": first_pid, "load_end": load_end, "sc": sc_a})
+    check("FP7137 the wait was reported as progress", any("waiting" in m for m in fp_progress(a, "L1")), fp_progress(a, "L1"))
+    check("FP7137 the load itself was not delayed", not res_b.get("isError") and "waited_s" not in sc_b, sc_b)
+    res_b, sc_b = fp_result(b, fp_call(b, "map_load", {"map": "gm_h", "timeout_s": 60}, 60), 30)
+    last_pid = (pid_times(srv) or [0])[-1]
+    start_h = [m for m in srv.map_log if m[0] == "gm_h"]
+    check("FP7137 a map_load right after a launch waits for the settle delay (2.5 s here)", not res_b.get("isError") and start_h and start_h[0][1] - last_pid >= 2.2 and sc_b.get("waited_s", 0) > 0.3 and "started" in sc_b.get("waited_reason", ""),
+          {"last_pid": last_pid, "h": start_h, "sc": sc_b})
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); b.close(); srv.stop()
+    # 9. A bridge dies while its map load runs: the other bridge's launch is not blocked.
+    port, env, srv = fp_setup(hold={"*": 30.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    fp_call(a, "map_load", {"map": "gm_i", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    a.p.kill()  # no clean exit: nothing releases its slot
+    t1 = time.time()
+    res_b, sc_b = fp_result(b, fp_call(b, "instances_launch", launch_args(timeout_s=20), 30), 30)
+    check("FP7137 a dead bridge's map load never blocks a launch", not res_b.get("isError") and time.time() - t1 < 15 and "waited_s" not in sc_b, {"took": time.time() - t1, "sc": sc_b})
+    b.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    b.close(); srv.stop()
+    # 10. A launch that would wait longer than its timeout fails cleanly, nothing is started.
+    port, env, srv = fp_setup(hold={"*": 40.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    fp_call(b, "map_load", {"map": "gm_j", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    t1 = time.time()
+    res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
+    check("FP7137 a launch blocked past timeout_s fails with map_load_in_progress and waited_s", res_a.get("isError") and sc_a.get("error", {}).get("code") == "map_load_in_progress" and 8 <= sc_a.get("waited_s", 0) <= 14, sc_a)
+    check("FP7137 ... and no game was started", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    a.close(); b.close(); srv.stop()
+    # 11. Kill switch: the same two bridges, no wait either way.
+    port, env, srv = fp_setup(workaround="0", hold={"*": 3.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    rid_b = fp_call(b, "map_load", {"map": "gm_k", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(), 60), 60)
+    done_b = srv.map_log[0][2]
+    check("FP7137 kill switch off: the launch does not wait for the load", not res_a.get("isError") and "waited_s" not in sc_a and (done_b is None or (pid_times(srv) or [0])[0] < done_b), {"sc": sc_a, "done_b": done_b})
+    res_b, sc_b = fp_result(b, rid_b, 10)
+    res_b, sc_b = fp_result(b, fp_call(b, "map_load", {"map": "gm_l", "timeout_s": 60}, 60), 20)
+    check("FP7137 kill switch off: map_load right after a launch does not wait", "waited_s" not in sc_b and not res_b.get("isError"), sc_b)
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+
 
 
 def case_launch():
@@ -1578,8 +1785,8 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "orphan", "edge", "version", "feedback", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "fp7137", "orphan", "edge", "version", "feedback", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
