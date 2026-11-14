@@ -1,0 +1,42 @@
+Running requirements 2026-07-28 (6 scenarios) against http://127.0.0.1:1/mcp
+
+
+=== Running scenario: server-stateless ===
+Running client scenario 'server-stateless' against server: http://127.0.0.1:1/mcp
+Results saved to out2\server-server-stateless-2026-11-14T15-24-52-920Z
+
+
+=== Running scenario: completion-complete ===
+Running client scenario 'completion-complete' against server: http://127.0.0.1:1/mcp
+Results saved to out2\server-completion-complete-2026-11-14T15-24-52-936Z
+
+
+=== Running scenario: tools-list ===
+Running client scenario 'tools-list' against server: http://127.0.0.1:1/mcp
+Results saved to out2\server-tools-list-2026-11-14T15-24-53-003Z
+
+
+=== Running scenario: tasks-capability-negotiation ===
+Running client scenario 'tasks-capability-negotiation' against server: http://127.0.0.1:1/mcp
+Failed to run scenario tasks-capability-negotiation: TypeError: fetch failed
+  [cause]: Error: bad port
+      at makeNetworkError (node:internal/deps/undici/undici:9495:35)
+      at mainFetch (node:internal/deps/undici/undici:10721:20)
+      at fetching (node:internal/deps/undici/undici:10707:7)
+
+=== Running scenario: tasks-status-notifications ===
+Running client scenario 'tasks-status-notifications' against server: http://127.0.0.1:1/mcp
+Results saved to out2\server-tasks-status-notifications-2026-11-14T15-24-53-138Z
+
+
+=== Running scenario: json-schema-2020-12 ===
+Running client scenario 'json-schema-2020-12' against server: http://127.0.0.1:1/mcp
+Results saved to out2\server-json-schema-2020-12-2026-11-14T15-24-53-142Z
+
+
+Total: 4 passed, 6 failed
+
+Not scored for 2026-07-28: 3 scenario(s) run, 2 failing. These do not affect conformance.
+  ✗ tasks-capability-negotiation (extension)
+  ✓ tasks-status-notifications (extension)
+  ✗ json-schema-2020-12 (pending)

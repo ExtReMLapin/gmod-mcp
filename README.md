@@ -1,5 +1,8 @@
 # gmod-mcp
 
+[![MCP conformance](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ExtReMLapin/gmod-mcp/badges/mcp-conformance.json)](https://github.com/ExtReMLapin/gmod-mcp/actions/workflows/build.yml)
+[![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ExtReMLapin/gmod-mcp/badges/tests.json)](https://github.com/ExtReMLapin/gmod-mcp/actions/workflows/build.yml)
+
 ---- 
 ##### The GMod MCP server that runs inside the game: Lua in every realm, maps, console, errors, screenshots, hook tracing, test clients and long-running jobs, straight from inside the game.
 ----

@@ -1,0 +1,470 @@
+[
+  {
+    "id": "sep-2575-request-meta-invalid-missing-meta",
+    "name": "RequestMetaInvalid",
+    "description": "Rejects request with missing _meta with -32602 Invalid params",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "_meta validation probe failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "fieldIssue": "missing-meta"
+    }
+  },
+  {
+    "id": "sep-2575-http-server-meta-invalid-400",
+    "name": "HttpServerMetaInvalid400",
+    "description": "Rejections of requests missing required _meta fields use HTTP 400 Bad Request.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "_meta validation probe failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "fieldIssue": "missing-meta"
+    }
+  },
+  {
+    "id": "sep-2575-request-meta-invalid-missing-protocol-version",
+    "name": "RequestMetaInvalid",
+    "description": "Rejects request with _meta missing io.modelcontextprotocol/protocolVersion",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "_meta validation probe failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "fieldIssue": "missing-protocol-version"
+    }
+  },
+  {
+    "id": "sep-2575-http-server-meta-invalid-400",
+    "name": "HttpServerMetaInvalid400",
+    "description": "Rejections of requests missing required _meta fields use HTTP 400 Bad Request.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "_meta validation probe failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "fieldIssue": "missing-protocol-version"
+    }
+  },
+  {
+    "id": "sep-2575-request-meta-invalid-missing-client-capabilities",
+    "name": "RequestMetaInvalid",
+    "description": "Rejects request with _meta missing io.modelcontextprotocol/clientCapabilities",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "_meta validation probe failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "fieldIssue": "missing-client-capabilities"
+    }
+  },
+  {
+    "id": "sep-2575-http-server-meta-invalid-400",
+    "name": "HttpServerMetaInvalid400",
+    "description": "Rejections of requests missing required _meta fields use HTTP 400 Bad Request.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "_meta validation probe failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "fieldIssue": "missing-client-capabilities"
+    }
+  },
+  {
+    "id": "sep-2575-request-meta-client-info-optional",
+    "name": "RequestMetaClientInfoOptional",
+    "description": "Serves requests whose _meta omits io.modelcontextprotocol/clientInfo (clientInfo is a SHOULD).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "clientInfo-less probe failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-implements-discover",
+    "name": "ServerImplementsDiscover",
+    "description": "Servers MUST implement server/discover.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Discovery failed: fetch failed",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-identifies-in-result-meta",
+    "name": "ServerIdentifiesInResultMeta",
+    "description": "Servers SHOULD identify themselves via _meta['io.modelcontextprotocol/serverInfo'] on responses (spec PR #3002).",
+    "status": "SKIPPED",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "note": "Prerequisite missing: fetch failed"
+    }
+  },
+  {
+    "id": "sep-2575-server-declares-prompts-in-discover",
+    "name": "ServerDeclaresPromptsInDiscover",
+    "description": "Servers that support prompts MUST declare the prompts capability in their DiscoverResult.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Prerequisite missing: fetch failed",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-discover-capabilities-match-handlers",
+    "name": "DiscoverCapabilitiesMatchHandlers",
+    "description": "capabilities matches what the server honors on real RPC calls",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Discovery runtime check failed: fetch failed",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-unsupported-version-error",
+    "name": "ServerUnsupportedVersionError",
+    "description": "If the server does not implement the requested version (whether the version is unknown to the server, or is a known version the server has chosen not to support), it MUST respond with an UnsupportedProtocolVersionError listing the versions it does support; the error data carries the supported versions and echoes the requested version.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Unsupported version invocation failed completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-unsupported-version-400",
+    "name": "HttpServerUnsupportedVersion400",
+    "description": "If the server does not implement the requested protocol version, it MUST respond with 400 Bad Request and an UnsupportedProtocolVersionError listing its supported versions.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Network transaction context unavailable",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-header-mismatch-400",
+    "name": "HttpServerHeaderMismatch400",
+    "description": "If the values do not match, the server MUST reject the request with 400 Bad Request and a HeaderMismatch JSON-RPC error.",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Header verification endpoint network hit failed",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-rejects-undeclared-capability",
+    "name": "ServerRejectsUndeclaredCapability",
+    "description": "A server MUST NOT rely on capabilities the client has not declared. If processing a request requires a capability the client did not include in io.modelcontextprotocol/clientCapabilities, the server MUST return a MissingRequiredClientCapabilityError (-32021).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Capability checking call sequence timed out or dropped connection",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-missing-capability-http-400",
+    "name": "MissingCapabilityHttp400",
+    "description": "On HTTP, the response status MUST be 400 Bad Request [for MissingRequiredClientCapabilityError].",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Network transport layer layer context failed to instantiate",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-method-not-found-404-initialize",
+    "name": "HttpServerMethodNotFound404initialize",
+    "description": "If the server does not implement the removed RPC method 'initialize', it MUST respond with 404 Not Found and a JSON-RPC error with code -32601 (Method not found).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Removed method validation hit dropped connections unexpectedly",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-method-not-found-404-ping",
+    "name": "HttpServerMethodNotFound404ping",
+    "description": "If the server does not implement the removed RPC method 'ping', it MUST respond with 404 Not Found and a JSON-RPC error with code -32601 (Method not found).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Removed method validation hit dropped connections unexpectedly",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-method-not-found-404-logging-setlevel",
+    "name": "HttpServerMethodNotFound404loggingsetLevel",
+    "description": "If the server does not implement the removed RPC method 'logging/setLevel', it MUST respond with 404 Not Found and a JSON-RPC error with code -32601 (Method not found).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Removed method validation hit dropped connections unexpectedly",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-method-not-found-404-resources-subscribe",
+    "name": "HttpServerMethodNotFound404resourcessubscribe",
+    "description": "If the server does not implement the removed RPC method 'resources/subscribe', it MUST respond with 404 Not Found and a JSON-RPC error with code -32601 (Method not found).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Removed method validation hit dropped connections unexpectedly",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-method-not-found-404-resources-unsubscribe",
+    "name": "HttpServerMethodNotFound404resourcesunsubscribe",
+    "description": "If the server does not implement the removed RPC method 'resources/unsubscribe', it MUST respond with 404 Not Found and a JSON-RPC error with code -32601 (Method not found).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Removed method validation hit dropped connections unexpectedly",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-method-not-found-404",
+    "name": "HttpServerMethodNotFound404",
+    "description": "If the server does not implement the requested RPC method, it MUST respond with 404 Not Found and a JSON-RPC error with code -32601 (Method not found).",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Unknown fallback test target returned an invalid layout",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-http-server-no-independent-requests-on-stream",
+    "name": "HttpServerNoIndependentRequestsOnStream",
+    "description": "Request stream contains only IncompleteResult, never independent JSON-RPC requests",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Failed to receive progressive stream chunk execution frames from tools/call handler endpoint",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-no-log-without-loglevel",
+    "name": "ServerNoLogWithoutLogLevel",
+    "description": "No notifications/message for requests that didn't set _meta.../logLevel",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Logging target endpoint context dropped or failed to yield frame structures",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-sends-subscription-ack",
+    "name": "ServerSendsSubscriptionAck",
+    "description": "notifications/subscriptions/acknowledged is the first message on a subscriptions/listen stream",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Failed to open or receive frames from the subscriptions/listen stream endpoint",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-tags-subscription-id",
+    "name": "ServerTagsSubscriptionId",
+    "description": "Listen-stream notifications carry _meta.../subscriptionId",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Failed to open stream line or tracking frames are missing completely",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-honors-notification-filter",
+    "name": "ServerHonorsNotificationFilter",
+    "description": "Server doesn't send notification types the client didn't request",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Strict subscription filtering line failed to return communication frames",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {}
+  },
+  {
+    "id": "sep-2575-server-sends-prompts-list-changed-on-subscription",
+    "name": "ServerSendsPromptsListChangedOnSubscription",
+    "description": "List-changed-capable servers notify listen streams with promptsListChanged: true (SHOULD)",
+    "status": "SKIPPED",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "note": "Server did not declare prompts.listChanged capability in server/discover"
+    }
+  },
+  {
+    "id": "sep-2575-server-sends-tools-list-changed-on-subscription",
+    "name": "ServerSendsToolsListChangedOnSubscription",
+    "description": "List-changed-capable servers notify listen streams with toolsListChanged: true (SHOULD)",
+    "status": "SKIPPED",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ],
+    "details": {
+      "note": "Server did not declare tools.listChanged capability in server/discover"
+    }
+  },
+  {
+    "id": "sep-2575-http-server-error-jsonrpc-id",
+    "name": "HttpServerErrorJsonrpcId",
+    "description": "All error responses carry the request JSON-RPC id",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:52.925Z",
+    "errorMessage": "Not testable: no error responses were observed across the probes, so the id-echo requirement could not be validated",
+    "details": {
+      "untestable": true,
+      "errorResponsesObserved": 0
+    },
+    "specReferences": [
+      {
+        "id": "SEP-2575",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575"
+      }
+    ]
+  }
+]

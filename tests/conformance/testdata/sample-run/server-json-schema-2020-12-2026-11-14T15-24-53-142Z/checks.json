@@ -1,0 +1,33 @@
+[
+  {
+    "id": "json-schema-2020-12-error",
+    "name": "JsonSchema2020_12Error",
+    "description": "JSON Schema 2020-12 conformance test",
+    "status": "FAILURE",
+    "timestamp": "2026-11-14T15:24:53.143Z",
+    "errorMessage": "Failed: fetch failed",
+    "specReferences": [
+      {
+        "id": "SEP-1613",
+        "url": "https://github.com/modelcontextprotocol/specification/pull/655"
+      }
+    ]
+  },
+  {
+    "id": "wire-schema-valid",
+    "name": "WireSchemaValid",
+    "description": "Every JSON-RPC message the implementation sent is valid per the spec JSON schema for the negotiated spec version",
+    "status": "SUCCESS",
+    "timestamp": "2026-11-14T15:24:53.143Z",
+    "specReferences": [
+      {
+        "id": "MCP-Schema",
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/draft/schema.json"
+      }
+    ],
+    "details": {
+      "messagesValidated": 1,
+      "violations": []
+    }
+  }
+]

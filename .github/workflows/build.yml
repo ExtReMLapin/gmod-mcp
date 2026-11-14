@@ -37,36 +37,84 @@ jobs:
         # (exit 143) once the test executables also compiled every source.
         run: cmake --build build --config Release --parallel 4
 
+      # Every test step tees its output to build/logs/*.log: cmake/ci_badges.py reads them for the README badges.
       - name: Native unit tests (no game)
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p build/logs
           for name in gmod-mcp-unittests gmod-mcp-coretests; do
             t=$(find build -name "$name" -type f -o -name "$name.exe" -type f | head -n 1)
-            "$t"
+            "$t" 2>&1 | tee "build/logs/${name#gmod-mcp-}.log"
           done
 
       - name: Lua runtime tests (no game, LuaJIT 2.1.0-beta3 like the game)
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
+          mkdir -p build/logs
           sudo apt-get install -y luajit
           luajit -v
-          luajit tests/lua/runtime_test.lua src/lua
+          luajit tests/lua/runtime_test.lua src/lua 2>&1 | tee build/logs/runtime.log
 
       - name: Bridge tests (no game - closed, fake server, 2026-07-28 client)
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p build/logs
           bridge=$(find build -name "gmod-mcp-bridge" -type f -o -name "gmod-mcp-bridge.exe" -type f | head -n 1)
           py=$(command -v python3 || command -v python)
-          "$py" -u tests/bridge/test_bridge.py "$bridge"
+          "$py" -u tests/bridge/test_bridge.py "$bridge" 2>&1 | tee build/logs/bridge.log
 
       - name: Protocol constants vs the official MCP schema
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p build/logs
           py=$(command -v python3 || command -v python)
-          "$py" tests/protocol/check_constants.py
+          "$py" tests/protocol/check_constants.py 2>&1 | tee build/logs/protocol.log
+
+      - name: Comparison table tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          py=$(command -v python3 || command -v python)
+          "$py" -B -m unittest discover -s tests/comparison 2>&1 | tee build/logs/comparison.log
+
+      - name: CI scripts tests (conformance runner, fixture check, badges)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          py=$(command -v python3 || command -v python)
+          "$py" -B -m unittest discover -s tests/conformance 2>&1 | tee build/logs/conformance-unit.log
+          "$py" -B -m unittest discover -s tests/ci 2>&1 | tee build/logs/ci-unit.log
+
+      # The official MCP conformance suite against the module's real MCP server code (no game): the host executable
+      # tests/conformance builds with the other test programs serves the suite's fixtures; run.py compares the results
+      # with tests/conformance/expected-failures.json and writes build/conformance-summary.json.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: MCP conformance suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          py=$(command -v python3 || command -v python)
+          "$py" -u tests/conformance/run.py 2>&1 | tee build/logs/conformance.log
+
+      # The suite's fixtures (test_simple_text, slow_compute, greet...) exist only in tests/conformance and in the
+      # conformance host. Their names come from tests/conformance itself (see check_fixtures_absent.py), so a new
+      # fixture is covered without editing this step.
+      - name: Fixture tools absent from shipped binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=$(command -v python3 || command -v python)
+          "$py" tests/conformance/check_fixtures_absent.py --build-dir build
 
       - name: Package
         shell: bash
@@ -93,6 +141,22 @@ jobs:
           cd dist
           if [ "$RUNNER_OS" = "Windows" ]; then 7z a -tzip "$name.zip" "$name" > /dev/null; else zip -qr "$name.zip" "$name"; fi
           sha256sum "$name.zip" > "$name.zip.sha256"
+
+      # Counts for the README badges (published by the badges job below, on pushes to main only).
+      - name: Collect badge data
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          mkdir -p badge-data
+          cp build/logs/*.log badge-data/ 2>/dev/null || true
+          cp build/conformance-summary.json badge-data/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v6
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: badge-data-${{ matrix.platform }}
+          path: badge-data/
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v6
         with:
@@ -214,3 +278,54 @@ jobs:
           git add .claude-plugin/marketplace.json
           git diff --cached --quiet || git commit -m "Marketplace: plugin ${tag}"
           git push origin HEAD:main
+
+  # The README badges: tests.json and mcp-conformance.json (shields.io endpoint format) on the orphan branch `badges`.
+  # Pushes to main only (not tags, not pull requests). It is a separate job, not a step of the Linux leg, so that it
+  # sees both legs (a failure on Windows turns the badge red), runs even when the build failed (the badge then says so)
+  # and holds the write permission alone. Publishing is best effort: this job can never fail the workflow.
+  badges:
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    concurrency:
+      group: badges
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          pattern: badge-data-*
+          path: badge-data
+      - name: Generate badges
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Linux leg is the primary one (it runs every suite, the counts are its); Windows only adds failures.
+          python3 cmake/ci_badges.py --dir badge-data/badge-data-linux64 --dir badge-data/badge-data-win64 \
+            --out "$RUNNER_TEMP/badges" --build-result "${{ needs.build.result }}"
+      - name: Publish to the badges branch
+        # Best effort: a failure here is shown on this step only (the job and the workflow stay green).
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A newer push to main will publish its own numbers: do not overwrite them with older ones.
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then echo "main moved on ($head): skipping"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin badges > /dev/null; then
+            git fetch --depth=1 origin badges
+            git checkout -q -B badges FETCH_HEAD
+          else
+            git checkout -q --orphan badges
+            git rm -rf -q .
+          fi
+          cp "$RUNNER_TEMP"/badges/*.json .
+          git add tests.json mcp-conformance.json
+          git diff --cached --quiet || git commit -q -m "Badges: ${GITHUB_SHA::7}"
+          git push origin HEAD:badges
