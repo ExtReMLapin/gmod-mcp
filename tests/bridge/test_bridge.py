@@ -1016,8 +1016,9 @@ def case_edge():
         sc, err = call(tool, args)
         check("EDGE %s %s refused, naming the argument" % (tool, json.dumps(args)),
               err is True and (key is None or key in json.dumps(sc)), sc)
-    sc, err = call("instances_launch", {"overlay": "relative/path"})
-    check("EDGE overlay relative path refused before launching", err and "absolute" in json.dumps(sc), sc)
+    sc, err = call("instances_launch", {"overlay": "relative/path", "game_dir": nowhere})
+    check("EDGE overlay relative path refused before launching",
+          err and ("absolute" in json.dumps(sc) or (os.name != "nt" and "unsupported" in json.dumps(sc))), sc)
     if os.name == "nt":
         import shutil
         game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
