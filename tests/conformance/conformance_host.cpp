@@ -2,10 +2,11 @@
 // fixtures of the official MCP conformance suite (fixtures.cpp) and a loopback relay that adds the bearer token (the suite
 // cannot send one). Test-only: built by CMake next to the other test executables, never shipped.
 //
-//   gmod-mcp-conformance-host [--port 27090] [--no-stdin]
+//   gmod-mcp-conformance-host [--port 27090] [--no-stdin] [--version]
 //
 // Prints exactly one line `READY http://127.0.0.1:<port>/mcp` once the relay and the server listen. Exits cleanly on
 // SIGINT / SIGTERM / Ctrl+C, or when stdin reaches EOF (--no-stdin ignores stdin: for a manual run in the background).
+// --version prints the canary below and exits.
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -64,14 +65,23 @@ static int free_port() {
     return port;
 }
 
+// A long unique string that no compiler or linker can split or drop (it is printed by --version): see
+// tests/conformance/check_fixtures_absent.py. The check requires it in this executable and never in the module or the
+// bridge, which proves its binary scan can see a string of the host's own (short fixture names may be built from
+// immediate stores by GCC and so be invisible to a byte scan, hence this canary instead of counting names).
+extern "C" const char gmod_mcp_conformance_canary[] = "GMOD_MCP_CONFORMANCE_FIXTURE_CANARY_7f3c9a1e";
+
 int main(int argc, char **argv) {
     int relay_port = 27090;
     bool watch_stdin = true;
     for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--port") && i + 1 < argc) relay_port = std::atoi(argv[++i]);
+        if (!std::strcmp(argv[i], "--version")) {
+            std::printf("gmod-mcp-conformance-host %s\n", gmod_mcp_conformance_canary);
+            return 0;
+        } else if (!std::strcmp(argv[i], "--port") && i + 1 < argc) relay_port = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--no-stdin")) watch_stdin = false;
         else {
-            std::fprintf(stderr, "usage: gmod-mcp-conformance-host [--port <port>] [--no-stdin]\n");
+            std::fprintf(stderr, "usage: gmod-mcp-conformance-host [--port <port>] [--no-stdin] [--version]\n");
             return 2;
         }
     }

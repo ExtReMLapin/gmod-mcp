@@ -24,6 +24,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Asks CMake for its code model (File API, codemodel-v2) at configure time, on both generators: the fixture check
+      # reads it to prove that nothing under tests/conformance/ is a source of any target but the conformance host.
+      - name: Request the CMake code model
+        shell: bash
+        run: |
+          mkdir -p build/.cmake/api/v1/query
+          touch build/.cmake/api/v1/query/codemodel-v2
+
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -92,10 +100,13 @@ jobs:
           "$py" -B -m unittest discover -s tests/ci 2>&1 | tee build/logs/ci-unit.log
 
       # The suite's fixtures (test_simple_text, slow_compute, greet...) exist only in tests/conformance and in the
-      # conformance host. Their names come from tests/conformance itself (see check_fixtures_absent.py), so a new
-      # fixture is covered without editing this step. It runs before the conformance suite (it needs only the build), so
-      # that a failing suite never hides a leak, and it scans the host as a positive control (the scan must see the
-      # fixtures where they are, or "clean" would mean nothing). It also refuses a set_request_hooks call in src/.
+      # conformance host. Guarantees, strongest first (see check_fixtures_absent.py): (1) the CMake build graph: no
+      # source under tests/conformance/ belongs to a target other than the host (deterministic, any generator);
+      # (2) no fixture name as a literal in src/, loader/, plugin/, and no set_request_hooks call there; (3) a scan of
+      # the module and the bridge for the fixture names and for the host's canary string, which the host must itself
+      # contain (a compiler may hide short names, so only the long canary is a reliable control). Names come from
+      # tests/conformance itself, so a new fixture is covered without editing this step. It runs before the conformance
+      # suite (it needs only the build), so that a failing suite never hides a leak.
       - name: Fixture tools absent from shipped binaries
         shell: bash
         run: |

@@ -21,7 +21,10 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
 - **No AI attribution** in commits (no `Co-Authored-By`, no session links).
 - **Conformance fixtures live only in `tests/conformance/`**, and only the `gmod-mcp-conformance-host` executable links
   them. `src/` never calls `mcp::set_request_hooks` (a test-only seam for the conformance host; only its declaration and
-  definition in `src/mcp.h` / `src/mcp.cpp` may name it). `tests/conformance/check_fixtures_absent.py` enforces both in CI.
+  definition in `src/mcp.h` / `src/mcp.cpp` may name it). `tests/conformance/check_fixtures_absent.py` enforces both in CI,
+  strongest guarantee first: the CMake build graph (File API: no `tests/conformance/` source in a target other than the
+  host), then the shipped sources (no fixture name literal, no `set_request_hooks` call), then a binary scan of the module
+  and bridge (secondary: a compiler can hide short strings) controlled by a long canary string that only the host defines.
 - **Release checksum**: `loader/mcpagent_boot.lua` contains the placeholder `@MCPAGENT_DLL_CRC@`. Never replace it by
   hand: the CI stamps it with the CRC32 of the DLL it just built. Local builds keep the placeholder (check skipped).
 - **Menu loader block**: when you change `kBlockSource` in `src/installer.cpp`, bump its `vN` so installed copies are

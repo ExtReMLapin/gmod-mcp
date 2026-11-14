@@ -373,6 +373,24 @@ the 8 others are by design (logging, server-initiated sampling/elicitation, lega
 protocol-level `failed` task with an `error`, and `tasks/get` does not check `Mcp-Name` (see "Known gaps" below).
 The manual run below predates the host.
 
+Fixtures must never ship. `tests/conformance/check_fixtures_absent.py` (CI step "Fixture tools absent from shipped
+binaries", before the suite; unit tests in `tests/conformance/test_check_fixtures.py`) enforces it, strongest guarantee
+first:
+
+1. **Build graph (deterministic, the primary guarantee).** The CMake File API (`codemodel-v2`, requested before configure
+   by a workflow step; the script requests it and re-configures once if a local build directory has no reply) lists each
+   target's sources and include directories, on the Visual Studio generator (Windows leg) as on Makefiles or Ninja
+   (Linux leg). No source under `tests/conformance/` may belong to a target other than `gmod-mcp-conformance-host`, and no
+   other target may have that directory on its include path.
+2. **Sources.** No fixture name (or the canary) as a string literal in `src/`, `loader/`, `plugin/`; no
+   `mcp::set_request_hooks` call there.
+3. **Binary scan (secondary).** The module and the bridge contain no fixture name and not the canary
+   `GMOD_MCP_CONFORMANCE_FIXTURE_CANARY_7f3c9a1e`, a long string the host defines (`conformance_host.cpp`) and prints for
+   `--version`. The host must contain it: that proves the scan sees the host's own strings. Short fixture names are only
+   counted, for information: GCC may build them from immediate stores, so they are not always contiguous bytes (a first
+   version required 80% of them and failed on the Linux leg with 47 of 63), and a short name leaked into the module could
+   be invisible too, which is why the scan is not the guarantee.
+
 While the host runs, its relay gives every local process that can reach its loopback port an authenticated session
 (the relay adds the bearer token), including the module's real tools (`game_terminate`, native `lua_file_write` and
 `lua_file_delete`, `wiki_*`). CI and development only, never shipped; do not run it next to a live game you care about.
