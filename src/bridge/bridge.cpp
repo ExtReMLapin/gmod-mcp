@@ -780,7 +780,8 @@ json bridge_tools() {
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
                          {"description", "Absolute folder whose Lua these clients load before every addon's (e.g. your git worktree of "
                                          "the addon: its root or its lua/ folder). Applies from their first map load; see lua_mount. "
-                                         "Windows only."}}},
+                                         "The result then reports what each engine really has (instances[i].lua_mount.active); a mount "
+                                         "that is not active is isError with a warning. Windows only."}}},
             {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
           {"additionalProperties", false}}},
@@ -950,6 +951,55 @@ bool file_is(const std::string &p) {
     out(json{{"jsonrpc", "2.0"}, {"method", "notifications/progress"}, {"params", p}});
 }
 
+#ifdef _WIN32
+// UTF-8 to UTF-16: paths and the command line arrive as UTF-8 (JSON); widening byte by byte corrupts every non-ASCII
+// character.
+std::wstring utf8_to_wide(const std::string &s) {
+    if (s.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    if (n <= 0) return std::wstring(s.begin(), s.end());
+    std::wstring w((size_t)n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+}
+#endif
+
+// Pure: what one launched client's engine has for the requested Lua mount, from what the game's own `lua_mount` tool
+// answered (its structuredContent, or {"error"} when the call failed). The mount counts as active only when the
+// engine reports the requested folder; the answer's base_lua_mounted false means the client cannot run its base Lua.
+[[maybe_unused]] json lua_mount_verdict(const std::string &requested, const json &answer) {
+    auto same = [](std::string a, std::string b) {
+        auto norm = [](std::string &x) {
+            for (auto &c : x) {
+                if (c == '/') c = '\\';
+                else if ((unsigned char)c < 0x80) c = (char)std::tolower((unsigned char)c);
+            }
+            while (x.size() > 3 && x.back() == '\\') x.pop_back();
+        };
+        norm(a);
+        norm(b);
+        return !a.empty() && a == b;
+    };
+    json v{{"requested", requested}, {"active", false}, {"base_lua_mounted", nullptr}};
+    if (!answer.is_object() || answer.contains("error")) {
+        json e = answer.is_object() && answer.contains("error") ? answer["error"] : json("no usable answer from the game");
+        json m = e.is_object() && e.contains("message") ? e["message"] : e;
+        v["error"] = m.is_string() ? m.get<std::string>() : m.dump();
+        return v;
+    }
+    if (answer.contains("base_lua_mounted") && answer["base_lua_mounted"].is_boolean()) v["base_lua_mounted"] = answer["base_lua_mounted"];
+    json engine = answer.value("lua_mount", json());
+    if (engine.is_string() && same(engine.get<std::string>(), requested)) {
+        v["active"] = true;
+    } else {
+        v["engine_lua_mount"] = engine.is_string() ? engine : json(nullptr);
+        v["error"] = engine.is_string() ? "the engine has another folder mounted: " + engine.get<std::string>()
+                                        : "the engine has no mounted folder: the module did not apply -mcp_lua_mount "
+                                          "(see garrysmod/console.log); the tests would run the installed addon's code";
+    }
+    return v;
+}
+
 json launch_tool(const json &args, const json &token) {
 #ifndef _WIN32
     (void)args;
@@ -992,7 +1042,7 @@ json launch_tool(const json &args, const json &token) {
     std::vector<Launched> started;
     for (int i = 0; i < count; ++i) {
         std::string cmd = "\"" + exe + "\" " + opts;
-        std::wstring wcmd(cmd.begin(), cmd.end()), wdir(root.begin(), root.end());
+        std::wstring wcmd = utf8_to_wide(cmd), wdir = utf8_to_wide(root);
         STARTUPINFOW si{};
         si.cb = sizeof si;
         PROCESS_INFORMATION pi{};
@@ -1066,11 +1116,29 @@ json launch_tool(const json &args, const json &token) {
             });
         for (auto &t : th) t.join();
     }
-    bool all_ok = true;
+    // The requested mount is only a request: ask each engine what it really has (the module logs and ignores a folder
+    // it cannot apply), so a test never runs on the installed addon's code without the agent knowing.
+    std::vector<json> mount_res(started.size());
+    json mount_problems = json::array();
+    if (!mount_root.empty()) {
+        progress(token, count, count, "checking the Lua mount of each client");
+        std::vector<std::thread> th;
+        for (size_t i = 0; i < started.size(); ++i)
+            th.emplace_back([&, i] { mount_res[i] = lua_mount_verdict(mount_root, game_call("lua_mount", json{{"instance", started[i].id}}, 20)); });
+        for (auto &t : th) t.join();
+        for (size_t i = 0; i < started.size(); ++i) {
+            const json &v = mount_res[i];
+            if (!v.value("active", false)) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active")));
+            else if (v.value("base_lua_mounted", json()) == json(false))
+                mount_problems.push_back(started[i].id + ": the game's own lua/ folder is missing from its server Lua paths (base Lua not mounted)");
+        }
+    }
+    bool all_ok = mount_problems.empty();
     for (size_t i = 0; i < started.size(); ++i) {
         const json &in = found[std::to_string(started[i].pid)];
         json e{{"instance", started[i].id}, {"pid", started[i].pid}, {"port", in.value("port", 0)}};
         if (!owner.empty()) e["owner"] = owner;
+        if (!mount_root.empty()) e["lua_mount"] = mount_res[i];
         if (!map.empty()) {
             bool ok = !map_res[i].contains("error");
             all_ok = all_ok && ok;
@@ -1087,6 +1155,12 @@ json launch_tool(const json &args, const json &token) {
                           "per-frame costs and frame-to-frame behaviour differ from a normal game; raise it with "
                           "convar_set fps_max for timing work"},
              {"next", "Pass `instance` to target one, or instance_select to make one the default; instances_close when done."}};
+    if (!mount_problems.empty()) {
+        std::string w = "lua_mount " + mount_root + " is NOT active on every client: ";
+        for (size_t i = 0; i < mount_problems.size(); ++i) w += (i ? "; " : "") + mount_problems[i].get<std::string>();
+        res["warning"] = w + ". Tests on these clients would run the installed addon's code (or no usable Lua): fix it with "
+                             "lua_mount {path, instance} then map_load, or close them (instances_close).";
+    }
     return tool_text(res, !all_ok);
 #endif
 }
