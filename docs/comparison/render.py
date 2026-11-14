@@ -10,6 +10,7 @@ import argparse
 import html
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -24,20 +25,22 @@ GROUPS = {"features": "Features", "trust": "Trust & ops"}
 REALM_KEYS = ("S", "C", "M")
 REALMS_ID = "realms"
 README_LIMIT = 8
+SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 # SVG geometry (mockup v7)
-CELL_W, CELL_H, GAP = 28, 16, 3
+CELL_W, CELL_H, GAP = 30, 16, 3
 REALMS_W = 44
 GROUP_GAP = 8
 PAD = 8
 NAME_CHAR_W = 6.2
-GROUP_Y = 12
-GROUP_LINE_Y = 17
-HDR_Y1, HDR_Y2 = 30, 41
-GRID_TOP = 48
+GROUP_Y = 13
+GROUP_LINE_Y = 18
+HDR_Y1, HDR_Y2 = 32, 44
+GRID_TOP = 51
 ROW_H = CELL_H + GAP
 PICK_H = 17
-FOOT_H = 14
+FOOT_H = 15
+FOOT_CHAR_W = 6.2  # estimated advance of an 11 px footer character
 
 VERDICT_FILL = {"yes": "#2e9d5b", "partial": "#d9a520", "no": "#c94040"}
 
@@ -49,20 +52,29 @@ THEMES = {
 
 # ---------------------------------------------------------------- data
 
-def _check_cell(repo, column, cell, allow_star=True):
+def _check_cell(repo, column, cell, prefixes):
     where = f"{repo}: column {column}"
     if not isinstance(cell, dict):
         raise ValueError(f"{where}: cell must be an object")
+    if "star" in cell:
+        raise ValueError(f"{where}: 'star' is computed by render.py, remove it from the data")
     verdict = cell.get("v")
     if verdict not in VERDICTS:
         raise ValueError(f"{where}: unknown verdict {verdict!r}")
-    if verdict != "unverified" and not cell.get("evidence"):
+    evidence = cell.get("evidence")
+    if verdict != "unverified" and not evidence:
         raise ValueError(f"{where}: verdict {verdict!r} requires evidence")
-    if cell.get("star"):
-        if not allow_star:
-            raise ValueError(f"{where}: star is not supported here")
-        if verdict != "yes":
-            raise ValueError(f"{where}: star only allowed on a 'yes' cell, got {verdict!r}")
+    if evidence and not str(evidence).startswith(prefixes):
+        raise ValueError(
+            f"{where}: evidence must be pinned to the repo and its sha "
+            f"({prefixes[0]}..., {prefixes[1]}... or {prefixes[2]}...), got {evidence!r}"
+        )
+
+
+def _evidence_prefixes(repo):
+    base = str(repo["url"]).rstrip("/")
+    sha = repo["sha"]
+    return (f"{base}/blob/{sha}/", f"{base}/tree/{sha}", f"{base}/releases/download/")
 
 
 def load_data(path):
@@ -82,9 +94,12 @@ def load_data(path):
     names = set()
     for repo in data["repos"]:
         name = repo.get("name", "?")
-        for key in ("name", "url", "cells"):
+        for key in ("name", "url", "sha", "cells"):
             if key not in repo:
                 raise ValueError(f"{name}: missing key {key!r}")
+        if not isinstance(repo["sha"], str) or not SHA_RE.fullmatch(repo["sha"]):
+            raise ValueError(f"{name}: sha must be 40 hex characters, got {repo['sha']!r}")
+        prefixes = _evidence_prefixes(repo)
         names.add(name)
         for col in data["columns"]:
             cell = repo["cells"].get(col["id"])
@@ -94,14 +109,27 @@ def load_data(path):
                 for key in REALM_KEYS:
                     if not isinstance(cell, dict) or key not in cell:
                         raise ValueError(f"{name}: column {col['id']}: missing realm {key}")
-                    _check_cell(name, f"{col['id']}.{key}", cell[key], allow_star=False)
+                    _check_cell(name, f"{col['id']}.{key}", cell[key], prefixes)
             else:
-                _check_cell(name, col["id"], cell)
+                _check_cell(name, col["id"], cell, prefixes)
 
     for pick in data["picks"]:
         if pick.get("repo") not in names:
             raise ValueError(f"pick {pick.get('label')!r}: unknown repo {pick.get('repo')!r}")
+    data["stars"] = compute_stars(data)
     return data
+
+
+def compute_stars(data):
+    """Return {(repo name, column id)} for every cell that is the only 'yes' in its column (realms excluded)."""
+    stars = set()
+    for col in data["columns"]:
+        if col["id"] == REALMS_ID:
+            continue
+        yes = [r["name"] for r in data["repos"] if r["cells"][col["id"]]["v"] == "yes"]
+        if len(yes) == 1:
+            stars.add((yes[0], col["id"]))
+    return stars
 
 
 # --------------------------------------------------------------- table
@@ -121,10 +149,16 @@ def _glyph(cell):
     return f"[{glyph}]({_url(cell['evidence'])})"
 
 
-def _table_cell(col, cell):
+def _is_star(data, repo, col):
+    stars = data["stars"] if "stars" in data else compute_stars(data)
+    return (repo["name"], col["id"]) in stars
+
+
+def _table_cell(data, repo, col):
+    cell = repo["cells"][col["id"]]
     if col["id"] == REALMS_ID:
         return " ".join(f"{key}{_glyph(cell[key])}" for key in REALM_KEYS)
-    return _glyph(cell) + (" ★" if cell.get("star") else "")
+    return _glyph(cell) + (" ★" if _is_star(data, repo, col) else "")
 
 
 def render_table(data):
@@ -135,7 +169,7 @@ def render_table(data):
     ]
     for repo in data["repos"]:
         cells = [f"[{_md(repo['name'])}]({_url(repo['url'])})"]
-        cells += [_table_cell(c, repo["cells"][c["id"]]) for c in cols]
+        cells += [_table_cell(data, repo, c) for c in cols]
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines) + "\n"
 
@@ -258,7 +292,7 @@ def render_svg(data, theme, limit=None):
                 f'<rect class="cell v-{verdict}" x="{_n(x)}" y="{y}" width="{width}" '
                 f'height="{CELL_H}" rx="3" fill="{fill}"/>'
             )
-            if cell.get("star"):
+            if _is_star(data, repo, col):
                 body.append(
                     f'<text class="star" x="{_n(x + width / 2)}" y="{y + 12}" '
                     f'text-anchor="middle">★</text>'
@@ -280,18 +314,18 @@ def render_svg(data, theme, limit=None):
     for verdict, word in (("yes", "yes"), ("partial", "partial"), ("no", "no"), ("unverified", "not verified")):
         fill = "url(#hatch)" if verdict == "unverified" else VERDICT_FILL[verdict]
         body.append(
-            f'<rect class="sw v-{verdict}" x="{_n(lx)}" y="{y - 9}" width="10" height="10" rx="2" fill="{fill}"/>'
+            f'<rect class="sw v-{verdict}" x="{_n(lx)}" y="{y - 10}" width="11" height="11" rx="2" fill="{fill}"/>'
         )
-        body.append(f'<text class="foot" x="{_n(lx + 14)}" y="{y}">{_esc(word)}</text>')
-        lx += 14 + len(word) * 5.6 + 12
-    rest = f"· as of {data['as_of']} · pinned commits · code read, nothing executed"
+        body.append(f'<text class="foot" x="{_n(lx + 15)}" y="{y}">{_esc(word)}</text>')
+        lx += 15 + len(word) * 5.6 + 12
+    rest = f"as of {data['as_of']} · pinned commits · code read, nothing executed"
     body.append(f'<text class="foot" x="{_n(lx)}" y="{y}">{_esc(rest)}</text>')
-    right = max(right, lx + len(rest) * 5.6)
+    right = max(right, lx + len(rest) * FOOT_CHAR_W)
 
     y += FOOT_H
     star_note = star_sentence(len(data["repos"]))
     body.append(f'<text class="foot" x="{PAD}" y="{y}">{_esc(star_note)}</text>')
-    right = max(right, PAD + len(star_note) * 5.6)
+    right = max(right, PAD + len(star_note) * FOOT_CHAR_W)
 
     width = math.ceil(right + PAD)
     height = y + PAD + 2
@@ -300,10 +334,10 @@ def render_svg(data, theme, limit=None):
         f".hdr,.repo,.pick,.pickrepo,.foot,.grp,.realm,.star{{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}}"
         f".repo,.pickrepo{{font-size:11px;fill:{colors['text']}}}"
         f".pick{{font-size:11px;font-weight:700;fill:{colors['text']}}}"
-        f".hdr{{font-size:9.5px;font-weight:600;fill:{colors['text']}}}"
-        f".grp{{font-size:10px;letter-spacing:.05em;fill:{colors['muted']}}}"
+        f".hdr{{font-size:10.5px;font-weight:600;fill:{colors['text']}}}"
+        f".grp{{font-size:11px;letter-spacing:.05em;fill:{colors['muted']}}}"
         f".grpline{{stroke:{colors['line']};stroke-width:1}}"
-        f".foot{{font-size:10px;fill:{colors['muted']}}}"
+        f".foot{{font-size:11px;fill:{colors['muted']}}}"
         f".star{{font-size:11px;fill:#fff}}"
         f".realm{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;font-weight:700}}"
         f".r-yes{{fill:{VERDICT_FILL['yes']}}}.r-partial{{fill:{VERDICT_FILL['partial']}}}"

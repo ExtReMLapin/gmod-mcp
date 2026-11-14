@@ -14,13 +14,13 @@
       "sha": "1111111111111111111111111111111111111111",
       "cells": {
         "realms": {
-          "S": {"v": "yes", "evidence": "https://github.com/a/b/blob/1111111/realms.lua#L1"},
-          "C": {"v": "partial", "evidence": "https://github.com/a/b/blob/1111111/realms.lua#L2"},
-          "M": {"v": "no", "evidence": "https://github.com/a/b/blob/1111111/realms.lua#L3"}
+          "S": {"v": "yes", "evidence": "https://github.com/a/b/blob/1111111111111111111111111111111111111111/realms.lua#L1"},
+          "C": {"v": "partial", "evidence": "https://github.com/a/b/blob/1111111111111111111111111111111111111111/realms.lua#L2"},
+          "M": {"v": "no", "evidence": "https://github.com/a/b/blob/1111111111111111111111111111111111111111/realms.lua#L3"}
         },
-        "errors": {"v": "yes", "evidence": "https://github.com/a/b/blob/1111111/errors.lua#L1", "star": true},
-        "screenshot": {"v": "partial", "evidence": "https://github.com/a/b/blob/1111111/shot.lua#L1"},
-        "purelua": {"v": "no", "evidence": "https://github.com/a/b/blob/1111111/CMakeLists.txt#L1"},
+        "errors": {"v": "yes", "evidence": "https://github.com/a/b/blob/1111111111111111111111111111111111111111/errors.lua#L1"},
+        "screenshot": {"v": "partial", "evidence": "https://github.com/a/b/blob/1111111111111111111111111111111111111111/shot.lua#L1"},
+        "purelua": {"v": "no", "evidence": "https://github.com/a/b/blob/1111111111111111111111111111111111111111/CMakeLists.txt#L1"},
         "license": {"v": "unverified"}
       }
     },
@@ -30,14 +30,14 @@
       "sha": "2222222222222222222222222222222222222222",
       "cells": {
         "realms": {
-          "S": {"v": "yes", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222/a.ts#L1"},
-          "C": {"v": "no", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222/a.ts#L2"},
+          "S": {"v": "yes", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222222222222222222222222222222222222/a.ts#L1"},
+          "C": {"v": "no", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222222222222222222222222222222222222/a.ts#L2"},
           "M": {"v": "unverified"}
         },
-        "errors": {"v": "yes", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222/b.ts#L1"},
+        "errors": {"v": "partial", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222222222222222222222222222222222222/b.ts#L1"},
         "screenshot": {"v": "unverified"},
-        "purelua": {"v": "yes", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222/c.lua#L1"},
-        "license": {"v": "yes", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222/LICENSE"}
+        "purelua": {"v": "yes", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222222222222222222222222222222222222/c.lua#L1"},
+        "license": {"v": "yes", "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/2222222222222222222222222222222222222222/LICENSE"}
       }
     },
     {
@@ -46,14 +46,14 @@
       "sha": "3333333333333333333333333333333333333333",
       "cells": {
         "realms": {
-          "S": {"v": "yes", "evidence": "https://github.com/x/a%26b/blob/3333333/r.lua#L1"},
-          "C": {"v": "yes", "evidence": "https://github.com/x/a%26b/blob/3333333/r.lua#L2"},
-          "M": {"v": "yes", "evidence": "https://github.com/x/a%26b/blob/3333333/r.lua#L3"}
+          "S": {"v": "yes", "evidence": "https://github.com/x/a&b/blob/3333333333333333333333333333333333333333/r.lua#L1"},
+          "C": {"v": "yes", "evidence": "https://github.com/x/a&b/blob/3333333333333333333333333333333333333333/r.lua#L2"},
+          "M": {"v": "yes", "evidence": "https://github.com/x/a&b/blob/3333333333333333333333333333333333333333/r.lua#L3"}
         },
-        "errors": {"v": "no", "evidence": "https://github.com/x/a%26b/blob/3333333/e.lua#L1"},
-        "screenshot": {"v": "yes", "evidence": "https://github.com/x/a%26b/blob/3333333/s.lua#L1"},
-        "purelua": {"v": "yes", "evidence": "https://github.com/x/a%26b/blob/3333333/p.lua#L1", "star": true},
-        "license": {"v": "yes", "evidence": "https://github.com/x/a%26b/blob/3333333/LICENSE"}
+        "errors": {"v": "no", "evidence": "https://github.com/x/a&b/blob/3333333333333333333333333333333333333333/e.lua#L1"},
+        "screenshot": {"v": "yes", "evidence": "https://github.com/x/a&b/blob/3333333333333333333333333333333333333333/s.lua#L1"},
+        "purelua": {"v": "yes", "evidence": "https://github.com/x/a&b/blob/3333333333333333333333333333333333333333/p.lua#L1"},
+        "license": {"v": "yes", "evidence": "https://github.com/x/a&b/blob/3333333333333333333333333333333333333333/LICENSE"}
       }
     }
   ],

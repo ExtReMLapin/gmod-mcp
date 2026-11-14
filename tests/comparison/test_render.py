@@ -52,11 +52,57 @@ class LoadDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Pollux12/vscode-gmod-glua-ls.*errors"):
             self.load_mutated(mutate)
 
-    def test_rejects_star_on_partial(self):
+    def test_rejects_star_key(self):
         def mutate(d):
-            d["repos"][0]["cells"]["screenshot"]["star"] = True
-        with self.assertRaisesRegex(ValueError, "a/b.*screenshot"):
+            d["repos"][0]["cells"]["errors"]["star"] = True
+        with self.assertRaisesRegex(ValueError, "a/b.*errors.*star"):
             self.load_mutated(mutate)
+
+    def test_rejects_star_key_in_realms(self):
+        def mutate(d):
+            d["repos"][0]["cells"]["realms"]["S"]["star"] = True
+        with self.assertRaisesRegex(ValueError, "a/b.*realms.S.*star"):
+            self.load_mutated(mutate)
+
+    def test_rejects_short_sha(self):
+        def mutate(d):
+            d["repos"][1]["sha"] = "2222222"
+        with self.assertRaisesRegex(ValueError, "Pollux12/vscode-gmod-glua-ls.*sha"):
+            self.load_mutated(mutate)
+
+    def test_rejects_missing_sha(self):
+        def mutate(d):
+            del d["repos"][1]["sha"]
+        with self.assertRaisesRegex(ValueError, "Pollux12/vscode-gmod-glua-ls.*sha"):
+            self.load_mutated(mutate)
+
+    def test_rejects_evidence_in_another_repo(self):
+        def mutate(d):
+            d["repos"][1]["cells"]["license"]["evidence"] = (
+                "https://github.com/Pollux12/gmod-glua-ls/blob/" + "2" * 40 + "/LICENSE")
+        with self.assertRaisesRegex(ValueError, "Pollux12/vscode-gmod-glua-ls.*license"):
+            self.load_mutated(mutate)
+
+    def test_rejects_evidence_at_another_sha(self):
+        def mutate(d):
+            d["repos"][1]["cells"]["license"]["evidence"] = (
+                "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/" + "4" * 40 + "/LICENSE")
+        with self.assertRaisesRegex(ValueError, "Pollux12/vscode-gmod-glua-ls.*license"):
+            self.load_mutated(mutate)
+
+    def test_rejects_evidence_on_a_branch(self):
+        def mutate(d):
+            d["repos"][0]["cells"]["realms"]["C"]["evidence"] = "https://github.com/a/b/blob/main/realms.lua#L2"
+        with self.assertRaisesRegex(ValueError, "a/b.*realms.C"):
+            self.load_mutated(mutate)
+
+    def test_accepts_tree_and_release_evidence(self):
+        def mutate(d):
+            d["repos"][1]["cells"]["purelua"]["evidence"] = (
+                "https://github.com/Pollux12/vscode-gmod-glua-ls/tree/" + "2" * 40)
+            d["repos"][1]["cells"]["license"]["evidence"] = (
+                "https://github.com/Pollux12/vscode-gmod-glua-ls/releases/download/v1/x.vsix")
+        self.load_mutated(mutate)
 
     def test_rejects_bad_realms_subcell(self):
         def mutate(d):
@@ -71,6 +117,28 @@ class LoadDataTests(unittest.TestCase):
             self.load_mutated(mutate)
 
 
+class StarTests(unittest.TestCase):
+    def setUp(self):
+        self.data = render.load_data(FIXTURE)
+
+    def test_sole_yes_gets_star(self):
+        self.assertIn(("a/b", "errors"), self.data["stars"])
+        self.assertIn(("x/a&b", "screenshot"), self.data["stars"])
+
+    def test_tie_gets_no_star(self):
+        # purelua and license: two repos say yes
+        for col in ("purelua", "license"):
+            self.assertFalse([s for s in self.data["stars"] if s[1] == col], col)
+        self.assertEqual(len(self.data["stars"]), 2)
+
+    def test_realms_never_starred(self):
+        self.assertFalse([s for s in self.data["stars"] if s[1] == "realms"])
+
+    def test_table_marks_only_starred_cells(self):
+        table = render.render_table(self.data)
+        self.assertEqual(table.count("★"), 2)
+
+
 class TableTests(unittest.TestCase):
     def setUp(self):
         self.data = render.load_data(FIXTURE)
@@ -78,16 +146,16 @@ class TableTests(unittest.TestCase):
 
     def test_table_links_repo_and_evidence(self):
         self.assertIn("[a/b](https://github.com/a/b)", self.table)
-        self.assertIn("[✅](https://github.com/a/b/blob/1111111/errors.lua#L1) ★", self.table)
+        self.assertIn(f"[✅](https://github.com/a/b/blob/{'1' * 40}/errors.lua#L1) ★", self.table)
 
     def test_table_escapes_pipe_in_label(self):
         self.assertIn("a\\|b", self.table)
 
     def test_table_realms_cell(self):
         self.assertIn(
-            "S[✅](https://github.com/a/b/blob/1111111/realms.lua#L1) "
-            "C[🟡](https://github.com/a/b/blob/1111111/realms.lua#L2) "
-            "M[❌](https://github.com/a/b/blob/1111111/realms.lua#L3)",
+            f"S[✅](https://github.com/a/b/blob/{'1' * 40}/realms.lua#L1) "
+            f"C[🟡](https://github.com/a/b/blob/{'1' * 40}/realms.lua#L2) "
+            f"M[❌](https://github.com/a/b/blob/{'1' * 40}/realms.lua#L3)",
             self.table,
         )
 
@@ -148,6 +216,7 @@ class SvgTests(unittest.TestCase):
     def test_svg_includes_footer_and_picks(self):
         text = self.svg()
         self.assertIn("as of 2026-11-14", text)
+        self.assertNotIn("· as of", text)
         self.assertIn("code read, nothing executed", text)
         self.assertIn("Most capabilities", text)
 
@@ -165,7 +234,7 @@ class SvgTests(unittest.TestCase):
         root = ET.fromstring(self.svg(limit=2))
         width = float(root.get("width"))
         sentence = [e for e in root.iter(SVG_NS + "text") if "the only server" in "".join(e.itertext())][0]
-        self.assertLessEqual(float(sentence.get("x")) + len("".join(sentence.itertext())) * 5.6, width)
+        self.assertLessEqual(float(sentence.get("x")) + len("".join(sentence.itertext())) * render.FOOT_CHAR_W, width)
 
 
 class MarkerTests(unittest.TestCase):
