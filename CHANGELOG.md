@@ -38,6 +38,12 @@ first, and checked in a real game.
 - Live regression cases (`test_bridge.py convar_crash`, `fixes_live`): the crash reproduced before the fix, 3/3 after;
   the review fixes 11/11 in a real game. The bridge suite runs its cases in parallel (29 s instead of 2 min 30).
 
+### Docs
+
+- Comparison with the other Garry's Mod MCP servers: a heatmap in the README and the full table in
+  [docs/COMPARISON.md](https://github.com/ExtReMLapin/gmod-mcp/blob/main/docs/COMPARISON.md) (22 servers, every cell linked to its evidence at a pinned commit). It is
+  generated from `docs/comparison/data.json` by `docs/comparison/render.py`.
+
 ### Upgrading
 
 - Update the plugin (auto-update, or `claude plugin update gmod-mcp@gmod-mcp`), restart Claude Code, then let Claude
