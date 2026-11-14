@@ -29,6 +29,7 @@ static bool g_started = false;
 static bool g_bootstrap = false;       // started from a listen/singleplayer server state (first run)
 static lua_State *g_host_L = nullptr;  // state that runs the pump: menu (client mode) or server (srcds)
 static bool g_disabled = false;
+static lua_State *g_server_L = nullptr;  // the server state that loaded the module (each new map has a new one)
 
 static std::string command_line() {
     using PlatCmd = const char *(*)();
@@ -264,10 +265,21 @@ static int open_impl(lua_State *L) {
             return 0;
         }
         g_started = true;
+        // Dedicated server or first run from a listen/singleplayer server state: this is the first map's server state.
+        if (global_true(L, "SERVER") && !global_true(L, "MENU_DLL")) {
+            g_server_L = L;
+            agent::on_server_state_open();
+        }
         return 0;
     }
     // Already running. Client mode: the module lives in the menu state; another state requiring it (the server autorun
     // of every map) is a no-op. Dedicated mode: the server state is new after each map change, re-register the pump.
+    // A new server state (client mode too: the autorun loader requires the module in each map's server state) is a new
+    // map load; the earliest moment the module can tell, before the pump sees the realm and before most autorun files.
+    if (global_true(L, "SERVER") && !global_true(L, "MENU_DLL")) {
+        g_server_L = L;
+        agent::on_server_state_open();
+    }
     if (agent::config().mode == agent::Mode::Dedicated) {
         g_host_L = L;
         register_pump(L);
@@ -286,6 +298,10 @@ EXPORT int gmod13_close(lua_State *L) {
         console::uninstall();
         g_started = false;
         g_disabled = true;
+    }
+    if (L == g_server_L) {
+        g_server_L = nullptr;
+        agent::on_server_state_close();
     }
     // In srcds, the server state is recreated on every map: the HTTP server keeps running, the pump will be re-registered.
     return 0;

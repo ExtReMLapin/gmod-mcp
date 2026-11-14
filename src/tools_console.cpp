@@ -256,19 +256,19 @@ static json console_read_tool(const json &args) {
 }
 
 static json errors_since_tool(const json &args) {
-    json r = console::errors_since(args.value("cursor", (uint64_t)0), args.value("limit", 100));
     uint64_t cur_load = agent::map_load_seq();
     bool only_current = args.value("since_map_load", false);
-    json f = json::array();
-    for (auto e : r["errors"]) {
-        if (args.contains("realm") && e.value("realm", "") != args["realm"].get<std::string>()) continue;
-        uint64_t ml = e.value("map_load", (uint64_t)0);
-        if (only_current && ml != cur_load) continue;
-        std::string m = agent::map_of_load(ml);
+    std::string realm = args.contains("realm") ? args["realm"].get<std::string>() : "";
+    bool has_realm = args.contains("realm");
+    // The filters apply while reading, so `limit` counts the errors kept and next_cursor stays exact.
+    json r = console::errors_since(args.value("cursor", (uint64_t)0), args.value("limit", 100), [&](const json &e) {
+        if (has_realm && e.value("realm", "") != realm) return false;
+        return !only_current || e.value("map_load", (uint64_t)0) == cur_load;
+    });
+    for (auto &e : r["errors"]) {
+        std::string m = agent::map_of_load(e.value("map_load", (uint64_t)0));
         if (!m.empty()) e["map"] = m;
-        f.push_back(std::move(e));
     }
-    r["errors"] = f;
     r["map_load"] = cur_load;
     r["map"] = agent::map_of_load(cur_load);
     return ok(r);

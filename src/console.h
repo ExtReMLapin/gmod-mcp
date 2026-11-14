@@ -47,7 +47,10 @@ size_t capacity();
 void push_error(const nlohmann::json &e);  // e contains realm, message, stack...; tagged with map_load (below)
 // Source of the current map-load sequence number, stamped on each error as "map_load" (set by the agent).
 void set_map_load_source(uint64_t (*fn)());
-nlohmann::json errors_since(uint64_t cursor, size_t limit);
+// keep (optional): only errors it accepts are returned and counted by limit; next_cursor stays exact.
+nlohmann::json errors_since(uint64_t cursor, size_t limit, const std::function<bool(const nlohmann::json &)> &keep = nullptr);
+// Gives map load number `map_load` to the kept server/client errors with seq >= from_seq.
+void errors_restamp(uint64_t from_seq, uint64_t map_load);
 uint64_t errors_cursor();
 void errors_clear();
 // Parses console lines to extract errors from them (srcds mode, without OnLuaError).
