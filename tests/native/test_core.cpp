@@ -53,7 +53,9 @@ static void test_cmdline() {
     CHECK(cmdline::command_name("\"quoted name\" 1") == "quoted name");
     CHECK(cmdline::command_name("   ").empty());
     CHECK(cmdline::unknown_commands({"Unknown command \"pba_typo\"", "hello", "Unknown command \"Other\""}) == (V{"pba_typo", "other"}));
-    CHECK(cmdline::unknown_commands({"Unknown command: x", "an Unknown command \"y\" inside", "fine"}).empty());
+    // What GMod really prints (seen live 2026-11-14 in the menu, client and server realms, French client too).
+    CHECK(cmdline::unknown_commands({"Unknown command: pba_typo_xyz", "Unknown command: Other_One"}) == (V{"pba_typo_xyz", "other_one"}));
+    CHECK(cmdline::unknown_commands({"Unknown command:", "Unknown command: ", "an Unknown command \"y\" inside", "Unknown command: x y", "fine"}) == (V{"x"}));
     CHECK(cmdline::own_log_line("[mcpagent] initialize (protocol 2026-07-28)"));
     CHECK(!cmdline::own_log_line("x [mcpagent] y"));
     CHECK(!cmdline::own_log_line("pba_enable = 1"));

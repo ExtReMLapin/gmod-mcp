@@ -43,13 +43,19 @@ std::string command_name(const std::string &statement) {
 }
 
 std::vector<std::string> unknown_commands(const std::vector<std::string> &lines) {
-    static const std::string prefix = "Unknown command \"";
+    // GMod prints `Unknown command: name` (seen in every realm); Source 2013 prints `Unknown command "name"`.
+    static const std::string colon = "Unknown command: ", quoted = "Unknown command \"";
     std::vector<std::string> out;
     for (const auto &l : lines) {
-        if (l.compare(0, prefix.size(), prefix) != 0) continue;
-        size_t end = l.find('"', prefix.size());
-        if (end == std::string::npos) continue;
-        out.push_back(util::to_lower(l.substr(prefix.size(), end - prefix.size())));
+        std::string name;
+        if (l.compare(0, colon.size(), colon) == 0) {
+            name = l.substr(colon.size());
+            name = name.substr(0, name.find_first_of(" \t"));
+        } else if (l.compare(0, quoted.size(), quoted) == 0) {
+            size_t end = l.find('"', quoted.size());
+            if (end != std::string::npos) name = l.substr(quoted.size(), end - quoted.size());
+        }
+        if (!name.empty()) out.push_back(util::to_lower(name));
     }
     return out;
 }
