@@ -33,7 +33,9 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        # A bounded job count: unbounded make -j started every compile at once and the Linux runner killed them
+        # (exit 143) once the test executables also compiled every source.
+        run: cmake --build build --config Release --parallel 4
 
       - name: Native unit tests (no game)
         shell: bash
