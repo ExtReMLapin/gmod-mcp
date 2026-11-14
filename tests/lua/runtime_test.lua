@@ -336,5 +336,81 @@ r = call("status", {})
 A.realm = realm0
 check(r.ok and r.result.fps_max == 1, "status reads fps_max without the cached GetConVar" .. (r.ok and "" or (" " .. tostring(r.error and r.error.message))))
 
+-- Job ids carry the realm's generation: a new Lua state restarts job_seq at 0, so "server-1" of map A and of map B
+-- must never be the same id (lua_job_status {id} answered the wrong map's job and consumed its result).
+local gen_a = call("job_start", { code = "return 1", async = true })
+check(gen_a.ok and gen_a.result.id:match("^server%-g7%-%d+$") ~= nil, "job id carries the generation: " .. tostring(gen_a.ok and gen_a.result.id))
+
+-- Pruning must not depend on the tick (the module stops ticking when nothing runs): finished jobs left uncollected
+-- are dropped by age when a job is started, polled or listed.
+local function age_all()
+	for _, j in pairs(A.jobs) do
+		if j.state ~= "running" then j.finished = SysTime() - 10000 end
+	end
+end
+local function count_jobs() local n = 0 for _ in pairs(A.jobs) do n = n + 1 end return n end
+for _ = 1, 50 do H.job_tick() end
+age_all()
+local before = count_jobs()
+call("job_start", { code = "return 9", async = true })
+check(before > 0 and count_jobs() == 1, "job_start prunes old finished jobs (" .. before .. " -> " .. count_jobs() .. ")")
+for _ = 1, 5 do H.job_tick() end
+age_all()
+local ping = call("job_start", { code = "job:sleep(100)" })
+age_all()
+call("job_poll", { id = ping.result.id, peek = true })
+check(count_jobs() == 1, "job_poll prunes old finished jobs (" .. count_jobs() .. ")")
+call("job_cancel", { id = ping.result.id })
+H.job_tick()
+age_all()
+local lst2 = call("job_list", {})
+check(lst2.ok and #lst2.result.jobs == 0 and count_jobs() == 0, "job_list prunes old finished jobs (" .. count_jobs() .. ")")
+
+-- Reports are bounded per item: depth 8, 5000 entries, 1 MiB strings; a cut is flagged. The count cap stays.
+local rj = run_job({ code = [[
+	job:report(string.rep("z", 2 * 1048576))
+	local deep = {} local t = deep for i = 1, 30 do t.n = {} t = t.n end
+	job:report(deep)
+	local wide = {} for i = 1, 20000 do wide[i] = i end
+	job:report(wide)
+	job:report("small")
+	return 1]] })
+check(rj.ok and #rj.result.reports == 4, "reports kept")
+local rep1, rep2, rep3, rep4 = rj.result.reports[1], rj.result.reports[2], rj.result.reports[3], rj.result.reports[4]
+check(type(rep1) == "table" and rep1.truncated == true and #rep1.value == 1048576, "report string cut at 1 MiB")
+local d, depth = rep2, 0
+while type(d) == "table" and d.n do d = d.n depth = depth + 1 end
+check(depth <= 9 and type(d) == "table" and d.truncated == true, "report depth bounded (reached " .. depth .. ")")
+check(#rep3 <= 5001 and rep3[#rep3].__type == "truncated", "report array bounded to 5000 entries")
+check(rep4 == "small", "small report untouched")
+check(rj.result.reports_truncated == 3, "poll says how many reports were cut: " .. tostring(rj.result.reports_truncated))
+-- A table the serializer refuses (too many nodes) must not break the job: the report is replaced by a marker.
+local rk = run_job({ code = [[
+	local big = {} for i = 1, 200 do local row = {} for j = 1, 200 do row[j] = { j } end big[i] = row end
+	job:report(big)
+	return 1]] })
+check(rk.ok and rk.result.state == "done" and type(rk.result.reports[1]) == "table" and rk.result.reports_truncated == 1,
+	"an oversized report is replaced by a marker, the job survives")
+-- Count cap still holds.
+local rc = run_job({ code = "for i = 1, 1100 do job:report(i) end return 1" })
+check(rc.ok and #rc.result.reports == 1000 and rc.result.reports_dropped == 100, "report count cap")
+
+-- A second Lua state (new map): reload the runtime with another generation. Its ids differ from the first state's.
+local function new_state(generation)
+	__mcpagent = {}
+	__mcpagent_native.generation = generation
+	for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua" }) do
+		assert(loadfile(dir .. "/" .. name))()
+	end
+	A, H, J = __mcpagent, __mcpagent.handlers, __mcpagent.json
+end
+local old_id = gen_a.result.id
+new_state(8)
+local gen_b = call("job_start", { code = "return 2", async = true })
+check(gen_b.ok and gen_b.result.id:match("^server%-g8%-%d+$") ~= nil, "new state: id carries the new generation: " .. tostring(gen_b.result and gen_b.result.id))
+check(gen_b.result.id ~= old_id, "same sequence number, different state: different ids")
+local stale = call("job_poll", { id = old_id })
+check(not stale.ok and stale.error.code == "not_found", "the new state does not know the old state's id")
+
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

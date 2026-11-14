@@ -9,7 +9,17 @@ local jobs = A.jobs
 A.job_seq = A.job_seq or 0
 
 local MAX_REPORTS = 1000
+local MAX_REPORT_BYTES = 33554432  -- strings kept in one job's reports (each item is already bounded)
 local MAX_OUTPUT = 262144
+
+-- Drops finished jobs nobody collected (5 min; async jobs 1 h). Called from every entry point, not only from the
+-- per-frame tick: the module stops ticking once no job runs, and the results would stay in memory forever.
+local function prune(now)
+	now = now or SysTime()
+	for id, job in pairs(jobs) do
+		if job.state ~= "running" and now - (job.finished or now) > (job.async and 3600 or 300) then jobs[id] = nil end
+	end
+end
 
 -- API available to the script as `job` (global inside the chunk, also passed as the chunk's first argument).
 local Job = {}
@@ -25,12 +35,15 @@ end
 -- job:report(value [, channel]): intermediate result, returned with the final result and readable live with
 -- reports_read (default channel "job:<id>").
 function Job:report(value, channel)
-	if #self._reports < MAX_REPORTS then
-		self._reports[#self._reports + 1] = A.serialize(value, {})
+	local item, cut, bytes = A.serialize_report(value)
+	if cut then self._reports_truncated = self._reports_truncated + 1 end
+	if #self._reports < MAX_REPORTS and self._reports_bytes + bytes <= MAX_REPORT_BYTES then
+		self._reports[#self._reports + 1] = item
+		self._reports_bytes = self._reports_bytes + bytes
 	else
 		self._reports_dropped = self._reports_dropped + 1
 	end
-	mcpagent.report(channel or ("job:" .. self.id), value)
+	A.send_report(channel or ("job:" .. self.id), item)
 end
 
 -- Yielding helpers: the job resumes on a later frame.
@@ -57,8 +70,10 @@ function H.job_start(args)
 	local chunk = args.chunkname or ("=mcpagent:job:" .. A.realm)
 	local fn, cerr = A.compile(args.code, chunk)
 	if not fn then A.fail("lua_syntax_error", tostring(cerr), { chunkname = chunk, line = (A.compile_error_line(cerr)) }) end
+	prune()
 	A.job_seq = A.job_seq + 1
-	local id = A.realm .. "-" .. A.job_seq
+	-- The sequence restarts at 0 in every new Lua state (map change): the generation keeps ids unique across states.
+	local id = A.realm .. "-g" .. A.generation .. "-" .. A.job_seq
 	local job = setmetatable({
 		id = id, args = args.args or {}, realm = A.realm, async = args.async == true,
 		slice = (tonumber(args.slice_ms) or 8) / 1000,
@@ -67,7 +82,7 @@ function H.job_start(args)
 		depth = tonumber(args.depth), items = tonumber(args.limit), maxstr = tonumber(args.max_string),
 		started = SysTime(), _frames = 0, _resumes = 0, _cpu = 0,
 		wake_t = 0, wake_frame = 0, state = "running",
-		_reports = {}, _reports_dropped = 0, _output = {}, _output_size = 0,
+		_reports = {}, _reports_dropped = 0, _reports_truncated = 0, _reports_bytes = 0, _output = {}, _output_size = 0,
 	}, Job)
 	-- `job` and `args` (= job.args) are visible as globals inside the chunk. Other global reads go to _G; global writes
 	-- go to _G too, unless fresh_env: they then stay in this job's own table (no leak into the next job).
@@ -147,16 +162,16 @@ function H.job_tick()
 				resume(job)
 			end
 			if job.state == "running" then active = active + 1 end
-		elseif now - (job.finished or now) > (job.async and 3600 or 300) then
-			jobs[id] = nil  -- result never collected
 		end
 	end
+	prune(now)  -- results never collected
 	return { active = active }
 end
 
 -- State and progress. Reports are drained from `report_cursor` on. The finished job is forgotten once its final
 -- state has been read.
 function H.job_poll(args)
+	prune()
 	local job = jobs[args.id]
 	if not job then A.fail("not_found", "unknown job " .. tostring(args.id) .. " (realm reloaded or result already collected)") end
 	if args.peek and job.state ~= "running" then
@@ -165,7 +180,7 @@ function H.job_poll(args)
 	local out = {
 		id = job.id, state = job.state, frames = job._frames, resumes = job._resumes,
 		cpu_ms = job._cpu * 1000, elapsed_s = (job.finished or SysTime()) - job.started,
-		progress = job._progress, reports_count = #job._reports, reports_dropped = job._reports_dropped,
+		progress = job._progress, reports_count = #job._reports, reports_dropped = job._reports_dropped, reports_truncated = job._reports_truncated,
 		chunkname = job.chunkname, async = job.async, generation = A.generation,
 	}
 	if job.state ~= "running" then
@@ -181,6 +196,7 @@ function H.job_poll(args)
 end
 
 function H.job_list(args)
+	prune()
 	local out = J.array({})
 	for id, job in pairs(jobs) do
 		out[#out + 1] = { id = id, state = job.state, async = job.async, chunkname = job.chunkname, frames = job._frames,
