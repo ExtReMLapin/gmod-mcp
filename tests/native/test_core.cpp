@@ -134,6 +134,14 @@ static void test_small_b6() {
     CHECK(dead.find("exited") != std::string::npos && dead.find("instances_launch") != std::string::npos);
     std::string hung = coordinator::gone_message("client-123", 4242, 12.5, true);
     CHECK(hung.find("still running") != std::string::npos && hung.find("game_terminate") != std::string::npos);
+    // The pid of a removed member may be reused: only the same start stamp means the same process.
+    CHECK(!coordinator::same_process_running(0, 12345));       // no such process
+    CHECK(!coordinator::same_process_running(0, 0));
+    CHECK(coordinator::same_process_running(12345, 12345));    // still the process we registered
+    CHECK(!coordinator::same_process_running(99999, 12345));   // pid reused by another process
+    CHECK(coordinator::same_process_running(99999, 0));        // never recorded: cannot tell, assume alive
+    CHECK(coordinator::same_process_running(1, 12345));        // unreadable (access denied): assume alive
+    CHECK(coordinator::same_process_running(12345, 1));
 }
 
 // B1 lua_mount: which folders are accepted as a mount root (no game needed for this part).
