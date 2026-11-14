@@ -138,9 +138,9 @@ Remove it with `/plugin uninstall gmod-mcp@gmod-mcp`.
 | Area | Tools |
 |---|---|
 | Session | `status`, `map_list`, `map_load`, `disconnect`, `game_quit`, `game_terminate`, `wait_for`, `wait_frames` |
-| Lua | `lua_exec`, `lua_exec_file`, `lua_reload` (run an addon file again from the disk, in its realms), `lua_check` (syntax and globals of a snippet, file or whole addon, without running it), `lua_job` (long work spread over frames, with progress), `lua_inspect`, `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
+| Lua | `lua_exec`, `lua_exec_file`, `lua_reload` (run an addon file again from the disk, in its realms), `lua_check` (syntax and globals of a snippet, file or whole addon, without running it), `lua_job` (long work spread over frames, with progress; `async: true` with `lua_job_status` / `lua_job_cancel`), `lua_inspect`, `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
 | Hooks | `hook_list`, `hook_trace`, `perf_hook_cost` |
-| Console | `console_exec`, `console_read`, `console_buffer`, `convar_get`, `convar_set`, `concommand_list` |
+| Console | `console_exec` (`a 1; b 2` runs two commands like the console; an unknown command is an error; convars it sets are read back), `console_read`, `console_wait` (block until N lines match, e.g. the end of a batch), `console_buffer`, `convar_get`, `convar_set`, `concommand_list` |
 | Errors | `errors_since`, `errors_clear` (Lua errors from all three realms, with stack) |
 | World | `ents_find`, `ent_info`, `ent_spawn`, `ent_remove`, `ent_fire`, `players_list`, `player_set`, `bots_add`, `trace`, `trace_through` (every surface crossed, with thickness and material) |
 | Rendering | `screenshot`, `screenshot_from` (arbitrary camera), `debug_draw`, `debug_clear` |

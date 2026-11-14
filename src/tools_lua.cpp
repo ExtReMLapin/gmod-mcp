@@ -131,11 +131,13 @@ void register_lua_tools() {
     mcp::set_task_support("hook_trace", "optional");
     mcp::register_tool({"perf_hook_cost", "Cost of a hook's functions",
                         "Measures over duration_s the cumulative, average and max time spent in each function of an event (hooks + gamemode "
-                        "function), sorted from most to least expensive. The original functions are restored afterwards.",
+                        "function), sorted from most to least expensive. The original functions are restored afterwards. "
+                        "Example: {\"realm\": \"client\", \"event\": \"Think\", \"duration_s\": 10} (`event` is required; "
+                        "the length is duration_s, not seconds).",
                         json{{"properties",
                               {{"realm", realm_prop("Default server.")},
-                               {"event", {{"type", "string"}, {"minLength", 1}}},
-                               {"duration_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600}, {"description", "Default 5."}}}}},
+                               {"event", {{"type", "string"}, {"minLength", 1}, {"description", "Hook event name, e.g. 'Think', 'Tick', 'PlayerTick'."}}},
+                               {"duration_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600}, {"description", "Measurement length in seconds (default 5)."}}}}},
                              {"required", {"event"}}},
                         RO, perf_hook_cost_tool});
     mcp::set_task_support("perf_hook_cost", "optional");

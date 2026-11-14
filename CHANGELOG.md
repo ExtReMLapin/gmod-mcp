@@ -33,6 +33,32 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
   `lua_job`'s `resume_limit_s`) are now optional and best effort. `jit` is obsolete.
 - **`lua_job` scripts that read `args` got nil** (the arguments are in `job.args`): `args` is now a global of the
   script too.
+- **`console_exec "a 1;b 1"` set `a` to `"1;b 1"`.** The whole line went to the first command. It is now split into
+  statements on `;` and line breaks outside quotes, like the engine console does, and each one runs in turn
+  (`statements` lists them).
+- **A mistyped command answered "ok".** The engine only prints `Unknown command "x"`; `console_exec` now reads that
+  line and fails with `unknown_command`.
+- **`console_exec` output mixed in gmod-mcp's own log lines** (`[mcpagent] initialize ...`): they are left out, and
+  `regex` filters what remains (the console is shared, so other prints of the same frames can still appear).
+- **Nothing said whether a convar set through `console_exec` took.** Every convar it sets or names is read back
+  (`convars`: value, number), with a warning for archived ones (FCVAR_ARCHIVE): they land in the user's
+  `cfg/config.cfg` and are shared by every instance.
+- **The same convar value read `"0.0"` or `"0.000000"`**, so snapshot comparisons flagged false changes:
+  `convar_get` also returns `number`.
+- **Errors raised before a map reload were easy to miss.** Each Lua error now carries `map_load` (a number that grows
+  with every map load) and `map`; `errors_since {since_map_load: true}` keeps only the current map's, including those
+  raised while it loaded. The buffer itself survives map loads.
+- **Read-only tools failed with `ambiguous_instance` as soon as two games ran**, even `map_list`, which is the same for
+  all: `map_list` (like `status` and the wiki tools) now works without `instance`.
+- **A call to an instance that had died gave a bare network error**, then `unknown_instance`. It now says
+  `instance_gone` with the pid and whether the process exited (relaunch) or is still running (frozen:
+  `game_terminate`).
+- **`instances_list` said "not reachable" when no game ran, and did not show clients that never answered.** Through
+  the bridge it now answers with an empty list and a note, lists the clients it launched that never answered
+  (`launched_not_answering`, close them with `instances_close {pids}`), gives each client's `owner` label and filters
+  on `owner`.
+- **`instances_launch` timed out without saying which clients answered**: the error lists them (`answered`) next to
+  `silent_pids`.
 
 ### New
 
@@ -47,6 +73,11 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
 - `lua_job {fresh_env: true}`: the script's globals stay in its own table instead of leaking into the next job.
 - `lua_exec` results give `chunk_bytes`, `chunkname` and the realm's `generation` (it changes on every map load).
 - `instances_list` gives each instance's version, uptime, fps, a stalled flag and its Lua error count.
+- `console_wait {regex, count, timeout_s}`: blocks until that many console lines match (the end line of a test batch,
+  for example), with progress, and returns them with a cursor for the next wait. Replaces hand-written polling loops.
+- `status` gives `fps_max` (20 on a light test client: per-frame behaviour differs from a normal game) and
+  `host_timescale`, and takes `fields` to return only some keys. `instances_launch` returns the preset's `fps_max`
+  with a note.
 - `instances_launch` documents what its presets change (the 20 fps cap hides per-frame cost; `-nosound` changes
   `SoundDuration` of compressed WAVs) and that clients share `data/` and cookies with the user's game.
 
@@ -57,6 +88,9 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
 - Lua runtime tests without a game (`tests/lua/runtime_test.lua`, plain LuaJIT 2.1.0-beta3 like the game's, in CI on
   Linux): whole values, explicit cuts flagged, size guard, chunk names, the compiler left on for defined functions,
   explicit budgets, job arguments, fresh environments, concurrent and async jobs.
+- No-game checks of the console helpers (statement splitting, unknown commands, own log lines), `console_wait`, error
+  map-load tags, `status` fields, instance-independent tools and the dead-instance message; bridge checks of
+  `instances_list` without a game, with silent clients and with an owner filter.
 
 ## 0.3.1
 
