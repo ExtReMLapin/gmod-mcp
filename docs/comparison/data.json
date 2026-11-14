@@ -19,8 +19,8 @@
       "group": "features",
       "definition": "Run an edited file again in the running game without a map change. partial = limited (agent code only, one file include, or a redeploy).",
       "lines": [
-        "Hot",
-        "reload"
+        "Hot re-",
+        "load"
       ]
     },
     {
@@ -93,7 +93,11 @@
       "id": "input",
       "label": "Input",
       "group": "features",
-      "definition": "Player input injected in the engine (CreateMove, StartCommand, engine +commands). partial = OS-level input (SendKeys, xdotool) that takes the real keyboard and mouse."
+      "definition": "Player input injected in the engine (CreateMove, StartCommand, engine +commands). partial = OS-level input (SendKeys, xdotool) that takes the real keyboard and mouse.",
+      "lines": [
+        "In-",
+        "put"
+      ]
     },
     {
       "id": "pure_lua",
@@ -115,7 +119,7 @@
       "id": "no_inject",
       "label": "No inject",
       "group": "trust",
-      "definition": "yes = no DLL injection, remote thread or process memory write into the game (loading a module through the game's own require is not injection).",
+      "definition": "yes = nothing is loaded or written into the game from another process (no injector, remote thread or WriteProcessMemory); loading a module through the game's own require is not injection. An in-process engine hook after a normal module load (e.g. gmod-mcp's lua_mount vtable hook) is not counted.",
       "lines": [
         "No",
         "inject"
@@ -144,7 +148,7 @@
       "definition": "yes = one command (plugin install, npx, extension install) plus at most copying files into the game; partial = several manual steps or an injector; no = the user must build it from source or write the game side first.",
       "lines": [
         "1-step",
-        "install"
+        "setup"
       ]
     },
     {
@@ -191,7 +195,7 @@
       "id": "feedback",
       "label": "Agent feedback",
       "group": "trust",
-      "definition": "yes = the tool itself invites the agent to report friction and that report is collected (gmod-mcp: plugin option feedback_offers, agent-feedback issues); no = nothing in the tool asks for it.",
+      "definition": "yes = the tool itself invites the agent to report friction (bugs, missing tools, confusing answers) and that report is collected; no = nothing in the tool asks for it.",
       "lines": [
         "Feed-",
         "back"
@@ -260,11 +264,11 @@
         },
         "debugger": {
           "v": "no",
-          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L164-L180"
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L166-L179"
         },
         "input": {
           "v": "no",
-          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L164-L180"
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L166-L179"
         },
         "pure_lua": {
           "v": "no",
@@ -283,8 +287,8 @@
           "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/module.cpp#L106-L108"
         },
         "linux": {
-          "v": "yes",
-          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/.github/workflows/build.yml#L21-L22"
+          "v": "partial",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L374-L375"
         },
         "install": {
           "v": "yes",
@@ -292,13 +296,11 @@
         },
         "long_calls": {
           "v": "yes",
-          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/mcp.cpp#L297-L298",
-          "star": true
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/mcp.cpp#L297-L298"
         },
         "mcp_spec": {
           "v": "yes",
-          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/mcp_protocol.h#L10",
-          "star": true
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/mcp.cpp#L20-L46"
         },
         "ci": {
           "v": "yes",
@@ -310,8 +312,7 @@
         },
         "feedback": {
           "v": "yes",
-          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/plugin/.claude-plugin/plugin.json#L19-L22",
-          "star": true
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/plugin/.claude-plugin/plugin.json#L19-L22"
         }
       }
     },
@@ -360,7 +361,7 @@
         },
         "perf": {
           "v": "no",
-          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L34"
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
         },
         "jobs": {
           "v": "yes",
@@ -368,15 +369,15 @@
         },
         "tests": {
           "v": "no",
-          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L34"
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
         },
         "multi": {
           "v": "no",
-          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L34"
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
         },
         "debugger": {
           "v": "no",
-          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L34"
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
         },
         "input": {
           "v": "yes",
@@ -407,10 +408,12 @@
           "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L9-L21"
         },
         "long_calls": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/Program.cs#L306"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/Bridge/FileBridge.cs#L84-L86"
         },
         "ci": {
           "v": "yes",
@@ -422,7 +425,7 @@
         },
         "feedback": {
           "v": "no",
-          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L34"
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
         }
       }
     },
@@ -583,23 +586,23 @@
         },
         "perf": {
           "v": "no",
-          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L128"
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
         },
         "jobs": {
           "v": "no",
-          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L128"
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
         },
         "tests": {
           "v": "no",
-          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L128"
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
         },
         "multi": {
           "v": "no",
-          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L128"
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
         },
         "debugger": {
           "v": "no",
-          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L128"
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
         },
         "input": {
           "v": "yes",
@@ -627,7 +630,7 @@
         },
         "install": {
           "v": "partial",
-          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L50-L75"
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L52-L74"
         },
         "long_calls": {
           "v": "no",
@@ -646,7 +649,7 @@
         },
         "feedback": {
           "v": "no",
-          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L128"
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
         }
       }
     },
@@ -723,7 +726,7 @@
         },
         "auth": {
           "v": "no",
-          "evidence": "https://github.com/Pollux12/gmod-glua-ls/blob/5297904d82194db0cefcc29c86b4cdbb82c3ba05/docs/mintlify/debugger/ai-agents.mdx#L31"
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/mcpHttpServer.ts#L202"
         },
         "no_inject": {
           "v": "yes",
@@ -743,7 +746,7 @@
         },
         "long_calls": {
           "v": "partial",
-          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/runtimeTools.ts#L342"
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/logTools.ts#L91"
         },
         "mcp_spec": {
           "v": "partial",
@@ -788,7 +791,7 @@
         },
         "reload": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "ents": {
           "v": "partial",
@@ -796,7 +799,7 @@
         },
         "traces": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "screenshot": {
           "v": "partial",
@@ -804,27 +807,27 @@
         },
         "hooks": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "perf": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "jobs": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "tests": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "multi": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "debugger": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         },
         "input": {
           "v": "yes",
@@ -872,7 +875,7 @@
         },
         "feedback": {
           "v": "no",
-          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L92-L104"
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
         }
       }
     },
@@ -965,7 +968,7 @@
         },
         "install": {
           "v": "partial",
-          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/README.md#L7-L10"
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/README.md#L8-L10"
         },
         "long_calls": {
           "v": "no",
@@ -1169,7 +1172,7 @@
         },
         "pure_lua": {
           "v": "no",
-          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L19"
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L21-L22"
         },
         "auth": {
           "v": "no",
@@ -2081,7 +2084,7 @@
         },
         "install": {
           "v": "partial",
-          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L17-L23"
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L19-L23"
         },
         "long_calls": {
           "v": "unverified"

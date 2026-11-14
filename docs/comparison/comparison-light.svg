@@ -1,275 +1,275 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="963" height="315" viewBox="0 0 963 315" role="img" aria-label="Comparison of Garry&#x27;s Mod MCP servers"><title>Comparison of Garry&#x27;s Mod MCP servers</title><style>.hdr,.repo,.pick,.pickrepo,.foot,.grp,.realm,.star{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}.repo,.pickrepo{font-size:11px;fill:#24292f}.pick{font-size:11px;font-weight:700;fill:#24292f}.hdr{font-size:9.5px;font-weight:600;fill:#24292f}.grp{font-size:10px;letter-spacing:.05em;fill:#57606a}.grpline{stroke:#8c959f;stroke-width:1}.foot{font-size:10px;fill:#57606a}.star{font-size:11px;fill:#fff}.realm{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;font-weight:700}.r-yes{fill:#2e9d5b}.r-partial{fill:#d9a520}.r-no{fill:#c94040;opacity:.45}.r-unverified{fill:#57606a;opacity:.6}.realms{stroke:#8c959f;stroke-width:1}.v-no{opacity:.85}.v-unverified{stroke:#8c959f;stroke-width:1}.hatchline{stroke:#8c959f;stroke-width:3;opacity:.27}</style><defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><line class="hatchline" x1="0" y1="0" x2="0" y2="6"/></pattern></defs>
-<text class="grp" x="190" y="12">Features</text>
-<line class="grpline" x1="190" y1="17" x2="606" y2="17"/>
-<text class="grp" x="617" y="12">Trust &amp; ops</text>
-<line class="grpline" x1="617" y1="17" x2="955" y2="17"/>
-<text class="hdr" x="212" text-anchor="middle"><tspan x="212" y="41">Realms</tspan></text>
-<text class="hdr" x="251" text-anchor="middle"><tspan x="251" y="41">Errors</tspan></text>
-<text class="hdr" x="282" text-anchor="middle"><tspan x="282" y="30">Hot</tspan><tspan x="282" y="41">reload</tspan></text>
-<text class="hdr" x="313" text-anchor="middle"><tspan x="313" y="41">Ents</tspan></text>
-<text class="hdr" x="344" text-anchor="middle"><tspan x="344" y="41">Traces</tspan></text>
-<text class="hdr" x="375" text-anchor="middle"><tspan x="375" y="30">Screen-</tspan><tspan x="375" y="41">shot</tspan></text>
-<text class="hdr" x="406" text-anchor="middle"><tspan x="406" y="41">Hooks</tspan></text>
-<text class="hdr" x="437" text-anchor="middle"><tspan x="437" y="41">Perf</tspan></text>
-<text class="hdr" x="468" text-anchor="middle"><tspan x="468" y="41">Jobs</tspan></text>
-<text class="hdr" x="499" text-anchor="middle"><tspan x="499" y="41">Tests</tspan></text>
-<text class="hdr" x="530" text-anchor="middle"><tspan x="530" y="30">Multi</tspan><tspan x="530" y="41">inst.</tspan></text>
-<text class="hdr" x="561" text-anchor="middle"><tspan x="561" y="30">Step</tspan><tspan x="561" y="41">debug</tspan></text>
-<text class="hdr" x="592" text-anchor="middle"><tspan x="592" y="41">Input</tspan></text>
-<text class="hdr" x="631" text-anchor="middle"><tspan x="631" y="30">Pure</tspan><tspan x="631" y="41">Lua</tspan></text>
-<text class="hdr" x="662" text-anchor="middle"><tspan x="662" y="41">Auth</tspan></text>
-<text class="hdr" x="693" text-anchor="middle"><tspan x="693" y="30">No</tspan><tspan x="693" y="41">inject</tspan></text>
-<text class="hdr" x="724" text-anchor="middle"><tspan x="724" y="30">Dedi-</tspan><tspan x="724" y="41">cated</tspan></text>
-<text class="hdr" x="755" text-anchor="middle"><tspan x="755" y="41">Linux</tspan></text>
-<text class="hdr" x="786" text-anchor="middle"><tspan x="786" y="30">1-step</tspan><tspan x="786" y="41">install</tspan></text>
-<text class="hdr" x="817" text-anchor="middle"><tspan x="817" y="30">Long</tspan><tspan x="817" y="41">calls</tspan></text>
-<text class="hdr" x="848" text-anchor="middle"><tspan x="848" y="30">MCP</tspan><tspan x="848" y="41">spec</tspan></text>
-<text class="hdr" x="879" text-anchor="middle"><tspan x="879" y="30">Own</tspan><tspan x="879" y="41">CI</tspan></text>
-<text class="hdr" x="910" text-anchor="middle"><tspan x="910" y="30">Li-</tspan><tspan x="910" y="41">cense</tspan></text>
-<text class="hdr" x="941" text-anchor="middle"><tspan x="941" y="30">Feed-</tspan><tspan x="941" y="41">back</tspan></text>
-<text class="repo" x="8" y="60">ExtReMLapin/gmod-mcp</text>
-<rect class="cell realms" x="190" y="48" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-yes" x="199" y="60" text-anchor="middle">S</text>
-<text class="realm r-yes" x="212" y="60" text-anchor="middle">C</text>
-<text class="realm r-yes" x="225" y="60" text-anchor="middle">M</text>
-<rect class="cell v-yes" x="237" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="268" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="299" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="330" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="361" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="392" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="423" y="48" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-yes" x="454" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="485" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="516" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="547" y="48" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="578" y="48" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="617" y="48" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="648" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="679" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="710" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="741" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="772" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="803" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<text class="star" x="817" y="60" text-anchor="middle">★</text>
-<rect class="cell v-yes" x="834" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<text class="star" x="848" y="60" text-anchor="middle">★</text>
-<rect class="cell v-yes" x="865" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="896" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="927" y="48" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<text class="star" x="941" y="60" text-anchor="middle">★</text>
-<text class="repo" x="8" y="79">AmyJeanes/GMod-MCP-Server</text>
-<rect class="cell realms" x="190" y="67" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-yes" x="199" y="79" text-anchor="middle">S</text>
-<text class="realm r-yes" x="212" y="79" text-anchor="middle">C</text>
-<text class="realm r-no" x="225" y="79" text-anchor="middle">M</text>
-<rect class="cell v-yes" x="237" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="268" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="299" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="330" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="361" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="392" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="423" y="67" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="454" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="485" y="67" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="516" y="67" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="547" y="67" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="578" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="617" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="648" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="679" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="710" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="741" y="67" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="772" y="67" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-unverified" x="803" y="67" width="28" height="16" rx="3" fill="url(#hatch)"/>
-<rect class="cell v-unverified" x="834" y="67" width="28" height="16" rx="3" fill="url(#hatch)"/>
-<rect class="cell v-yes" x="865" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="896" y="67" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="927" y="67" width="28" height="16" rx="3" fill="#c94040"/>
-<text class="repo" x="8" y="98">Sycatle/gmod-mcp</text>
-<rect class="cell realms" x="190" y="86" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-yes" x="199" y="98" text-anchor="middle">S</text>
-<text class="realm r-partial" x="212" y="98" text-anchor="middle">C</text>
-<text class="realm r-no" x="225" y="98" text-anchor="middle">M</text>
-<rect class="cell v-yes" x="237" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="268" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="299" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="330" y="86" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="361" y="86" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="392" y="86" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="423" y="86" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="454" y="86" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="485" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="516" y="86" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="547" y="86" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="578" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="617" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="648" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="679" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="710" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="741" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="772" y="86" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="803" y="86" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-unverified" x="834" y="86" width="28" height="16" rx="3" fill="url(#hatch)"/>
-<rect class="cell v-yes" x="865" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="896" y="86" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="927" y="86" width="28" height="16" rx="3" fill="#c94040"/>
-<text class="repo" x="8" y="117">TomDotBat/gmcl_mcp</text>
-<rect class="cell realms" x="190" y="105" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-no" x="199" y="117" text-anchor="middle">S</text>
-<text class="realm r-yes" x="212" y="117" text-anchor="middle">C</text>
-<text class="realm r-partial" x="225" y="117" text-anchor="middle">M</text>
-<rect class="cell v-yes" x="237" y="105" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="268" y="105" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="299" y="105" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="330" y="105" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="361" y="105" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="392" y="105" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="423" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="454" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="485" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="516" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="547" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="578" y="105" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="617" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="648" y="105" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="679" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="710" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="741" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="772" y="105" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="803" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-unverified" x="834" y="105" width="28" height="16" rx="3" fill="url(#hatch)"/>
-<rect class="cell v-partial" x="865" y="105" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-yes" x="896" y="105" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="927" y="105" width="28" height="16" rx="3" fill="#c94040"/>
-<text class="repo" x="8" y="136">Pollux12/vscode-gmod-glua-ls</text>
-<rect class="cell realms" x="190" y="124" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-yes" x="199" y="136" text-anchor="middle">S</text>
-<text class="realm r-no" x="212" y="136" text-anchor="middle">C</text>
-<text class="realm r-no" x="225" y="136" text-anchor="middle">M</text>
-<rect class="cell v-yes" x="237" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="268" y="124" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="299" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="330" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="361" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="392" y="124" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="423" y="124" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="454" y="124" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="485" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="516" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="547" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="578" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="617" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="648" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="679" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="710" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="741" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="772" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="803" y="124" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="834" y="124" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-yes" x="865" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="896" y="124" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="927" y="124" width="28" height="16" rx="3" fill="#c94040"/>
-<text class="repo" x="8" y="155">Celant/GmodMCP</text>
-<rect class="cell realms" x="190" y="143" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-yes" x="199" y="155" text-anchor="middle">S</text>
-<text class="realm r-yes" x="212" y="155" text-anchor="middle">C</text>
-<text class="realm r-yes" x="225" y="155" text-anchor="middle">M</text>
-<rect class="cell v-partial" x="237" y="143" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="268" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="299" y="143" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="330" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="361" y="143" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="392" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="423" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="454" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="485" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="516" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="547" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="578" y="143" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="617" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="648" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="679" y="143" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="710" y="143" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="741" y="143" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="772" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="803" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="834" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="865" y="143" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="896" y="143" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="927" y="143" width="28" height="16" rx="3" fill="#c94040"/>
-<text class="repo" x="8" y="174">Earu/GTerm</text>
-<rect class="cell realms" x="190" y="162" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-yes" x="199" y="174" text-anchor="middle">S</text>
-<text class="realm r-yes" x="212" y="174" text-anchor="middle">C</text>
-<text class="realm r-no" x="225" y="174" text-anchor="middle">M</text>
-<rect class="cell v-partial" x="237" y="162" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="268" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="299" y="162" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="330" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="361" y="162" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="392" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="423" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="454" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="485" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="516" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="547" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="578" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="617" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="648" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="679" y="162" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="710" y="162" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="741" y="162" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="772" y="162" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="803" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="834" y="162" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-partial" x="865" y="162" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-yes" x="896" y="162" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="927" y="162" width="28" height="16" rx="3" fill="#c94040"/>
-<text class="repo" x="8" y="193">mathis1M/gmod-mcp</text>
-<rect class="cell realms" x="190" y="181" width="44" height="16" rx="3" fill="none"/>
-<text class="realm r-yes" x="199" y="193" text-anchor="middle">S</text>
-<text class="realm r-yes" x="212" y="193" text-anchor="middle">C</text>
-<text class="realm r-no" x="225" y="193" text-anchor="middle">M</text>
-<rect class="cell v-no" x="237" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="268" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="299" y="181" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="330" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="361" y="181" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-no" x="392" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="423" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="454" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="485" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="516" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="547" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="578" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="617" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-no" x="648" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-yes" x="679" y="181" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-unverified" x="710" y="181" width="28" height="16" rx="3" fill="url(#hatch)"/>
-<rect class="cell v-yes" x="741" y="181" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-yes" x="772" y="181" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="803" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-unverified" x="834" y="181" width="28" height="16" rx="3" fill="url(#hatch)"/>
-<rect class="cell v-partial" x="865" y="181" width="28" height="16" rx="3" fill="#d9a520"/>
-<rect class="cell v-yes" x="896" y="181" width="28" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-no" x="927" y="181" width="28" height="16" rx="3" fill="#c94040"/>
-<text class="pick" x="8" y="217">Most capabilities</text>
-<text class="pickrepo" x="270.8" y="217">ExtReMLapin/gmod-mcp</text>
-<text class="pick" x="8" y="234">No binary, pure Lua</text>
-<text class="pickrepo" x="270.8" y="234">AmyJeanes/GMod-MCP-Server</text>
-<text class="pick" x="8" y="251">Breakpoints / step debug (server only)</text>
-<text class="pickrepo" x="270.8" y="251">Pollux12/vscode-gmod-glua-ls</text>
-<text class="pick" x="8" y="268">Dedicated-server workflow</text>
-<text class="pickrepo" x="270.8" y="268">Sycatle/gmod-mcp</text>
-<rect class="sw v-yes" x="8" y="282" width="10" height="10" rx="2" fill="#2e9d5b"/>
-<text class="foot" x="22" y="291">yes</text>
-<rect class="sw v-partial" x="50.8" y="282" width="10" height="10" rx="2" fill="#d9a520"/>
-<text class="foot" x="64.8" y="291">partial</text>
-<rect class="sw v-no" x="116" y="282" width="10" height="10" rx="2" fill="#c94040"/>
-<text class="foot" x="130" y="291">no</text>
-<rect class="sw v-unverified" x="153.2" y="282" width="10" height="10" rx="2" fill="url(#hatch)"/>
-<text class="foot" x="167.2" y="291">not verified</text>
-<text class="foot" x="246.4" y="291">· as of 2026-11-14 · pinned commits · code read, nothing executed</text>
-<text class="foot" x="8" y="305">★ = the only server with a verified &quot;yes&quot; in this column (out of 22 compared)</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1009" height="319" viewBox="0 0 1009 319" role="img" aria-label="Comparison of Garry&#x27;s Mod MCP servers"><title>Comparison of Garry&#x27;s Mod MCP servers</title><style>.hdr,.repo,.pick,.pickrepo,.foot,.grp,.realm,.star{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}.repo,.pickrepo{font-size:11px;fill:#24292f}.pick{font-size:11px;font-weight:700;fill:#24292f}.hdr{font-size:10.5px;font-weight:600;fill:#24292f}.grp{font-size:11px;letter-spacing:.05em;fill:#57606a}.grpline{stroke:#8c959f;stroke-width:1}.foot{font-size:11px;fill:#57606a}.star{font-size:11px;fill:#fff}.realm{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;font-weight:700}.r-yes{fill:#2e9d5b}.r-partial{fill:#d9a520}.r-no{fill:#c94040;opacity:.45}.r-unverified{fill:#57606a;opacity:.6}.realms{stroke:#8c959f;stroke-width:1}.v-no{opacity:.85}.v-unverified{stroke:#8c959f;stroke-width:1}.hatchline{stroke:#8c959f;stroke-width:3;opacity:.27}</style><defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><line class="hatchline" x1="0" y1="0" x2="0" y2="6"/></pattern></defs>
+<text class="grp" x="190" y="13">Features</text>
+<line class="grpline" x1="190" y1="18" x2="630" y2="18"/>
+<text class="grp" x="641" y="13">Trust &amp; ops</text>
+<line class="grpline" x1="641" y1="18" x2="1001" y2="18"/>
+<text class="hdr" x="212" text-anchor="middle"><tspan x="212" y="44">Realms</tspan></text>
+<text class="hdr" x="252" text-anchor="middle"><tspan x="252" y="44">Errors</tspan></text>
+<text class="hdr" x="285" text-anchor="middle"><tspan x="285" y="32">Hot re-</tspan><tspan x="285" y="44">load</tspan></text>
+<text class="hdr" x="318" text-anchor="middle"><tspan x="318" y="44">Ents</tspan></text>
+<text class="hdr" x="351" text-anchor="middle"><tspan x="351" y="44">Traces</tspan></text>
+<text class="hdr" x="384" text-anchor="middle"><tspan x="384" y="32">Screen-</tspan><tspan x="384" y="44">shot</tspan></text>
+<text class="hdr" x="417" text-anchor="middle"><tspan x="417" y="44">Hooks</tspan></text>
+<text class="hdr" x="450" text-anchor="middle"><tspan x="450" y="44">Perf</tspan></text>
+<text class="hdr" x="483" text-anchor="middle"><tspan x="483" y="44">Jobs</tspan></text>
+<text class="hdr" x="516" text-anchor="middle"><tspan x="516" y="44">Tests</tspan></text>
+<text class="hdr" x="549" text-anchor="middle"><tspan x="549" y="32">Multi</tspan><tspan x="549" y="44">inst.</tspan></text>
+<text class="hdr" x="582" text-anchor="middle"><tspan x="582" y="32">Step</tspan><tspan x="582" y="44">debug</tspan></text>
+<text class="hdr" x="615" text-anchor="middle"><tspan x="615" y="32">In-</tspan><tspan x="615" y="44">put</tspan></text>
+<text class="hdr" x="656" text-anchor="middle"><tspan x="656" y="32">Pure</tspan><tspan x="656" y="44">Lua</tspan></text>
+<text class="hdr" x="689" text-anchor="middle"><tspan x="689" y="44">Auth</tspan></text>
+<text class="hdr" x="722" text-anchor="middle"><tspan x="722" y="32">No</tspan><tspan x="722" y="44">inject</tspan></text>
+<text class="hdr" x="755" text-anchor="middle"><tspan x="755" y="32">Dedi-</tspan><tspan x="755" y="44">cated</tspan></text>
+<text class="hdr" x="788" text-anchor="middle"><tspan x="788" y="44">Linux</tspan></text>
+<text class="hdr" x="821" text-anchor="middle"><tspan x="821" y="32">1-step</tspan><tspan x="821" y="44">setup</tspan></text>
+<text class="hdr" x="854" text-anchor="middle"><tspan x="854" y="32">Long</tspan><tspan x="854" y="44">calls</tspan></text>
+<text class="hdr" x="887" text-anchor="middle"><tspan x="887" y="32">MCP</tspan><tspan x="887" y="44">spec</tspan></text>
+<text class="hdr" x="920" text-anchor="middle"><tspan x="920" y="32">Own</tspan><tspan x="920" y="44">CI</tspan></text>
+<text class="hdr" x="953" text-anchor="middle"><tspan x="953" y="32">Li-</tspan><tspan x="953" y="44">cense</tspan></text>
+<text class="hdr" x="986" text-anchor="middle"><tspan x="986" y="32">Feed-</tspan><tspan x="986" y="44">back</tspan></text>
+<text class="repo" x="8" y="63">ExtReMLapin/gmod-mcp</text>
+<rect class="cell realms" x="190" y="51" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-yes" x="199" y="63" text-anchor="middle">S</text>
+<text class="realm r-yes" x="212" y="63" text-anchor="middle">C</text>
+<text class="realm r-yes" x="225" y="63" text-anchor="middle">M</text>
+<rect class="cell v-yes" x="237" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="270" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="303" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="336" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="369" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="402" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="435" y="51" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-yes" x="468" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="501" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="534" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="567" y="51" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="600" y="51" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="641" y="51" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="674" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="707" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="740" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="773" y="51" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-yes" x="806" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="839" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<text class="star" x="854" y="63" text-anchor="middle">★</text>
+<rect class="cell v-yes" x="872" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<text class="star" x="887" y="63" text-anchor="middle">★</text>
+<rect class="cell v-yes" x="905" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="938" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="971" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<text class="star" x="986" y="63" text-anchor="middle">★</text>
+<text class="repo" x="8" y="82">AmyJeanes/GMod-MCP-Server</text>
+<rect class="cell realms" x="190" y="70" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-yes" x="199" y="82" text-anchor="middle">S</text>
+<text class="realm r-yes" x="212" y="82" text-anchor="middle">C</text>
+<text class="realm r-no" x="225" y="82" text-anchor="middle">M</text>
+<rect class="cell v-yes" x="237" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="270" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="303" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="336" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="369" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="402" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="435" y="70" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="468" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="501" y="70" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="534" y="70" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="567" y="70" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="600" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="641" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="674" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="707" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="740" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="773" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="806" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="839" y="70" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="872" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-yes" x="905" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="938" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="971" y="70" width="30" height="16" rx="3" fill="#c94040"/>
+<text class="repo" x="8" y="101">Sycatle/gmod-mcp</text>
+<rect class="cell realms" x="190" y="89" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-yes" x="199" y="101" text-anchor="middle">S</text>
+<text class="realm r-partial" x="212" y="101" text-anchor="middle">C</text>
+<text class="realm r-no" x="225" y="101" text-anchor="middle">M</text>
+<rect class="cell v-yes" x="237" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="270" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="303" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="336" y="89" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="369" y="89" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="402" y="89" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="435" y="89" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="468" y="89" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="501" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="534" y="89" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="567" y="89" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="600" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="641" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="674" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="707" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="740" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="773" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="806" y="89" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="839" y="89" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-unverified" x="872" y="89" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-yes" x="905" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="938" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="971" y="89" width="30" height="16" rx="3" fill="#c94040"/>
+<text class="repo" x="8" y="120">TomDotBat/gmcl_mcp</text>
+<rect class="cell realms" x="190" y="108" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-no" x="199" y="120" text-anchor="middle">S</text>
+<text class="realm r-yes" x="212" y="120" text-anchor="middle">C</text>
+<text class="realm r-partial" x="225" y="120" text-anchor="middle">M</text>
+<rect class="cell v-yes" x="237" y="108" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="270" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="303" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="336" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="369" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="402" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="435" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="468" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="501" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="534" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="567" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="600" y="108" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="641" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="674" y="108" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="707" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="740" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="773" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="806" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="839" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-unverified" x="872" y="108" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-partial" x="905" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-yes" x="938" y="108" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="971" y="108" width="30" height="16" rx="3" fill="#c94040"/>
+<text class="repo" x="8" y="139">Pollux12/vscode-gmod-glua-ls</text>
+<rect class="cell realms" x="190" y="127" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-yes" x="199" y="139" text-anchor="middle">S</text>
+<text class="realm r-no" x="212" y="139" text-anchor="middle">C</text>
+<text class="realm r-no" x="225" y="139" text-anchor="middle">M</text>
+<rect class="cell v-yes" x="237" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="270" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="303" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="336" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="369" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="402" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="435" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="468" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="501" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="534" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="567" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="600" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="641" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="674" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="707" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="740" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="773" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="806" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="839" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="872" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-yes" x="905" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="938" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="971" y="127" width="30" height="16" rx="3" fill="#c94040"/>
+<text class="repo" x="8" y="158">Celant/GmodMCP</text>
+<rect class="cell realms" x="190" y="146" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-yes" x="199" y="158" text-anchor="middle">S</text>
+<text class="realm r-yes" x="212" y="158" text-anchor="middle">C</text>
+<text class="realm r-yes" x="225" y="158" text-anchor="middle">M</text>
+<rect class="cell v-partial" x="237" y="146" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="270" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="303" y="146" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="336" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="369" y="146" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="402" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="435" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="468" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="501" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="534" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="567" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="600" y="146" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="641" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="674" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="707" y="146" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="740" y="146" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="773" y="146" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="806" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="839" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="872" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="905" y="146" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="938" y="146" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="971" y="146" width="30" height="16" rx="3" fill="#c94040"/>
+<text class="repo" x="8" y="177">Earu/GTerm</text>
+<rect class="cell realms" x="190" y="165" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-yes" x="199" y="177" text-anchor="middle">S</text>
+<text class="realm r-yes" x="212" y="177" text-anchor="middle">C</text>
+<text class="realm r-no" x="225" y="177" text-anchor="middle">M</text>
+<rect class="cell v-partial" x="237" y="165" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="270" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="303" y="165" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="336" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="369" y="165" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="402" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="435" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="468" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="501" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="534" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="567" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="600" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="641" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="674" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="707" y="165" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="740" y="165" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="773" y="165" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-partial" x="806" y="165" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="839" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="872" y="165" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-partial" x="905" y="165" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-yes" x="938" y="165" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="971" y="165" width="30" height="16" rx="3" fill="#c94040"/>
+<text class="repo" x="8" y="196">mathis1M/gmod-mcp</text>
+<rect class="cell realms" x="190" y="184" width="44" height="16" rx="3" fill="none"/>
+<text class="realm r-yes" x="199" y="196" text-anchor="middle">S</text>
+<text class="realm r-yes" x="212" y="196" text-anchor="middle">C</text>
+<text class="realm r-no" x="225" y="196" text-anchor="middle">M</text>
+<rect class="cell v-no" x="237" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="270" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="303" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="336" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-partial" x="369" y="184" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="402" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="435" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="468" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="501" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="534" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="567" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="600" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="641" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-no" x="674" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-yes" x="707" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-unverified" x="740" y="184" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-yes" x="773" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-yes" x="806" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="839" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<rect class="cell v-unverified" x="872" y="184" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-partial" x="905" y="184" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-yes" x="938" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<rect class="cell v-no" x="971" y="184" width="30" height="16" rx="3" fill="#c94040"/>
+<text class="pick" x="8" y="220">Most capabilities</text>
+<text class="pickrepo" x="270.8" y="220">ExtReMLapin/gmod-mcp</text>
+<text class="pick" x="8" y="237">No binary, pure Lua</text>
+<text class="pickrepo" x="270.8" y="237">AmyJeanes/GMod-MCP-Server</text>
+<text class="pick" x="8" y="254">Breakpoints / step debug (server only)</text>
+<text class="pickrepo" x="270.8" y="254">Pollux12/vscode-gmod-glua-ls</text>
+<text class="pick" x="8" y="271">Dedicated-server workflow</text>
+<text class="pickrepo" x="270.8" y="271">Sycatle/gmod-mcp</text>
+<rect class="sw v-yes" x="8" y="284" width="11" height="11" rx="2" fill="#2e9d5b"/>
+<text class="foot" x="23" y="294">yes</text>
+<rect class="sw v-partial" x="51.8" y="284" width="11" height="11" rx="2" fill="#d9a520"/>
+<text class="foot" x="66.8" y="294">partial</text>
+<rect class="sw v-no" x="118" y="284" width="11" height="11" rx="2" fill="#c94040"/>
+<text class="foot" x="133" y="294">no</text>
+<rect class="sw v-unverified" x="156.2" y="284" width="11" height="11" rx="2" fill="url(#hatch)"/>
+<text class="foot" x="171.2" y="294">not verified</text>
+<text class="foot" x="250.4" y="294">as of 2026-11-14 · pinned commits · code read, nothing executed</text>
+<text class="foot" x="8" y="309">★ = the only server with a verified &quot;yes&quot; in this column (out of 22 compared)</text>
 </svg>
