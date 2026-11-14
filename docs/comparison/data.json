@@ -109,7 +109,7 @@
       "id": "auth",
       "label": "Auth",
       "group": "trust",
-      "definition": "yes = token/secret required, or no network listener at all. no = a listener that accepts calls without a required secret."
+      "definition": "yes = token/secret required, or no network listener at all (local IPC such as files or named pipes counts as no network listener). no = a listener that accepts calls without a required secret."
     },
     {
       "id": "no_inject",
@@ -161,7 +161,7 @@
       "id": "mcp_spec",
       "label": "MCP spec",
       "group": "trust",
-      "definition": "yes = declares protocol version >= 2025-06-18, handles notifications/cancelled, returns structuredContent with outputSchema; partial = 1-2 of 3; no = none. SDK-based servers are credited with what their pinned SDK does.",
+      "definition": "yes = declares protocol version >= 2025-06-18, handles notifications/cancelled, returns structuredContent with outputSchema; partial = 1-2 of 3; no = none. A verdict needs a line in the server's own code; SDK defaults are not credited.",
       "lines": [
         "MCP",
         "spec"
@@ -240,8 +240,7 @@
         },
         "hooks": {
           "v": "yes",
-          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_lua.cpp#L122",
-          "star": true
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_lua.cpp#L122"
         },
         "perf": {
           "v": "partial",
@@ -356,8 +355,8 @@
           "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/functions/cl_screenshot.lua#L143"
         },
         "hooks": {
-          "v": "partial",
-          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L76-L77"
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/functions/sh_debug_record.lua#L25"
         },
         "perf": {
           "v": "no",
@@ -396,7 +395,7 @@
           "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L28"
         },
         "dedicated": {
-          "v": "partial",
+          "v": "yes",
           "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/libraries/sv_launch_intent.lua#L48"
         },
         "linux": {
@@ -611,7 +610,7 @@
           "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L8"
         },
         "auth": {
-          "v": "no",
+          "v": "yes",
           "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/core/src/ipc_server.cpp#L106-L109"
         },
         "no_inject": {
@@ -1070,8 +1069,7 @@
           "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/README.md#L90"
         },
         "dedicated": {
-          "v": "yes",
-          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/README.md#L90"
+          "v": "unverified"
         },
         "linux": {
           "v": "yes",
