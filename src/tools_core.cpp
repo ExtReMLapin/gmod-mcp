@@ -521,13 +521,18 @@ static json file_delete(const json &args) {
 
 void register_core() {
     json RO = {{"readOnlyHint", true}};
-    json realm_exec = realm_prop("Target Lua state: 'menu' (always present), 'client' or 'server' (after map_load). Default: menu.");
+    json realm_exec = realm_prop("Lua state to run in. Default: menu (client mode), which has no game libraries (ents, "
+                                 "util.TraceLine, players...): pass 'server' or 'client' for game code; they exist only once a map "
+                                 "is loaded (map_load). On srcds only 'server' exists.");
 
     mcp::register_tool({"status", "Instance status",
                         "GMod version, branch, platform, map, gamemode, maxplayers, available realms (and injection generation), "
                         "client lock, fps/frametime (perf), fps_max (the frame cap: 20 on a light test client) and host_timescale, "
                         "loading (a map load in progress), uptime, age of the main thread's last tick (main_thread_stalled if > 5 s), "
-                        "Lua temporary directory (tmp_dir, absolute path). Call this first. Works even if the game is frozen.",
+                        "Lua temporary directory (tmp_dir, absolute path). Call this first. Works even if the game is frozen. "
+                        "Result: summary fields at the top (instance, mode, map, gamemode, maxplayers, fps_max, loading, "
+                        "main_thread_stalled...) and one object per realm (menu, server, client) with its own details; `fields` "
+                        "keeps only some top-level keys. Example: {\"fields\": [\"map\", \"realms\", \"perf\"]}.",
                         json{{"properties", {{"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 30},
                                                             {"description", "Max wait for Lua info (default 3)."}}},
                                              {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
@@ -571,7 +576,9 @@ void register_core() {
                         "Values come back whole: nothing is cut unless you pass depth, limit or max_string, and then the "
                         "result says truncated: <count>. A value too big to send (over a million values or 64 MiB of "
                         "strings) fails with result_too_large; a whole _G is about 4.5 MB: return only what you need. "
-                        "Non-JSON types: {__type: Vector|Angle|Color|Entity|function|cycle|...}. "
+                        "Non-JSON types: {__type: Vector|Angle|Color|Entity|function|cycle|...}. Example: {\"realm\": \"server\", "
+                        "\"code\": \"return #player.GetAll(), game.GetMap()\"} -> {values: [1, \"gm_construct\"], n: 2, output: \"\", "
+                        "duration_ms, chunk_bytes, chunkname, generation}. "
                         "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, main_thread_timeout, "
                         "result_too_large, realm_unavailable, client_locked. "
                         "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
@@ -589,7 +596,9 @@ void register_core() {
                         "lua_mount, a relative path finds its files first, like the engine). The chunk is named after the real path "
                         "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks, or `chunkname` (e.g. the "
                         "addon-relative name of a file from your git worktree). Prefer it to pasting a file into lua_exec's "
-                        "code: it saves the tokens of the file on every call. With `fields`, only the test's verdict comes back.",
+                        "code: it saves the tokens of the file on every call. With `fields`, only the test's verdict comes back. "
+                        "Example: {\"realm\": \"server\", \"path\": \"tests/check_doors.lua\", \"fields\": [\"pass\", \"fails\"]} "
+                        "(relative: lua/mcpagent_tmp/tests/check_doors.lua first).",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
 
     json reload_props = exec_props;
@@ -609,7 +618,8 @@ void register_core() {
                         "the mounted Lua folder if any (lua_mount), then lua/, gamemodes/, addons/*/lua|gamemodes/: the engine's order, "
                         "so the copy the game would load (other matches are listed). Errors name the real file. "
                         "Running a file again redefines its functions and hooks; what it built at load time (entities, timers, "
-                        "net strings) is not reset. Returns ok and, per realm, the lua_exec result or its error.",
+                        "net strings) is not reset. Returns {ok, file, chunkname, realms: {<realm>: lua_exec result or {error}}, "
+                        "other_matches?}. Example: {\"path\": \"my_addon/sh_core.lua\"} (shared file: runs in server then client).",
                         json{{"properties", reload_props}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_reload_tool});
 
     mcp::register_tool(
@@ -620,7 +630,10 @@ void register_core() {
          "the bytecode: unknown_globals (globals read but neither defined in the checked files nor present in the realm: "
          "typos, missing includes, wrong realm) and globals_written (every global assignment, e.g. a forgotten `local`). "
          "Unknown globals depend on the realm: pick the one the code runs in ('client'/'server' need a map; 'menu' lacks "
-         "most game functions). ENT, SWEP, GM, EFFECT and TOOL are never reported. Errors: realm_unavailable, not_found.",
+         "most game functions). ENT, SWEP, GM, EFFECT and TOOL are never reported. Result: {ok, realm, checked (files), errors: "
+         "[{file, line, message}], unknown_globals: [{name, file, line}], globals_written: [{name, file, line}], "
+         "truncated? (lists cut at limit), notes?}. Errors: "
+         "realm_unavailable, not_found. Example: {\"realm\": \"server\", \"path\": \"addons/my_addon/lua\"}.",
          json{{"properties",
                {{"realm", realm_prop("Lua state whose parser and globals are used: 'menu' (default, always present), 'client' or 'server'.")},
                 {"code", {{"type", "string"}, {"description", "Lua code to check (instead of path)."}}},
@@ -631,8 +644,11 @@ void register_core() {
          RO, lua_check_tool});
 
     mcp::register_tool({"lua_inspect", "Inspect a Lua value",
-                        "Evaluates an expression (expected to be side-effect free) and describes the value: type, value serialized to the given depth, "
-                        "keys (with types) up to `limit`, metatable (name, keys, __index methods). Depth 0 = summary only.",
+                        "Evaluates an expression in a realm (it runs: keep it side-effect free; 2 s time limit) and describes the "
+                        "value. Result: {type, value (serialized to `depth`; 0 = summary only), and for a table: count, keys: [{key, "
+                        "key_type, type}] up to `limit`, truncated; metatable?: {type, name (MetaName), keys, methods (functions of "
+                        "__index)}}. Use it to discover an API or a structure; use lua_exec to compute something. Example: "
+                        "{\"realm\": \"server\", \"expr\": \"FindMetaTable(\\\"Player\\\")\", \"depth\": 0, \"limit\": 300}.",
                         json{{"properties",
                               {{"realm", realm_exec},
                                {"expr", {{"type", "string"}, {"description", "Lua expression, e.g. 'hook.GetTable()' or 'FindMetaTable(\"Entity\")'."}}},
@@ -645,8 +661,12 @@ void register_core() {
                         "Tells where a function was defined and whether the game runs the current code of that file: its "
                         "bytecode is compared with the file compiled again from disk, in the same realm. Use it before "
                         "trusting a test result after an edit (a map that was not reloaded, a file the client got from the "
-                        "server, another copy of the addon). Returns source, linedefined, file, file_age_s, matches_disk "
-                        "(true, false, or null when there is no file to compare), line_on_disk and a note.",
+                        "server, another copy of the addon). Pick the realm the function lives in (default menu: addon code is "
+                        "usually in 'server' or 'client'). The file is found like the engine does (mounted Lua folder first, then "
+                        "lua/, gamemodes/, addons). Result: {source (\"@<path>\" as the engine names it), linedefined, "
+                        "lastlinedefined, file (absolute), file_age_s, matches_disk: true (same code) | false (edited since it was "
+                        "loaded, or another copy) | null (no file: code from lua_exec/RunString, or only inside a .gma), "
+                        "line_on_disk (where it starts now), note}. Example: {\"realm\": \"server\", \"expr\": \"MyAddon.Update\"}.",
                         json{{"properties",
                               {{"realm", realm_exec},
                                {"expr", {{"type", "string"}, {"description", "Lua expression giving the function, e.g. 'MyAddon.Update' or 'hook.GetTable().Think.MyHook'."}}}}},
@@ -655,16 +675,21 @@ void register_core() {
 
     json name_prop = {{"type", "string"}, {"description", "Name relative to the lua/mcpagent_tmp/ directory (e.g. 'scan.lua', 'lib/util.lua')."}};
     mcp::register_tool({"lua_file_write", "Write a temporary Lua file",
-                        "Writes a file into the game's lua/mcpagent_tmp/ temporary directory (creates subdirectories). Useful when the MCP "
-                        "client does not share the game's disk. Then: lua_exec_file {path: name}.",
+                        "Writes (or overwrites) a file in the game's lua/mcpagent_tmp/ folder, creating subfolders. Useful when you do "
+                        "not share the game's disk; if you do, write there directly. Run it with lua_exec_file {path: name}; from "
+                        "game code it is include(\"mcpagent_tmp/<name>\"). Result: {path (absolute), bytes, exec_path}.",
                         json{{"properties", {{"name", name_prop}, {"content", {{"type", "string"}, {"description", "File content."}}}}},
                              {"required", {"name", "content"}}},
                         json{{"destructiveHint", false}, {"idempotentHint", true}}, file_write});
-    mcp::register_tool({"lua_file_read", "Read a temporary Lua file", "Reads a file from the lua/mcpagent_tmp/ directory.",
+    mcp::register_tool({"lua_file_read", "Read a temporary Lua file",
+                        "Reads a file of the game's lua/mcpagent_tmp/ folder. Result: {path, content}. Error not_found.",
                         json{{"properties", {{"name", name_prop}}}, {"required", {"name"}}}, RO, file_read});
     mcp::register_tool({"lua_file_list", "List temporary Lua files",
-                        "Recursively lists the lua/mcpagent_tmp/ directory (absolute path in `dir`).", json::object(), RO, file_list});
-    mcp::register_tool({"lua_file_delete", "Delete a temporary Lua file", "Deletes a file from the lua/mcpagent_tmp/ directory.",
+                        "Lists every file under the game's lua/mcpagent_tmp/ folder, subfolders included. Result: {dir (absolute), "
+                        "files: [paths relative to dir, sorted]}.", json::object(), RO, file_list});
+    mcp::register_tool({"lua_file_delete", "Delete a temporary Lua file",
+                        "Deletes one file of the game's lua/mcpagent_tmp/ folder (code it defined keeps running). Result: {deleted}. "
+                        "Error not_found.",
                         json{{"properties", {{"name", name_prop}}}, {"required", {"name"}}}, json{{"destructiveHint", true}}, file_delete});
 }
 

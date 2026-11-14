@@ -389,30 +389,42 @@ void register_console() {
                         RO, console_wait_tool});
     mcp::set_task_support("console_wait", "optional");
     mcp::register_tool({"console_read", "Read the console",
-                        "Incremental console read (ring buffer, monotonic cursor). Without `cursor`: the last `limit` lines. "
-                        "Reuse next_cursor. `lost` > 0 = lines lost to buffer overflow. Regex filter (ECMAScript, case-insensitive).",
+                        "Reads this game's console output: everything printed by the engine and by Lua in every realm (print, Msg, "
+                        "MsgN, MsgC, errors), one entry per line, kept in a ring buffer (20000 lines by default, see "
+                        "console_buffer) that survives map changes. Without `cursor`: the last `limit` lines (matching `regex`). "
+                        "With cursor: the lines from that point on; pass next_cursor to the next call to read only new lines. "
+                        "Result: {lines: [{seq, t (s since module start), level: message|warning|assert|error|log, text}], "
+                        "next_cursor, lost (lines dropped before you read them), oldest, capture (spew, logging, condebug or none: "
+                        "none = nothing is captured)}. To block until a line appears, use console_wait. Example: "
+                        "{\"regex\": \"^\\\\[ERROR\\\\]\", \"limit\": 50}.",
                         json{{"properties", {{"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Cursor (previous next_cursor)."}}},
                                              {"regex", {{"type", "string"}, {"description", "Optional filter."}}},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Default 200."}}}}}},
                         RO, console_read_tool});
     mcp::register_tool({"console_buffer", "Console buffer capacity",
-                        "Reads or sets the capacity (in lines) of the console ring buffer (default 20000).",
+                        "Reads or sets how many console lines this game keeps for console_read, console_wait and console_exec (default "
+                        "20000; lowering it drops the oldest lines at once). Without `capacity`: just reads it. Result: {capacity, "
+                        "cursor (the current console position)}.",
                         json{{"properties", {{"capacity", {{"type", "integer"}, {"minimum", 16}, {"maximum", 1000000}}}}}},
                         json{{"idempotentHint", true}, {"destructiveHint", false}}, [](const json &a) {
                             if (a.contains("capacity")) console::set_capacity(a["capacity"].get<size_t>());
                             return ok(json{{"capacity", console::capacity()}, {"cursor", console::cursor_now()}});
                         }});
     mcp::register_tool({"errors_since", "Read Lua errors",
-                        "Lua errors from all realms (menu state OnLuaError hook; on srcds: console parsing) with realm, "
-                        "message and stack. Monotonic cursor (0 = from the start of the buffer). The buffer (2000 errors) "
-                        "survives map loads: each error carries map_load (a number that grows with every map load) and map; "
-                        "since_map_load: true keeps only the current map's errors (including those raised while it loaded).",
-                        json{{"properties", {{"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Default 0."}}},
-                                             {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Default 100."}}},
+                        "Lua errors of every realm of this game, as the game reports them (client mode: the menu's OnLuaError hook; "
+                        "srcds: parsed from the console). The game reports each distinct error as it happens. Cursor: 0 = from the "
+                        "oldest kept error; pass next_cursor to read only new ones. The last 2000 are kept and survive map loads: "
+                        "each error carries map_load (a number that grows with every map load) and map; since_map_load: true "
+                        "keeps only the current map's errors, including those raised while it loaded. Result: {errors: [{seq, "
+                        "realm, message, stack: [{file, line, function}], addon, addon_id, time, map_load, map}], next_cursor, "
+                        "lost, map_load, map}. Example: {\"cursor\": 0, \"since_map_load\": true}.",
+                        json{{"properties", {{"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Start here (default 0 = the oldest kept error)."}}},
+                                             {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Max errors returned (default 100)."}}},
                                              {"realm", realm_prop("Optional realm filter.")},
                                              {"since_map_load", {{"type", "boolean"}, {"description", "Only errors of the current map load (default false)."}}}}}},
                         RO, errors_since_tool});
-    mcp::register_tool({"errors_clear", "Clear errors", "Clears the error buffer (the cursor keeps increasing).", json::object(),
+    mcp::register_tool({"errors_clear", "Clear errors", "Forgets the errors kept so far (errors_since then starts empty); cursors keep growing, so an old cursor stays "
+                        "valid. Result: {cleared, next_cursor}.", json::object(),
                         json{{"destructiveHint", true}, {"idempotentHint", true}},
                         [](const json &) {
                             console::errors_clear();
@@ -425,8 +437,14 @@ void register_console() {
                         json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}}}, {"realm", realm_p}}}, {"required", {"name"}}},
                         RO, [](const json &a) { return rt_realm(a, "realm", default_realm(), "convar_get", json{{"name", a["name"]}}); }});
     mcp::register_tool({"convar_set", "Set a convar",
-                        "Sets a convar then re-reads its value after a few frames. Errors: not_found, protected, archived (FCVAR_ARCHIVE without persist=true), set_refused "
-                        "(value not applied: cheat, restriction...).",
+                        "Sets a convar from a realm (RunConsoleCommand; server realm: game.ConsoleCommand), waits 3 frames and reads "
+                        "it back. When the value did not take from Lua (some convars, e.g. volume_sfx, ignore Lua) it retries "
+                        "through the engine console (client mode). Convars with FCVAR_ARCHIVE are saved into the user's "
+                        "cfg/config.cfg when the game quits and are shared by every game of this folder: they are refused unless "
+                        "persist: true (your MCP client may then ask the user). Result: the convar as convar_get reads it, plus "
+                        "previous and via (lua or engine). Errors: not_found, protected (FCVAR_PROTECTED), archived, set_refused "
+                        "(cheat without sv_cheats, wrong realm, blocked command). Example: {\"name\": \"sv_gravity\", \"value\": "
+                        "300, \"realm\": \"server\"}.",
                         json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}}},
                                              {"value", {{"type", {"string", "number", "boolean"}}, {"description", "New value."}}},
                                              {"realm", realm_p},
@@ -434,9 +452,11 @@ void register_console() {
                              {"required", {"name", "value"}}},
                         json{{"destructiveHint", false}, {"idempotentHint", true}}, convar_set_tool});
     mcp::register_tool({"concommand_list", "List commands",
-                        "Lua commands (the realm's concommand.GetTable) and, if a filter is given, engine commands and convars "
-                        "(output of 'find <filter>').",
-                        json{{"properties", {{"filter", {{"type", "string"}, {"description", "Substring."}}},
+                        "Lists console commands. Always: the Lua commands of `realm` (concommand.Add, name matches `filter` as a "
+                        "case-insensitive substring). With a filter and engine: true (default): also the engine's commands and "
+                        "convars whose name or help text matches, parsed from the console command `find <filter>`. Result: "
+                        "{lua_commands, realm, engine_commands?, engine_convars?}. Example: {\"filter\": \"sv_\"}.",
+                        json{{"properties", {{"filter", {{"type", "string"}, {"description", "Case-insensitive substring of the name."}}},
                                              {"realm", realm_p},
                                              {"engine", {{"type", "boolean"}, {"description", "Include engine commands (default true, requires a filter)."}}}}}},
                         RO, concommand_list_tool});

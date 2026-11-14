@@ -705,7 +705,12 @@ json bridge_tools() {
          "size barely matters, and a client narrower than 640 pixels crashes while loading a map (integer division by zero "
          "in client.dll at client Lua startup: seen at 480x270 and 320x240; it only survived with the HUD turned off). "
          "-textmode and lower graphics settings were measured: no real gain (and graphics settings would be saved into the "
-         "user's own), so neither is offered."},
+         "user's own), so neither is offered.\n"
+         "Result: {instances: [{instance, pid, port, owner?, map? (or map: null + map_error)}], game_dir, found_by, preset, "
+         "keep, fps_max, fps_note, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
+         "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. Example: "
+         "{\"count\": 2, \"map\": \"gm_construct\", \"owner\": \"fork-a\"}, then pass each returned instance id as "
+         "`instance`."},
         {"inputSchema",
          {{"type", "object"},
           {"properties",
@@ -731,7 +736,10 @@ json bridge_tools() {
          "Closes clients this session started with instances_launch, at once and without writing their config, by "
          "instance id, by pid (also for a client that never answered, e.g. gmod-mcp did not load in it) or by owner label. "
          "Other games (the user's own, another session's) are refused: close those only if the user asks, with "
-         "game_terminate. Sub-agents of one Claude Code session share it: all: true closes their clients too."},
+         "game_terminate. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
+         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], refused?: [ids, pids or "
+         "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error only when nothing was "
+         "closed. Example: {\"owner\": \"fork-a\"}."},
         {"inputSchema",
          {{"type", "object"},
           {"properties",
@@ -748,7 +756,7 @@ json bridge_tools() {
          "Makes `instance` this session's default: tool calls without an `instance` argument go to it (useful with several "
          "games running, where they would otherwise be refused as ambiguous). null clears it. Lasts until the session ends. "
          "Do not use it with sub-agents: they all share this session, so a default set by one applies to every other's "
-         "calls too (they would act on its game). Pass `instance` on every call instead."},
+         "calls too (they would act on its game). Pass `instance` on every call instead. Result: {default_instance, previous}. The id is not checked: an unknown one makes later calls fail with unknown_instance."},
         {"inputSchema",
          {{"type", "object"},
           {"properties", {{"instance", {{"type", json::array({"string", "null"})}, {"description", "Instance id (see instances_list), or null."}}}}},

@@ -109,7 +109,10 @@ static json tests_run_tool(const json &args) {
 
 void register_lua_tools() {
     json RO = {{"readOnlyHint", true}};
-    mcp::register_tool({"hook_list", "List hooks", "Registered hooks (hook.GetTable) with the source of each function; filterable by event (known=false if unknown).",
+    mcp::register_tool({"hook_list", "List hooks", "Hooks registered with hook.Add in a realm (hook.GetTable), with where each function was defined. Without `event`: "
+                        "every event (large). Result: {hooks: {<event>: [{id, source (file), line, what}]}, count}, and with "
+                        "`event`: event, known (false = no hook and no gamemode function for that name: probably a typo) and "
+                        "gamemode_function (source of GAMEMODE:<event>, or null). Example: {\"realm\": \"client\", \"event\": \"Think\"}.",
                         json{{"properties", {{"realm", realm_prop("Default server.")}, {"event", {{"type", "string"}, {"description", "Event name (e.g. Think)."}}}}}},
                         RO, [](const json &a) {
                             json p = json::object();
@@ -117,9 +120,13 @@ void register_lua_tools() {
                             return rt_realm(a, "realm", realms::SERVER, "hook_list", p);
                         }});
     mcp::register_tool({"hook_trace", "Trace a hook",
-                        "Records the calls of an event (serialized arguments, timestamp) for duration_s or until "
-                        "max_calls, via a temporary hook.Add that returns nothing (game behaviour unchanged), removed at the end "
-                        "(tracer_removed). Limitation: if a hook called before it returns a value, the call is not seen.",
+                        "Records the calls of a hook event for duration_s (or until max_calls), with each call's arguments "
+                        "serialized (entities as {__type, id, class...}), through a temporary hook.Add that returns nothing (game "
+                        "behaviour unchanged), removed at the end. Waits the whole duration (progress reported; MCP task possible). "
+                        "Result: {event, calls: [{t (seconds since start), args: [...]}], recorded, total_calls (also those past "
+                        "max_calls), capped, duration_s, tracer_removed}. Not seen: calls that a hook running before it stopped "
+                        "by returning a value. Error realm_lost if the map changes meanwhile. Example: {\"realm\": \"server\", "
+                        "\"event\": \"PlayerSay\", \"duration_s\": 10}.",
                         json{{"properties",
                               {{"realm", realm_prop("Default server.")},
                                {"event", {{"type", "string"}, {"minLength", 1}, {"description", "E.g. EntityEmitSound, PlayerSpawn, Think."}}},
@@ -130,8 +137,12 @@ void register_lua_tools() {
                         RO, hook_trace_tool});
     mcp::set_task_support("hook_trace", "optional");
     mcp::register_tool({"perf_hook_cost", "Cost of a hook's functions",
-                        "Measures over duration_s the cumulative, average and max time spent in each function of an event (hooks + gamemode "
-                        "function), sorted from most to least expensive. The original functions are restored afterwards. "
+                        "Measures over duration_s the time spent in each function of a hook event: every hook.Add function "
+                        "registered when it starts, and GAMEMODE:<event>. Each one is wrapped with a timer for the measurement and "
+                        "put back afterwards (restored = how many hooks were put back; a hook replaced meanwhile is left alone). "
+                        "Waits the whole duration. Result: {event, duration_s, functions: [{id, calls, total_ms, avg_ms, max_ms, "
+                        "src {source, line}}] sorted by total_ms, most expensive first, restored}. The game runs at its real frame "
+                        "rate: on a light test client (20 fps) the number of calls is lower than in a normal game. "
                         "Example: {\"realm\": \"client\", \"event\": \"Think\", \"duration_s\": 10} (`event` is required; "
                         "the length is duration_s, not seconds).",
                         json{{"properties",
@@ -142,14 +153,20 @@ void register_lua_tools() {
                         RO, perf_hook_cost_tool});
     mcp::set_task_support("perf_hook_cost", "optional");
     mcp::register_tool({"tests_run", "Run Lua tests",
-                        "Runs test files in GLuaTest format (return {groupName, beforeAll, beforeEach, afterEach, afterAll, "
-                        "cases={{name, func}}} with expect(x).to.equal(y)...) and returns structured results (pass/fail/error/skip, "
-                        "message, line, duration). `path`: file or pattern (*.lua, **/*.lua), relative to lua/mcpagent_tmp/ or absolute. "
-                        "Detailed format: resource mcpagent://tests-format.",
+                        "Runs test files in GLuaTest format in one realm and returns structured results. A file returns {groupName, "
+                        "beforeAll, beforeEach, afterEach, afterAll, cases = {{name, func, skip?, when?, timeout?}}}; inside, "
+                        "expect(x).to.equal(y) / .notTo / .beTrue / .beNil / .exist / .beA(type) / .beValid / .beGreaterThan / "
+                        ".beLessThan / .beBetween / .aboutEqual(x, tol) / .haveLength / .contain / .err / .errWith(msg) / .succeed. "
+                        "Steps share a `state` table (their first argument). `path`: a file or a pattern in the file name (*.lua, "
+                        "or **/*.lua for subfolders), relative to lua/mcpagent_tmp/ or absolute. Result: {files: [{file, group, "
+                        "cases: [{name, status: pass|fail|error|skip, message?, line?, traceback?, duration_ms}], error?, "
+                        "setup_error?}], totals {pass, fail, error, skip}, ok}. The whole run is one call on the main thread (the "
+                        "game is frozen meanwhile): for multi-frame tests use lua_job. Full format: resource "
+                        "mcpagent://tests-format. Example: {\"realm\": \"server\", \"path\": \"tests/*.lua\"}.",
                         json{{"properties",
                               {{"realm", realm_prop("Default server.")},
-                               {"path", {{"type", "string"}, {"minLength", 1}}},
-                               {"budget", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 120}, {"description", "Budget per step in seconds (default 10)."}}}}},
+                               {"path", {{"type", "string"}, {"minLength", 1}, {"description", "File or pattern, relative to lua/mcpagent_tmp/ or absolute."}}},
+                               {"budget", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 120}, {"description", "Time limit per step (load, beforeAll, each case...) in seconds (default 10)."}}}}},
                              {"required", {"path"}}},
                         json{{"destructiveHint", true}}, tests_run_tool});
 }

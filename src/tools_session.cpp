@@ -210,46 +210,72 @@ static json wait_frames_tool(const json &args) {
 
 void register_session() {
     json RO = {{"readOnlyHint", true}};
-    mcp::register_tool({"map_list", "List maps", "Installed maps (maps/*.bsp on the GAME path, mounted games included), filtered by case-insensitive substring.",
+    mcp::register_tool({"map_list", "List maps", "Installed maps: every maps/*.bsp on the game's GAME path (garrysmod, addons, workshop, mounted games such as "
+                        "HL2), names without .bsp, sorted, filtered by a case-insensitive substring. Same answer on every instance of "
+                        "this game folder (callable without `instance`). Result: {maps: [names], count (all matches), truncated, filter}. "
+                        "Example: {\"filter\": \"gm_\"}.",
                         json{{"properties", {{"filter", {{"type", "string"}, {"description", "Substring (empty = all)."}}},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Default 1000."}}}}}},
                         RO, map_list_tool});
     mcp::register_tool({"map_load", "Load a map",
-                        "Loads a map (singleplayer if maxplayers=1, listen server otherwise) and WAITS until the server AND client realms "
-                        "are recreated and ready (gamemode loaded, valid local player). Clean error if the map does not exist. "
-                        "Equivalent to waiting for the map_loaded event. Can run as an MCP task.",
+                        "Loads a map and WAITS until it is playable: client mode = the console `map` command (singleplayer when "
+                        "maxplayers is 1, listen server otherwise), then it waits until NEW server and client realms are up and "
+                        "ready (gamemode loaded, local player valid) and the loading screen is gone; srcds = `changelevel`, server "
+                        "realm only. Every Lua state of the previous map is destroyed: its globals, hooks, timers, jobs and debug "
+                        "drawings are gone, and the addons' files are loaded again from disk. Changing maxplayers on a running "
+                        "game disconnects first (client mode only). Result: {map, gamemode, maxplayers, requested_map, duration_s, "
+                        "server_generation, client_generation, warning?}. Errors: not_found (no maps/<map>.bsp), busy (another "
+                        "map_load/disconnect runs), timeout (with which realms are up), cancelled. IMPORTANT: when your client "
+                        "runs it as a background MCP task, wait for its result before calling a realm tool: a call made before it "
+                        "ends reaches the OLD map's state. Every lua_exec/lua_job result carries the realm's `generation`: equal to "
+                        "server_generation/client_generation = the new map's state. Example: {\"map\": \"gm_construct\"}.",
                         json{{"properties",
                               {{"map", {{"type", "string"}, {"minLength", 1}, {"description", "Name without extension, e.g. gm_construct."}}},
                                {"gamemode", {{"type", "string"}, {"description", "Gamemode (e.g. sandbox). Default: unchanged."}}},
-                               {"maxplayers", {{"type", "integer"}, {"minimum", 1}, {"maximum", 128}, {"description", "1 = singleplayer, >1 = listen server."}}},
-                               {"timeout_s", {{"type", "number"}, {"minimum", 5}, {"maximum", 900}, {"description", "Default 180."}}}}},
+                               {"maxplayers", {{"type", "integer"}, {"minimum", 1}, {"maximum", 128}, {"description", "1 = singleplayer, >1 = listen server (needed for bots_add). Default: unchanged."}}},
+                               {"timeout_s", {{"type", "number"}, {"minimum", 5}, {"maximum", 900}, {"description", "Max wait in seconds (default 180)."}}}}},
                              {"required", {"map"}}},
                         json{{"destructiveHint", true}}, map_load_tool});
     mcp::set_task_support("map_load", "optional");
-    mcp::register_tool({"disconnect", "Return to main menu", "Disconnects (disconnect command) and waits until the client and server realms are gone.",
+    mcp::register_tool({"disconnect", "Return to main menu", "Leaves the current map for the main menu (console `disconnect`) and waits until the client and server realms "
+                        "are gone; their Lua states are destroyed. Client mode only (unsupported on srcds). Result: {disconnected, "
+                        "was_in_game, duration_s, realms}. Errors: busy (a map_load runs), timeout.",
                         json{{"properties", {{"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 120}, {"description", "Default 30."}}}}}},
                         json{{"destructiveHint", true}, {"idempotentHint", true}}, disconnect_tool});
-    mcp::register_tool({"game_quit", "Quit the game cleanly", "Requests a clean shutdown (quit command). The MCP server goes away with the process.",
+    mcp::register_tool({"game_quit", "Quit the game cleanly", "Asks the game to quit cleanly (console `quit`): it saves its config (cfg/config.cfg, video settings) and exits; "
+                        "the MCP server of this instance goes away with it. For test clients started by instances_launch, use "
+                        "instances_close instead (a clean quit writes their small window size into the user's video settings). "
+                        "Result: {quitting: true}.",
                         json::object(), json{{"destructiveHint", true}}, quit_tool});
     mcp::register_tool({"game_terminate", "Kill the game immediately",
-                        "Immediate process termination, run from the network thread: works even if the main thread is frozen "
-                        "(infinite loop). Use game_quit normally.",
+                        "Kills this game process at once (no config saved, no clean shutdown), from the network thread, so it works "
+                        "even when the game is frozen (infinite loop, status main_thread_stalled). The answer {terminating, pid, "
+                        "main_thread_stalled, last_tick_age_s} is sent first, then the process ends after delay_ms. With `instance`, "
+                        "the coordinator relays it to that game. Never use it on the user's own game unless they ask.",
                         json{{"properties", {{"delay_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 5000}, {"description", "Delay before termination (default 200, to let the response go out)."}}}}}},
                         json{{"destructiveHint", true}}, terminate_tool});
     mcp::register_tool({"wait_for", "Wait for a Lua condition",
-                        "Re-evaluates a Lua expression (or a block with return) in a realm every frame (or every interval_s) "
-                        "until it is true. Errors: timeout, realm_lost (realm destroyed/recreated during the wait), lua_error.",
+                        "Waits until a Lua condition is true. `condition` is an expression (\"IsValid(Entity(57))\") or a block "
+                        "with return (\"local d = Entity(57) return IsValid(d) and d:GetInternalVariable('m_eDoorState') == 2\"), "
+                        "compiled once and evaluated in `realm` every frame (or every interval_s); true = anything but nil/false. "
+                        "Each evaluation may run 1 s at most. Result: {satisfied: true, elapsed_s, polls, value (the last value)}. "
+                        "Errors: timeout (details: polls, last_value), realm_lost (the realm was destroyed or recreated, e.g. a map "
+                        "change, during the wait), realm_unavailable, lua_syntax_error, lua_error. Reports progress; can run as an "
+                        "MCP task.",
                         json{{"properties",
                               {{"realm", realm_prop("Evaluation realm (default server).")},
-                               {"condition", {{"type", "string"}, {"description", "E.g. 'IsValid(Entity(1)) and Entity(1):Alive()'."}}},
-                               {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Default 10."}}},
-                               {"interval_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 60}, {"description", "Default: every frame."}}}}},
+                               {"condition", {{"type", "string"}, {"description", "Lua expression or block with return, e.g. 'IsValid(Entity(1)) and Entity(1):Alive()'."}}},
+                               {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Max wait in seconds (default 10)."}}},
+                               {"interval_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 60}, {"description", "Seconds between evaluations (default 0 = every frame)."}}}}},
                              {"required", {"condition"}}},
                         RO, wait_for_tool});
     mcp::set_task_support("wait_for", "optional");
-    mcp::register_tool({"wait_frames", "Wait N frames", "Waits until the main thread has run N frames (menu state pump).",
-                        json{{"properties", {{"n", {{"type", "integer"}, {"minimum", 1}, {"maximum", 100000}, {"description", "Number of frames."}}},
-                                             {"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600}, {"description", "Default 30."}}}}},
+    mcp::register_tool({"wait_frames", "Wait N frames", "Waits until the game's main loop has run n more frames (counted by gmod-mcp every frame, map or not), e.g. to let "
+                        "a console command, a spawn or a SetPos take effect. Result: {frames, elapsed_s}. Error timeout if the game "
+                        "renders fewer frames in timeout_s (frozen, minimized with a low fps_max_nofocus). A light test client runs "
+                        "at 20 fps: 20 frames = 1 s.",
+                        json{{"properties", {{"n", {{"type", "integer"}, {"minimum", 1}, {"maximum", 100000}, {"description", "Number of frames to wait."}}},
+                                             {"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600}, {"description", "Max wait in seconds (default 30)."}}}}},
                              {"required", {"n"}}},
                         RO, wait_frames_tool});
 }
