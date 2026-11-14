@@ -247,10 +247,13 @@ static json api_search_tool(const json &a) {
 void register_docs() {
     json RO = {{"readOnlyHint", true}};
     mcp::register_tool({"api_search", "Search the live Lua API",
-                        "Runtime introspection of what really exists in each realm of the installed game: global functions, library "
-                        "functions (util.TraceLine) and metatable methods (Entity:EmitSound). Each result lists the realms where it exists "
-                        "and the matching wiki page if any. Source of truth for realms (the wiki can be wrong). Pattern: case-insensitive "
-                        "substring, or glob with *.",
+                        "Asks each running realm which functions really exist in this game build: global functions, library "
+                        "functions (util.TraceLine) and metatable methods (Entity:EmitSound). Only realms that exist answer: menu "
+                        "always (client mode), client and server only with a map loaded (realms_searched says which answered). "
+                        "Source of truth for realms when the wiki disagrees. Pattern: case-insensitive substring, or a glob with * "
+                        "matched against the whole name. Result: {results: [{name, kind: global|library|method, realms: [...], "
+                        "wiki_page (URL or null)}], count, realms_searched, wiki_index}. wiki_page needs the wiki page list "
+                        "(wiki_search once). Example: {\"pattern\": \"Entity:Emit*\"}.",
                         json{{"properties", {{"pattern", {{"type", "string"}, {"minLength", 1}}},
                                              {"realm", realm_prop("Restrict to one realm (default: all available).")},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}, {"description", "Per realm, default 500."}}}}},
@@ -258,19 +261,24 @@ void register_docs() {
                         RO, api_search_tool});
     json open_world = {{"readOnlyHint", true}, {"openWorldHint", true}};
     mcp::register_tool({"wiki_search", "Search the GMod wiki",
-                        "Searches page names of https://wiki.facepunch.com/gmod/ (exact, prefix, substring, approximate). The page list is "
-                        "cached locally for 24 h; when offline the stale cache is used.",
+                        "Finds pages of the official wiki (https://wiki.facepunch.com/gmod/) by NAME, not by content: exact, then "
+                        "prefix, substring and approximate matches, best first. Names look like Entity:EmitSound, util.TraceLine, "
+                        "GM:PlayerSpawn, Global.EmitSound, Structures/TraceResult. The page list is downloaded once and cached "
+                        "24 h (stale cache used offline). Result: {query, results: [{page, score, url}], total_matches, cache}. "
+                        "Then read one with wiki_page. Example: {\"query\": \"TraceLine\"}.",
                         json{{"properties", {{"query", {{"type", "string"}, {"minLength", 1}}},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}, {"description", "Default 20."}}},
-                                             {"refresh", {{"type", "boolean"}, {"description", "Ignore the cache."}}}}},
+                                             {"refresh", {{"type", "boolean"}, {"description", "Download the page list again (default false)."}}}}},
                              {"required", {"query"}}},
                         open_world, wiki_search_tool});
     mcp::register_tool({"wiki_page", "Read a GMod wiki page",
-                        "Raw wiki markup of a page (?format=text, compact) or its JSON form (?format=json). Names like Entity:EmitSound, "
-                        "GM:EntityEmitSound, util.TraceLine, Global.EmitSound. Cached 7 days; stale cache used when offline.",
+                        "Reads one wiki page by its exact name (as wiki_search returns it): format text = the page's raw wiki markup "
+                        "(realm, arguments, returns, notes), format json = the wiki's JSON form. Cached 7 days (stale cache used "
+                        "offline; refresh: true re-downloads). Result: {name, format, url, cache, content (text) or page (json)}. "
+                        "Error not_found for an unknown name (use wiki_search). Example: {\"name\": \"Entity:EmitSound\"}.",
                         json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 200}}},
                                              {"format", {{"type", "string"}, {"enum", {"text", "json"}}, {"description", "Default text."}}},
-                                             {"refresh", {{"type", "boolean"}}}}},
+                                             {"refresh", {{"type", "boolean"}, {"description", "Download the page again (default false)."}}}}},
                              {"required", {"name"}}},
                         open_world, wiki_page_tool});
 }

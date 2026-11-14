@@ -29,7 +29,9 @@ std::string instructions() {
          "test changes; (6) entity names (targetname) are server-side: ents.FindByName does nothing on the client and "
          "Entity:GetName/SetName are server-only; (7) EyePos()/EyeAngles() are only reliable inside rendering hooks "
          "(use LocalPlayer():EyePos() elsewhere, e.g. in a lua_job); (8) a background test client may believe it has the "
-         "focus (system.HasFocus() true), so fps_max_nofocus is not exercised there.\n";
+         "focus (system.HasFocus() true), so fps_max_nofocus is not exercised there; (9) when your client runs map_load as a "
+         "background task, wait for its result before calling a realm tool: an earlier call reaches the previous map's Lua "
+         "state (every lua_exec/lua_job result has `generation`; map_load returns server_generation/client_generation).\n";
     s += "Lua files: working directory = " + c.tmp_dir +
          " (lua/mcpagent_tmp/). If you share this disk, write there directly then call lua_exec_file(realm, 'name.lua'); otherwise "
          "use lua_file_write. Errors then point to the real file.\n";
@@ -71,7 +73,10 @@ The agent runtime (global table `__mcpagent`) is re-injected automatically.
 ## Temporary Lua files
 - Directory: `)" + c.tmp_dir + R"(`
 - If your file system is the same as the game's, write there directly; otherwise use `lua_file_write {name, content}`.
-- `lua_exec_file {realm, path}`: `path` relative to this directory (e.g. `test.lua`, `sub/a.lua`) or an absolute path.
+- `lua_exec_file {realm, path}`: `path` is absolute, or relative: looked up in this directory first (e.g. `test.lua`,
+  `sub/a.lua`), then in the mounted Lua folder (lua_mount) if any, the game folder (`addons/x/lua/y.lua`), then `lua/`,
+  `gamemodes/` and `addons/*/lua/` like include(). A miss lists every place tried. Same rule for `lua_job {path}`,
+  `lua_check` and `lua_reload`; `tests_run` takes this directory or an absolute path only.
 - The chunk is named `@lua/mcpagent_tmp/<name>`, so errors and tracebacks point to the file; `include("mcpagent_tmp/x.lua")` works.
 
 ## Returned values

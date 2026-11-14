@@ -23,16 +23,22 @@ static const char *kJobProtocol =
     "- job:report(value [, channel]): intermediate result, returned at the end and readable live with reports_read "
     "(channel \"job:<id>\").\n"
     "- args (a global, same table as job.args): the `args` object of this call. job:elapsed(): seconds since start.\n"
+    "- `return value, ...` ends the job: the values are the tool result.\n"
+    "Realm: server by default (a map must be loaded); menu always exists in client mode. The code is `code`, or `path` "
+    "(a file, found like lua_exec_file finds it).\n"
+    "By default the call waits for the end and returns {job_id, values, n, reports, output (printed text), frames, "
+    "resumes, cpu_ms, elapsed_s, generation, truncated?, concurrent_jobs?}; timeout_s (default 300) cancels a job that "
+    "is still running. Errors: lua_syntax_error, lua_error (with traceback, reports and output so far), realm_reset (the "
+    "map changed: the job died with its Lua state), cancelled, timeout.\n"
     "Globals the script assigns go to the realm's _G (they outlive the job and the next job sees them) unless "
     "fresh_env: true.\n"
-    "async: true starts the job and returns its id at once: poll it with lua_job_status, stop it with lua_job_cancel "
-    "(two jobs can then run side by side, e.g. one per realm). A job started while another runs in the same realm is "
-    "reported in concurrent_jobs: their timings and state mix.\n"
+    "async: true starts the job and returns {job_id, state, realm, generation} at once: poll it with lua_job_status "
+    "(wait_s to wait), stop it with lua_job_cancel; two jobs can then run side by side, e.g. one per realm. A job started "
+    "while another runs in the same realm is reported in concurrent_jobs: their timings and state mix.\n"
     "Returned values come back whole (no cut unless depth/limit/max_string; then the result says truncated).\n"
-    "- `return value, ...` ends the job: the values are the tool result.\n"
-    "The LuaJIT compiler stays on (timings are real). A resume that never yields freezes the game: the call then fails "
-    "after timeout_s and status shows main_thread_stalled. resume_limit_s (optional, best effort) aborts a resume that "
-    "runs that long without yielding, for loops written in the script itself. "
+    "The LuaJIT compiler stays on (timings are real). A resume that never yields freezes the game: polling it then fails "
+    "with main_thread_timeout (about 10 s) and status shows main_thread_stalled. resume_limit_s (optional, best effort) "
+    "aborts a resume that runs that long without yielding, for loops written in the script itself. "
     "Cancelling the request (or the task) stops the coroutine at the next frame. The job dies with its realm (map change). "
     "Example:\n"
     "local hits = 0\n"
@@ -42,7 +48,8 @@ static const char *kJobProtocol =
     "  if i % 250 == 0 then job:progress(i, 5000, hits .. \" hits\") end\n"
     "  job:step()\n"
     "end\n"
-    "return { hits = hits }";
+    "return { hits = hits }\n"
+    "called as {\"realm\": \"server\", \"code\": \"<the script above>\", \"timeout_s\": 120}.";
 
 const char *job_protocol() { return kJobProtocol; }
 
@@ -247,7 +254,10 @@ void register_jobs() {
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table."}}}}}},
          json{{"readOnlyHint", false}}, lua_job_status_tool});
-    mcp::register_tool({"lua_job_cancel", "Cancel a Lua job", "Stops a running job at its next frame.",
+    mcp::register_tool({"lua_job_cancel", "Cancel a Lua job",
+                        "Asks a running job (started by lua_job, e.g. with async: true) to stop: it ends at its next frame, before "
+                        "resuming. Result: {job_id, cancelled (false if the id is unknown), note}. Its final state (cancelled) "
+                        "stays readable once with lua_job_status. Example: {\"id\": \"server-3\"}.",
                         json{{"properties", {{"id", {{"type", "string"}, {"description", "Job id (e.g. 'server-3')."}}}}}, {"required", {"id"}}},
                         json{{"destructiveHint", true}}, lua_job_cancel_tool});
 }
