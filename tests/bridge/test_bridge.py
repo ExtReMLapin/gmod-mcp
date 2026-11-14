@@ -942,7 +942,50 @@ def case_retex():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex}
+def case_overlay_live():
+    """Live (Windows, Steam running, no other game): O-6 two clients launched with two different overlays and one
+    without; O-8 same file name and time in the game and the overlay, with and without empty_cache. Folders come from
+    OVERLAY_A / OVERLAY_B (each holds lua/mcpagent_tmp/ovtest_shared.lua returning its own tag) and the game's
+    lua/mcpagent_tmp/ovtest_shared.lua returns "main"."""
+    print("== OVERLAY LIVE: per-instance overlays (O-6, O-8)", flush=True)
+    a, bdir = os.environ["OVERLAY_A"], os.environ["OVERLAY_B"]
+    b = Bridge(27080)
+
+    def call(tool, args, timeout=300):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    ids = {}
+    for tag, ov in (("A", a), ("B", bdir), ("none", None)):
+        args = {"count": 1, "map": "gm_construct", "owner": "overlay-live", "sound": False}
+        if ov: args["overlay"] = ov
+        sc, err = call("instances_launch", args)
+        ins = sc.get("instances", [])
+        check("OVLIVE client %s launched with map" % tag, not err and len(ins) == 1 and ins[0].get("map") == "gm_construct", sc)
+        if ins: ids[tag] = ins[0]["instance"]
+    expect = {"A": "branch", "B": "branch2", "none": "main"}
+    for tag, inst in ids.items():
+        sc, err = call("lua_exec", {"instance": inst, "realm": "server", "code": "return include('mcpagent_tmp/ovtest_shared.lua'), OVTEST_AUTORUN"})
+        check("OVLIVE client %s runs its own copy (%s)" % (tag, expect[tag]), sc.get("values", [None])[0] == expect[tag], sc)
+        sc, err = call("lua_exec", {"instance": inst, "realm": "client", "code": "return OVTEST_AUTORUN"})
+        check("OVLIVE client %s client realm" % tag, (sc.get("values") or [None])[0] == ({"A": "client from overlay", "B": "client from overlay 2"}.get(tag)), sc)
+    # O-8: same name and time in the game and overlay A: which copy does include() return?
+    if "A" in ids:
+        game_copy = os.path.join(os.environ["GMOD_LUA_TMP"], "ovtest_shared.lua")
+        ov_copy = os.path.join(a, "lua", "mcpagent_tmp", "ovtest_shared.lua")
+        st = os.stat(game_copy)
+        os.utime(ov_copy, (st.st_atime, st.st_mtime))
+        for ec in (False, True):
+            call("lua_overlay", {"instance": ids["A"], "path": a, "empty_cache": ec})
+            sc, err = call("lua_exec", {"instance": ids["A"], "realm": "server", "code": "return include('mcpagent_tmp/ovtest_shared.lua')"})
+            print("   O-8 same mtime, empty_cache=%s -> include returns %r" % (ec, sc.get("values")), flush=True)
+            check("OVLIVE O-8 same name and time, empty_cache=%s: the overlay copy wins" % ec, sc.get("values") == ["branch"], sc)
+    call("instances_close", {"owner": "overlay-live"}, 60)
+    b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live}
 for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "overlay", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
