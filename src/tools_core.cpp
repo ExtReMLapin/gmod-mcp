@@ -655,6 +655,7 @@ void register_all() {
     register_lua_tools();
     register_jobs();
     register_instances();
+    register_overlay();
     // Long-running tools executable as MCP tasks (declared after all tools are registered).
     for (const char *n : {"events_wait", "reports_read"}) mcp::set_task_support(n, "optional");
 }

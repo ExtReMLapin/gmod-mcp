@@ -16,6 +16,29 @@ No decompiled code is copied into the repository; only signatures, offsets and b
 - **slot 6 `GetLuaInterface(realm)`**: `return *(this + 0x78 + realm*8)` — a plain read with no side effects; returns
   `nullptr` when the realm does not exist. Realms: 0 = client, 1 = server, 2 = menu.
 
+- **slot 9 `MountLua(pathID)`**: mounts `lua` then (unless the ID is `LuaMenu`) `gamemodes` for that Lua path ID;
+  slot 10 `MountLuaAdd(dir, pathID)` adds one folder (`IFileSystem::AddSearchPath(full, id, 5)`, i.e. the tail of
+  GMod's LUA priority group); slot 11 `UnMountLua(pathID)` removes every path of the ID; slot 17 `EmptyCache()`
+  (position in the header; used by the Lua overlay).
+
+### Lua overlay: search paths
+
+`bin/win64/filesystem_stdio.dll`, `CreateInterface("VFileSystem022")`, primary vtable (IAppSystem takes 5 slots, then
+the SDK 2013 order, checked by body): **7 `AddSearchPath(path, pathID, addType)`** (re-adding a path+ID moves it, no
+duplicate), **8 `RemoveSearchPath(path, pathID)`**, **13 `GetSearchPath(pathID, bGetPackFiles, dest, maxLen)`**
+(`;`-separated), 63 `PrintSearchPaths` (the `path` console command). GMod turned `addType` into priority groups:
+`(group << 1) | tail`; `0` puts the path before every other one.
+
+- Lua path IDs: `lsv` (server realm), `lcl` (client), `LuaMenu` (menu).
+- At every map start, `server.dll` calls `UnMountLua("lsv")`, then `MountLuaAdd` for each addon's `lua`/`gamemodes`,
+  then `MountLua("lsv")`, then creates the server Lua state (autorun runs after this).
+- `lua_shared` loads a file only if its full path maps back to a `MOD`-relative name (`FullPathToRelativePathEx(full,
+  "MOD")`), and caches it under that name with its file time.
+
+So the overlay adds its root to `MOD` and `GAME` (head), its `lua`/`gamemodes` to `lsv` and `lcl` (head), and hooks
+`ILuaShared` slot 9 (vtable entry patched in this process only) to put them back in front right after every
+`MountLua`. Not analysed: how `client.dll` mounts `lcl` (live check), the Linux layouts.
+
 ### `CLuaInterface` (implements `ILuaInterface : ILuaBase`)
 - 0x9B0-byte allocation; vptr at +0x0.
 - **`lua_State*` at +0x8**: vtable slot 0 (`ILuaBase::Top`) is `mov rcx,[rcx+8]; jmp lua_gettop`.

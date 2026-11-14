@@ -13,6 +13,7 @@ Cases (default: a f):
          the shared cache stays valid under concurrent writes, no temporary file left behind
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
+  overlay instances_launch {overlay}: -mcp_overlay passed to the client (stand-in game), bad folders refused
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
   fuzz   400 random messages (random JSON shapes, ids, params, invalid UTF-8): the bridge survives and still answers
@@ -23,7 +24,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans overlay orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -699,6 +700,51 @@ def case_orphans():
     shutil.rmtree(game, ignore_errors=True)
 
 
+def case_overlay():
+    """instances_launch {overlay} (B1): the client starts with -mcp_overlay "<folder>", a path with spaces stays one
+    argument; a folder without lua/, a relative path or a quote is refused before anything starts."""
+    print("== OVERLAY: instances_launch passes the overlay folder to the client", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("OVERLAY stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-overlay-")
+    wt = os.path.join(work, "my addon wt")
+    os.makedirs(os.path.join(wt, "lua", "autorun"))
+    os.makedirs(os.path.join(work, "nolua"))
+    argv_file = os.path.join(work, "argv.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_ARGV"] = argv_file
+    b = Bridge(port, env)
+
+    def launch(overlay, timeout=40):
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 5, "game_dir": game, "overlay": overlay}}, timeout)
+        return (r or {}).get("result", {})
+
+    for bad, word in ((os.path.join(work, "nolua"), "lua"), ("relative/dir", "absolute"), (wt + '"', "character"), (os.path.join(work, "missing"), "not found")):
+        res = launch(bad)
+        sc = res.get("structuredContent", {})
+        check("OVERLAY refused before starting anything: " + word, res.get("isError") and word in json.dumps(sc) and not sc.get("silent_pids") and not os.path.exists(argv_file), sc)
+    res = launch(os.path.join(wt, "lua"))
+    sc = res.get("structuredContent", {})
+    pids = sc.get("silent_pids", [])
+    line = open(argv_file, encoding="mbcs", errors="replace").read() if os.path.exists(argv_file) else ""
+    check("OVERLAY the client got -mcp_overlay with the addon root, quoted (spaces kept)", ('-mcp_overlay "%s"' % wt) in line, line)
+    check("OVERLAY the timeout answer names the overlay", sc.get("overlay") == wt, sc)
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
+    time.sleep(1)
+    check("OVERLAY stand-in closed", not any(alive(p) for p in pids), pids)
+    b.close()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def case_launch():
     """Live (Windows, Steam running, no other game): starts 2 light clients with a map, uses the default instance,
     closes them. Note: the game saves their window size as its video setting (documented)."""
@@ -890,8 +936,8 @@ def case_retex():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "orphan", "fuzz"]:
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "overlay", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))

@@ -42,6 +42,16 @@ void *find_symbol(void *module, const char *name) {
 std::vector<std::string> lua_shared_names() { return {"lua_shared.dll"}; }
 std::vector<std::string> tier0_names() { return {"tier0.dll"}; }
 std::vector<std::string> engine_names() { return {"engine.dll"}; }
+std::vector<std::string> filesystem_names() { return {"filesystem_stdio.dll"}; }
+
+bool patch_pointer(void **slot, void *value) {
+    DWORD old = 0;
+    if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old)) return false;
+    *slot = value;
+    DWORD tmp = 0;
+    VirtualProtect(slot, sizeof(void *), old, &tmp);
+    return true;
+}
 
 std::string process_command_line() {
     const char *c = GetCommandLineA();

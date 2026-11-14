@@ -16,6 +16,10 @@ void *find_symbol(void *module, const char *name);
 std::vector<std::string> lua_shared_names();
 std::vector<std::string> tier0_names();
 std::vector<std::string> engine_names();
+std::vector<std::string> filesystem_names();
+
+// Writes a pointer into read-only memory (a vtable slot), restoring the page protection afterwards.
+bool patch_pointer(void **slot, void *value);
 
 // Process command line (fallback if tier0 does not expose it).
 std::string process_command_line();
