@@ -75,7 +75,7 @@
       "group": "features",
       "definition": "Several games driven at once from one MCP server. partial = pick one server or process among several, without coordination.",
       "lines": [
-        "Multi-",
+        "Multi",
         "inst."
       ]
     },
@@ -85,8 +85,8 @@
       "group": "features",
       "definition": "Breakpoints with stepping and locals.",
       "lines": [
-        "Debug-",
-        "ger"
+        "Step",
+        "debug"
       ]
     },
     {
@@ -193,8 +193,8 @@
       "group": "trust",
       "definition": "yes = the tool itself invites the agent to report friction and that report is collected (gmod-mcp: plugin option feedback_offers, agent-feedback issues); no = nothing in the tool asks for it.",
       "lines": [
-        "Agent",
-        "feedback"
+        "Feed-",
+        "back"
       ]
     }
   ],
