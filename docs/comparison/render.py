@@ -37,6 +37,7 @@ HDR_Y1, HDR_Y2 = 30, 41
 GRID_TOP = 48
 ROW_H = CELL_H + GAP
 PICK_H = 17
+FOOT_H = 14
 
 VERDICT_FILL = {"yes": "#2e9d5b", "partial": "#d9a520", "no": "#c94040"}
 
@@ -151,6 +152,10 @@ def replace_between_markers(text, block):
 
 
 # ----------------------------------------------------------------- svg
+
+def star_sentence(total):
+    return f'★ = the only server with a verified "yes" in this column (out of {total} compared)'
+
 
 def _esc(text):
     return html.escape(str(text), quote=True)
@@ -282,6 +287,11 @@ def render_svg(data, theme, limit=None):
     rest = f"· as of {data['as_of']} · pinned commits · code read, nothing executed"
     body.append(f'<text class="foot" x="{_n(lx)}" y="{y}">{_esc(rest)}</text>')
     right = max(right, lx + len(rest) * 5.6)
+
+    y += FOOT_H
+    star_note = star_sentence(len(data["repos"]))
+    body.append(f'<text class="foot" x="{PAD}" y="{y}">{_esc(star_note)}</text>')
+    right = max(right, PAD + len(star_note) * 5.6)
 
     width = math.ceil(right + PAD)
     height = y + PAD + 2

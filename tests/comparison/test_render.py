@@ -152,6 +152,22 @@ class SvgTests(unittest.TestCase):
         self.assertIn("Most capabilities", text)
 
 
+    def test_svg_explains_star(self):
+        n = len(self.data["repos"])
+        sentence = f'★ = the only server with a verified "yes" in this column (out of {n} compared)'
+        # limit must not change N: it counts every repo in the data, not the drawn ones
+        for limit in (None, 2):
+            root = ET.fromstring(self.svg(limit=limit))
+            texts = ["".join(e.itertext()) for e in root.iter(SVG_NS + "text")]
+            self.assertIn(sentence, texts)
+
+    def test_svg_star_sentence_fits_canvas(self):
+        root = ET.fromstring(self.svg(limit=2))
+        width = float(root.get("width"))
+        sentence = [e for e in root.iter(SVG_NS + "text") if "the only server" in "".join(e.itertext())][0]
+        self.assertLessEqual(float(sentence.get("x")) + len("".join(sentence.itertext())) * 5.6, width)
+
+
 class MarkerTests(unittest.TestCase):
     def test_replace_between_markers_requires_markers(self):
         with self.assertRaises(ValueError):
