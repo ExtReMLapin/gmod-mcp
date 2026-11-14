@@ -42,6 +42,9 @@ bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs,
 json project_values(json result, const json &args);
 // `fields` on an object result (status): keeps only these top-level keys.
 json project_keys(json result, const json &args);
+// Non-negotiable network rule: "" if the console line may run, else why it is refused (connect/redirect/retry to a
+// server that is not this machine, in any of its statements).
+std::string forbidden_network_cmd(const std::string &line);
 
 // The `job` protocol of lua_job (tool description, also used by the write-lua-job prompt).
 const char *job_protocol();

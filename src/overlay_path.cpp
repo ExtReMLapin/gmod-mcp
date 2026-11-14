@@ -46,4 +46,6 @@ bool normalize_root(const std::string &in, std::string &root, std::string &err) 
     return true;
 }
 
+std::string refuse_inside_game(const std::string &, const std::string &) { return ""; }
+
 }  // namespace overlay

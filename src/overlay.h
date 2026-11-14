@@ -18,6 +18,10 @@ namespace overlay {
 // root or its lua/ folder. Refuses relative paths, missing folders, a root without lua/, and characters that would
 // break a command line or the engine's ';'-separated path lists (quotes, ';', line breaks).
 bool normalize_root(const std::string &in, std::string &root, std::string &err);
+// Pure: "" if `root` may be an overlay for the game in `game_dir` (the garrysmod folder), else why not. A folder inside
+// the game folder (garrysmod itself, an installed addon) is already searched by the engine: overlaying it would only
+// reorder the game's own paths.
+std::string refuse_inside_game(const std::string &root, const std::string &game_dir);
 
 // Main thread. root empty = remove the overlay. Returns {"ok":true,"result":...} or an agent error.
 nlohmann::json set(const std::string &root, bool empty_cache);

@@ -12,6 +12,8 @@
 #include "coordinator.h"
 #include "mcp.h"
 #include "overlay.h"
+#include "resources.h"
+#include "overlay.h"
 #include "tools.h"
 #include "util.h"
 
@@ -206,12 +208,109 @@ static void test_srcds_error_parsing() {
     CHECK(r.size() == 3 && r[2]["addon"] == "my_addon");
 }
 
+// Edge cases (2026-11-14).
+static void test_edge_cases() {
+    using V = std::vector<std::string>;
+    // Statements: quotes, line breaks, many statements, blanks, long lines, unicode.
+    CHECK(cmdline::split_statements("say \"a;b\nc\"") == (V{"say \"a;b", "c\""}));  // a line break ends a quoted string
+    std::string many;
+    for (int i = 0; i < 100; ++i) many += "echo " + std::to_string(i) + ";";
+    CHECK(cmdline::split_statements(many).size() == 100);
+    CHECK(cmdline::split_statements(" \t ; \t\r\n ").empty());
+    std::string longline = "echo " + std::string(5000, 'x');
+    CHECK(cmdline::split_statements(longline) == (V{longline}));
+    CHECK(cmdline::split_statements("say \xC3\xA9t\xC3\xA9;say \xE2\x82\xAC") == (V{"say \xC3\xA9t\xC3\xA9", "say \xE2\x82\xAC"}));
+    CHECK(cmdline::command_name("\xC3\x89T\xC3\x89 1") == "\xC3\x89t\xC3\x89" || !cmdline::command_name("\xC3\x89T\xC3\x89 1").empty());
+    // Network rule: a connect anywhere in the line is caught, whatever hides it.
+    for (const char *line : {"echo a; connect 1.2.3.4", "echo \"x;y\"; connect 8.8.8.8", "echo a\nconnect 1.2.3.4",
+                             "echo a\r\nconnect 1.2.3.4", "CONNECT 1.2.3.4", "  connect   1.2.3.4  ", "redirect 1.2.3.4",
+                             "retry", "connect", "echo \"a\nconnect 1.2.3.4", "echo \"a\rconnect 1.2.3.4",
+                             "connect_lobby 1", "\"connect\" 1.2.3.4"}) {
+        bool refused = !tools::forbidden_network_cmd(line).empty();
+        if (!refused) std::printf("  not refused: [%s]\n", line);
+        CHECK(refused);
+    }
+    for (const char *line : {"echo connect 1.2.3.4", "echo \"connect 1.2.3.4\"", "sv_gravity 600", "connect 127.0.0.1:27015",
+                             "connect localhost"})
+        CHECK(tools::forbidden_network_cmd(line).empty());
+    // console_wait: a cursor in the future starts now; more lines asked than printed times out with what was found;
+    // lines lost to a tiny buffer are reported.
+    size_t cap = console::capacity();
+    json r = mcp::call_tool("console_wait", json{{"regex", "^EDGE"}, {"cursor", console::cursor_now() + 1000000}, {"timeout_s", 0.2}});
+    CHECK(r.value("isError", false) && r.dump().find("timeout") != std::string::npos);
+    uint64_t c0 = console::cursor_now();
+    console::push_line("message", "EDGE 1");
+    r = mcp::call_tool("console_wait", json{{"regex", "^EDGE"}, {"cursor", c0}, {"count", 3}, {"timeout_s", 0.2}});
+    CHECK(r.value("isError", false) && r.dump().find("EDGE 1") != std::string::npos);
+    console::set_capacity(16);
+    c0 = console::cursor_now();
+    for (int i = 0; i < 100; ++i) console::push_line("message", "FLOOD " + std::to_string(i));
+    r = mcp::call_tool("console_wait", json{{"regex", "^FLOOD 99$"}, {"cursor", c0}, {"timeout_s", 1}});
+    json sc = r.value("structuredContent", json::object());
+    CHECK(!r.value("isError", true) && sc.value("lost", 0) > 0);
+    console::set_capacity(cap);
+    // Errors: more than the buffer holds -> lost counted; a cursor past the end returns nothing.
+    console::errors_clear();
+    uint64_t e0 = console::errors_cursor();
+    for (int i = 0; i < 2100; ++i) console::push_error(json{{"realm", "server"}, {"message", "e" + std::to_string(i)}});
+    json es = console::errors_since(e0, 5000);
+    CHECK(es["errors"].size() == 2000 && es.value("lost", 0) == 100);
+    json past = console::errors_since(e0 + 100000, 10);
+    CHECK(past["errors"].empty());
+    console::errors_clear();
+    // A non-UTF-8 byte in a console line or a path never breaks a response.
+    console::push_line("message", "bad \xFB byte");
+    json rd = mcp::call_tool("console_read", json{{"limit", 5}});
+    CHECK(!rd.value("isError", true));
+    bool dumped = true;
+    try {
+        (void)rd.dump(-1, ' ', false, json::error_handler_t::replace);
+    } catch (...) {
+        dumped = false;
+    }
+    CHECK(dumped);
+    std::string saved = agent::config().game_dir;
+    agent::config().game_dir = "D:/Jeux vid\xE9o/garrysmod";  // a path in a legacy code page
+    bool read_ok = true;
+    try {
+        json cfgres = resources::read("mcpagent://config");
+        read_ok = cfgres.contains("text");
+    } catch (...) {
+        read_ok = false;
+    }
+    CHECK(read_ok);
+    agent::config().game_dir = saved;
+    // Overlay paths.
+    fs::path t = fs::temp_directory_path() / "gmod-mcp-edge-overlay";
+    std::error_code ec;
+    fs::remove_all(t, ec);
+    fs::create_directories(t / "\xC3\xA9t\xC3\xA9 wt" / "lua");
+    fs::create_directories(t / "garrysmod" / "lua");
+    fs::create_directories(t / "garrysmod" / "addons" / "pba" / "lua");
+    std::ofstream(t / "afile.txt") << "x";
+    std::string root, err;
+    CHECK(overlay::normalize_root((t / "\xC3\xA9t\xC3\xA9 wt").u8string(), root, err));
+    CHECK(overlay::normalize_root((t / "\xC3\xA9t\xC3\xA9 wt" / "lua").u8string() + "/", root, err) &&
+          fs::u8path(root) == (t / "\xC3\xA9t\xC3\xA9 wt").make_preferred());
+    CHECK(!overlay::normalize_root((t / "afile.txt").u8string(), root, err) && err.find("not a folder") != std::string::npos);
+    CHECK(!overlay::normalize_root("\\\\nosuchserver\\share\\wt", root, err));
+    CHECK(!overlay::normalize_root(t.u8string() + "/does-not-exist", root, err) && err.find("not found") != std::string::npos);
+    std::string game = (t / "garrysmod").u8string();
+    CHECK(!overlay::refuse_inside_game((t / "garrysmod").u8string(), game).empty());
+    CHECK(!overlay::refuse_inside_game((t / "garrysmod" / "addons" / "pba").u8string(), game).empty());
+    CHECK(!overlay::refuse_inside_game(game + "/", game).empty());
+    CHECK(overlay::refuse_inside_game((t / "\xC3\xA9t\xC3\xA9 wt").u8string(), game).empty());
+    CHECK(overlay::refuse_inside_game((t / "garrysmod-wt").u8string(), game).empty());  // a sibling with the same prefix
+    fs::remove_all(t, ec);
+}
+
 int main() {
     test_cmdline();
     test_console_wait();
     test_errors_map_tags();
     test_small_b6();
     test_srcds_error_parsing();
+    test_edge_cases();
     test_overlay_paths();
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;

@@ -50,7 +50,7 @@ static std::string forbidden_one(const std::string &cmd) {
     return "";
 }
 
-static std::string forbidden_network_cmd(const std::string &line) {
+std::string forbidden_network_cmd(const std::string &line) {
     std::string cur;
     bool inq = false;
     for (char c : line + ";") {
