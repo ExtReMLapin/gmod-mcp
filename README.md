@@ -234,7 +234,9 @@ lua_function_source {realm: "server", expr: "MyAddon.Update"}   -> source: the w
 ```
 
 - `path` is the addon's root (the folder that contains `lua/`) or its `lua/` folder, absolute. Its `gamemodes/` folder
-  is overlaid too, and so are its materials, sounds and models.
+  is overlaid too (materials, sounds and models are not: see the table below).
+- The path must be ASCII-only: the game's file system lists a folder with non-ASCII characters but loads none of its
+  files, so `lua_mount` refuses it. Use an ASCII junction instead (`mklink /J C:\dev\my-addon "D:\Développement\my-addon"`).
 - **It applies to files loaded from then on.** Code that already runs is not run again: after `lua_mount`, call
   `map_load`. `instances_launch {lua_mount}` sets it before the first map, so nothing more is needed there.
 - `lua_mount {}` shows the current mounted folder and the engine's Lua search paths; `lua_mount {path: null}` removes it
@@ -355,8 +357,9 @@ tracebacks then point at the real file.
   or its address is loopback or exactly one of this machine's own network addresses (a local dedicated server). On any
   other server, even on your LAN, nothing is injected into the client, client calls fail with `client_locked` and
   `status` says why. This cannot be disabled.
-- `console_exec` refuses `connect`/`redirect` to servers that are not on this machine (including after a `;`), and
-  `convar_set` refuses archived convars (they would end up in your `config.cfg`) unless asked explicitly.
+- `console_exec` refuses `connect`/`redirect` to servers that are not on this machine (including after a `;`). A
+  `connect` must also be alone on its line: `echo x; connect ...` is refused, because the engine crashes on it while a
+  map is loaded. `convar_set` refuses archived convars (they would end up in your `config.cfg`) unless asked explicitly.
 
 ## What gets modified in your game folder
 
