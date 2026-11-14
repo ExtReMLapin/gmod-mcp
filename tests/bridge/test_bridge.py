@@ -183,7 +183,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
             return self.reply_json(res({"protocolVersion": params.get("protocolVersion", "2025-06-18"),
                                         "capabilities": {"tools": {"listChanged": False}},
                                         "serverInfo": {"name": "gmod-mcp", "version": srv.version},
-                                        "instructions": "fake instructions"}))
+                                        "instructions": srv.instructions}))
         if method == "ping": return self.reply_json(res({}))
         if method == "server/discover":
             return self.reply_json(res({"resultType": "complete", "supportedVersions": [MODERN, "2025-11-25"],
@@ -255,6 +255,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         super().__init__(("127.0.0.1", port), Fake)
         self.lock, self.seen, self.disconnects, self.listens, self.conns = threading.Lock(), [], [], 0, []
         self.version, self.token = version, token
+        self.instructions = "fake instructions"
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     def handle_error(self, request, client_address):
@@ -1332,8 +1333,38 @@ def case_observe():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "version", "fuzz"]:
+def case_feedback():
+    """The plugin option feedback_offers (Claude Code userConfig, passed to the bridge as GMOD_MCP_FEEDBACK_OFFERS):
+    on by default, the instructions ask agents to offer friction reports and say how to turn that off; off, the
+    paragraph is gone and agents are told not to offer."""
+    print("== FEEDBACK: the option that turns friction-report offers off", flush=True)
+    def instructions(env_value, live):
+        port, env = free_port(), isolated_config(with_token=True)
+        if env_value is not None: env["GMOD_MCP_FEEDBACK_OFFERS"] = env_value
+        fake = None
+        if live:
+            fake = FakeServer(port, version=bridge_version())
+            fake.instructions = "fake instructions\nFeedback: while you work, note the frictions you meet with gmod-mcp itself."
+        b = Bridge(port, env)
+        r = b.req("initialize", INIT)
+        b.close()
+        if fake: fake.stop()
+        return (r or {}).get("result", {}).get("instructions", "")
+    for live in (False, True):
+        where = "live" if live else "offline"
+        on = instructions(None, live)
+        check("FEEDBACK %s default: agents are asked to offer reports" % where, "Feedback: while you work" in on, on[-500:])
+        check("FEEDBACK %s default: they are told how to turn it off" % where, "feedback_offers" in on and "plugin configure" in on, on[-500:])
+        for v in ("false", "0"):
+            off = instructions(v, live)
+            check("FEEDBACK %s option %s: no offer paragraph, a clear 'turned off'" % (where, v),
+                  "Feedback: while you work" not in off and "turned off" in off, off[-500:])
+        on2 = instructions("true", live)
+        check("FEEDBACK %s option true: same as default" % where, "Feedback: while you work" in on2, on2[-300:])
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "version", "feedback", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))

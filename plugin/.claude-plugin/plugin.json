@@ -14,5 +14,13 @@
     "mcp",
     "lua"
   ],
-  "description": "gmod-mcp for Claude Code: the MCP server for Garry's Mod (a bridge that stays connected while the game is closed, test clients on demand), the module for the game, and the skill that installs, starts and updates it."
+  "description": "gmod-mcp for Claude Code: the MCP server for Garry's Mod (a bridge that stays connected while the game is closed, test clients on demand), the module for the game, and the skill that installs, starts and updates it.",
+  "userConfig": {
+    "feedback_offers": {
+      "type": "boolean",
+      "title": "Offer to report frictions",
+      "description": "On (default): at the end of a task, agents may offer to report the frictions they met with gmod-mcp as a public GitHub issue (no secrets or project data; you agree to each one). Off: they never ask.",
+      "default": true
+    }
+  }
 }

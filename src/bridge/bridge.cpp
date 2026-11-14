@@ -393,8 +393,38 @@ std::string exe_dir() {
 std::string module_dir() { return exe_dir() + "/../module/" + plat::platform_tag(); }
 
 // --- Answers built by the bridge ---
+// The plugin option feedback_offers (Claude Code userConfig, given to the bridge as GMOD_MCP_FEEDBACK_OFFERS): on by
+// default. On, the instructions' "Feedback:" paragraph (friction reports) gains how to turn it off; off, it is replaced.
+bool feedback_offers_on() {
+    const char *v = std::getenv("GMOD_MCP_FEEDBACK_OFFERS");
+    if (!v) return true;
+    std::string s = v;
+    for (auto &c : s) c = (char)std::tolower((unsigned char)c);
+    return !(s == "false" || s == "0" || s == "no" || s == "off");
+}
+
+std::string patch_feedback(std::string text) {
+    static const std::string head = "Feedback: while you work";
+    size_t a = text.find(head);
+    if (a == std::string::npos) return text;
+    size_t b = text.find('\n', a);
+    if (b == std::string::npos) b = text.size();
+    if (feedback_offers_on()) {
+        text.insert(b, " The user can turn these offers off: Claude Code plugin option feedback_offers (/plugin configure "
+                       "gmod-mcp@gmod-mcp, or in a shell: echo '{\"feedback_offers\": \"false\"}' | claude plugin configure "
+                       "gmod-mcp@gmod-mcp --values-stdin, then restart Claude Code). Say so in your offer, and set it for "
+                       "them if they ask.");
+    } else {
+        text.replace(a, b - a, "Feedback: the user turned off friction-report offers (plugin option feedback_offers): do "
+                               "not offer reports. They can turn them back on with /plugin configure gmod-mcp@gmod-mcp.");
+    }
+    return text;
+}
+
 json patch_capabilities(json result) {
     if (!result.is_object()) return result;
+    if (result.contains("instructions") && result["instructions"].is_string())
+        result["instructions"] = patch_feedback(result["instructions"].get<std::string>());
     json &caps = result["capabilities"];
     if (!caps.is_object()) caps = json::object();
     for (const char *k : {"tools", "prompts", "resources"}) {

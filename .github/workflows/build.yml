@@ -128,8 +128,9 @@ jobs:
           cp -r parts/bin parts/module dist/plugin/
           chmod +x dist/plugin/bin/gmod-mcp-bridge
           cp LICENSE THIRD_PARTY_NOTICES.md dist/plugin/
-          # The plugin's MCP server: the bridge, found without extension on Windows too.
-          printf '%s\n' '{ "mcpServers": { "gmod": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/gmod-mcp-bridge" } } }' > dist/plugin/.mcp.json
+          # The plugin's MCP server: the bridge, found without extension on Windows too. The plugin option
+          # feedback_offers (userConfig) reaches it as an environment variable.
+          printf '%s\n' '{ "mcpServers": { "gmod": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/gmod-mcp-bridge", "env": { "GMOD_MCP_FEEDBACK_OFFERS": "${user_config.feedback_offers}" } } } }' > dist/plugin/.mcp.json
           # Same version as the module and the bridge.
           py=$(command -v python3)
           "$py" - "$version" <<'PY'

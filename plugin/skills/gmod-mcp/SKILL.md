@@ -217,6 +217,11 @@ guide's "Reporting frictions" section (resource `mcpagent://guide`). In short:
   user, in one line, to report them, and say it costs them nothing (you draft, check duplicates and file).
 - The issue is public, in English: no secrets, tokens, personal paths, project or addon names, or project code.
   Include the gmod-mcp version (`status`: `agent_version`), platform, coding agent (e.g. Claude Code) and model.
+- The user can turn these offers off with the plugin option `feedback_offers`. Its current value is
+  `${user_config.feedback_offers}`: `false` means never offer (if you see the placeholder itself, treat it as `true`).
+  Mention the option when you offer. If the user asks to stop, set it for them:
+  `echo '{"feedback_offers": "false"}' | claude plugin configure gmod-mcp@gmod-mcp --values-stdin` (or they use
+  `/plugin configure gmod-mcp@gmod-mcp`), then they restart Claude Code.
 - Search duplicates in https://github.com/ExtReMLapin/gmod-mcp/issues first when you can. File with `gh issue create
   --repo ExtReMLapin/gmod-mcp --label agent-feedback` when `gh auth status` succeeds; otherwise give the prefilled
   `issues/new?labels=agent-feedback&title=...&body=...` URL, one click left for the user.
