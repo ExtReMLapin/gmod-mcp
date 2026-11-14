@@ -667,6 +667,18 @@ def case_orphans():
     sc = (r or {}).get("result", {}).get("structuredContent", {})
     pids = sc.get("silent_pids", [])
     check("ORPHANS timeout names the silent clients' pids", r and r["result"].get("isError") and len(pids) == 3 and all(alive(p) for p in pids), sc)
+    check("ORPHANS timeout says which clients answered (none here)", sc.get("answered") == [], sc)
+    # instances_list while no game answers (SW2: it said "not reachable"; SB1: the silent clients were invisible).
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    silent = sc.get("launched_not_answering", [])
+    check("ORPHANS instances_list without a game: no error, no instance, a clear note",
+          r and not r["result"].get("isError") and sc.get("instances") == [] and "no game instance" in sc.get("note", ""), sc)
+    check("ORPHANS instances_list lists the launched clients that never answered, with their owner",
+          sorted(x.get("pid") for x in silent) == sorted(pids) and all(x.get("owner") == "fork-a" for x in silent), silent)
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {"owner": "fork-b"}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("ORPHANS instances_list {owner} filters by owner", r and not sc.get("launched_not_answering"), sc)
     r = b.req("tools/call", {"name": "instances_close", "arguments": {"pids": [pids[0] if pids else 0, 4]}}, 20)
     sc = (r or {}).get("result", {}).get("structuredContent", {})
     check("ORPHANS close by pid: closed, and a pid this session did not start is refused",
@@ -680,6 +692,9 @@ def case_orphans():
     check("ORPHANS close by owner closes the rest, labelled", sorted(c.get("pid") for c in sc.get("closed", [])) == sorted(pids[1:]) and all(c.get("owner") == "fork-a" for c in sc.get("closed", [])), sc)
     time.sleep(1)
     check("ORPHANS no stand-in left running", not any(alive(p) for p in pids), [p for p in pids if alive(p)])
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("ORPHANS closed clients no longer listed", r and not sc.get("launched_not_answering"), sc)
     b.close()
     shutil.rmtree(game, ignore_errors=True)
 

@@ -180,6 +180,8 @@ function H.convar_get(args)
 		o.protected = true
 	else
 		o.value = cv:GetString()
+		-- The same number can be spelled "0.0" or "0.000000": compare `number`, not the string.
+		o.number = tonumber(o.value)
 	end
 	if cv.GetMin then o.min = cv:GetMin() end
 	if cv.GetMax then o.max = cv:GetMax() end

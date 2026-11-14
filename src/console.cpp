@@ -39,6 +39,7 @@ static const size_t kErrCapacity = 2000;
 static uint64_t g_err_next = 0;
 static uint64_t g_err_floor = 0;  // sequences < floor were cleared on purpose (errors_clear): not losses
 static bool g_parse_errors = false;
+static uint64_t (*g_map_load_fn)() = nullptr;  // constant-initialized: safe to set from another file's static init
 // Error parser state (srcds mode).
 static json g_pending_err;
 
@@ -59,7 +60,8 @@ static void parse_error_line(const std::string &text) {
     if (std::regex_match(text, m, head)) {
         flush_pending_error_locked();
         g_pending_err = json{{"realm", "server"}, {"message", m[2].str()}, {"addon", m[1].str() == "ERROR" ? "" : m[1].str()},
-                             {"stack", json::array()}, {"time", uptime()}, {"source", "console"}};
+                             {"stack", json::array()}, {"time", uptime()}, {"source", "console"},
+                             {"map_load", g_map_load_fn ? g_map_load_fn() : 0}};
     } else if (!g_pending_err.is_null() && std::regex_match(text, m, frame)) {
         g_pending_err["stack"].push_back(
             json{{"level", std::stoi(m[1].str())}, {"function", m[2].str()}, {"file", m[3].str()}, {"line", std::stoi(m[4].str())}});
@@ -253,9 +255,12 @@ ReadResult read(uint64_t cursor, size_t limit, const std::string &re, std::strin
     return r;
 }
 
+void set_map_load_source(uint64_t (*fn)()) { g_map_load_fn = fn; }
+
 void push_error(const json &e) {
     std::lock_guard<std::mutex> lk(g_emu);
     json x = e;
+    if (!x.contains("map_load")) x["map_load"] = g_map_load_fn ? g_map_load_fn() : 0;
     x["seq"] = g_err_next++;
     if (!x.contains("time")) x["time"] = uptime();
     g_errors.push_back(std::move(x));

@@ -185,6 +185,15 @@ static json to_call_result(json r) {
     return json{{"content", content}, {"structuredContent", result}, {"isError", false}};
 }
 
+bool instance_independent(const std::string &tool) {
+    // Same answer on every instance of this game folder: status (it names the instance that answered), the wiki, the
+    // maps on disk. Not api_search or lua_check: they read a realm, which depends on the instance's state.
+    static const char *names[] = {"status", "wiki_search", "wiki_page", "map_list"};
+    for (const char *n : names)
+        if (tool == n) return true;
+    return false;
+}
+
 json call_tool(const std::string &name, const json &args_in) {
     const Tool *t = find_tool(name);
     if (!t) return to_call_result(agent::err("unknown_tool", "unknown tool: " + name));
@@ -201,9 +210,7 @@ json call_tool(const std::string &name, const json &args_in) {
     } else if (!t->local_only && g_peers) {
         // Several game processes share this endpoint: a call without `instance` would silently target whichever
         // instance holds the base port (it changes after a coordinator re-election). Refuse instead of guessing.
-        static const char *exempt[] = {"status", "wiki_search", "wiki_page"};
-        bool is_exempt = false;
-        for (const char *e : exempt) is_exempt = is_exempt || name == e;
+        bool is_exempt = instance_independent(name);
         std::vector<std::string> peers = g_peers();
         if (!is_exempt && !peers.empty()) {
             json ids = json::array({agent::config().instance_id + " (this one)"});

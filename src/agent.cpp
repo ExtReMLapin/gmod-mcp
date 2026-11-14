@@ -3,6 +3,7 @@
 #include <embedded_lua.h>
 
 #include <chrono>
+#include <map>
 #include <mutex>
 
 #include "console.h"
@@ -34,6 +35,22 @@ static uint64_t g_map_loaded_key = 0;
 static bool g_menu_ready_sent = false;
 static std::mutex g_map_mu;
 static std::string g_map;
+
+static std::atomic<uint64_t> g_map_load_seq{0};
+static std::map<uint64_t, std::string> g_load_maps;  // map load -> map name (filled once map_loaded knows it)
+void note_map_load_start(const std::string &map) {
+    std::lock_guard<std::mutex> lk(g_map_mu);
+    g_load_maps[++g_map_load_seq] = map;
+    while (g_load_maps.size() > 1000) g_load_maps.erase(g_load_maps.begin());
+}
+uint64_t map_load_seq() { return g_map_load_seq.load(); }
+std::string map_of_load(uint64_t seq) {
+    std::lock_guard<std::mutex> lk(g_map_mu);
+    auto it = g_load_maps.find(seq);
+    return it == g_load_maps.end() ? "" : it->second;
+}
+// Every Lua error is stamped with the map load it happened in.
+static const bool g_err_source_set = (console::set_map_load_source(&map_load_seq), true);
 
 std::string current_map() {
     std::lock_guard<std::mutex> lk(g_map_mu);
@@ -381,6 +398,8 @@ static void check_map_loaded() {
     {
         std::lock_guard<std::mutex> lk(g_map_mu);
         g_map = st.value("map", "");
+        auto it = g_load_maps.find(g_map_load_seq.load());
+        if (it != g_load_maps.end() && it->second.empty()) it->second = g_map;
     }
     events::publish("map_loaded", json{{"map", st.value("map", "")},
                                        {"gamemode", st.value("gamemode", "")},
@@ -453,6 +472,7 @@ void pump(lua_State *host) {
         g_present[r] = present;
         if (present != g_was_present[r]) {
             g_was_present[r] = present;
+            if (present && r == realms::SERVER) note_map_load_start("");
             events::publish(present ? "realm_up" : "realm_down", json{{"realm", realms::name(r)}});
             if (!present && r != realms::MENU && g_cfg.mode == Mode::Client && !realms::state(realms::CLIENT) &&
                 !realms::state(realms::SERVER))

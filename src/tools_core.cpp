@@ -157,6 +157,16 @@ json project_values(json r, const json &args) {
     return r;
 }
 
+json project_keys(json r, const json &args) {
+    if (!args.contains("fields") || !r.value("ok", false) || !r.contains("result") || !r["result"].is_object()) return r;
+    json kept = json::object();
+    for (const auto &f : args["fields"])
+        if (f.is_string() && r["result"].contains(f.get<std::string>())) kept[f.get<std::string>()] = r["result"][f.get<std::string>()];
+    kept["projected"] = args["fields"];
+    r["result"] = std::move(kept);
+    return r;
+}
+
 static json status_tool(const json &args) {
     const auto &c = agent::config();
     double since = jobs::seconds_since_last_frame();
@@ -225,7 +235,13 @@ static json status_tool(const json &args) {
         s["branch"] = s["menu"].value("branch", json());
         s["loading"] = s["menu"].value("loading", false);
     }
-    return ok(s);
+    // Frame cap and time scale (a light test client runs at 20 fps: per-frame behaviour differs from a normal game).
+    json hostj = s.contains("menu") ? s["menu"] : (s.contains("server") ? s["server"] : json());
+    if (!hostj.is_null()) {
+        s["fps_max"] = hostj.value("fps_max", json());
+        s["host_timescale"] = hostj.value("host_timescale", json());
+    }
+    return project_keys(ok(s), args);
 }
 
 static json exec_payload(const json &args, const std::string &code, const std::string &chunk) {
@@ -484,10 +500,13 @@ void register_core() {
 
     mcp::register_tool({"status", "Instance status",
                         "GMod version, branch, platform, map, gamemode, maxplayers, available realms (and injection generation), "
-                        "client lock, fps/frametime, uptime, age of the main thread's last tick (main_thread_stalled if > 5 s), "
+                        "client lock, fps/frametime (perf), fps_max (the frame cap: 20 on a light test client) and host_timescale, "
+                        "loading (a map load in progress), uptime, age of the main thread's last tick (main_thread_stalled if > 5 s), "
                         "Lua temporary directory (tmp_dir, absolute path). Call this first. Works even if the game is frozen.",
                         json{{"properties", {{"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 30},
-                                                            {"description", "Max wait for Lua info (default 3)."}}}}}},
+                                                            {"description", "Max wait for Lua info (default 3)."}}},
+                                             {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
+                                                         {"description", "Keep only these top-level keys, e.g. [\"map\", \"perf\", \"fps_max\"]."}}}}}},
                         RO, status_tool});
 
     json exec_props = {{"realm", realm_exec},

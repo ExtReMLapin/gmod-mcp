@@ -39,6 +39,8 @@ bool resolve_lua_file(const std::string &path, std::string &abs, std::string &ch
 bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs, std::string &err);
 // Applies the `fields` argument (lua_exec, lua_exec_file, lua_job): keeps only these keys of each returned table.
 json project_values(json result, const json &args);
+// `fields` on an object result (status): keeps only these top-level keys.
+json project_keys(json result, const json &args);
 
 // The `job` protocol of lua_job (tool description, also used by the write-lua-job prompt).
 const char *job_protocol();

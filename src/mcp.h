@@ -72,6 +72,9 @@ void set_relay(RelayFn fn);
 // Other live instances registered with this coordinator (empty when alone or not coordinator).
 using PeersFn = std::function<std::vector<std::string>()>;
 void set_peers(PeersFn fn);
+// Tools whose answer does not depend on the instance (same game folder, same build): callable without `instance`
+// even when several instances share the endpoint.
+bool instance_independent(const std::string &tool);
 
 void set_instructions(std::string s);
 extern const char *kProtocolVersion;

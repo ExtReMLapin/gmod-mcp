@@ -64,12 +64,21 @@ static json self_info() {
                 {"main_thread_stalled", since > 5.0}, {"lua_errors", console::errors_cursor()}};
 }
 
+// Members recently removed (no heartbeat): their id, pid and when, so a later call gets a useful answer.
+struct Gone {
+    uint32_t pid;
+    Clock::time_point when;
+};
+static std::map<std::string, Gone> g_gone;
+
 static void purge_locked() {
     auto now = Clock::now();
     for (auto it = g_members.begin(); it != g_members.end();) {
         double age = std::chrono::duration<double>(now - it->second.last_seen).count();
         if (age > kDeadAfterS) {
             logx::info("instance %s removed (no heartbeat for %.0f s)", it->first.c_str(), age);
+            g_gone[it->first] = Gone{it->second.info.value("pid", 0u), it->second.last_seen};
+            if (g_gone.size() > 200) g_gone.erase(g_gone.begin());
             it = g_members.erase(it);
         } else {
             ++it;
@@ -119,6 +128,17 @@ static json on_heartbeat(const json &in) {
     return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
 }
 
+std::string gone_message(const std::string &id, uint32_t pid, double seconds_ago, bool process_alive) {
+    std::string who = "instance " + id + (pid ? " (pid " + std::to_string(pid) + ")" : "");
+    std::string when = " stopped answering " + std::to_string((int)seconds_ago) + " s ago";
+    if (!process_alive)
+        return who + when + ": its process has exited (closed, or crashed: see garrysmod/console.log or the crash dialog). "
+                            "Relaunch a client with instances_launch.";
+    return who + when + " but its process is still running: frozen (infinite loop, long load) or busy. Check it with "
+                        "status {instance}; game_terminate {instance} ends it.";
+}
+
+
 // Relay of a tools/call to another instance (coordinator only).
 static json relay(const std::string &instance, const std::string &tool, const json &args) {
     auto wrap_err = [](const std::string &code, const std::string &msg) {
@@ -127,17 +147,32 @@ static json relay(const std::string &instance, const std::string &tool, const js
     };
     if (!is_coordinator()) return wrap_err("not_coordinator", "this instance is not the coordinator: call the coordinator (base port)");
     int port = 0;
+    uint32_t pid = 0;
+    Clock::time_point last_seen = Clock::now();
     {
         std::lock_guard<std::mutex> lk(g_mu);
         purge_locked();
         auto it = g_members.find(instance);
-        if (it == g_members.end()) return wrap_err("unknown_instance", "unknown or dead instance: " + instance + " (see instances_list)");
+        if (it == g_members.end()) {
+            auto g = g_gone.find(instance);
+            if (g != g_gone.end()) {
+                double ago = std::chrono::duration<double>(Clock::now() - g->second.when).count();
+                return wrap_err("instance_gone", gone_message(instance, g->second.pid, ago, plat::process_start_stamp(g->second.pid) != 0));
+            }
+            return wrap_err("unknown_instance", "unknown instance: " + instance + " (see instances_list)");
+        }
         port = it->second.info.value("port", 0);
+        pid = it->second.info.value("pid", 0u);
+        last_seen = it->second.last_seen;
     }
     auto cli = client(port, 900);
     json req{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", args}}}};
     auto res = cli->Post("/mcp", req.dump(), "application/json");
-    if (!res) return wrap_err("instance_unreachable", "instance " + instance + " did not answer (dead?)");
+    if (!res) {
+        bool alive = pid && plat::process_start_stamp(pid) != 0;
+        double ago = std::chrono::duration<double>(Clock::now() - last_seen).count();
+        return wrap_err(alive ? "instance_unreachable" : "instance_gone", gone_message(instance, pid, ago, alive));
+    }
     try {
         json r = json::parse(res->body);
         if (r.contains("result")) {

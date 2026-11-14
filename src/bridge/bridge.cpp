@@ -754,6 +754,45 @@ json bridge_tools() {
 
 bool is_bridge_tool(const std::string &name) { return name == kLaunchName || name == kCloseName || name == kSelectName; }
 
+json tool_text(json structured, bool error);
+
+// instances_list, completed by the bridge: the owner label of each client it launched, the clients it launched that
+// never answered (gmod-mcp not loaded, still starting), and an optional owner filter. `sc` is the game's answer
+// (or an empty list when no game answers).
+json annotate_instances(json sc, const json &args) {
+    std::string want = args.value("owner", "");
+    std::set<uint32_t> listed;
+    json kept = json::array();
+    std::lock_guard<std::mutex> lk(g_launch_mu);
+    for (auto e : sc.value("instances", json::array())) {
+        uint32_t pid = e.value("pid", 0u);
+        listed.insert(pid);
+        for (const auto &l : g_launched)
+            if (l.pid == pid) {
+                if (!l.owner.empty()) e["owner"] = l.owner;
+                e["launched_by_this_session"] = true;
+            }
+        if (!want.empty() && e.value("owner", "") != want) continue;
+        kept.push_back(std::move(e));
+    }
+    sc["instances"] = kept;
+    json silent = json::array();
+    for (const auto &l : g_launched) {
+        if (listed.count(l.pid)) continue;
+        if (!want.empty() && l.owner != want) continue;
+#ifdef _WIN32
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) continue;  // exited
+#endif
+        json x{{"pid", l.pid}, {"note", "launched by this session, not answering: still starting, or gmod-mcp did not load in it "
+                                        "(see garrysmod/data/mcpagent/last_crash.txt). instances_close {pids} closes it."}};
+        if (!l.owner.empty()) x["owner"] = l.owner;
+        silent.push_back(x);
+    }
+    if (!silent.empty()) sc["launched_not_answering"] = silent;
+    if (!want.empty()) sc["owner_filter"] = want;
+    return sc;
+}
+
 json tool_text(json structured, bool error) {
     std::string t = structured.dump(-1, ' ', false, json::error_handler_t::replace);
     return json{{"content", json::array({json{{"type", "text"}, {"text", t}}})}, {"structuredContent", std::move(structured)}, {"isError", error}};
@@ -917,16 +956,17 @@ json launch_tool(const json &args, const json &token) {
                 if (g.pid == l.pid) g.id = l.id;
     }
     if ((int)found.size() < count) {
-        json silent = json::array();
+        json silent = json::array(), answered = json::array();
         for (auto &l : started)
             if (!found.contains(std::to_string(l.pid))) silent.push_back(l.pid);
+            else answered.push_back(json{{"instance", l.id}, {"pid", l.pid}});
         return tool_text(json{{"error", {{"code", "timeout"},
                                          {"message", std::to_string(found.size()) + " of " + std::to_string(count) +
                                                          " clients answered within " + std::to_string((int)timeout) +
                                                          " s (still starting, or gmod-mcp did not load in them: see "
                                                          "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
                                                          "the silent ones with instances_close {pids}."}}},
-                              {"silent_pids", silent}},
+                              {"silent_pids", silent}, {"answered", answered}},
                          true);
     }
     // Maps, all at once.
@@ -956,7 +996,12 @@ json launch_tool(const json &args, const json &token) {
         }
         results.push_back(e);
     }
+    int fps_cap = preset == "normal" ? 30 : 20;
     json res{{"instances", results}, {"game_dir", root}, {"found_by", how}, {"preset", preset}, {"keep", keep},
+             {"fps_max", fps_cap},
+             {"fps_note", "these clients run at most " + std::to_string(fps_cap) + " fps (fps_max, also when unfocused): "
+                          "per-frame costs and frame-to-frame behaviour differ from a normal game; raise it with "
+                          "convar_set fps_max for timing work"},
              {"next", "Pass `instance` to target one, or instance_select to make one the default; instances_close when done."}};
     return tool_text(res, !all_ok);
 #endif
@@ -1088,6 +1133,8 @@ void handle_request(const json &msg) {
         return;
     }
     json fwd = msg;
+    if (tool == "instances_list" && fwd["params"].contains("arguments") && fwd["params"]["arguments"].is_object())
+        fwd["params"]["arguments"].erase("owner");
     if (!tool.empty() && takes_instance(tool)) {
         std::lock_guard<std::mutex> lk(g_default_mu);
         json &a = fwd["params"]["arguments"];
@@ -1188,6 +1235,10 @@ void handle_request(const json &msg) {
                 add_bridge_tools(r.response["result"]);
             }
         }
+        if (tool == "instances_list" && r.response.contains("result") && !r.response["result"].value("isError", false)) {
+            json &res = r.response["result"];
+            res = tool_text(annotate_instances(res.value("structuredContent", json::object()), params_of(msg).value("arguments", json::object())), false);
+        }
         // Remember where the game is (instances_launch can then start more without asking).
         if (tool == "status" && r.response.contains("result")) {
             json sc = r.response["result"].value("structuredContent", json::object());
@@ -1218,6 +1269,11 @@ void handle_request(const json &msg) {
         out(local_result(msg, res));
     } else if (method == "ping") {
         out(local_result(msg, json::object()));
+    } else if (method == "tools/call" && tool == "instances_list") {
+        json sc{{"instances", json::array()},
+                {"note", "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
+                         "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
+        out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object())), false)));
     } else if (method == "tools/call") {
         json text{{"type", "text"}, {"text", not_running_text()}};
         out(local_result(msg, json{{"content", json::array({text})},

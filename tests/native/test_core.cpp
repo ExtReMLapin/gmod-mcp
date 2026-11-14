@@ -4,8 +4,13 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include "agent.h"
+#include "cmdline.h"
+#include "console.h"
+#include "coordinator.h"
+#include "mcp.h"
 #include "tools.h"
 
 namespace fs = std::filesystem;
@@ -32,7 +37,104 @@ static bool same(const std::string &a, const fs::path &b) {
     return fs::equivalent(fs::u8path(a), b, ec);
 }
 
+// console_exec: statements split like the engine does (T4: "a 1;b 1" went to `a` as the value "1;b"), unknown commands
+// detected (PO1: a typo answered ok), gmod-mcp's own log lines kept out of a command's output (SB3).
+static void test_cmdline() {
+    using V = std::vector<std::string>;
+    CHECK(cmdline::split_statements("pba_native_render 1;pba_native_all 1") == (V{"pba_native_render 1", "pba_native_all 1"}));
+    CHECK(cmdline::split_statements("  a 1 ;  ; b 2 ;") == (V{"a 1", "b 2"}));
+    CHECK(cmdline::split_statements("echo \"x;y\"; c") == (V{"echo \"x;y\"", "c"}));
+    CHECK(cmdline::split_statements("a\nb\r\nc") == (V{"a", "b", "c"}));
+    CHECK(cmdline::split_statements("sv_cheats 1") == (V{"sv_cheats 1"}));
+    CHECK(cmdline::split_statements("").empty());
+    CHECK(cmdline::split_statements(" ; ;\n").empty());
+    CHECK(cmdline::split_statements("echo \"unclosed;quote") == (V{"echo \"unclosed;quote"}));
+    CHECK(cmdline::command_name("  Sv_Cheats 1") == "sv_cheats");
+    CHECK(cmdline::command_name("\"quoted name\" 1") == "quoted name");
+    CHECK(cmdline::command_name("   ").empty());
+    CHECK(cmdline::unknown_commands({"Unknown command \"pba_typo\"", "hello", "Unknown command \"Other\""}) == (V{"pba_typo", "other"}));
+    CHECK(cmdline::unknown_commands({"Unknown command: x", "an Unknown command \"y\" inside", "fine"}).empty());
+    CHECK(cmdline::own_log_line("[mcpagent] initialize (protocol 2026-07-28)"));
+    CHECK(!cmdline::own_log_line("x [mcpagent] y"));
+    CHECK(!cmdline::own_log_line("pba_enable = 1"));
+}
+
+// console_wait (RF6, RF7, sweep: agents wrote broken polling loops to know when a long batch was done).
+static void test_console_wait() {
+    tools::register_console();
+    // Lines printed while it waits, mixed with noise: returns once 3 match, with next_cursor just after the third.
+    std::thread printer([] {
+        for (int i = 0; i < 5; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            console::push_line("message", "noise " + std::to_string(i));
+            console::push_line("message", "BATCH DONE " + std::to_string(i));
+        }
+    });
+    json r = mcp::call_tool("console_wait", json{{"regex", "^batch done"}, {"count", 3}, {"timeout_s", 5}});
+    printer.join();
+    json sc = r.value("structuredContent", json::object());
+    CHECK(!r.value("isError", true));
+    CHECK(sc.value("matched", 0) == 3);
+    CHECK(sc["lines"].size() == 3 && sc["lines"][2]["text"] == "BATCH DONE 2");
+    // A second wait from next_cursor sees the 2 lines printed after the third match, not the first ones again.
+    json r2 = mcp::call_tool("console_wait", json{{"regex", "^batch done"}, {"count", 2}, {"timeout_s", 1}, {"cursor", sc["next_cursor"]}});
+    json sc2 = r2.value("structuredContent", json::object());
+    CHECK(!r2.value("isError", true) && sc2["lines"].size() == 2 && sc2["lines"][0]["text"] == "BATCH DONE 3");
+    // Without cursor it starts now: lines printed before do not count, and a timeout says how many were found.
+    auto t0 = std::chrono::steady_clock::now();
+    json r3 = mcp::call_tool("console_wait", json{{"regex", "^batch done"}, {"count", 1}, {"timeout_s", 0.3}});
+    double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(r3.value("isError", false));
+    CHECK(r3.dump().find("timeout") != std::string::npos);
+    CHECK(el >= 0.3 && el < 2.0);
+    // Bad regex: invalid_params, at once.
+    json r4 = mcp::call_tool("console_wait", json{{"regex", "(unclosed"}, {"timeout_s", 5}});
+    CHECK(r4.value("isError", false) && r4.dump().find("invalid_params") != std::string::npos);
+}
+
+// errors_since across map loads (RF6: after a reload the agent saw no error and took a false lead). Each error carries
+// the map load it happened in; since_map_load keeps only the current one; older errors stay readable.
+static void test_errors_map_tags() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_old");
+    console::push_error(json{{"realm", "server"}, {"message", "old map error"}});
+    agent::note_map_load_start("gm_new");
+    console::push_error(json{{"realm", "client"}, {"message", "new map error"}});
+    json all = mcp::call_tool("errors_since", json{{"cursor", 0}}).value("structuredContent", json::object());
+    CHECK(all["errors"].size() == 2);
+    CHECK(all["errors"].size() == 2 && all["errors"][0].value("map", "") == "gm_old" && all["errors"][1].value("map", "") == "gm_new");
+    CHECK(all["errors"].size() == 2 && all["errors"][1].value("map_load", 0) == all["errors"][0].value("map_load", 0) + 1);
+    json cur = mcp::call_tool("errors_since", json{{"cursor", 0}, {"since_map_load", true}}).value("structuredContent", json::object());
+    CHECK(cur["errors"].size() == 1 && cur["errors"][0].value("message", "") == "new map error");
+    CHECK(cur.value("map_load", 0) == all["errors"][1].value("map_load", -1));
+}
+
+// B6: small things agents tripped on.
+static void test_small_b6() {
+    // sweep: read-only tools that answer the same on every instance work without `instance`.
+    for (const char *t : {"status", "wiki_search", "wiki_page", "map_list"}) CHECK(mcp::instance_independent(t));
+    for (const char *t : {"lua_exec", "console_exec", "ents_find", "api_search", "lua_check", "convar_get"}) CHECK(!mcp::instance_independent(t));
+    // P2: status {fields} keeps only the named top-level keys.
+    json st = tools::ok(json{{"map", "gm_construct"}, {"fps_max", 20}, {"realms", {{"server", true}}}, {"perf", {{"fps", 19.8}}}});
+    json pr = tools::project_keys(st, json{{"fields", {"map", "fps_max", "missing"}}});
+    CHECK(pr["result"].size() == 3 && pr["result"]["map"] == "gm_construct" && pr["result"]["fps_max"] == 20);
+    CHECK(pr["result"].contains("projected"));
+    CHECK(tools::project_keys(st, json::object()) == st);
+    json err = agent::err("x", "y");
+    CHECK(tools::project_keys(err, json{{"fields", {"map"}}}) == err);
+    // T4: an instance that died says so, with its pid, instead of a bare network error.
+    std::string dead = coordinator::gone_message("client-123", 4242, 12.5, false);
+    CHECK(dead.find("client-123") != std::string::npos && dead.find("4242") != std::string::npos);
+    CHECK(dead.find("exited") != std::string::npos && dead.find("instances_launch") != std::string::npos);
+    std::string hung = coordinator::gone_message("client-123", 4242, 12.5, true);
+    CHECK(hung.find("still running") != std::string::npos && hung.find("game_terminate") != std::string::npos);
+}
+
 int main() {
+    test_cmdline();
+    test_console_wait();
+    test_errors_map_tags();
+    test_small_b6();
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;
     fs::remove_all(root.parent_path(), ec);

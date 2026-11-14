@@ -52,6 +52,12 @@ bool realm_injected(int realm);
 bool realm_ready(int realm);
 // Map currently loaded ("" at the main menu), updated on map_loaded / disconnected.
 std::string current_map();
+// Map loads: counter incremented when a new server realm comes up (a map starts loading), with the map name if known.
+// Lua errors are tagged with it, so errors_since can keep only the current map's.
+void note_map_load_start(const std::string &map);
+uint64_t map_load_seq();
+// Map of a given map load ("" if not known yet).
+std::string map_of_load(uint64_t seq);
 // Queues a one-time notice shown in game to the local player once the client realm is ready (client mode only).
 void notify_player(const std::string &text);
 

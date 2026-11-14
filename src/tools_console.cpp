@@ -1,9 +1,12 @@
 // Tools: console_exec, console_read, errors_since, errors_clear, convar_get, convar_set, concommand_list.
+#include <algorithm>
 #include <chrono>
+#include <memory>
 #include <regex>
 #include <set>
 
 #include "agent.h"
+#include "cmdline.h"
 #include "console.h"
 #include "events.h"
 #include "jobs.h"
@@ -11,6 +14,7 @@
 #include "platform/platform.h"
 #include "realms.h"
 #include "netaddr.h"
+#include "reqctx.h"
 #include "tools.h"
 #include "util.h"
 
@@ -62,17 +66,33 @@ static std::string forbidden_network_cmd(const std::string &line) {
     return "";
 }
 
+// Sends one statement from a realm; a statement blocked from Lua goes through the engine (menu state). Returns the realm
+// result or an error; `via` says which way.
+static json send_statement(int r, const std::string &stmt, std::string &via) {
+    json res = agent::rt(r, "console_exec", json{{"cmd", stmt}});
+    via = realms::name(r);
+    if (!res.value("ok", false) || !res["result"].value("blocked", false)) return res;
+    // Realm's Lua blacklist: fall back to the engine (IVEngineClient::ClientCmd), via the menu state.
+    if (agent::config().mode != agent::Mode::Client)
+        return agent::err("blocked", "command blocked from Lua and no engine path in srcds mode: " + stmt);
+    via = "engine";
+    return agent::rt(realms::MENU, "engine_cmd", json{{"cmd", stmt}});
+}
+
 static json console_exec_tool(const json &args) {
     int r = realm_of(args, "realm", default_realm());
     if (r < 0) return agent::err("invalid_params", "unknown realm");
     std::string cmd = args["cmd"];
     std::string why = forbidden_network_cmd(cmd);
     if (!why.empty()) return agent::err("forbidden", why);
+    // The engine runs "a 1; b 2" as two commands: so do we (sending it as one made "1; b 2" the value of a).
+    std::vector<std::string> stmts = cmdline::split_statements(cmd);
+    if (stmts.empty()) return agent::err("invalid_params", "empty command");
     int frames = args.value("wait_frames", 5);
     uint64_t c0 = console::cursor_now();
     uint64_t ev0 = events::cursor_now();
-    auto parts = util::split_args(cmd);
-    bool is_connect = !parts.empty() && util::to_lower(parts[0]) == "connect" && agent::config().mode == agent::Mode::Client;
+    bool is_connect = cmdline::command_name(stmts[0]) == "connect" && agent::config().mode == agent::Mode::Client;
+    if (is_connect && stmts.size() > 1) return agent::err("invalid_params", "connect must be alone on its command line");
     // Connecting while this game still runs (or hosts) a map crashes the engine: leave the current game first.
     if (is_connect && (agent::realm_present(realms::SERVER) || agent::realm_present(realms::CLIENT))) {
         // Internal call: target this instance explicitly (otherwise the ambiguous_instance guard would refuse it).
@@ -81,19 +101,23 @@ static json console_exec_tool(const json &args) {
         c0 = console::cursor_now();
         ev0 = events::cursor_now();
     }
-    json res = agent::rt(r, "console_exec", json{{"cmd", cmd}});
-    if (!res.value("ok", false)) return res;
-    json out = json{{"cmd", cmd}, {"realm", realms::name(r)}, {"via", realms::name(r)}};
-    if (res["result"].value("blocked", false)) {
-        // Realm's Lua blacklist: fall back to the engine (IVEngineClient::ClientCmd), via the menu state.
-        out["blocked_in_lua"] = true;
-        if (agent::config().mode != agent::Mode::Client)
-            return agent::err("blocked", "command blocked from Lua and no engine path in srcds mode: " + cmd);
-        c0 = console::cursor_now();
-        res = agent::rt(realms::MENU, "engine_cmd", json{{"cmd", cmd}});
-        if (!res.value("ok", false)) return res;
-        out["via"] = "engine";
+    json sent = json::array();
+    std::string via_all;
+    for (const auto &st : stmts) {
+        std::string via;
+        json res = send_statement(r, st, via);
+        if (!res.value("ok", false)) {
+            if (sent.empty()) return res;
+            json e = res;  // earlier statements already ran: say which
+            e["error"]["details"]["already_sent"] = sent;
+            return e;
+        }
+        sent.push_back(json{{"cmd", st}, {"via", via}});
+        via_all = via_all.empty() || via_all == via ? via : "mixed";
     }
+    json out = json{{"cmd", cmd}, {"realm", realms::name(r)}, {"via", via_all}};
+    if (stmts.size() > 1) out["statements"] = sent;
+    if (via_all == "engine") out["blocked_in_lua"] = true;
     wait_frames(frames, 5.0);
     std::string e;
     // connect: wait for the outcome and report it, so the agent knows at once (a failure also opens a native game dialog
@@ -123,9 +147,94 @@ static json console_exec_tool(const json &args) {
         out["connect_result"] = result;
     }
     auto rd = console::read(c0, 2000, "", e);
-    out["output"] = lines_json(rd.lines);
+    // The console is shared: keep gmod-mcp's own log lines out, and apply the caller's filter.
+    std::unique_ptr<std::regex> rx;
+    if (args.contains("regex")) {
+        try {
+            rx = std::make_unique<std::regex>(args["regex"].get<std::string>(), std::regex::ECMAScript | std::regex::icase);
+        } catch (const std::exception &ex) {
+            return agent::err("invalid_params", std::string("invalid regex: ") + ex.what());
+        }
+    }
+    std::vector<console::Line> kept;
+    std::vector<std::string> texts;
+    for (const auto &l : rd.lines) {
+        texts.push_back(l.text);
+        if (cmdline::own_log_line(l.text)) continue;
+        if (rx && !std::regex_search(l.text, *rx)) continue;
+        kept.push_back(l);
+    }
+    out["output"] = lines_json(kept);
     out["next_cursor"] = rd.next_cursor;
+    out["output_note"] = "console lines printed while the command ran; the console is shared, so other prints of the same "
+                         "frames can appear (filter with `regex`)";
+    // Unknown commands: the engine only prints a line, the call itself "worked".
+    std::vector<std::string> unknown;
+    for (const auto &u : cmdline::unknown_commands(texts))
+        for (const auto &st : stmts)
+            if (cmdline::command_name(st) == u && std::find(unknown.begin(), unknown.end(), u) == unknown.end()) unknown.push_back(u);
+    if (!unknown.empty())
+        return agent::err("unknown_command", "unknown command or convar: " + unknown[0] + (unknown.size() > 1 ? " (and others)" : "") +
+                                                 " (typo, wrong realm, or the addon that defines it is not loaded)",
+                          json{{"unknown", unknown}, {"statements", sent}, {"output", out["output"]}});
+    // Convars: read the value back, so the caller knows whether it took (and warn when it lands in the user's config).
+    json convars = json::object();
+    for (const auto &st : stmts) {
+        auto parts = util::split_args(st);
+        if (parts.empty() || parts.size() > 2) continue;
+        json g = agent::rt(r, "convar_get", json{{"name", parts[0]}}, 5.0);
+        if (!g.value("ok", false)) continue;  // a command, or a protected convar
+        json c{{"value", g["result"].value("value", json())}};
+        if (g["result"].contains("number")) c["number"] = g["result"]["number"];
+        if (parts.size() == 2) c["requested"] = parts[1];
+        for (const auto &f : g["result"].value("flag_names", json::array()))
+            if (f == "ARCHIVE")
+                c["warning"] = "FCVAR_ARCHIVE: saved to cfg/config.cfg when the game closes, and shared by every instance "
+                               "and the user's own game (convar_set refuses it unless persist: true)";
+        convars[g["result"].value("name", parts[0])] = c;
+    }
+    if (!convars.empty()) out["convars"] = convars;
     return ok(out);
+}
+
+// console_wait: blocks until `count` console lines match `regex` (end of a long batch, a test's final line...).
+static json console_wait_tool(const json &args) {
+    std::string re = args["regex"];
+    size_t count = args.value("count", (size_t)1);
+    double timeout = args.value("timeout_s", 30.0);
+    uint64_t cursor = args.contains("cursor") ? args["cursor"].get<uint64_t>() : console::cursor_now();
+    auto t0 = std::chrono::steady_clock::now();
+    json found = json::array();
+    uint64_t lost = 0;
+    double last_progress = -1;
+    for (;;) {
+        std::string e;
+        auto rd = console::read(cursor, 10000, re, e);
+        if (!e.empty()) return agent::err("invalid_params", e);
+        lost += rd.lost;
+        for (const auto &l : rd.lines) {
+            if (found.size() < count) found.push_back(json{{"seq", l.seq}, {"t", l.time}, {"level", l.level}, {"text", l.text}});
+        }
+        cursor = rd.next_cursor;
+        double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (found.size() >= count) {
+            // next_cursor: just after the last line used, so a second wait does not miss lines printed meanwhile.
+            uint64_t next = found.back()["seq"].get<uint64_t>() + 1;
+            json out{{"matched", found.size()}, {"lines", found}, {"next_cursor", next}, {"waited_s", el}};
+            if (lost) out["lost"] = lost;
+            return ok(out);
+        }
+        if (el >= timeout)
+            return agent::err("timeout", std::to_string(found.size()) + " of " + std::to_string(count) + " matching lines after " +
+                                             std::to_string((int)timeout) + " s",
+                              json{{"matched", found.size()}, {"lines", found}, {"next_cursor", cursor}, {"lost", lost}});
+        if (reqctx::cancelled()) return agent::err("cancelled", "console_wait cancelled", json{{"matched", found.size()}});
+        if (el - last_progress >= 1.0) {
+            last_progress = el;
+            reqctx::progress((double)found.size(), (double)count, std::to_string(found.size()) + "/" + std::to_string(count) + " lines");
+        }
+        plat::sleep_ms(50);
+    }
 }
 
 static json console_read_tool(const json &args) {
@@ -148,12 +257,20 @@ static json console_read_tool(const json &args) {
 
 static json errors_since_tool(const json &args) {
     json r = console::errors_since(args.value("cursor", (uint64_t)0), args.value("limit", 100));
-    if (args.contains("realm")) {
-        json f = json::array();
-        for (const auto &e : r["errors"])
-            if (e.value("realm", "") == args["realm"].get<std::string>()) f.push_back(e);
-        r["errors"] = f;
+    uint64_t cur_load = agent::map_load_seq();
+    bool only_current = args.value("since_map_load", false);
+    json f = json::array();
+    for (auto e : r["errors"]) {
+        if (args.contains("realm") && e.value("realm", "") != args["realm"].get<std::string>()) continue;
+        uint64_t ml = e.value("map_load", (uint64_t)0);
+        if (only_current && ml != cur_load) continue;
+        std::string m = agent::map_of_load(ml);
+        if (!m.empty()) e["map"] = m;
+        f.push_back(std::move(e));
     }
+    r["errors"] = f;
+    r["map_load"] = cur_load;
+    r["map"] = agent::map_of_load(cur_load);
     return ok(r);
 }
 
@@ -248,16 +365,35 @@ void register_console() {
     json RO = {{"readOnlyHint", true}};
     json realm_p = realm_prop("Execution realm (default: menu in client mode, server on srcds).");
     mcp::register_tool({"console_exec", "Run a console command",
-                        "Runs a console command from a realm (menu: RunConsoleCommand; server: game.ConsoleCommand; client: "
-                        "RunConsoleCommand, with automatic fallback to the menu if the command is blocked client-side). Waits "
-                        "a few frames then returns the console lines produced (multi-line output included). Argument: "
-                        "{\"cmd\": \"sv_gravity 600\"}. To change a convar, convar_set is better: it reads the value back.",
+                        "Runs a console command line from a realm (menu: RunConsoleCommand; server: game.ConsoleCommand; client: "
+                        "RunConsoleCommand, with automatic fallback to the engine if the command is blocked from Lua). Like the "
+                        "engine console, ';' and line breaks outside quotes separate commands: 'a 1; b 2' runs a then b "
+                        "(`statements` lists them). Waits a few frames then returns the console lines printed meanwhile "
+                        "(gmod-mcp's own log lines left out; the console is shared, so filter with `regex`). An unknown "
+                        "command or convar is an error (unknown_command), not a silent no-op. For every convar it set or "
+                        "named, `convars` gives the value read back (value, number, and a warning for FCVAR_ARCHIVE "
+                        "convars, which land in the user's config and are shared by every instance). "
+                        "Example: {\"cmd\": \"sv_gravity 600\"}. convar_set refuses archived convars unless persist: true.",
                         json{{"properties", {{"cmd", {{"type", "string"}, {"minLength", 1}, {"description", "Command line, e.g. 'echo hello' or 'sv_gravity 600'."}}},
                                              {"realm", realm_p},
                                              {"wait_frames", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600}, {"description", "Frames to wait before reading the output (default 5)."}}},
+                                             {"regex", {{"type", "string"}, {"description", "Keep only the output lines matching this (ECMAScript, case-insensitive)."}}},
                                              {"connect_timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 300}, {"description", "For `connect`: how long to wait for the outcome, reported in connect_result (default 20)."}}}}},
                              {"required", {"cmd"}}},
                         json{{"destructiveHint", true}}, console_exec_tool});
+    mcp::register_tool({"console_wait", "Wait for console lines",
+                        "Blocks until `count` console lines matching `regex` are printed (from `cursor`, default: now), e.g. "
+                        "the end line of a test batch: {regex: \"^BATCH DONE\", count: 4, timeout_s: 900}. Returns the "
+                        "matching lines and next_cursor (just after the last one used: pass it to the next wait so nothing "
+                        "printed in between is missed). Reports progress; error timeout (with the lines found so far). "
+                        "Lines come from every realm and the engine (print, Msg, engine messages). Can run as an MCP task.",
+                        json{{"properties", {{"regex", {{"type", "string"}, {"minLength", 1}, {"description", "ECMAScript, case-insensitive."}}},
+                                             {"count", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Lines to wait for (default 1)."}}},
+                                             {"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Start from this console cursor (from console_read, console_exec or an earlier wait). Default: now."}}},
+                                             {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Default 30."}}}}},
+                             {"required", {"regex"}}},
+                        RO, console_wait_tool});
+    mcp::set_task_support("console_wait", "optional");
     mcp::register_tool({"console_read", "Read the console",
                         "Incremental console read (ring buffer, monotonic cursor). Without `cursor`: the last `limit` lines. "
                         "Reuse next_cursor. `lost` > 0 = lines lost to buffer overflow. Regex filter (ECMAScript, case-insensitive).",
@@ -274,10 +410,13 @@ void register_console() {
                         }});
     mcp::register_tool({"errors_since", "Read Lua errors",
                         "Lua errors from all realms (menu state OnLuaError hook; on srcds: console parsing) with realm, "
-                        "message and stack. Monotonic cursor (0 = from the start of the buffer).",
+                        "message and stack. Monotonic cursor (0 = from the start of the buffer). The buffer (2000 errors) "
+                        "survives map loads: each error carries map_load (a number that grows with every map load) and map; "
+                        "since_map_load: true keeps only the current map's errors (including those raised while it loaded).",
                         json{{"properties", {{"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Default 0."}}},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Default 100."}}},
-                                             {"realm", realm_prop("Optional realm filter.")}}}},
+                                             {"realm", realm_prop("Optional realm filter.")},
+                                             {"since_map_load", {{"type", "boolean"}, {"description", "Only errors of the current map load (default false)."}}}}}},
                         RO, errors_since_tool});
     mcp::register_tool({"errors_clear", "Clear errors", "Clears the error buffer (the cursor keeps increasing).", json::object(),
                         json{{"destructiveHint", true}, {"idempotentHint", true}},
@@ -286,7 +425,9 @@ void register_console() {
                             return ok(json{{"cleared", true}, {"next_cursor", console::errors_cursor()}});
                         }});
     mcp::register_tool({"convar_get", "Read a convar",
-                        "Value, default, help text, flags (decoded), min/max of a convar. FCVAR_PROTECTED convars have their value masked.",
+                        "Value (string as the engine stores it), number (the value as a number when it is one: compare this, since the "
+                        "same value can read \"0.0\" or \"0.000000\"), default, help text, flags (decoded), min/max of a convar. "
+                        "FCVAR_PROTECTED convars have their value masked.",
                         json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}}}, {"realm", realm_p}}}, {"required", {"name"}}},
                         RO, [](const json &a) { return rt_realm(a, "realm", default_realm(), "convar_get", json{{"name", a["name"]}}); }});
     mcp::register_tool({"convar_set", "Set a convar",
