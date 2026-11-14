@@ -1,15 +1,48 @@
 # Changelog
 
-## Unreleased
+## 0.3.5
 
-### Fixed
+A crash fix, then the findings of an independent review of everything since 0.3.1, each with a test seen failing
+first, and checked in a real game.
 
+### Fixes
+
+- **The game could crash on `console_exec` after a map change** (since 0.3.2). `console_exec` reads back every convar it
+  sets, through `convar_get` in the menu realm, and GMod's `GetConVar` caches the ConVar object per name. For a convar
+  an addon re-creates at every map load, the cached object pointed to freed memory after the change: access violation.
+  gmod-mcp now always asks the engine afresh (`GetConVar_Internal`) and reads a convar back in the realm that owns it.
+- **`console_exec "echo x; connect ..."` sent `connect` while a map was loaded**, which crashes the engine: a line with
+  `connect` is refused unless `connect` is alone on it.
+- **Printing could throw into the engine**: the console capture code called by the engine's print functions now never
+  lets an exception out, skips error parsing of lines over 4 KB, and parses frame numbers without exceptions.
+- **A slow regex in `console_read` / `console_wait` froze the game**: it ran while holding the lock every engine print
+  waits for. Lines are now copied, then matched outside the lock; a regex too costly to run is an error instead of a
+  crashed thread.
+- **Async job ids were reused after a map change**: `lua_job_status {id}` could return another map's job. Ids carry the
+  realm's generation (`server-g3-1`); an old id answers `realm_reset`.
+- **Memory could grow without limit**: finished async jobs nobody collected are now pruned even when no job runs, and
+  each job report is bounded (depth, entries, string size, 32 MiB per job), cuts being counted.
+- **`instances_launch {lua_mount}` reported a mount it never checked**: it now asks each client what its engine really
+  has, and a mount that is not active is an error naming the clients. A folder with non-ASCII characters is refused:
+  the game's file system lists it but loads none of its files (use an ASCII junction).
+- **`instance_gone` could call a dead game "frozen"** when its pid had been reused: the process start time is compared.
 - **`errors_since {since_map_load: true}` kept the wrong errors.** A map load now starts when the new server Lua state
   appears (the module is required in it by the autorun loader), in client and srcds modes, instead of when the pump later
   noticed the realm: errors raised while the map loaded were stamped with the previous map, and on a dedicated server the
   number never grew after the first map. Errors raised between the old server state closing and the new one opening
   (shared autorun files) are re-stamped to the new load. The `realm` and `since_map_load` filters now apply before
   `limit`: with more than `limit` older errors kept, the current map's errors were returned as an empty list.
+
+### Tests
+
+- Live regression cases (`test_bridge.py convar_crash`, `fixes_live`): the crash reproduced before the fix, 3/3 after;
+  the review fixes 11/11 in a real game. The bridge suite runs its cases in parallel (29 s instead of 2 min 30).
+
+### Upgrading
+
+- Update the plugin (auto-update, or `claude plugin update gmod-mcp@gmod-mcp`), restart Claude Code, then let Claude
+  update the module in the game (quit it first) when the version warning asks for it. Update soon if agents use
+  `console_exec` on addon convars across map loads (the crash).
 
 ## 0.3.4
 
