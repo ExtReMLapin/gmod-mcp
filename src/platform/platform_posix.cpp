@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -38,11 +39,13 @@ void *find_symbol(void *module, const char *name) {
 std::vector<std::string> lua_shared_names() { return {"lua_shared.dylib"}; }
 std::vector<std::string> tier0_names() { return {"libtier0.dylib"}; }
 std::vector<std::string> engine_names() { return {"engine.dylib"}; }
+std::vector<std::string> filesystem_names() { return {"filesystem_stdio.dylib"}; }
 const char *platform_tag() { return "osx64"; }
 #else
 std::vector<std::string> lua_shared_names() { return {"lua_shared.so", "lua_shared_srv.so", "lua_shared_client.so"}; }
 std::vector<std::string> tier0_names() { return {"libtier0.so", "libtier0_srv.so", "libtier0_client.so"}; }
 std::vector<std::string> engine_names() { return {"engine.so", "engine_srv.so", "engine_client.so"}; }
+std::vector<std::string> filesystem_names() { return {"filesystem_stdio.so", "dedicated_srv.so"}; }
 const char *platform_tag() { return "linux64"; }
 #endif
 
@@ -196,6 +199,16 @@ std::vector<std::string> local_ipv4_addresses() {
 
 int process_has_foreground() { return -1; }
 bool send_focus_lost() { return false; }
+
+bool patch_pointer(void **slot, void *value) {
+    long page = sysconf(_SC_PAGESIZE);
+    uintptr_t start = reinterpret_cast<uintptr_t>(slot) & ~static_cast<uintptr_t>(page - 1);
+    size_t len = reinterpret_cast<uintptr_t>(slot + 1) - start;
+    if (mprotect(reinterpret_cast<void *>(start), len, PROT_READ | PROT_WRITE) != 0) return false;
+    *slot = value;
+    mprotect(reinterpret_cast<void *>(start), len, PROT_READ);
+    return true;
+}
 
 }  // namespace plat
 #endif

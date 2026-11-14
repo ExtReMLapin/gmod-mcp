@@ -11,7 +11,9 @@
 #include "console.h"
 #include "coordinator.h"
 #include "mcp.h"
+#include "overlay.h"
 #include "tools.h"
+#include "util.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -130,11 +132,59 @@ static void test_small_b6() {
     CHECK(hung.find("still running") != std::string::npos && hung.find("game_terminate") != std::string::npos);
 }
 
+// B1 overlay: which folders are accepted as an overlay root (no game needed for this part).
+static void test_overlay_paths() {
+    fs::path t = fs::temp_directory_path() / "gmod-mcp-coretests-overlay";
+    std::error_code ec;
+    fs::remove_all(t, ec);
+    touch(t / "addon" / "lua" / "autorun" / "x.lua");
+    touch(t / "my addon wt" / "lua" / "x.lua");
+    touch(t / "nolua" / "materials" / "m.vmt");
+    touch(t / "file.txt");
+    std::string root, err;
+    auto ok = [&](const fs::path &in, const fs::path &want) {
+        root.clear();
+        err.clear();
+        bool r = overlay::normalize_root(in.u8string(), root, err);
+        return r && same(root, want) && root.back() != '/' && root.back() != '\\';
+    };
+    auto bad = [&](const std::string &in, const char *word) {
+        root.clear();
+        err.clear();
+        bool r = overlay::normalize_root(in, root, err);
+        return !r && root.empty() && err.find(word) != std::string::npos;
+    };
+    CHECK(ok(t / "addon", t / "addon"));                                   // the addon root
+    CHECK(ok(t / "addon" / "lua", t / "addon"));                           // its lua/ folder
+    CHECK(ok(fs::u8path((t / "addon" / "lua").u8string() + "/"), t / "addon"));  // trailing separator
+    CHECK(ok(fs::u8path((t / "addon").u8string() + "\\"), t / "addon"));
+    CHECK(ok(t / "my addon wt", t / "my addon wt"));                       // spaces are fine
+    CHECK(bad((t / "nolua").u8string(), "lua"));                           // no lua/ inside
+    CHECK(bad((t / "missing").u8string(), "not found"));
+    CHECK(bad((t / "file.txt").u8string(), "not a folder"));
+    CHECK(bad("addons/pba", "absolute"));
+    CHECK(bad("", "empty"));
+    CHECK(bad((t / "addon").u8string() + "\"", "character"));
+    CHECK(bad((t / "addon").u8string() + ";C:/x", "character"));
+    CHECK(bad((t / "addon").u8string() + "\nx", "character"));
+    // The module reads back what the bridge puts on the client's command line (quoted, spaces, backslashes).
+    auto args = util::split_args(R"("C:\Games\gmod_win64.exe" -multirun -mcp -mcp_overlay "D:\dev\my addon wt" +fps_max 20)");
+    CHECK(util::flag_value(args, "-mcp_overlay") == R"(D:\dev\my addon wt)");
+    CHECK(util::flag_value(util::split_args("gmod -mcp"), "-mcp_overlay").empty());
+    // The tool refuses a bad path at once (before touching the game's main thread).
+    tools::register_overlay();
+    json r = mcp::call_tool("lua_overlay", json{{"path", "addons/pba"}});
+    CHECK(r.value("isError", false) && r.dump().find("invalid_params") != std::string::npos);
+    r = mcp::call_tool("lua_overlay", json{{"path", (t / "nolua").u8string()}});
+    CHECK(r.value("isError", false) && r.dump().find("lua") != std::string::npos);
+}
+
 int main() {
     test_cmdline();
     test_console_wait();
     test_errors_map_tags();
     test_small_b6();
+    test_overlay_paths();
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;
     fs::remove_all(root.parent_path(), ec);
