@@ -23,7 +23,13 @@ std::string instructions() {
     s += "Pitfalls: (1) a missing realm returns the 'realm_unavailable' error: load a map; (2) everything is asynchronous on the game "
          "side (a console command or a spawn takes effect on the next frame): use wait_for(realm, condition) or wait_frames(n) "
          "instead of guessing; (3) the client realm is locked ('client_locked') if the game is connected to a non-loopback server; "
-         "(4) if the game freezes (infinite loop), status reports it and game_terminate remains available.\n";
+         "(4) if the game freezes (infinite loop), status reports it and game_terminate remains available; "
+         "(5) every instance shares the game folder with the user's own game: archived convars (FCVAR_ARCHIVE) are saved to "
+         "cfg/config.cfg and seen by every instance, and data/ and the cookies (sv.db/cl.db) are shared too: restore what a "
+         "test changes; (6) entity names (targetname) are server-side: ents.FindByName does nothing on the client and "
+         "Entity:GetName/SetName are server-only; (7) EyePos()/EyeAngles() are only reliable inside rendering hooks "
+         "(use LocalPlayer():EyePos() elsewhere, e.g. in a lua_job); (8) a background test client may believe it has the "
+         "focus (system.HasFocus() true), so fps_max_nofocus is not exercised there.\n";
     s += "Lua files: working directory = " + c.tmp_dir +
          " (lua/mcpagent_tmp/). If you share this disk, write there directly then call lua_exec_file(realm, 'name.lua'); otherwise "
          "use lua_file_write. Errors then point to the real file.\n";
@@ -95,8 +101,8 @@ itself). Cancelling the request stops the job at the next frame; a map change de
 Globals the script assigns land in the realm's `_G` and the next job sees them: pass `fresh_env: true` to keep them in the
 job's own table. `async: true` returns the job id at once: `lua_job_status {id, wait_s}` polls it and returns the result
 once finished, `lua_job_cancel {id}` stops it; a job started while another runs in the same realm gets `concurrent_jobs`.
-Pitfall: `EyePos()` / `EyeAngles()` are only meaningful while rendering; in a job they return (0,0,0): use
-`LocalPlayer():EyePos()`.
+Pitfall: `EyePos()` / `EyeAngles()` are only reliable inside rendering hooks (wiki); a job runs outside them (agents saw
+(0,0,0)): use `LocalPlayer():EyePos()` / `LocalPlayer():EyeAngles()`.
 
 ```lua
 local found = {}

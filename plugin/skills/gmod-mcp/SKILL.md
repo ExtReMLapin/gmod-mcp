@@ -92,7 +92,14 @@ first).
 - A client that never answers (gmod-mcp did not load in it): `instances_launch` returns its pid in `silent_pids`;
   close it with `instances_close {pids}`.
 - The clients share the game folder with the user's own game: addons, cfg, `data/` and cookies (`sv.db`/`cl.db`). A
-  test that writes cookies, data files or archived convars changes the user's game too: clean up after it.
+  test that writes cookies, data files or archived convars changes the user's game too: clean up after it. Archived
+  convars (FCVAR_ARCHIVE) are saved to `cfg/config.cfg` and seen by every instance: one agent's `pba_x 0` left behind
+  pollutes another's runs (`console_exec` warns when it sets one; `convar_set` refuses them unless `persist: true`).
+- A background test client may believe it has the focus (`system.HasFocus()` true): `fps_max_nofocus` is not
+  exercised there.
+- Engine facts that cost agents runs: entity names (targetname) are server-side (`ents.FindByName` does nothing on the
+  client; `Entity:GetName`/`SetName` are server-only); `EyePos()`/`EyeAngles()` are only reliable inside rendering
+  hooks (use `LocalPlayer():EyePos()` in a `lua_job`).
 
 - **Tell the user before launching**: Garry's Mod saves the window size of these clients as its own video setting, so
   their next normal start opens at that size until they set their resolution back in the video options. Closing the
