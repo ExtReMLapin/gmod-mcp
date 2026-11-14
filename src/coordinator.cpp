@@ -249,7 +249,7 @@ void start() {
     });
     if (!is_coordinator()) {
         if (heartbeat()) logx::info("registered with the coordinator on port %d", agent::config().base_port);
-        else logx::warn("coordinator on port %d did not answer (will retry)", agent::config().base_port);
+        else if (link_state() != "refused") logx::warn("coordinator on port %d did not answer (will retry)", agent::config().base_port);
     }
     g_run = true;
     g_thread = std::thread(loop);
