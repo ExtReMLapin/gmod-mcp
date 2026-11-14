@@ -1079,6 +1079,7 @@ def case_lua_mount_ecosystem():
         "lua/ovx/sh.lua": 'OVX = OVX or {}\nfunction OVX.Shared() return "sh v1" end\n',
         "lua/ovx/sv.lua": 'function OVX.Server() return "sv v1" end\n',
         "lua/ovx/cl.lua": 'function OVX.Client() return "cl v1" end\n',
+        "gamemodes/ovxgm/gamemode/shared.lua": 'return "gm from the mounted folder"\n',
     }
     for rel, text in files.items():
         os.makedirs(os.path.dirname(os.path.join(ov, rel)), exist_ok=True)
@@ -1100,6 +1101,9 @@ def case_lua_mount_ecosystem():
     check("OVX server: autorun, include, engine name @lua/...", sc.get("values") == ["sh v1", "sv v1", "@lua/ovx/sh.lua"], sc)
     sc, err = call("lua_exec", dict(I, realm="client", code="return OVX.Shared(), OVX.Client(), OVX.Server == nil"))
     check("OVX client realm: AddCSLuaFile copies from the folder, server file not sent", sc.get("values") == ["sh v1", "cl v1", True], sc)
+    sc, err = call("lua_exec", dict(I, realm="server", code="local f = CompileFile('ovxgm/gamemode/shared.lua') return file.Exists('ovxgm/gamemode/shared.lua', 'LUA'), f and f()"))
+    check("OVX <folder>/gamemodes/ is searched too (gamemode files by their gamemodes-relative path)",
+          sc.get("values") == [True, "gm from the mounted folder"], sc)
     sc, err = call("lua_function_source", dict(I, realm="server", expr="OVX.Shared"))
     check("OVX lua_function_source finds the folder's file, matches", sc.get("matches_disk") is True and "my addon wt" in sc.get("file", ""), sc)
     sc, err = call("lua_check", dict(I, realm="server", path="ovx"))
