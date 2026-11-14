@@ -34,6 +34,13 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
   do not rename them.
 - **Lua sources** contain escape sequences (`"\n"`): edit them with a real editor, not shell heredocs or `sed`, which
   turn them into raw newlines.
+- **Comparison table** (`docs/comparison/data.json`): when a change adds, removes or limits something that matches a
+  column (definitions in `docs/COMPARISON.md`; e.g. Linux support for `instances_launch`, a new realm, a debugger),
+  update the `ExtReMLapin/gmod-mcp` row in a follow-up commit: re-pin the row's `sha` to the feature commit, re-check
+  every evidence link of the row at that SHA, set the verdict by the definition with a line that proves it (no green
+  without a line; partial if the README states a limitation), run `python docs/comparison/render.py`, and commit
+  `data.json` with the regenerated SVGs and `docs/COMPARISON.md`. Do not change other servers' rows without
+  re-checking them at a new pinned SHA.
 
 ## Build and test loop
 

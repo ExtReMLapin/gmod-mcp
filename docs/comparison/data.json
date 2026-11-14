@@ -412,8 +412,7 @@
           "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/Program.cs#L306"
         },
         "mcp_spec": {
-          "v": "partial",
-          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/Bridge/FileBridge.cs#L84-L86"
+          "v": "unverified"
         },
         "ci": {
           "v": "yes",

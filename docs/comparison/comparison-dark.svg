@@ -82,7 +82,7 @@
 <rect class="cell v-partial" x="773" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-partial" x="806" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-no" x="839" y="70" width="30" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-partial" x="872" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-unverified" x="872" y="70" width="30" height="16" rx="3" fill="url(#hatch)"/>
 <rect class="cell v-yes" x="905" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="938" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-no" x="971" y="70" width="30" height="16" rx="3" fill="#c94040"/>
