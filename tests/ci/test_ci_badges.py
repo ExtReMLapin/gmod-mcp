@@ -76,6 +76,25 @@ class BadgeTests(unittest.TestCase):
         self.assertEqual(ci_badges.conformance_badge(None)["color"], "lightgrey")
         self.assertEqual(ci_badges.conformance_badge(None, "failure")["color"], "red")
 
+    def test_conformance_red_when_another_leg_failed(self):
+        failed = {"2026-07-28": {"passed": 138, "total": 140, "unexpected": 2, "ok": False}}
+        b = ci_badges.conformance_badge(SUMMARY, "success", [failed])
+        self.assertEqual(b["color"], "red")
+        self.assertIn("2026-07-28 · 140/140", b["message"])            # the primary leg's counts
+        self.assertIn("another platform", b["message"])
+        self.assertEqual(ci_badges.conformance_badge(SUMMARY, "success", [SUMMARY, None])["color"], "brightgreen")
+
+    def test_main_conformance_badge_sees_the_secondary_leg(self):
+        failed = {"2026-07-28": {"passed": 1, "total": 2, "ok": False}}
+        out = tempfile.mkdtemp()
+        ci_badges.main(["--dir", make_dir(), "--dir", make_dir(summary=failed), "--out", out,
+                        "--build-result", "success"])
+        with open(os.path.join(out, "mcp-conformance.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["color"], "red")
+        ci_badges.main(["--dir", make_dir(), "--dir", make_dir(), "--out", out, "--build-result", "success"])
+        with open(os.path.join(out, "mcp-conformance.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["color"], "brightgreen")
+
     def test_main_writes_endpoint_files(self):
         out = tempfile.mkdtemp()
         self.assertEqual(ci_badges.main(["--dir", make_dir(), "--out", out, "--build-result", "success"]), 0)

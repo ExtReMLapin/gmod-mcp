@@ -91,6 +91,18 @@ jobs:
           "$py" -B -m unittest discover -s tests/conformance 2>&1 | tee build/logs/conformance-unit.log
           "$py" -B -m unittest discover -s tests/ci 2>&1 | tee build/logs/ci-unit.log
 
+      # The suite's fixtures (test_simple_text, slow_compute, greet...) exist only in tests/conformance and in the
+      # conformance host. Their names come from tests/conformance itself (see check_fixtures_absent.py), so a new
+      # fixture is covered without editing this step. It runs before the conformance suite (it needs only the build), so
+      # that a failing suite never hides a leak, and it scans the host as a positive control (the scan must see the
+      # fixtures where they are, or "clean" would mean nothing). It also refuses a set_request_hooks call in src/.
+      - name: Fixture tools absent from shipped binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=$(command -v python3 || command -v python)
+          "$py" tests/conformance/check_fixtures_absent.py --build-dir build
+
       # The official MCP conformance suite against the module's real MCP server code (no game): the host executable
       # tests/conformance builds with the other test programs serves the suite's fixtures; run.py compares the results
       # with tests/conformance/expected-failures.json and writes build/conformance-summary.json.
@@ -105,16 +117,6 @@ jobs:
           mkdir -p build/logs
           py=$(command -v python3 || command -v python)
           "$py" -u tests/conformance/run.py 2>&1 | tee build/logs/conformance.log
-
-      # The suite's fixtures (test_simple_text, slow_compute, greet...) exist only in tests/conformance and in the
-      # conformance host. Their names come from tests/conformance itself (see check_fixtures_absent.py), so a new
-      # fixture is covered without editing this step.
-      - name: Fixture tools absent from shipped binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          py=$(command -v python3 || command -v python)
-          "$py" tests/conformance/check_fixtures_absent.py --build-dir build
 
       - name: Package
         shell: bash
@@ -284,7 +286,8 @@ jobs:
   # sees both legs (a failure on Windows turns the badge red), runs even when the build failed (the badge then says so)
   # and holds the write permission alone. Publishing is best effort: this job can never fail the workflow.
   badges:
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Not on a cancelled run: a cancelled build says nothing about the code, the badges keep the last real result.
+    if: (success() || failure()) && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-22.04
     continue-on-error: true

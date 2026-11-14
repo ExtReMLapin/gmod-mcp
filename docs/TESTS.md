@@ -356,7 +356,7 @@ server on Linux), `srcds_run_x64 ... +sv_lan 1 +map gm_construct`.
 | X-21 | Load after the fix | ✅ `active: mode srcds ... http://127.0.0.1:27080/mcp` |
 | X-22 | Bridge suite, live cases (Linux bridge, Linux module) | ✅ 17/17 |
 | X-23 | Direct calls: status (srcds, linux64, map), server Lua, ents_find, console_exec capture, lua_check bytecode reader, syntax error line | ✅ 6/6 |
-| X-24 | Official conformance suite, 2026-07-28 requirements (from Windows through WSL's localhost forwarding) | ✅ 120 passed, the same as on Windows (only the suite's fixture scenarios fail) |
+| X-24 | Official conformance suite, 2026-07-28 requirements (from Windows through WSL's localhost forwarding) | ✅ 120 passed, the same as on Windows (only the suite's fixture scenarios failed; historical: the conformance host now serves them, see "Official conformance suite") |
 | X-25 | 2026-11-14, Windows srcds (`D:\gmod-srcds`, `+ip 127.0.0.1 +sv_lan 1`), test_bridge.py `retex` + `b` | 27/30 first: Lua errors from chunks without a .lua name were not parsed from the console (fixed, coretests +4), echo is blocked from server Lua without an engine path on srcds (test uses convars), no menu realm (test skips it). After the fixes: ✅ 29/29 |
 | X-26 | 2026-11-14, Windows srcds: `lua_mount` | the filesystem interface is not in filesystem_stdio (not loaded) nor reachable through dedicated.dll's CreateInterface: the mounted folder now says it is client only |
 | X-27 | 2026-11-14, Linux srcds in WSL (reinstalled, app 4020 `-beta x86-64`), test_bridge.py `retex` + `b` with the Linux bridge | 27/29 first: `console capture: none`, this libtier0 exports no `SpewOutputFunc`, only the LoggingSystem. Added a LoggingSystem listener (`console_capture: logging`), used when SpewOutputFunc is missing (Windows tier0, client and srcds, only has SpewOutputFunc): ✅ 29/29 |
@@ -370,12 +370,23 @@ DLL or the bridge) and a relay adding the bearer token. Suite pinned in `tests/c
 (`0.2.0-alpha.12`), which lists the checks absent by design. 2026-07-28: 37/37 required scenarios pass; 2025-11-25: 22/30,
 the 8 others are by design (logging, server-initiated sampling/elicitation, legacy `resources/subscribe`). Not scored
 (Tasks extension) and failing: the module's tasks never park for input (`input_required` task status), never report a
-protocol-level `failed` task with an `error`, and `tasks/get` does not check `Mcp-Name`. The manual run below predates the host.
+protocol-level `failed` task with an `error`, and `tasks/get` does not check `Mcp-Name` (see "Known gaps" below).
+The manual run below predates the host.
+
+While the host runs, its relay gives every local process that can reach its loopback port an authenticated session
+(the relay adds the bearer token), including the module's real tools (`game_terminate`, native `lua_file_write` and
+`lua_file_delete`, `wiki_*`). CI and development only, never shipped; do not run it next to a live game you care about.
+
+Known gaps (Tasks extension, not scored by the suite yet): nothing tracks these, so check them by hand when touching tasks.
+
+- No `failed` task state carrying an `error` (scenario `tasks-lifecycle`).
+- Tasks never park as `input_required` (scenario `tasks-mrtr-input`).
+- `tasks/get` does not validate `Mcp-Name` (scenario `tasks-request-headers`).
 
 `@modelcontextprotocol/conformance@0.2.0-alpha.12 server --requirements 2026-07-28`, against a test client (`-multirun`,
 no map) through a local relay that adds the bearer token (the suite cannot send one) and logs the traffic. Run on
 2026-11-11 with the **old** module (before the fixes below): 103 checks passed, 73 failed. With the new module: 120
-passed; server-stateless 24/28 (the 4 left need the suite's diagnostic tools), dns-rebinding 2/2, custom headers 10/10. A first run had 101 failures
+passed; server-stateless 24/28 (historical: the 4 left needed the suite's diagnostic tools, which the conformance host now provides), dns-rebinding 2/2, custom headers 10/10. A first run had 101 failures
 caused by the relay itself (it sent two Host headers), not by the server.
 
 | Area | Result with the old module | Status |

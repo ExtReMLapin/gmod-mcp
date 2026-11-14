@@ -17,7 +17,8 @@ Outputs, in --out:
   mcp-conformance.json    {"schemaVersion": 1, "label": "MCP conformance", "message": "2026-07-28 · 140/140", ...}
 
 The first --dir is the primary one (its counts are the badge: the suites run on every platform, counting them twice
-would be wrong). Every --dir is checked for failures, so a failure on any platform turns the badge red.
+would be wrong). Every --dir is checked for failures, so a failure on any platform turns the badge red, the conformance
+badge included (its counts are the primary leg's).
 --build-result is the result of the build job (success, failure, cancelled...): anything but success turns the badge red
 even when no log shows a failure (a step that never ran).
 
@@ -124,7 +125,20 @@ def tests_badge(dirs, build_result="", expected=None):
     return {"schemaVersion": 1, "label": "tests", "message": message, "color": color}, missing
 
 
-def conformance_badge(summary, build_result=""):
+def summary_ok(summary):
+    """True if no run of a conformance summary failed (same rule as the badge itself)."""
+    if not isinstance(summary, dict):
+        return True
+    for e in summary.values():
+        passed, total = int(e.get("passed", 0)), int(e.get("total", 0))
+        if not bool(e.get("ok", passed == total and total > 0)):
+            return False
+    return True
+
+
+def conformance_badge(summary, build_result="", other_summaries=()):
+    """The badge shows the primary leg's counts; it is red when any leg's conformance failed (other_summaries: the
+    summaries of the other legs, parsed; a missing one is simply not there: build_result covers a leg that never ran)."""
     base = {"schemaVersion": 1, "label": "MCP conformance"}
     if not isinstance(summary, dict) or not summary:
         if build_result not in ("", "success"):
@@ -140,6 +154,9 @@ def conformance_badge(summary, build_result=""):
         if e.get("excluded"):
             text += " (%d excluded)" % int(e["excluded"])
         parts.append(text)
+    if not all(summary_ok(o) for o in other_summaries):
+        ok = False
+        parts.append("failing on another platform")
     return dict(base, message=", ".join(parts), color="brightgreen" if ok else "red")
 
 
@@ -172,7 +189,14 @@ def main(argv=None):
             summary = json.loads(text)
         except ValueError:
             summary = None
-    conf = conformance_badge(summary, args.build_result)
+    others = []
+    for d in args.dir[1:]:
+        t = read(os.path.join(d, "conformance-summary.json"))
+        try:
+            others.append(json.loads(t) if t else None)
+        except ValueError:
+            others.append(None)
+    conf = conformance_badge(summary, args.build_result, others)
 
     os.makedirs(args.out, exist_ok=True)
     write_json(os.path.join(args.out, "tests.json"), tests)

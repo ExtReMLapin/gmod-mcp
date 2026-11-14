@@ -8,6 +8,7 @@ completion-complete was edited by hand to pass, so that the sample has both outc
 """
 import json
 import os
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -68,6 +69,37 @@ class ParseTests(unittest.TestCase):
             with open(os.path.join(p, "checks.json"), "w") as f:
                 json.dump([{"id": "a", "status": "WARNING"}, {"id": "b", "status": "SKIPPED"}], f)
             self.assertEqual(run.parse_scenarios(d)["foo"]["failures"], {})
+
+
+class CompletenessTests(unittest.TestCase):
+    def test_announced_count(self):
+        self.assertEqual(run.parse_announced_count(sample_stdout()), 6)
+        self.assertEqual(run.parse_announced_count("Running requirements x (1 scenario) against u\n"), 1)
+        self.assertIsNone(run.parse_announced_count("nothing here\n"))
+
+    def test_full_sample_is_complete(self):
+        text = sample_stdout()
+        self.assertIsNone(run.completeness_problem(run.parse_scenarios(SAMPLE, text), text))
+
+    def test_truncated_sample_is_incomplete(self):
+        # The suite died after three scenarios: only three result directories and a cut stdout, but the first line
+        # still announces six.
+        text = sample_stdout()
+        cut = text[:text.index("=== Running scenario: tools-list ===")]
+        with tempfile.TemporaryDirectory() as d:
+            kept = 0
+            for name in sorted(os.listdir(SAMPLE)):
+                m = run.DIR_RE.match(name)
+                if m and m.group("scenario") in ("server-stateless", "completion-complete", "json-schema-2020-12"):
+                    shutil.copytree(os.path.join(SAMPLE, name), os.path.join(d, name))
+                    kept += 1
+            self.assertEqual(kept, 3)
+            sc = run.parse_scenarios(d, cut)
+            self.assertEqual(len(sc), 3)
+            self.assertIn("cut short", run.completeness_problem(sc, cut))
+
+    def test_missing_announcement_is_a_problem(self):
+        self.assertIn("did not print", run.completeness_problem({"a": {}}, "no header\n"))
 
 
 def entry(scenario, check="*", reason="by design"):
@@ -218,6 +250,28 @@ class EndToEndTests(unittest.TestCase):
         with open(bad, "w") as f:
             f.write("import sys\nprint('boom')\nsys.exit(3)\n")
         self.assertEqual(self.go([], host=bad), 2)
+
+    def test_truncated_suite_run_fails(self):
+        # A fake suite that dies after writing half of the sample, with the full announcement on its first line.
+        half = os.path.join(self.d, "half.py")
+        with open(half, "w") as f:
+            f.write(textwrap.dedent("""
+                import os, re, shutil, sys
+                sample = sys.argv[1]
+                out = sys.argv[sys.argv.index("--output-dir") + 1]
+                keep = ("server-stateless", "completion-complete", "tools-list")
+                for d in os.listdir(sample):
+                    if any(d.startswith("server-" + k + "-") for k in keep):
+                        shutil.copytree(os.path.join(sample, d), os.path.join(out, d))
+                text = open(os.path.join(sample, "stdout.txt"), encoding="utf-8").read()
+                sys.stdout.write(text[:text.index("=== Running scenario: tasks-capability")])
+                sys.exit(1)
+            """))
+        os.environ["MCP_CONFORMANCE_SUITE_CMD"] = json.dumps([sys.executable, half, SAMPLE])
+        # Same listed failures as test_pass_and_summary: without the completeness check this would pass (3/3 scored).
+        self.assertEqual(self.go([entry("tools-list"), entry("server-stateless")]), 1)
+        with open(self.summary) as f:
+            self.assertFalse(json.load(f)["2026-07-28"]["ok"])
 
     def test_missing_host(self):
         self.assertEqual(self.go([], host=os.path.join(self.d, "nope.py")), 2)

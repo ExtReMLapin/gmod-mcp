@@ -15,7 +15,13 @@ Checks
   - source: no name of 1. or 2. appears as a string literal in src/, loader/ or plugin/;
   - binary: no name of 1., 2. or 3. appears as a string in the module or the bridge (a NUL-delimited string or a
     JSON string "name"). The module and the bridge must exist under --build-dir, otherwise the check fails (it must
-    never pass because there was nothing to scan).
+    never pass because there was nothing to scan);
+  - positive control: the scanner must see the fixtures where they are. The conformance host executable
+    (gmod-mcp-conformance-host[.exe]) must exist under --build-dir and contain at least MIN_HOST_FRACTION (80%) of the
+    names of 1., 2. and 3. If it does not (a toolchain change, e.g. string pooling or UTF-16 literals, that hides the
+    strings from this scan), "clean" would mean nothing, so the check fails;
+  - hook seam: mcp::set_request_hooks (the test-only seam of the conformance host) must not be called from src/,
+    loader/ or plugin/; only its declaration (src/mcp.h) and definition (src/mcp.cpp) may contain it.
 
 Usage: python tests/conformance/check_fixtures_absent.py [--build-dir build]
 """
@@ -48,6 +54,10 @@ SHIPPED_EXT = (".cpp", ".cc", ".cxx", ".h", ".hpp", ".inc", ".lua", ".json", ".m
 LITERAL_RE = re.compile(r'"([a-z][a-z0-9]*(?:_[a-z0-9]+)+)"')
 MODULE_RE = re.compile(r"^gmsv_mcpagent_.*\.(dll|so)$")
 BRIDGE_NAMES = ("gmod-mcp-bridge", "gmod-mcp-bridge.exe")
+HOST_NAMES = ("gmod-mcp-conformance-host", "gmod-mcp-conformance-host.exe")
+MIN_HOST_FRACTION = 0.8
+HOOK_SETTER = "set_request_hooks"
+HOOK_SETTER_HOME = ("mcp.h", "mcp.cpp")  # under src/: the declaration and the definition
 
 
 def walk(base, exts):
@@ -97,7 +107,7 @@ def in_binary(name, data):
 
 
 def find_binaries(build_dir):
-    modules, bridges = [], []
+    modules, bridges, hosts = [], [], []
     for dirpath, dirs, files in os.walk(build_dir):
         dirs[:] = [d for d in dirs if d not in ("CMakeFiles", "_deps")]
         for f in files:
@@ -106,7 +116,31 @@ def find_binaries(build_dir):
                 modules.append(full)
             elif f in BRIDGE_NAMES:
                 bridges.append(full)
-    return sorted(modules), sorted(bridges)
+            elif f in HOST_NAMES:
+                hosts.append(full)
+    return sorted(modules), sorted(bridges), sorted(hosts)
+
+
+def hook_setter_uses(root=ROOT):
+    """Lines in the shipped sources that mention the test-only hook setter, other than its declaration and definition
+    in src/mcp.h and src/mcp.cpp (comments are fine). Returns ["path:line: text"]."""
+    found = []
+    for d in SHIPPED_DIRS:
+        base = os.path.join(root, d)
+        if not os.path.isdir(base):
+            continue
+        for path in walk(base, SHIPPED_EXT):
+            home = d == "src" and os.path.dirname(path) == base and os.path.basename(path) in HOOK_SETTER_HOME
+            for n, line in enumerate(read_text(path).splitlines(), 1):
+                if HOOK_SETTER not in line:
+                    continue
+                code = line.strip()
+                if code.startswith(("//", "*", "/*")):
+                    continue
+                if home and code.startswith("void %s(" % HOOK_SETTER):
+                    continue
+                found.append("%s:%d: %s" % (os.path.relpath(path, root).replace(os.sep, "/"), n, code[:120]))
+    return found
 
 
 def rel(path):
@@ -116,13 +150,13 @@ def rel(path):
         return path
 
 
-def main(argv=None):
+def main(argv=None, root=ROOT):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build"))
     args = ap.parse_args(argv)
 
-    fixed, auto = fixture_names()
-    shipped = shipped_text()
+    fixed, auto = fixture_names(os.path.join(root, "tests", "conformance"))
+    shipped = shipped_text(root)
     auto_only = {n for n in auto if n not in fixed and not literal_in(n, shipped)}
     names = sorted(fixed | auto_only)
     print("fixture names checked: %d (%d known or listed, %d found in tests/conformance sources)"
@@ -133,7 +167,11 @@ def main(argv=None):
         if literal_in(n, shipped):
             problems.append("source: fixture name %r appears as a literal in src/, loader/ or plugin/" % n)
 
-    modules, bridges = find_binaries(args.build_dir)
+    for use in hook_setter_uses(root):
+        problems.append("source: %s is a test-only seam of the conformance host, not for shipped code: %s"
+                        % (HOOK_SETTER, use))
+
+    modules, bridges, hosts = find_binaries(args.build_dir)
     if not modules:
         problems.append("no module (gmsv_mcpagent_*.dll/.so) found under %s: nothing to scan" % args.build_dir)
     if not bridges:
@@ -147,13 +185,28 @@ def main(argv=None):
         for n in hits:
             problems.append("binary: fixture name %r found in %s" % (n, rel(path)))
 
+    if not hosts:
+        problems.append("no conformance host (gmod-mcp-conformance-host[.exe]) found under %s: no positive control"
+                        % args.build_dir)
+    for path in hosts:
+        with open(path, "rb") as f:
+            data = f.read()
+        found = [n for n in names if in_binary(n, data)]
+        need = int(MIN_HOST_FRACTION * len(names) + 0.999999)
+        print("positive control %s: %d of %d fixture names found (at least %d needed)"
+              % (rel(path), len(found), len(names), need))
+        if len(found) < need:
+            problems.append("positive control: only %d of %d fixture names found in %s (need %d): the scan cannot see "
+                            "fixture strings in this toolchain's output, so a clean result would mean nothing"
+                            % (len(found), len(names), rel(path), need))
+
     if problems:
         print("\nFIXTURE LEAK: conformance fixtures must exist only in tests/conformance/ and "
               "gmod-mcp-conformance-host:")
         for p in problems:
             print("  - " + p)
         return 1
-    print("OK: no conformance fixture in the shipped module, bridge or sources")
+    print("OK: no conformance fixture in the shipped module, bridge or sources (positive control passed)")
     return 0
 
 

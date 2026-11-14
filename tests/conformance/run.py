@@ -40,6 +40,8 @@ READY_RE = re.compile(r"^READY\s+(http://\S+)\s*$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 DIR_RE = re.compile(r"^server-(?P<scenario>.+)-(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)$")
 RUNNING_RE = re.compile(r"^=== Running scenario: (\S+) ===\s*$")
+# First line of the suite: "Running requirements 2026-07-28 (6 scenarios) against http://...".
+ANNOUNCED_RE = re.compile(r"^Running requirements \S+ \((\d+) scenarios?\)")
 # "  ✗ tasks-lifecycle (extension)" in the "Not scored for <revision>" section of the suite's output.
 NOT_SCORED_RE = re.compile(r"^\s+\S\s+(\S+)\s+\(([a-z-]+)\)\s*$")
 
@@ -135,6 +137,27 @@ def parse_scenarios(output_dir, stdout_text=""):
 
 def clean_lines(text):
     return [ANSI_RE.sub("", l).rstrip("\r") for l in text.splitlines()]
+
+
+def parse_announced_count(stdout_text):
+    """The number of scenarios the suite announced in its first line, or None if there is no such line."""
+    for line in clean_lines(stdout_text):
+        m = ANNOUNCED_RE.match(line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def completeness_problem(scenarios, stdout_text):
+    """None if the suite ran every scenario it announced; otherwise a message. A run cut short (the suite process died
+    between two scenarios) leaves fewer result directories and would otherwise pass with a smaller N/N."""
+    announced = parse_announced_count(stdout_text)
+    if announced is None:
+        return 'the suite did not print its "Running requirements ... (N scenarios)" line: cannot tell if it finished'
+    if len(scenarios) != announced:
+        return "the suite announced %d scenario(s) but %d produced results: the run was cut short" % (
+            announced, len(scenarios))
+    return None
 
 
 def parse_not_scored(stdout_text):
@@ -439,7 +462,10 @@ def main(argv=None):
                 failed = True
             scenarios = parse_scenarios(out_dir, text)
             result = compare(scenarios, runs[run], parse_not_scored(text))
-            if timed_out:
+            incomplete = None if timed_out else completeness_problem(scenarios, text)
+            if incomplete:
+                out("ERROR: " + incomplete)
+            if timed_out or incomplete:
                 result["ok"] = False
             report(run, version, result, out)
             summary[run] = summary_entry(result)

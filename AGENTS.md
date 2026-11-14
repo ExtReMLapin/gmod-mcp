@@ -11,12 +11,17 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
   (`cmake/embed_lua.cmake`, alphabetical order).
 - `src/installer.cpp` — the main-menu loader block the module writes into `garrysmod/lua/menu/menu.lua`.
 - `loader/mcpagent_boot.lua` — server autorun shipped in the release zip.
+- `tests/conformance/` — the MCP conformance suite harness: `gmod-mcp-conformance-host` (the module's MCP server code plus
+  the suite's fixtures, no game), `run.py`, `check_fixtures_absent.py`. Test-only: nothing in it ships.
 - `docs/TESTS.md` — test matrix; `docs/REVERSE.md` — engine interfaces, vtable slots and offsets in use.
 
 ## Rules
 
 - **English only**: code, comments, log messages, tool descriptions, docs.
 - **No AI attribution** in commits (no `Co-Authored-By`, no session links).
+- **Conformance fixtures live only in `tests/conformance/`**, and only the `gmod-mcp-conformance-host` executable links
+  them. `src/` never calls `mcp::set_request_hooks` (a test-only seam for the conformance host; only its declaration and
+  definition in `src/mcp.h` / `src/mcp.cpp` may name it). `tests/conformance/check_fixtures_absent.py` enforces both in CI.
 - **Release checksum**: `loader/mcpagent_boot.lua` contains the placeholder `@MCPAGENT_DLL_CRC@`. Never replace it by
   hand: the CI stamps it with the CRC32 of the DLL it just built. Local builds keep the placeholder (check skipped).
 - **Menu loader block**: when you change `kBlockSource` in `src/installer.cpp`, bump its `vN` so installed copies are
