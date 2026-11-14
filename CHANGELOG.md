@@ -1,11 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
-From the field feedback of agents that ran up to 17 test clients in parallel.
+From the field feedback of agents that ran up to 17 test clients in parallel, then checked in game on a Windows
+client, a Windows dedicated server and a Linux dedicated server (also all three behind one bridge).
 
 ### Fixes
 
+- **A plugin newer than the module in the game went unnoticed.** Claude Code updates the plugin (bridge, skill, a copy
+  of the module), not the module the game loads. The mismatch was only in the connection instructions, and only when
+  the game was already running then. The bridge now asks the game its version whenever it becomes reachable, and while
+  they differ every tool result starts with a warning that names both versions and says what to do.
+- **Console capture was empty on the x86-64 Linux dedicated server** (its libtier0 has no `SpewOutputFunc`): no
+  `console_exec` output, no `console_wait`, no Lua errors. gmod-mcp now listens to tier0's logging system there.
+- **On a dedicated server, Lua errors in code without a .lua file** (`lua_exec`, `CompileString`) were not caught from
+  the console.
+- **A game whose gmod-mcp config folder differs was refused by the coordinator in silence** (another token: HTTP 401)
+  and stayed invisible. It now logs why and how to fix it, and `status` gives `coordinator_link`.
+- **Some tool descriptions were wrong or left agents guessing**: `screenshot` claimed to capture the main menu,
+  `lua_reload` claimed a client `include()` ignores edits (it reads the disk on the hosting machine). Every tool now
+  says what it does and does not do, what it needs, each parameter's unit and default, the result's shape, its side
+  effects, with an example; facts the code could not settle were checked in game.
 - **A console line could still connect to a remote server.** The network rule split the line its own way and kept a
   quote open across a line break, so `echo "a` + line break + `connect 1.2.3.4` passed as one `echo` but ran as an
   `echo` and a `connect`. It now checks exactly the statements that run.
@@ -48,7 +63,7 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
 - **`console_exec "a 1;b 1"` set `a` to `"1;b 1"`.** The whole line went to the first command. It is now split into
   statements on `;` and line breaks outside quotes, like the engine console does, and each one runs in turn
   (`statements` lists them).
-- **A mistyped command answered "ok".** The engine only prints `Unknown command "x"`; `console_exec` now reads that
+- **A mistyped command answered "ok".** The engine only prints `Unknown command: x`; `console_exec` now reads that
   line and fails with `unknown_command`.
 - **`console_exec` output mixed in gmod-mcp's own log lines** (`[mcpagent] initialize ...`): they are left out, and
   `regex` filters what remains (the console is shared, so other prints of the same frames can still appear).
@@ -100,6 +115,13 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
   with a note.
 - `instances_launch` documents what its presets change (the 20 fps cap hides per-frame cost; `-nosound` changes
   `SoundDuration` of compressed WAVs) and that clients share `data/` and cookies with the user's game.
+
+### Upgrading
+
+- Update the plugin: with auto-update on (`/plugin` → Marketplaces → gmod-mcp → Enable auto-update) it comes by itself;
+  otherwise `claude plugin update gmod-mcp@gmod-mcp`. Then restart Claude Code.
+- Then update the module in the game (quit it first): ask Claude to update gmod-mcp. Until then every tool result
+  starts with the version warning (module 0.3.1, plugin 0.3.2).
 
 ### Tests
 
