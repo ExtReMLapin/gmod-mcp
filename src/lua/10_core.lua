@@ -74,7 +74,8 @@ function A.serialize(v, opts, depth, seen)
 	seen = seen or {}
 	-- No cut by default: depth, limit and maxstr apply only when the caller asks (every cut is counted in opts.cut and
 	-- the result says so at the top level). The only guard is the total size (opts.max_nodes values, opts.max_bytes of
-	-- strings): past it, the call fails with result_too_large instead of freezing the game on e.g. `return _G`.
+	-- strings): past it, the call fails with result_too_large instead of building a huge result. (A client _G is far below:
+	-- about 4.5 MB of JSON.)
 	local maxdepth = opts.depth or 200
 	local limit = opts.limit or math.huge
 	local maxstr = opts.maxstr or math.huge

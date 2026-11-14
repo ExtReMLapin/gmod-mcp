@@ -24,7 +24,8 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
 - **Results were cut without warning.** `lua_exec` and `lua_job` replaced any string over 64 KiB, and tables deeper
   than 4 levels or longer than 200 entries, by a stub; a script that read the stub as data saw an empty list. Values
   now come back whole. `depth`, `limit` and `max_string` cut only when asked, and the result then says
-  `truncated: <count>`. A value too big to send (`return _G`) fails with `result_too_large` instead of freezing the game.
+  `truncated: <count>`. Only a value too big to send (over a million values or 64 MiB of strings) fails with `result_too_large`; the client
+  realm's whole `_G` (4.5 MB of JSON) comes back whole.
 - **Code loaded through `lua_exec` ran several times slower than real.** The LuaJIT compiler was turned off for the
   chunk and for every function it defined (hooks, timers), for their whole life, so the time budget could interrupt
   loops; performance measured through such functions was wrong. gmod-mcp no longer turns the compiler off, and there

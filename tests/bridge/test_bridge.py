@@ -813,7 +813,84 @@ def case_c():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c}
+def case_retex():
+    """Live (one game with gmod-mcp on 27080, a map loaded; give `instance` with RETEX_INSTANCE if several run):
+    the 2026-11-14 field feedback changes that need parameters older clients do not send."""
+    print("== RETEX: live checks of the 2026-11-14 field feedback changes", flush=True)
+    b = Bridge(27080)
+    inst = os.environ.get("RETEX_INSTANCE")
+
+    def call(tool, args, timeout=60):
+        a = dict(args)
+        if inst: a["instance"] = inst
+        r = b.req("tools/call", {"name": tool, "arguments": a}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    def ex(code, **kw):
+        return call("lua_exec", dict(kw, realm=kw.get("realm", "server"), code=code))
+
+    sc, err = ex("return string.rep('x', 70000)", max_string=100)
+    check("RETEX explicit max_string cuts and says truncated", not err and sc.get("truncated") == 1 and sc["values"][0].get("length") == 70000, sc)
+    sc, err = ex("return {{{{1}}}}", depth=2)
+    check("RETEX explicit depth cuts and says truncated", not err and sc.get("truncated") == 1, sc)
+    sc, err = ex("return debug.getinfo(1, 'S').short_src", chunkname="@addons/pba/lua/pba/x.lua")
+    check("RETEX chunkname is the source", sc.get("values") == ["addons/pba/lua/pba/x.lua"], sc)
+    sc, err = ex("local t = {} for i = 1, 3000000 do t[i] = i end return t", timeout_s=60)
+    check("RETEX a result of 3 million values fails with result_too_large", err and "result_too_large" in json.dumps(sc), str(sc)[:300])
+    # lua_job: async, status, concurrent, cancel, fresh_env.
+    sc, err = call("lua_job", {"realm": "server", "async": True, "code": "job:sleep(1) return args.v", "args": {"v": 7}})
+    jid = sc.get("job_id")
+    check("RETEX async lua_job returns its id at once", not err and jid and sc.get("state") == "running", sc)
+    sc2, _ = call("lua_job", {"realm": "server", "async": True, "code": "job:sleep(30) return 1"})
+    check("RETEX a second job in the same realm reports the first in concurrent_jobs",
+          any(c.get("id") == jid for c in sc2.get("concurrent_jobs", [])), sc2)
+    sc, err = call("lua_job_status", {})
+    check("RETEX lua_job_status without id lists both", {jid, sc2.get("job_id")} <= {j.get("id") for j in sc.get("jobs", [])}, sc)
+    sc, err = call("lua_job_status", {"id": jid, "wait_s": 10})
+    check("RETEX lua_job_status waits for the end and returns the result", not err and sc.get("values") == [7], sc)
+    sc, err = call("lua_job_status", {"id": jid})
+    check("RETEX a collected job is forgotten", err and "not_found" in json.dumps(sc), sc)
+    sc, err = call("lua_job_cancel", {"id": sc2.get("job_id")})
+    check("RETEX lua_job_cancel stops a sleeping job", not err and sc.get("cancelled") is True, sc)
+    sc, err = call("lua_job_status", {"id": sc2.get("job_id"), "wait_s": 5})
+    check("RETEX the cancelled job ends as cancelled", err and "cancelled" in json.dumps(sc), sc)
+    call("lua_job", {"realm": "server", "fresh_env": True, "code": "__RETEX_FRESH = 1 return 1"})
+    sc, err = ex("return __RETEX_FRESH == nil")
+    check("RETEX fresh_env keeps the job's globals out of _G", sc.get("values") == [True], sc)
+    call("lua_job", {"realm": "server", "code": "__RETEX_SHARED = 1 return 1"})
+    sc, err = ex("local v = __RETEX_SHARED __RETEX_SHARED = nil return v")
+    check("RETEX without fresh_env the global lands in _G", sc.get("values") == [1], sc)
+    # Files: absolute path, chunk name, fields.
+    tmp = os.path.join(tempfile.mkdtemp(prefix="gmcp-retex-"), "verdict.lua")
+    with open(tmp, "w") as f: f.write("return { pass = 3, fails = 0, big = string.rep('z', 1000), src = debug.getinfo(1, 'S').short_src }\n")
+    sc, err = call("lua_exec_file", {"realm": "server", "path": tmp, "chunkname": "@addons/x/lua/verdict.lua", "fields": ["pass", "fails", "src"]})
+    v = (sc.get("values") or [{}])[0]
+    check("RETEX lua_exec_file: absolute path, chunkname, fields", not err and v == {"pass": 3, "fails": 0, "src": "addons/x/lua/verdict.lua"}, sc)
+    # Errors of the current map only.
+    ex("timer.Simple(0, function() error('retex current map error') end)")
+    time.sleep(1)
+    sc, err = call("errors_since", {"cursor": 0, "since_map_load": True})
+    errs = sc.get("errors", [])
+    check("RETEX errors_since since_map_load: current map's errors, tagged", errs and all(e.get("map_load") == sc.get("map_load") for e in errs)
+          and any("retex current map error" in e.get("message", "") for e in errs), sc)
+    # status fields.
+    sc, err = call("status", {"fields": ["map", "fps_max", "host_timescale"]})
+    check("RETEX status fields keeps only those keys", set(sc) - {"answered_by", "relayed_by"} == {"map", "fps_max", "host_timescale", "projected"}, sc)
+    # console_exec: regex filter, unknown command, archived convar warning (read only: no value given).
+    sc, err = call("console_exec", {"realm": "server", "cmd": "echo retex-a; echo retex-b", "regex": "retex-b"})
+    check("RETEX console_exec runs both statements, regex keeps one line", not err and [l["text"].strip() for l in sc.get("output", [])] == ["retex-b"] and len(sc.get("statements", [])) == 2, sc)
+    sc, err = call("console_exec", {"realm": "server", "cmd": "retex_typo_cmd 1"})
+    check("RETEX unknown command is an error", err and "unknown_command" in json.dumps(sc), sc)
+    sc, err = call("console_exec", {"realm": "menu", "cmd": "fov_desired"})
+    c = sc.get("convars", {}).get("fov_desired", {})
+    check("RETEX naming an archived convar reads it back with a warning", not err and c.get("number") is not None and "ARCHIVE" in c.get("warning", ""), sc)
+    sc, err = call("convar_get", {"name": "sv_gravity", "realm": "server"})
+    check("RETEX convar_get gives the number", sc.get("number") == 600, sc)
+    b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex}
 for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)

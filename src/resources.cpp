@@ -81,7 +81,8 @@ Vector/Angle/Color/Entity/functions/cyclic tables have a `{"__type": ...}` form.
 loop freezes the game: the call fails with `main_thread_timeout` after `timeout_s`, `status` shows `main_thread_stalled`,
 `game_terminate` ends it). The LuaJIT compiler is never turned off: code and the functions it defines run at real speed.
 Returned values come back whole unless you pass `depth`/`limit`/`max_string` (the result then says `truncated`); a value
-too big to send (`return _G`) fails with `result_too_large`. For anything that spans frames,
+too big to send (over a million values or 64 MiB of strings) fails with `result_too_large`; a whole `_G` is
+about 4.5 MB, which your client may save to a file instead of showing it: return only what you need. For anything that spans frames,
 use `lua_job`: the script runs as a coroutine resumed once per frame and talks to the agent through `job`:
 
 | call | effect |

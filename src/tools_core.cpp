@@ -545,7 +545,7 @@ void register_core() {
                         "changes on every map load: compare it with map_load's result to know which state ran the code). "
                         "Values come back whole: nothing is cut unless you pass depth, limit or max_string, and then the "
                         "result says truncated: <count>. A value too big to send (over a million values or 64 MiB of "
-                        "strings, e.g. `return _G`) fails with result_too_large. "
+                        "strings) fails with result_too_large; a whole _G is about 4.5 MB: return only what you need. "
                         "Non-JSON types: {__type: Vector|Angle|Color|Entity|function|cycle|...}. "
                         "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, main_thread_timeout, "
                         "result_too_large, realm_unavailable, client_locked. "
