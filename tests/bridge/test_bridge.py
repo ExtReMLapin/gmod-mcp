@@ -1580,10 +1580,31 @@ def case_fixes_live():
 
 CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
 DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "orphan", "edge", "version", "feedback", "fuzz"]
-for c in sys.argv[2:] or DEFAULT:
-    t_case = time.time()
-    CASES[c]()
-    print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
+args = sys.argv[2:]
+if args[:1] == ["--serial"] or len(args) == 1:
+    # One case at a time in this process (also what each parallel worker runs).
+    for c in [a for a in args if a != "--serial"] or DEFAULT:
+        t_case = time.time()
+        CASES[c]()
+        print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
+else:
+    # Several cases: each in its own process, all at once (they use their own ports, configs and stand-in games), so
+    # the whole default suite takes about as long as its slowest case. Output is printed per case, in order.
+    t0 = time.time()
+    names = args or DEFAULT
+    procs = [(c, subprocess.Popen([sys.executable, "-u", __file__, BRIDGE, "--serial", c], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONIOENCODING="utf-8"))) for c in names]
+    for c, pr in procs:
+        out = pr.communicate()[0].decode("utf-8", "replace")
+        for line in out.splitlines():
+            if line.startswith("TOTAL "):
+                continue
+            print(line, flush=True)
+            if line.startswith("PASS "): results.append((line[5:], True))
+            elif line.startswith("FAIL "): results.append((line[5:], False))
+        if pr.returncode != 0 and not any(l.startswith(("PASS ", "FAIL ")) for l in out.splitlines()):
+            results.append(("case %s crashed (exit %d)" % (c, pr.returncode), False))
+    print("   [all %d cases in parallel: %.1f s]" % (len(names), time.time() - t0), flush=True)
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))
 sys.exit(0 if passed == len(results) else 1)
