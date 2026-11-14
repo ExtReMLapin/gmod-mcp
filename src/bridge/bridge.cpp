@@ -437,6 +437,30 @@ bool modern_2026(const json &msg) {
 }
 
 // A result built by the bridge: in the 2026-07-28 era it says it is complete and who answered.
+// --- Version of the module in the game. The plugin (this bridge, the skill, a copy of the module) is updated by
+// Claude Code; the module loaded by the game is not. When they differ, every tool result says so, whatever the order in
+// which Claude Code and the game started.
+std::mutex g_ver_mu;
+std::string g_module_version;  // "" = unknown (game not reached yet)
+
+std::string version_warning() {
+    std::lock_guard<std::mutex> lk(g_ver_mu);
+    if (g_module_version.empty() || g_module_version == kBridgeVersion) return "";
+    return std::string("WARNING: version mismatch. The gmod-mcp module running in Garry's Mod is ") + g_module_version +
+           ", this Claude Code plugin is " + kBridgeVersion + ". Tools may behave differently from their descriptions or "
+           "miss features. Tell the user now. To fix it: quit every game that runs gmod-mcp, then ask the gmod-mcp skill to "
+           "update the module (it installs the module shipped with this plugin into the game).";
+}
+
+// Adds the warning to a tools/call result: first text item and structuredContent.version_warning.
+void add_version_warning(json &result) {
+    std::string w = version_warning();
+    if (w.empty() || !result.is_object()) return;
+    if (!result.contains("content") || !result["content"].is_array()) result["content"] = json::array();
+    result["content"].insert(result["content"].begin(), json{{"type", "text"}, {"text", w}});
+    if (result.contains("structuredContent") && result["structuredContent"].is_object()) result["structuredContent"]["version_warning"] = w;
+}
+
 json local_result(const json &msg, json r) {
     if (modern_2026(msg)) {
         r["resultType"] = "complete";
@@ -1269,6 +1293,7 @@ void handle_request(const json &msg) {
             json &res = r.response["result"];
             res = tool_text(annotate_instances(res.value("structuredContent", json::object()), params_of(msg).value("arguments", json::object())), false);
         }
+        if (!tool.empty() && r.response.contains("result")) add_version_warning(r.response["result"]);
         // Remember where the game is (instances_launch can then start more without asking).
         if (tool == "status" && r.response.contains("result")) {
             json sc = r.response["result"].value("structuredContent", json::object());
@@ -1339,8 +1364,24 @@ void handle_notification(const json &msg) {
 }
 
 // Watches the game: when it comes back after being unreachable, the client is asked to fetch the lists again.
+void probe_module_version() {
+    json m{{"jsonrpc", "2.0"}, {"id", "gmod-mcp-bridge-version"}, {"method", "initialize"},
+           {"params", {{"protocolVersion", "2025-06-18"}, {"capabilities", json::object()},
+                       {"clientInfo", {{"name", "gmod-mcp-bridge"}, {"version", kBridgeVersion}}}}}};
+    Relay r = relay(m, 5.0);
+    if (!r.reached || !r.response.contains("result")) return;
+    std::string v = r.response["result"].value("serverInfo", json::object()).value("version", "");
+    if (v.empty()) return;
+    std::lock_guard<std::mutex> lk(g_ver_mu);
+    if (v != g_module_version) {
+        g_module_version = v;
+        if (v != kBridgeVersion) log("module " + v + " in the game, bridge " + kBridgeVersion + ": every tool result will say so");
+    }
+}
+
 void watcher() {
     Link last = g_link.load();
+    int ticks = 0;
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         if (!g_initialized) continue;
@@ -1352,6 +1393,7 @@ void watcher() {
             continue;
         }
         Link now = r.reached ? Link::Up : Link::Down;
+        if (now == Link::Up && (now != last || ++ticks % 30 == 0)) probe_module_version();
         if (now != last) {
             log(now == Link::Up ? "the game answers" : "the game is unreachable: " + why_down());
             if (now == Link::Up && (last == Link::Down || g_served_offline.exchange(false))) announce_lists_changed();

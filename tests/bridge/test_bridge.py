@@ -1191,8 +1191,42 @@ def case_edge():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "fuzz"]:
+def case_version():
+    """Version mismatch between the bridge (the plugin, updated by Claude Code) and the module in the game (not
+    updated): the agent must be told on every tool result, even when the game starts after Claude Code connected."""
+    print("== VERSION: module in the game older than the bridge", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env)
+    b.req("initialize", INIT)
+    b.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    fake = FakeServer(port, version="0.0.1")   # the game starts AFTER Claude Code connected
+    time.sleep(5)                               # the bridge's probe sees it (every 2 s)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    res = (r or {}).get("result", {})
+    sc = res.get("structuredContent", {})
+    first = (res.get("content") or [{}])[0].get("text", "")
+    bv = bridge_version()
+    check("VERSION every tool result carries version_warning naming both versions",
+          "0.0.1" in sc.get("version_warning", "") and bv in sc.get("version_warning", ""), sc)
+    check("VERSION the first text the agent reads is the warning, with what to do",
+          first.startswith("WARNING") and "0.0.1" in first and "skill" in first, first[:300])
+    check("VERSION the tool's own answer is still there", sc.get("args") == {} and any(c.get("text") == "echo" for c in res.get("content", [])), res)
+    fake.stop(); b.close()
+    # Same version: no warning.
+    port, env = free_port(), isolated_config(with_token=True)
+    fake = FakeServer(port, version=bv)
+    b = Bridge(port, env)
+    b.req("initialize", INIT)
+    time.sleep(3)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    res = (r or {}).get("result", {})
+    check("VERSION same version: no warning", "version_warning" not in res.get("structuredContent", {}) and
+          not (res.get("content") or [{}])[0].get("text", "").startswith("WARNING"), res)
+    fake.stop(); b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "version", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))
