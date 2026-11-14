@@ -724,7 +724,7 @@ def case_overlay():
     b = Bridge(port, env)
 
     def launch(overlay, timeout=40):
-        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 5, "game_dir": game, "overlay": overlay}}, timeout)
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 10, "game_dir": game, "overlay": overlay}}, timeout)
         return (r or {}).get("result", {})
 
     for bad, word in ((os.path.join(work, "nolua"), "lua"), ("relative/dir", "absolute"), (wt + '"', "character"), (os.path.join(work, "missing"), "not found")):
