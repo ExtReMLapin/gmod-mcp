@@ -59,7 +59,11 @@ static void *get_iface(const std::vector<std::string> &names, const char *versio
 static bool ensure(std::string &err) {
     if (!g_fs) g_fs = get_iface(plat::filesystem_names(), "VFileSystem022");
     if (!g_ls) g_ls = static_cast<GarrysMod::Lua::ILuaShared *>(get_iface(plat::lua_shared_names(), GMOD_LUASHARED_INTERFACE));
-    if (!g_fs) err = "IFileSystem (VFileSystem022) not found in filesystem_stdio";
+    if (!g_fs)
+        err = agent::config().mode == agent::Mode::Dedicated
+                  ? "the Lua overlay is not supported on a dedicated server yet (its filesystem interface is not found); use "
+                    "it on a game client (instances_launch {overlay})"
+                  : "IFileSystem (VFileSystem022) not found in filesystem_stdio";
     else if (!g_ls) err = "ILuaShared (" GMOD_LUASHARED_INTERFACE ") not found in lua_shared";
     return g_fs && g_ls;
 }

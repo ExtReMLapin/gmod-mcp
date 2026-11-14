@@ -183,11 +183,35 @@ static void test_overlay_paths() {
     CHECK(r.value("isError", false) && r.dump().find("lua") != std::string::npos);
 }
 
+// srcds: Lua errors come from the console. An error in code without a .lua file name (lua_exec, CompileString chunks,
+// "=name" chunks) was missed: seen live on a Windows srcds 2026-11-14.
+static void test_srcds_error_parsing() {
+    console::errors_clear();
+    uint64_t c0 = console::errors_cursor();
+    console::set_parse_errors_from_console(true);
+    console::push_line("message", "[ERROR] mcpagent:lua_exec:1: boom from a chunk");
+    console::push_line("message", "  1. unknown - mcpagent:lua_exec:1");
+    console::push_line("message", "[ERROR] addons/x/lua/autorun/x.lua:3: boom from a file");
+    console::push_line("message", "  1. fn - addons/x/lua/autorun/x.lua:3");
+    console::push_line("message", "  2. unknown - [C]:-1");
+    console::push_line("message", "[my_addon] lua/y.lua:7: boom with an addon tag");
+    console::push_line("message", "a normal line");
+    console::push_line("message", "[ERROR] not an error line without a line number");
+    console::push_line("message", "flush");
+    console::set_parse_errors_from_console(false);
+    json r = console::errors_since(c0, 100)["errors"];
+    CHECK(r.size() == 3);
+    CHECK(r.size() == 3 && r[0]["message"] == "mcpagent:lua_exec:1: boom from a chunk" && r[0]["stack"].size() == 1);
+    CHECK(r.size() == 3 && r[1]["message"] == "addons/x/lua/autorun/x.lua:3: boom from a file" && r[1]["stack"].size() == 2);
+    CHECK(r.size() == 3 && r[2]["addon"] == "my_addon");
+}
+
 int main() {
     test_cmdline();
     test_console_wait();
     test_errors_map_tags();
     test_small_b6();
+    test_srcds_error_parsing();
     test_overlay_paths();
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;

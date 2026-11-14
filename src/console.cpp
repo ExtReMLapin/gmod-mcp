@@ -54,14 +54,26 @@ static void flush_pending_error_locked() {
 
 static void parse_error_line(const std::string &text) {
     // GMod formats: "[ERROR] lua/x.lua:3: msg" then "  1. fn - lua/x.lua:3"; or "[addon] lua/x.lua:3: msg".
-    static const std::regex head(R"(^\[(ERROR|[^\]]+)\] (.*\.lua:\d+: .*)$)");
+    // [ERROR] lines: any source with a line number (chunks without a file: "mcpagent:lua_exec:1: msg"). Lines tagged
+    // with an addon name: a .lua file only, so ordinary "[tag] text" messages are not taken for errors.
+    static const std::regex head_err(R"(^\[ERROR\] (\S+:\d+: .*)$)");
+    static const std::regex head(R"(^\[([^\]]+)\] (.*\.lua:\d+: .*)$)");
     static const std::regex frame(R"(^\s+(\d+)\. (\S*) - (.*):(-?\d+)\s*$)");
     std::smatch m;
-    if (std::regex_match(text, m, head)) {
+    std::string message, addon;
+    bool is_head = false;
+    if (std::regex_match(text, m, head_err)) {
+        message = m[1].str();
+        is_head = true;
+    } else if (std::regex_match(text, m, head)) {
+        message = m[2].str();
+        addon = m[1].str() == "ERROR" ? "" : m[1].str();
+        is_head = true;
+    }
+    if (is_head) {
         flush_pending_error_locked();
-        g_pending_err = json{{"realm", "server"}, {"message", m[2].str()}, {"addon", m[1].str() == "ERROR" ? "" : m[1].str()},
-                             {"stack", json::array()}, {"time", uptime()}, {"source", "console"},
-                             {"map_load", g_map_load_fn ? g_map_load_fn() : 0}};
+        g_pending_err = json{{"realm", "server"}, {"message", message}, {"addon", addon}, {"stack", json::array()},
+                             {"time", uptime()}, {"source", "console"}, {"map_load", g_map_load_fn ? g_map_load_fn() : 0}};
     } else if (!g_pending_err.is_null() && std::regex_match(text, m, frame)) {
         g_pending_err["stack"].push_back(
             json{{"level", std::stoi(m[1].str())}, {"function", m[2].str()}, {"file", m[3].str()}, {"line", std::stoi(m[4].str())}});

@@ -205,7 +205,8 @@ lua_function_source {realm: "server", expr: "MyAddon.Update"}   -> source: the w
   (from the next map load).
 - The engine caches Lua files by name and file time; `lua_overlay` empties that cache when it changes (so an addon file
   and its worktree copy with the same name and time cannot be mixed up).
-- Windows only for now (the engine's filesystem interface is not verified on Linux).
+- Windows game clients only for now: not on Linux (the engine's filesystem interface is not verified there) nor on a
+  dedicated server (its filesystem interface is not reachable the same way).
 - How it works: the engine's own search paths (`IFileSystem::AddSearchPath` at the head of the Lua path IDs), put back
   in front at every map start; see [docs/REVERSE.md](docs/REVERSE.md#lua-overlay-search-paths). Nothing is written to
   the game folder.

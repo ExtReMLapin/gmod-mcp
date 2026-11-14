@@ -876,6 +876,8 @@ def case_retex():
     def ex(code, **kw):
         return call("lua_exec", dict(kw, realm=kw.get("realm", "server"), code=code))
 
+    srcds = call("status", {"fields": ["mode"]})[0].get("mode") == "srcds"
+
     sc, err = ex("return string.rep('x', 70000)", max_string=100)
     check("RETEX explicit max_string cuts and says truncated", not err and sc.get("truncated") == 1 and sc["values"][0].get("length") == 70000, sc)
     sc, err = ex("return {{{{1}}}}", depth=2)
@@ -924,13 +926,17 @@ def case_retex():
     sc, err = call("status", {"fields": ["map", "fps_max", "host_timescale"]})
     check("RETEX status fields keeps only those keys", set(sc) - {"answered_by", "relayed_by"} == {"map", "fps_max", "host_timescale", "projected"}, sc)
     # console_exec: regex filter, unknown command, archived convar warning (read only: no value given).
-    sc, err = call("console_exec", {"realm": "server", "cmd": "echo retex-a; echo retex-b", "regex": "retex-b"})
-    check("RETEX console_exec runs both statements, regex keeps one line", not err and [l["text"].strip() for l in sc.get("output", [])] == ["retex-b"] and len(sc.get("statements", [])) == 2, sc)
+    # (echo is blocked from server Lua, and srcds has no engine path: use two convars.)
+    sc, err = call("console_exec", {"realm": "server", "cmd": "sv_gravity 600; sv_friction 8", "regex": "sv_friction"})
+    check("RETEX console_exec runs both statements, regex keeps one line",
+          not err and len(sc.get("statements", [])) == 2 and len(sc.get("output", [])) <= 1
+          and all("sv_friction" in l["text"] for l in sc.get("output", [])) and set(sc.get("convars", {})) == {"sv_gravity", "sv_friction"}, sc)
     sc, err = call("console_exec", {"realm": "server", "cmd": "retex_typo_cmd 1"})
     check("RETEX unknown command is an error", err and "unknown_command" in json.dumps(sc), sc)
-    sc, err = call("console_exec", {"realm": "menu", "cmd": "fov_desired"})
-    c = sc.get("convars", {}).get("fov_desired", {})
-    check("RETEX naming an archived convar reads it back with a warning", not err and c.get("number") is not None and "ARCHIVE" in c.get("warning", ""), sc)
+    if not srcds:  # an archived client convar, read only (no value given)
+        sc, err = call("console_exec", {"realm": "menu", "cmd": "fov_desired"})
+        c = sc.get("convars", {}).get("fov_desired", {})
+        check("RETEX naming an archived convar reads it back with a warning", not err and c.get("number") is not None and "ARCHIVE" in c.get("warning", ""), sc)
     sc, err = call("convar_get", {"name": "sv_gravity", "realm": "server"})
     check("RETEX convar_get gives the number", sc.get("number") == 600, sc)
     b.close()

@@ -38,7 +38,7 @@ void register_overlay() {
          "(from the next map load). Without `path`: the current overlay and the engine's Lua search paths (lsv = "
          "server, lcl = client). A test client can also start with one: instances_launch {overlay}. empty_cache "
          "(default true) empties the engine's Lua file cache so an older copy with the same name and time is not "
-         "served. Windows only for now (unsupported_platform elsewhere).",
+         "served. Windows game clients only for now (unsupported_platform on Linux; not on a dedicated server).",
          json{{"properties",
                {{"path", {{"type", json::array({"string", "null"})},
                           {"description", "Overlay folder (absolute), or null / \"\" to remove it. Omit to read the current state."}}},
