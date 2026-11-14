@@ -21,7 +21,10 @@ static const char *kJobProtocol =
     "- job:step(): call it inside long loops; it yields only when this frame's time slice (slice_ms, default 8 ms) is used up.\n"
     "- job:yield() / job:frames(n) / job:sleep(seconds) / job:wait(fn, timeout): resume on a later frame.\n"
     "- job:report(value [, channel]): intermediate result, returned at the end and readable live with reports_read "
-    "(channel \"job:<id>\").\n"
+    "(channel \"job:<id>\"). Each report is bounded: depth 8, 5000 entries per table, strings of 1 MiB (an item the "
+    "serializer cannot take, over 20000 values, becomes a {__type=\"report_too_large\"} marker); a cut part is marked "
+    "truncated and counted in reports_truncated. At most 1000 reports are kept (more are counted in reports_dropped), "
+    "32 MiB of strings in all: put big data in the returned values or a file instead.\n"
     "- args (a global, same table as job.args): the `args` object of this call. job:elapsed(): seconds since start.\n"
     "- `return value, ...` ends the job: the values are the tool result.\n"
     "Realm: server by default (a map must be loaded); menu always exists in client mode. The code is `code`, or `path` "
@@ -63,6 +66,7 @@ static json job_result(const json &s, const json &args) {
                  {"frames", s["frames"]}, {"resumes", s["resumes"]}, {"cpu_ms", s["cpu_ms"]}, {"elapsed_s", s["elapsed_s"]},
                  {"generation", s.value("generation", json())}};
         if (s.value("reports_dropped", 0) > 0) out["reports_dropped"] = s["reports_dropped"];
+        if (s.value("reports_truncated", 0) > 0) out["reports_truncated"] = s["reports_truncated"];
         if (s.contains("truncated")) {
             out["truncated"] = s["truncated"];
             out["truncated_note"] = s.value("truncated_note", "");
@@ -78,10 +82,38 @@ static json job_result(const json &s, const json &args) {
     return agent::err("cancelled", "lua_job cancelled", json{{"job_id", id}});
 }
 
-// "server-12" -> server realm.
-static int realm_of_job(const std::string &id) {
+// "server-g3-12" -> server realm, generation 3 (the old "server-12" form has no generation).
+JobId parse_job_id(const std::string &id) {
+    JobId out;
     size_t dash = id.find('-');
-    return dash == std::string::npos ? -1 : realms::parse(id.substr(0, dash));
+    if (dash == std::string::npos) return out;
+    int realm = realms::parse(id.substr(0, dash));
+    if (realm < 0) return out;
+    out.realm = realm;
+    // "g<digits>-<n>"
+    size_t p = dash + 1;
+    if (p < id.size() && id[p] == 'g') {
+        size_t q = p + 1, end = q;
+        while (end < id.size() && id[end] >= '0' && id[end] <= '9') ++end;
+        if (end > q && end < id.size() && id[end] == '-') {
+            if (end - q > 18) return JobId{};  // not a number a Lua state could have produced
+            out.has_generation = true;
+            out.generation = std::stoull(id.substr(q, end - q));
+        }
+    }
+    return out;
+}
+
+std::string job_reset_message(const JobId &id, uint64_t current_generation) {
+    if (id.realm < 0 || !id.has_generation || id.generation == current_generation) return "";
+    return std::string("the ") + realms::name(id.realm) + " realm was re-created (map change) since this job started: the job is gone";
+}
+
+// An id from an earlier Lua state: realm_reset, without touching the new state's jobs (whose ids restart at 1).
+static json job_reset_error(const std::string &id, const JobId &jid) {
+    std::string why = job_reset_message(jid, agent::generation(jid.realm));
+    if (why.empty()) return json();
+    return agent::err("realm_reset", why, json{{"job_id", id}});
 }
 
 static json lua_job_tool(const json &args) {
@@ -175,11 +207,14 @@ static json lua_job_status_tool(const json &args) {
         return ok(json{{"jobs", all}});
     }
     std::string id = args["id"];
-    int realm = realm_of_job(id);
-    if (realm < 0) return agent::err("invalid_params", "id: expected a job id like 'server-3'");
+    JobId jid = parse_job_id(id);
+    int realm = jid.realm;
+    if (realm < 0) return agent::err("invalid_params", "id: expected a job id like 'server-g3-1'");
     double wait_s = args.value("wait_s", 0.0);
     auto t0 = Clock::now();
     for (;;) {
+        json reset = job_reset_error(id, jid);
+        if (!reset.is_null()) return reset;
         json st = agent::rt(realm, "job_poll", json{{"id", id}, {"peek", true}});
         if (!st.value("ok", false)) return st;
         const json &s = st["result"];
@@ -199,8 +234,11 @@ static json lua_job_status_tool(const json &args) {
 
 static json lua_job_cancel_tool(const json &args) {
     std::string id = args["id"];
-    int realm = realm_of_job(id);
-    if (realm < 0) return agent::err("invalid_params", "id: expected a job id like 'server-3'");
+    JobId jid = parse_job_id(id);
+    int realm = jid.realm;
+    if (realm < 0) return agent::err("invalid_params", "id: expected a job id like 'server-g3-1'");
+    json reset = job_reset_error(id, jid);
+    if (!reset.is_null()) return reset;
     json r = agent::rt(realm, "job_cancel", json{{"id", id}}, 5.0);
     if (!r.value("ok", false)) return r;
     return ok(json{{"job_id", id}, {"cancelled", r["result"].value("cancelled", false)},
@@ -247,9 +285,9 @@ void register_jobs() {
         {"lua_job_status", "State of a Lua job",
          "With id: the state of a job started by lua_job (frames, elapsed_s, cpu_ms, last progress, reports_count); once it "
          "has finished, its full result exactly like lua_job's, and the job is then forgotten. wait_s waits up to that long "
-         "for the end. Without id: every job of every realm, running or finished but not collected yet.",
+         "for the end. A job id belongs to one Lua state: after a map change (new realm) an id of the old state answers realm_reset. Without id: every job of every realm, running or finished but not collected yet.",
          json{{"properties",
-               {{"id", {{"type", "string"}, {"description", "Job id returned by lua_job (e.g. 'server-3')."}}},
+               {{"id", {{"type", "string"}, {"description", "Job id returned by lua_job (e.g. 'server-g3-1')."}}},
                 {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table."}}}}}},
@@ -257,8 +295,8 @@ void register_jobs() {
     mcp::register_tool({"lua_job_cancel", "Cancel a Lua job",
                         "Asks a running job (started by lua_job, e.g. with async: true) to stop: it ends at its next frame, before "
                         "resuming. Result: {job_id, cancelled (false if the id is unknown), note}. Its final state (cancelled) "
-                        "stays readable once with lua_job_status. Example: {\"id\": \"server-3\"}.",
-                        json{{"properties", {{"id", {{"type", "string"}, {"description", "Job id (e.g. 'server-3')."}}}}}, {"required", {"id"}}},
+                        "stays readable once with lua_job_status. Example: {\"id\": \"server-g3-1\"}.",
+                        json{{"properties", {{"id", {{"type", "string"}, {"description", "Job id (e.g. 'server-g3-1')."}}}}}, {"required", {"id"}}},
                         json{{"destructiveHint", true}}, lua_job_cancel_tool});
 }
 

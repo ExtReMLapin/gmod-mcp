@@ -326,9 +326,24 @@ end
 
 -- Public API for scripts: mcpagent.report(channel, value), mcpagent.event(type, data).
 mcpagent = mcpagent or {}
+-- Reports are streamed and kept in memory: each item is bounded (depth 8, 5000 entries per table, strings of 1 MiB,
+-- 20000 values, 1 MiB of strings in all). Returns the serialized item, whether anything was cut, and the string bytes
+-- kept. An item the serializer refuses (too many values) becomes a marker instead of an error in the script.
+function A.serialize_report(value)
+	local opts = { depth = 8, limit = 5000, maxstr = 1048576, max_nodes = 20000, max_bytes = 1048576 }
+	local ok, out = pcall(A.serialize, value, opts, 0, {})
+	if not ok then
+		local msg = A.is_fail(out) and out.message or tostring(out)
+		return { __type = "report_too_large", truncated = true, message = msg }, true, 0
+	end
+	return out, (opts.cut or 0) > 0, opts.bytes or 0
+end
+function A.send_report(channel, serialized)
+	if native.report then native.report(channel, J.encode(serialized), A.realm) end
+end
 function mcpagent.report(channel, value)
 	if type(channel) ~= "string" or channel == "" then error("mcpagent.report: expected a channel (string)", 2) end
-	if native.report then native.report(channel, J.encode(A.serialize(value, {})), A.realm) end
+	A.send_report(channel, (A.serialize_report(value)))
 end
 function mcpagent.event(etype, data)
 	if type(etype) ~= "string" then error("mcpagent.event: expected a type (string)", 2) end

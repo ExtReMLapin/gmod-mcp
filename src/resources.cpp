@@ -105,7 +105,7 @@ use `lua_job`: the script runs as a coroutine resumed once per frame and talks t
 | `job:step()` | in loops: yields once this frame's slice (`slice_ms`, default 8 ms) is used |
 | `job:yield()`, `job:frames(n)`, `job:sleep(s)` | resume on a later frame |
 | `job:wait(fn, timeout)` | resume once `fn()` is true (checked every frame); false on timeout |
-| `job:report(value [, channel])` | intermediate result: returned at the end, live through `reports_read` (`job:<id>`) |
+| `job:report(value [, channel])` | intermediate result: returned at the end, live through `reports_read` (`job:<id>`); each item is bounded (depth 8, 5000 entries, 1 MiB strings; cut parts are marked, `reports_truncated` counts them), 1000 items kept |
 | `args` (global) = `job.args`, `job:elapsed()` | call arguments, seconds since start |
 | `return ...` | final result |
 
@@ -115,7 +115,7 @@ itself). Cancelling the request stops the job at the next frame; a map change de
 
 Globals the script assigns land in the realm's `_G` and the next job sees them: pass `fresh_env: true` to keep them in the
 job's own table. `async: true` returns the job id at once: `lua_job_status {id, wait_s}` polls it and returns the result
-once finished, `lua_job_cancel {id}` stops it; a job started while another runs in the same realm gets `concurrent_jobs`.
+once finished, `lua_job_cancel {id}` stops it (ids look like `server-g3-1`: the number after `g` is the realm's generation, so after a map change an old id answers `realm_reset` instead of reaching a newer job); a job started while another runs in the same realm gets `concurrent_jobs`.
 Pitfall: `EyePos()` / `EyeAngles()` are only reliable inside rendering hooks (wiki); a job runs outside them (agents saw
 (0,0,0)): use `LocalPlayer():EyePos()` / `LocalPlayer():EyeAngles()`.
 

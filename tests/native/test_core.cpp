@@ -13,6 +13,7 @@
 #include "coordinator.h"
 #include "mcp.h"
 #include "lua_mount.h"
+#include "realms.h"
 #include "resources.h"
 #include "tools.h"
 #include "util.h"
@@ -344,6 +345,35 @@ static void test_argcheck() {
     CHECK(argcheck::check(json::object(), json::parse(R"({"anything":1})")).empty());  // no properties declared: anything
 }
 
+// lua_job ids carry the realm's generation ("server-g3-1"): job_seq restarts in every new Lua state, so "server-1" of
+// one map is another job on the next map. A status/cancel with an id of an earlier generation must say realm_reset
+// and never reach the new state's jobs.
+static void test_job_ids() {
+    tools::JobId a = tools::parse_job_id("server-g3-1");
+    CHECK(a.realm == realms::SERVER && a.has_generation && a.generation == 3);
+    tools::JobId b = tools::parse_job_id("client-g12-340");
+    CHECK(b.realm == realms::CLIENT && b.has_generation && b.generation == 12);
+    tools::JobId m = tools::parse_job_id("menu-g1-7");
+    CHECK(m.realm == realms::MENU && m.generation == 1);
+    // Old form (no generation): the realm still parses, nothing to compare.
+    tools::JobId old = tools::parse_job_id("server-3");
+    CHECK(old.realm == realms::SERVER && !old.has_generation);
+    // Garbage.
+    CHECK(tools::parse_job_id("").realm < 0);
+    CHECK(tools::parse_job_id("nodash").realm < 0);
+    CHECK(tools::parse_job_id("bogus-g1-1").realm < 0);
+    CHECK(tools::parse_job_id("server-g-1").realm == realms::SERVER && !tools::parse_job_id("server-g-1").has_generation);
+    CHECK(!tools::parse_job_id("server-gx-1").has_generation);
+    CHECK(tools::parse_job_id("server-g99999999999999999999999-1").realm < 0);
+    // The decision: same generation keeps the job reachable, another generation is realm_reset.
+    CHECK(tools::job_reset_message(a, 3).empty());
+    CHECK(!tools::job_reset_message(a, 4).empty());
+    CHECK(tools::job_reset_message(a, 4).find("server realm was re-created") != std::string::npos);
+    CHECK(tools::job_reset_message(a, 4).find("job is gone") != std::string::npos);
+    CHECK(tools::job_reset_message(b, 13).find("client realm") != std::string::npos);
+    CHECK(tools::job_reset_message(old, 99).empty());  // no generation in the id: the Lua side answers not_found
+}
+
 int main() {
     test_cmdline();
     test_console_wait();
@@ -352,6 +382,7 @@ int main() {
     test_srcds_error_parsing();
     test_edge_cases();
     test_argcheck();
+    test_job_ids();
     test_lua_mount_paths();
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;

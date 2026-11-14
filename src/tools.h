@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
@@ -51,6 +52,15 @@ std::string forbidden_network_cmd(const std::string &line);
 
 // The `job` protocol of lua_job (tool description, also used by the write-lua-job prompt).
 const char *job_protocol();
+// lua_job ids: "<realm>-g<generation>-<n>" (e.g. "server-g3-1"); the old "<realm>-<n>" still parses (no generation).
+struct JobId {
+    int realm = -1;  // -1: not a job id
+    bool has_generation = false;
+    uint64_t generation = 0;
+};
+JobId parse_job_id(const std::string &id);
+// "" if the job may still exist; otherwise why not: the id was issued by an earlier Lua state of its realm (map change).
+std::string job_reset_message(const JobId &id, uint64_t current_generation);
 // Wiki helpers shared with resources and completion.
 json wiki_page_tool(const json &args);  // {name, format?, refresh?} -> tool result
 std::set<std::string> pagelist_from_cache();  // never hits the network
