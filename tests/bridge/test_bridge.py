@@ -985,7 +985,89 @@ def case_overlay_live():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live}
+def case_edge_live():
+    """Live edge cases (Windows, Steam running, no other game): async jobs and map loads, cancel twice, yield inside
+    pcall, 100 async jobs, overlay switch / removal / deleted folder / accented path, closing a client while it loads."""
+    print("== EDGE LIVE: corner cases against a real client", flush=True)
+    import shutil
+    b = Bridge(27080)
+
+    def call(tool, args, timeout=300):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    sc, err = call("instances_launch", {"count": 1, "map": "gm_construct", "owner": "edge-live", "sound": False})
+    inst = (sc.get("instances") or [{}])[0].get("instance")
+    check("EDGE client launched", not err and inst, sc)
+    if not inst:
+        b.close(); return
+    I = {"instance": inst}
+
+    # Jobs.
+    sc, err = call("lua_job", dict(I, realm="server", code="local ok, v = pcall(function() job:frames(3) return 7 end) return ok, v"))
+    check("EDGE job:frames inside pcall resumes and returns", not err and sc.get("values") == [True, 7], sc)
+    sc, err = call("lua_job", dict(I, realm="server", **{"async": True}, code="job:sleep(60) return 1"))
+    jid = sc.get("job_id")
+    sc1, err1 = call("lua_job_cancel", dict(I, id=jid))
+    sc2, err2 = call("lua_job_cancel", dict(I, id=jid))
+    check("EDGE cancel twice: both answer, no crash", not err1 and not err2, [sc1, sc2])
+    ids = []
+    for k in range(100):
+        sc, err = call("lua_job", dict(I, realm="server", **{"async": True}, code="job:frames(1 + args.k % 5) return args.k", args={"k": k}), 30)
+        ids.append(sc.get("job_id"))
+    vals = []
+    for jid2 in ids:
+        sc, err = call("lua_job_status", dict(I, id=jid2, wait_s=20), 40)
+        vals.append((sc.get("values") or [None])[0])
+    check("EDGE 100 async jobs all return their own value", vals == list(range(100)), vals[:10])
+    sc, err = call("lua_job", dict(I, realm="server", **{"async": True}, code="job:sleep(120) return 1"))
+    jid3 = sc.get("job_id")
+    call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
+    sc, err = call("lua_job_status", dict(I, id=jid3))
+    check("EDGE async job of a realm destroyed by map_load: a clear error", err and ("not_found" in json.dumps(sc) or "realm" in json.dumps(sc)), sc)
+
+    # Overlay corner cases.
+    base = tempfile.mkdtemp(prefix="gmcp-edge-")
+    ova = os.path.join(base, "ov A é")
+    ovb = os.path.join(base, "ovB")
+    for d, tag in ((ova, "edgeA"), (ovb, "edgeB")):
+        os.makedirs(os.path.join(d, "lua", "mcpagent_tmp"))
+        with open(os.path.join(d, "lua", "mcpagent_tmp", "edge_ov.lua"), "w", encoding="utf-8") as f:
+            f.write("return '%s'\n" % tag)
+    sc, err = call("lua_overlay", dict(I, path=None))
+    check("EDGE removing an overlay when none is set is fine", not err, sc)
+    sc, err = call("lua_overlay", dict(I, path=ova))
+    check("EDGE overlay with spaces and an accent in the path", not err and sc.get("mount_hook") is True, sc)
+    sc, err = call("lua_overlay", dict(I, path=ovb))
+    check("EDGE switching A -> B without a map load: A removed", not err and sc.get("removed", {}).get("lsv:lua") is True, sc)
+    call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
+    sc, err = call("lua_exec", dict(I, realm="server", code="return include('mcpagent_tmp/edge_ov.lua')"))
+    check("EDGE after the map load B is served, not A", sc.get("values") == ["edgeB"], sc)
+    shutil.rmtree(ovb, ignore_errors=True)
+    call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
+    sc, err = call("lua_exec", dict(I, realm="server", code="return GAMEMODE ~= nil, file.Exists('mcpagent_tmp/edge_ov.lua', 'LUA')"))
+    check("EDGE overlay folder deleted while set: the map still loads, the file is just gone", sc.get("values") == [True, False], sc)
+    sc, err = call("lua_overlay", dict(I))
+    check("EDGE overlay status still answers (base Lua mounted)", not err and sc.get("base_lua_mounted") is True, sc)
+    call("lua_overlay", dict(I, path=None))
+    shutil.rmtree(base, ignore_errors=True)
+
+    # Close a client while it is still loading its map.
+    rid = b.start("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "map": "gm_construct", "owner": "edge-loading", "sound": False}})
+    time.sleep(8)
+    sc, err = call("instances_close", {"owner": "edge-loading"}, 60)
+    r = b.wait(rid, 300)
+    check("EDGE closing a client by owner while instances_launch waits: the launch call ends (no hang)", r is not None, r)
+    time.sleep(2)
+    sc, err = call("instances_list", {"owner": "edge-loading"})
+    check("EDGE the closed loading client is gone", not sc.get("instances") and not sc.get("launched_not_answering"), sc)
+
+    call("instances_close", {"owner": "edge-live"}, 60)
+    b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live, "edge_live": case_edge_live}
 for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "overlay", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)

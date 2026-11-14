@@ -185,6 +185,7 @@ static json status_tool(const json &args) {
            {"pid", plat::process_id()},
            {"port", c.port},
            {"coordinator", coordinator::is_coordinator()},
+           {"coordinator_link", coordinator::link_state()},
            {"uptime_s", console::uptime()},
            {"frames", jobs::frame_count()},
            {"last_tick_age_s", since},

@@ -187,9 +187,30 @@ static json relay(const std::string &instance, const std::string &tool, const js
 }
 
 // Member side: one heartbeat; returns true when the coordinator answered.
+// State of this member's link to the coordinator, for status: "registered", "refused" (another token: the coordinator
+// answers 401, so this game is not reachable through it) or "unreachable".
+static std::mutex g_link_mu;
+static std::string g_link = "unknown";
+std::string link_state() {
+    if (is_coordinator()) return "coordinator";
+    std::lock_guard<std::mutex> lk(g_link_mu);
+    return g_link;
+}
+static void set_link(const std::string &state) {
+    std::lock_guard<std::mutex> lk(g_link_mu);
+    if (state == g_link) return;
+    g_link = state;
+    if (state == "refused")
+        logx::warn("the coordinator on port %d refused this instance (HTTP 401: it uses another token). This game is not "
+                   "reachable through it: give every game the same gmod-mcp config folder (APPDATA on Windows, "
+                   "XDG_CONFIG_HOME or ~/.config on Linux)", agent::config().base_port);
+}
+
 static bool heartbeat() {
     auto cli = client(agent::config().base_port, 3);
     auto res = cli->Post("/internal/heartbeat", self_info().dump(), "application/json");
+    if (res && (res->status == 401 || res->status == 403)) set_link("refused");
+    else set_link(res && res->status == 200 ? "registered" : "unreachable");
     return res && res->status == 200;
 }
 
