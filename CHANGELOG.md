@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.4
+
+### New
+
+- **Agents report their frictions with gmod-mcp, with the user's agreement.** The server instructions, the guide
+  ("Reporting frictions") and the skill ask agents to note what got in their way with gmod-mcp (a wrong or unclear
+  description, an error without a reason, a missing tool, a workaround they had to write) and, at the end of a task,
+  to offer once to report what cost real time or a feature. The issue is public and in English: no secrets, paths,
+  project names or code; it names the coding agent, the model and the versions. Agents look for duplicates, file it
+  with `gh` when it is signed in, otherwise give a prefilled link. New issue template and `agent-feedback` label.
+- **Plugin option `feedback_offers`** (on by default): turns these offers off. Set it with
+  `/plugin configure gmod-mcp@gmod-mcp`, or ask the agent to stop offering: it sets the option for you. Restart
+  Claude Code after a change.
+
+### Upgrading
+
+- Update the plugin (auto-update, or `claude plugin update gmod-mcp@gmod-mcp`), restart Claude Code, then let Claude
+  update the module in the game (quit it first) when the version warning asks for it.
+
 ## 0.3.3
 
 ### Fixes
