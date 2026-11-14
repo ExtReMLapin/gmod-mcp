@@ -6,7 +6,13 @@ local dir = arg[1] or "src/lua"
 SysTime = os.clock
 CurTime = os.clock
 MENU_DLL, SERVER, CLIENT = nil, true, nil
-function CompileString(code, chunk) return loadstring(code, chunk) end
+-- Like GMod: with handleError false, a syntax error is returned as a string instead of a function.
+function CompileString(code, chunk, handle)
+	local f, e = loadstring(code, chunk)
+	if f then return f end
+	if handle == false then return e end
+	error(e)
+end
 util = {}
 Vector = function(x, y, z) return { x = x, y = y, z = z } end
 Angle = function(p, y, r) return { p = p, y = y, r = r } end
@@ -14,7 +20,7 @@ IsColor = function() return false end
 
 __mcpagent = {}
 __mcpagent_native = { realm = "server", mode = "client", version = "test", generation = 7 }
-for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "25_jobs.lua" }) do
+for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua" }) do
 	local f = assert(loadfile(dir .. "/" .. name))
 	f()
 end
@@ -166,6 +172,149 @@ H.job_tick()
 A.jobs[s3.result.id].finished = SysTime() - 1000
 H.job_tick()
 check(A.jobs[s3.result.id] ~= nil, "async result kept after 300 s")
+
+-- ===================== Edge cases =====================
+-- Strict UTF-8 check (what nlohmann::json::parse on the C++ side accepts): no overlongs, no surrogates, <= U+10FFFF.
+local function strict_utf8(str)
+	local i, n = 1, #str
+	while i <= n do
+		local c = str:byte(i)
+		if c < 0x80 then i = i + 1
+		else
+			local need, lo, hi
+			if c >= 0xC2 and c <= 0xDF then need, lo, hi = 1, 0x80, 0xBF
+			elseif c == 0xE0 then need, lo, hi = 2, 0xA0, 0xBF
+			elseif c == 0xED then need, lo, hi = 2, 0x80, 0x9F
+			elseif c >= 0xE1 and c <= 0xEF then need, lo, hi = 2, 0x80, 0xBF
+			elseif c == 0xF0 then need, lo, hi = 3, 0x90, 0xBF
+			elseif c == 0xF4 then need, lo, hi = 3, 0x80, 0x8F
+			elseif c >= 0xF1 and c <= 0xF3 then need, lo, hi = 3, 0x80, 0xBF
+			else return false, i end
+			if i + need > n then return false, i end
+			local c2 = str:byte(i + 1)
+			if c2 < lo or c2 > hi then return false, i end
+			for k = 2, need do local cc = str:byte(i + k) if cc < 0x80 or cc > 0xBF then return false, i end end
+			i = i + need + 1
+		end
+	end
+	return true
+end
+local function raw(tool, args) return A.dispatch(J.encode({ tool = tool, args = args })) end
+
+-- Binary strings and every malformed UTF-8 shape must give strictly valid JSON (else the C++ side fails to parse
+-- the runtime's answer: bad_runtime_output).
+for _, case in ipairs({
+	{ "nul byte", "a\\0b" }, { "lone 0xFB", "\\251" }, { "lone continuation", "\\128" },
+	{ "overlong 2-byte", "\\192\\175" }, { "overlong 3-byte", "\\224\\128\\175" },
+	{ "UTF-16 surrogate in UTF-8", "\\237\\160\\128" }, { "above U+10FFFF", "\\244\\144\\128\\128" },
+	{ "truncated 3-byte", "x\\226\\130" }, { "valid euro sign", "\\226\\130\\172" }, { "valid emoji", "\\240\\159\\152\\128" },
+}) do
+	local out = raw("lua_exec", { code = "return '" .. case[2] .. "'" })
+	local ok, at = strict_utf8(out)
+	check(ok, "strict UTF-8 output for " .. case[1] .. (ok and "" or (" (bad byte at " .. tostring(at) .. ")")))
+end
+-- Valid UTF-8 comes back unchanged.
+r = call("lua_exec", { code = "return '\\226\\130\\172 \\240\\159\\152\\128'" })
+check(r.ok and r.result.values[1] == "\226\130\172 \240\159\152\128", "valid UTF-8 unchanged")
+-- Numbers.
+r = call("lua_exec", { code = "return 0/0, 1/0, -1/0, -0, 2^53, 2^63, 1e308, 5e-324, 0.1" })
+local v = r.ok and r.result.values or {}
+check(r.ok and v[1].value == "nan" and v[2].value == "inf" and v[3].value == "-inf", "nan/inf/-inf tagged")
+check(r.ok and v[4] == 0 and v[5] == 2^53 and v[6] == 2^63 and v[7] == 1e308 and v[8] == 5e-324 and v[9] == 0.1, "number round trip")
+-- Odd tables.
+r = call("lua_exec", { code = "return { [1] = 'a', [3] = 'c' }, { 'x', k = 'y' }, { [true] = 1, [false] = 2 }, { [{}] = 1 }, { [print] = 1 }, { [1.5] = 1 }, {}" })
+v = r.ok and r.result.values or {}
+check(r.ok and v[1]["[1]"] == "a" and v[1]["[3]"] == "c", "sparse array as an object")
+check(r.ok and v[2]["[1]"] == "x" and v[2].k == "y", "mixed table")
+check(r.ok and v[3]["[boolean:true]"] == 1 and v[3]["[boolean:false]"] == 2, "boolean keys")
+local tk, fk = 0, 0
+for k in pairs(v[4] or {}) do if k:find("^%[table:") then tk = tk + 1 end end
+for k in pairs(v[5] or {}) do if k:find("^%[function:") then fk = fk + 1 end end
+check(tk == 1 and fk == 1, "table and function keys named by type")
+check(r.ok and v[6]["[1.5]"] == 1, "fractional key")
+check(r.ok and type(v[7]) == "table" and next(v[7]) == nil, "empty table")
+-- Depth beyond the hard cap: cut and flagged, no stack overflow.
+r = call("lua_exec", { code = "local t = {} local c = t for i = 1, 5000 do c.n = {} c = c.n end return t" })
+check(r.ok and r.result.truncated == 1, "5000-deep table cut at the hard cap, flagged")
+-- Metatables that throw while being serialized.
+r = call("lua_exec", { code = "return setmetatable({ a = 1 }, { __index = function() error('idx') end, __tostring = function() error('ts') end })" })
+check(r.ok and r.result.values[1].a == 1, "throwing __index/__tostring on a table")
+r = call("lua_exec", { code = "return setmetatable({}, { __metatable = 'locked' })" })
+check(r.ok, "protected metatable")
+r = call("lua_exec", { code = "return newproxy and setmetatable and newproxy(true) or 1" })
+check(r.ok, "plain userdata")
+r = call("lua_exec", { code = "local u = newproxy(true) getmetatable(u).__tostring = function() error('ud ts') end return u" })
+check(r.ok and r.result.values[1].__type == "userdata", "userdata whose __tostring throws")
+-- Errors of every shape.
+r = call("lua_exec", { code = "error(nil)" })
+check(not r.ok and r.error.code == "lua_error", "error(nil)")
+r = call("lua_exec", { code = "error({ code = 42 })" })
+check(not r.ok and r.error.code == "lua_error" and type(r.error.message) == "string", "error(table)")
+r = call("lua_exec", { code = "error(setmetatable({}, { __tostring = function() return 'custom' end }))" })
+check(not r.ok and r.error.message == "custom", "error object with __tostring")
+r = call("lua_exec", { code = "error(setmetatable({}, { __tostring = function() error('ts fails') end }))" })
+check(not r.ok and r.error.code == "lua_error", "error object whose __tostring throws")
+local out = raw("lua_exec", { code = "error(setmetatable({}, { __tostring = function() error('ts fails') end }))" })
+check(pcall(J.decode, out), "dispatch still answers JSON when the error's __tostring throws")
+r = call("lua_exec", { code = "error('\\251 bad bytes')" })
+check(not r.ok and strict_utf8(raw("lua_exec", { code = "error('\\251 bad bytes')" })), "error message with invalid UTF-8")
+r = call("lua_exec", { code = "return" })
+check(r.ok and r.result.n == 0, "no return value")
+r = call("lua_exec", { code = "return nil, nil" })
+check(r.ok and r.result.n == 2, "two nils counted")
+r = call("lua_exec", { code = "print('a\\0b\\251') return 1" })
+check(r.ok and strict_utf8(raw("lua_exec", { code = "print('a\\0b\\251') return 1" })), "captured output with binary bytes")
+-- Syntax errors and odd code.
+r = call("lua_exec", { code = "" })
+check(r.ok and r.result.n == 0, "empty code")
+r = call("lua_exec", { code = "return 1 +" })
+check(not r.ok and r.error.code == "lua_syntax_error", "syntax error")
+r = call("lua_exec", { code = "\\239\\187\\191return 1" })
+check(r.ok or (not r.ok and r.error.code == "lua_syntax_error"), "BOM at the start: clean answer")
+r = call("lua_exec", {})
+check(not r.ok and r.error.code == "invalid_params", "missing code")
+r = call("no_such_tool", {})
+check(not r.ok and r.error.code == "unknown_tool", "unknown tool")
+check(J.decode(A.dispatch("not json")).ok == false, "bad request payload")
+
+-- Jobs: error after reports, yield inside pcall, nothing returned, cancel twice, unknown id, many jobs.
+r = run_job({ code = "job:report('r1') job:frames(1) error('late failure')" })
+check(not r.ok or r.result.state == "failed", "job failing after a report")
+local st = call("job_start", { code = "job:report('r1') job:frames(1) error('late failure')" })
+for _ = 1, 5 do H.job_tick() end
+local p2 = call("job_poll", { id = st.result.id })
+check(p2.ok and p2.result.state == "failed" and #p2.result.reports == 1 and p2.result.error.message:find("late failure"), "failed job keeps its reports and message")
+r = run_job({ code = "local ok, v = pcall(function() job:frames(2) return 7 end) return ok, v" })
+check(r.ok and r.result.values[1] == true and r.result.values[2] == 7, "yield inside pcall")
+r = run_job({ code = "local ok, e = pcall(function() job:frames(1) error('inner') end) return ok, e ~= nil" })
+check(r.ok and r.result.values[1] == false and r.result.values[2] == true, "error caught by pcall across a yield")
+r = run_job({ code = "job:frames(1)" })
+check(r.ok and r.result.state == "done" and r.result.n == 0, "job returning nothing")
+st = call("job_start", { code = "job:sleep(60)" })
+local c1, c2 = call("job_cancel", { id = st.result.id }), call("job_cancel", { id = st.result.id })
+check(c1.ok and c2.ok and c1.result.cancelled and c2.result.cancelled, "cancel twice")
+H.job_tick()
+check(call("job_poll", { id = st.result.id }).result.state == "cancelled", "cancelled after a double cancel")
+check(call("job_cancel", { id = "server-999999" }).result.cancelled == false, "cancel of an unknown id")
+local up = call("job_poll", { id = "server-999999" })
+check(not up.ok and up.error.code == "not_found", "poll of an unknown id")
+local ids = {}
+for i = 1, 100 do ids[i] = call("job_start", { code = "job:frames(" .. (i % 3 + 1) .. ") return " .. i, async = true }).result.id end
+for _ = 1, 10 do H.job_tick() end
+local good = 0
+for i = 1, 100 do
+	local p = call("job_poll", { id = ids[i] })
+	if p.ok and p.result.state == "done" and p.result.values[1] == i then good = good + 1 end
+end
+check(good == 100, "100 jobs at once all finish with their own result (" .. good .. ")")
+local lst = call("job_list", {})
+local still = 0
+for _, j in ipairs(lst.result.jobs) do for i = 1, 100 do if j.id == ids[i] then still = still + 1 end end end
+check(still == 0, "collected jobs leave job_list")
+r = run_job({ code = "job:sleep(0) job:sleep(-5) job:frames(0) job:frames('x') return 1" })
+check(r.ok and r.result.state == "done", "odd sleep/frames arguments do not break the job")
+r = run_job({ code = "coroutine.yield('weird', 1) return 2" })
+check(r.ok and r.result.values[1] == 2, "plain coroutine.yield with odd values")
 
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)
