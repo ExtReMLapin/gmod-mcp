@@ -107,7 +107,7 @@ add_custom_command(
   COMMENT "Building the bridge's offline snapshot")
 
 # --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
-add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/util.cpp src/overlay_path.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H})
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/util.cpp src/overlay_path.cpp src/argcheck.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H})
 target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)
 if(MSVC)

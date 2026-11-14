@@ -46,6 +46,19 @@ bool normalize_root(const std::string &in, std::string &root, std::string &err) 
     return true;
 }
 
-std::string refuse_inside_game(const std::string &, const std::string &) { return ""; }
+std::string refuse_inside_game(const std::string &root, const std::string &game_dir) {
+    if (game_dir.empty()) return "";
+    auto norm = [](const std::string &p) {
+        std::string s = util::to_lower(fs::u8path(p).lexically_normal().make_preferred().u8string());
+        while (s.size() > 3 && (s.back() == '/' || s.back() == '\\')) s.pop_back();
+        return s;
+    };
+    std::string r = norm(root), g = norm(game_dir);
+    std::string sep(1, (char)fs::path::preferred_separator);
+    if (r == g || r.rfind(g + sep, 0) == 0)
+        return "the overlay folder is inside the game folder (" + game_dir + "), which the engine already searches: overlaying "
+               "it would only reorder the game's own paths. Pass a folder outside the game, e.g. your git worktree";
+    return "";
+}
 
 }  // namespace overlay

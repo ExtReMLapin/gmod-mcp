@@ -14,6 +14,8 @@ static json lua_overlay_tool(const json &args) {
     if (set && args["path"].is_string() && !args["path"].get<std::string>().empty()) {
         std::string e;
         if (!overlay::normalize_root(args["path"].get<std::string>(), root, e)) return agent::err("invalid_params", e);
+        e = overlay::refuse_inside_game(root, agent::config().game_dir);
+        if (!e.empty()) return agent::err("invalid_params", e);
     }
     std::string why;
     if (!overlay::supported(&why)) return agent::err("unsupported_platform", why);

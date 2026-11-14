@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "agent.h"
+#include "argcheck.h"
 #include "cmdline.h"
 #include "console.h"
 #include "coordinator.h"
@@ -304,6 +305,46 @@ static void test_edge_cases() {
     fs::remove_all(t, ec);
 }
 
+// Bridge tools' argument check (edge cases 2026-11-14: count 0 started a launch with nothing, overlay: 5 and
+// preset: "turbo" were ignored and real clients were started).
+static void test_argcheck() {
+    json schema = json::parse(R"({"type":"object","additionalProperties":false,"required":["name"],"properties":{
+        "name":{"type":"string","minLength":1,"maxLength":8,"pattern":"^[a-z]+$"},
+        "count":{"type":"integer","minimum":1,"maximum":8},
+        "ratio":{"type":"number","minimum":0},
+        "preset":{"type":"string","enum":["light","normal"]},
+        "flag":{"type":"boolean"},
+        "target":{"type":["string","null"]},
+        "pids":{"type":"array","items":{"type":"integer","minimum":1},"minItems":1,"maxItems":3}}})");
+    auto ok = [&](const char *a) { return argcheck::check(schema, json::parse(a)).empty(); };
+    auto bad = [&](const char *a, const char *word) {
+        std::string e = argcheck::check(schema, json::parse(a));
+        return !e.empty() && e.find(word) != std::string::npos;
+    };
+    CHECK(ok(R"({"name":"abc"})"));
+    CHECK(ok(R"({"name":"abc","count":8,"ratio":0.5,"preset":"light","flag":true,"target":null,"pids":[1,2]})"));
+    CHECK(ok(R"({"name":"abc","target":"x","count":1.0})"));  // 1.0 is an integer in JSON Schema
+    CHECK(bad(R"({})", "name"));
+    CHECK(bad(R"({"name":"abc","count":0})", "count"));
+    CHECK(bad(R"({"name":"abc","count":9})", "count"));
+    CHECK(bad(R"({"name":"abc","count":"two"})", "count"));
+    CHECK(bad(R"({"name":"abc","count":1.5})", "count"));
+    CHECK(bad(R"({"name":"abc","ratio":-1})", "ratio"));
+    CHECK(bad(R"({"name":"abc","preset":"turbo"})", "preset"));
+    CHECK(bad(R"({"name":"abc","flag":"yes"})", "flag"));
+    CHECK(bad(R"({"name":"abc","target":5})", "target"));
+    CHECK(bad(R"({"name":"abc","pids":"abc"})", "pids"));
+    CHECK(bad(R"({"name":"abc","pids":[]})", "pids"));
+    CHECK(bad(R"({"name":"abc","pids":[1,2,3,4]})", "pids"));
+    CHECK(bad(R"({"name":"abc","pids":[0]})", "pids"));
+    CHECK(bad(R"({"name":""})", "name"));
+    CHECK(bad(R"({"name":"abcdefghi"})", "name"));
+    CHECK(bad(R"({"name":"ABC"})", "name"));
+    CHECK(bad(R"({"name":"abc","other":1})", "other"));
+    CHECK(bad(R"([1,2])", "object"));
+    CHECK(argcheck::check(json::object(), json::parse(R"({"anything":1})")).empty());  // no properties declared: anything
+}
+
 int main() {
     test_cmdline();
     test_console_wait();
@@ -311,6 +352,7 @@ int main() {
     test_small_b6();
     test_srcds_error_parsing();
     test_edge_cases();
+    test_argcheck();
     test_overlay_paths();
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;

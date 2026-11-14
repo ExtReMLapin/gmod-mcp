@@ -167,6 +167,7 @@ static bool start(lua_State *L) {
     if (!ov.empty()) {
         std::string root, oerr, why;
         if (!overlay::normalize_root(ov, root, oerr)) logx::warn("-mcp_overlay ignored: %s", oerr.c_str());
+        else if (!(oerr = overlay::refuse_inside_game(root, cfg.game_dir)).empty()) logx::warn("-mcp_overlay ignored: %s", oerr.c_str());
         else if (!overlay::supported(&why)) logx::warn("-mcp_overlay ignored: %s", why.c_str());
         else {
             nlohmann::json r = overlay::set(root, false);

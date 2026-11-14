@@ -50,18 +50,12 @@ static std::string forbidden_one(const std::string &cmd) {
     return "";
 }
 
+// Checks the very statements console_exec will run (cmdline::split_statements): a separate splitter here kept a quote
+// open across a line break, so 'echo "a<newline>connect x' passed as one echo and ran as an echo plus a connect.
 std::string forbidden_network_cmd(const std::string &line) {
-    std::string cur;
-    bool inq = false;
-    for (char c : line + ";") {
-        if (c == '"') inq = !inq;
-        if (!inq && (c == ';' || c == '\n' || c == '\r')) {
-            std::string why = forbidden_one(cur);
-            if (!why.empty()) return why;
-            cur.clear();
-        } else {
-            cur += c;
-        }
+    for (const auto &st : cmdline::split_statements(line)) {
+        std::string why = forbidden_one(st);
+        if (!why.empty()) return why;
     }
     return "";
 }

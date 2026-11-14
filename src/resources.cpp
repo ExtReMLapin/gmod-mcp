@@ -274,7 +274,7 @@ json read(const std::string &uri) {
                                   {"tmp_dir", c.tmp_dir},
                                   {"data_dir", c.data_dir},
                                   {"version", c.version}}
-                                 .dump(2)}};
+                                 .dump(2, ' ', false, json::error_handler_t::replace)}};  // paths need not be UTF-8
     return read_dynamic(uri);
 }
 

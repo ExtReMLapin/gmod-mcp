@@ -38,6 +38,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include "argcheck.h"
 #include "bridge_snapshot.h"
 #include "mcp_protocol.h"
 #include "platform/platform.h"
@@ -906,6 +907,10 @@ json launch_tool(const json &args, const json &token) {
     std::string how, root = find_game_root(args.value("game_dir", ""), how);
     if (root.empty())
         return tool_error("game_not_found", "Garry's Mod not found (" + how + "): pass game_dir, the folder holding gmod_win64.exe (the gmod-mcp skill explains how to find it)");
+    if (!overlay_root.empty()) {
+        std::string inside = overlay::refuse_inside_game(overlay_root, root + "/garrysmod");
+        if (!inside.empty()) return tool_error("invalid_params", "overlay: " + inside);
+    }
     // Fixed option set (no free arguments). The light preset comes from measurements of what actually saves CPU and
     // memory per client.
     std::string opts = "-multirun -mcp -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
@@ -1109,6 +1114,16 @@ void handle_bridge_tool(const json &msg) {
     json args = p.value("arguments", json::object());
     if (!args.is_object()) args = json::object();
     json token = p.value("_meta", json::object()).value("progressToken", json());
+    // Arguments are checked against the tool's own schema first: an unchecked count 0, overlay 5 or preset "turbo" used
+    // to be ignored or defaulted, and a launch went ahead anyway.
+    for (const auto &t : bridge_tools())
+        if (t.value("name", "") == name) {
+            std::string e = argcheck::check(t.value("inputSchema", json::object()), p.contains("arguments") ? p["arguments"] : json::object());
+            if (!e.empty()) {
+                out(local_result(msg, tool_error("invalid_params", e)));
+                return;
+            }
+        }
     json res;
     if (name == kLaunchName) res = launch_tool(args, token);
     else if (name == kCloseName) res = close_tool(args);

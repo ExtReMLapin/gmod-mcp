@@ -985,8 +985,56 @@ def case_overlay_live():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "overlay", "orphan", "fuzz"]:
+def case_edge():
+    """Edge cases of the bridge's own tools, no game (2026-11-14): nothing launched, unicode owners, wrong argument
+    types, an overlay inside the game folder."""
+    print("== EDGE: bridge tools with odd input (no game)", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env)
+
+    def call(tool, args, timeout=20):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        if r is None: return None, None
+        if "error" in r: return r["error"], True  # JSON-RPC level error (schema)
+        res = r.get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    sc, err = call("instances_close", {"owner": "nobody"})
+    check("EDGE close by owner with nothing launched: an error, nothing closed", err and not (sc or {}).get("closed"), sc)
+    sc, err = call("instances_list", {"owner": "équipe-中文"})
+    check("EDGE instances_list with a unicode owner and no game: empty, no error", err is False and sc.get("instances") == [] and sc.get("owner_filter") == "équipe-中文", sc)
+    # game_dir points nowhere: even if a check regressed, no real game could start from this test.
+    nowhere = os.path.join(tempfile.gettempdir(), "gmcp-no-game-here")
+    for tool, args, key in (("instances_launch", {"count": "two"}, "count"), ("instances_launch", {"count": 0}, "count"),
+                            ("instances_launch", {"count": 99}, "count"), ("instances_launch", {"overlay": 5}, "overlay"),
+                            ("instances_launch", {"preset": "turbo"}, "preset"), ("instances_launch", {"sound": "no"}, "sound"),
+                            ("instances_launch", {"map": "../../etc"}, "map"), ("instances_launch", {"bogus": 1}, "bogus"),
+                            ("instances_close", {"pids": "abc"}, "pids"), ("instances_close", {"pids": [-1]}, None),
+                            ("instances_close", {"owner": 12}, "owner"), ("instances_close", {"instances": "client-1"}, "instances"),
+                            ("instance_select", {"instance": 5}, "instance")):
+        if tool == "instances_launch": args = dict(args, game_dir=nowhere)
+        sc, err = call(tool, args)
+        check("EDGE %s %s refused, naming the argument" % (tool, json.dumps(args)),
+              err is True and (key is None or key in json.dumps(sc)), sc)
+    sc, err = call("instances_launch", {"overlay": "relative/path"})
+    check("EDGE overlay relative path refused before launching", err and "absolute" in json.dumps(sc), sc)
+    if os.name == "nt":
+        import shutil
+        game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+        fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+        if os.path.exists(fake): shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        inside = os.path.join(game, "garrysmod", "addons", "myaddon")
+        os.makedirs(os.path.join(inside, "lua"))
+        sc, err = call("instances_launch", {"overlay": inside, "game_dir": game, "timeout_s": 10}, 30)
+        check("EDGE overlay inside the game folder refused before launching", err and "inside the game folder" in json.dumps(sc), sc)
+        shutil.rmtree(game, ignore_errors=True)
+    r = b.req("ping", {}, 5)
+    check("EDGE bridge still answers after the odd calls", r is not None and "result" in r, r)
+    b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live, "edge": case_edge}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "overlay", "orphan", "edge", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))
