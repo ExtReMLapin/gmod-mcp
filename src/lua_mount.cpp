@@ -1,4 +1,4 @@
-#include "overlay.h"
+#include "lua_mount.h"
 
 #include <algorithm>
 #include <cstring>
@@ -12,7 +12,7 @@
 #include "platform/platform.h"
 #include "util.h"
 
-namespace overlay {
+namespace lua_mount {
 
 using nlohmann::json;
 namespace fs = std::filesystem;
@@ -66,8 +66,8 @@ static bool ensure(std::string &err) {
     if (!g_ls) g_ls = static_cast<GarrysMod::Lua::ILuaShared *>(get_iface(plat::lua_shared_names(), GMOD_LUASHARED_INTERFACE));
     if (!g_fs)
         err = agent::config().mode == agent::Mode::Dedicated
-                  ? "the Lua overlay is not supported on a dedicated server yet (its filesystem interface is not found); use "
-                    "it on a game client (instances_launch {overlay})"
+                  ? "the Lua mount is not supported on a dedicated server yet (its filesystem interface is not found); use "
+                    "it on a game client (instances_launch {lua_mount})"
                   : "IFileSystem (VFileSystem022) not found in filesystem_stdio";
     else if (!g_ls) err = "ILuaShared (" GMOD_LUASHARED_INTERFACE ") not found in lua_shared";
     return g_fs && g_ls;
@@ -105,14 +105,14 @@ static bool is_dir(const std::string &p) {
     return fs::is_directory(fs::u8path(p), ec);
 }
 
-// The overlay's Lua folders, at the head of one Lua path ID ("lsv" server, "lcl" client).
+// The mounted folder's Lua folders, at the head of one Lua path ID ("lsv" server, "lcl" client).
 static void add_lua(const std::string &root, const char *id) {
     fs_add(root + "\\lua", id);
     if (is_dir(root + "\\gamemodes")) fs_add(root + "\\gamemodes", id);
 }
 
 // ILuaShared::MountLua is what the server (at every map start, after unmounting "lsv") and the client call to mount
-// a Lua path ID: put the overlay back in front right after it.
+// a Lua path ID: put the mounted folder back in front right after it.
 static void hooked_mount(void *self, const char *id) {
     g_orig_mount(self, id);
     if (g_in_hook || !id) return;
@@ -162,7 +162,7 @@ json info() {
     std::string base = util::to_lower(agent::config().game_dir + "/lua/");
     std::replace(base.begin(), base.end(), '/', '\\');
     // Only meaningful once the engine has mounted the server Lua paths (a map is loaded or loading): at the main menu
-    // lsv holds at most the overlay's own folders.
+    // lsv holds at most the mounted folder's own folders.
     std::string ov = util::to_lower(root);
     std::replace(ov.begin(), ov.end(), '/', '\\');
     bool engine_mounted = false, base_ok = false;
@@ -172,7 +172,7 @@ json info() {
         if (l == base) base_ok = true;
     }
     if (!engine_mounted) base_ok = true;
-    json r{{"overlay", root.empty() ? json(nullptr) : json(root)},
+    json r{{"lua_mount", root.empty() ? json(nullptr) : json(root)},
            {"base_lua_mounted", base_ok},
            {"mount_hook", cur == reinterpret_cast<void *>(&hooked_mount)},
            {"hook_calls", g_hook_calls},
@@ -180,7 +180,7 @@ json info() {
            {"search_paths", {{"lsv", lsv}, {"lcl", fs_paths("lcl")}}}};
     if (!base_ok)
         r["warning"] = "the game's own lua/ folder is missing from the server Lua paths: the game cannot run its base Lua. "
-                       "Remove the overlay (lua_overlay {path: null}) and close this client.";
+                       "Remove the mounted folder (lua_mount {path: null}) and close this client.";
     return json{{"ok", true}, {"result", r}};
 }
 
@@ -203,7 +203,7 @@ json set(const std::string &root, bool empty_cache) {
     if (!root.empty()) {
         // lua_shared only loads a file whose full path maps back to a MOD-relative name: the root must be a MOD path.
         // At the END of MOD: the engine finds the base "lua" and "gamemodes" folders through MOD (MountLuaAdd), and an
-        // overlay at the head made it mount the overlay's lua/ INSTEAD of garrysmod/lua (seen live 2026-11-14: no
+        // a root at the head made it mount that folder's lua/ INSTEAD of garrysmod/lua (seen live 2026-11-14: no
         // base Lua, errors everywhere, black sky). Not added to GAME either: only Lua is overlaid.
         fs_add(root, "MOD", kTail);
         add_lua(root, "lsv");
@@ -212,9 +212,9 @@ json set(const std::string &root, bool empty_cache) {
     } else if (!hook(false, err)) {
         return json{{"ok", false}, {"error", {{"code", "hook_failed"}, {"message", err}}}};
     }
-    // Cached copies are keyed by MOD-relative name and file time: an addon file and its overlay copy share the name.
+    // Cached copies are keyed by MOD-relative name and file time: an addon file and its mounted copy share the name.
     if (empty_cache) g_ls->EmptyCache();
-    logx::info("Lua overlay %s%s", root.empty() ? "removed" : "set: ", root.c_str());
+    logx::info("Lua mount %s%s", root.empty() ? "removed" : "set: ", root.c_str());
     json r = info();
     if (!r.value("ok", false)) return r;
     json &res = r["result"];
@@ -224,8 +224,8 @@ json set(const std::string &root, bool empty_cache) {
     }
     res["cache_emptied"] = empty_cache;
     res["note"] = root.empty()
-                      ? "overlay removed: the next map load uses the addons' own files again (code already loaded stays until then)"
-                      : "the overlay applies to files loaded from now on: include(), autorun and AddCSLuaFile of the NEXT map "
+                      ? "mounted folder removed: the next map load uses the addons' own files again (code already loaded stays until then)"
+                      : "the mounted folder applies to files loaded from now on: include(), autorun and AddCSLuaFile of the NEXT map "
                         "load read it first. Code already running is not re-run: call map_load now.";
     return r;
 }
@@ -234,7 +234,7 @@ json set(const std::string &root, bool empty_cache) {
 
 bool supported(std::string *why) {
     if (why)
-        *why = "the Lua overlay is Windows only for now (the engine's filesystem interface layout is not verified on this "
+        *why = "the Lua mount is Windows only for now (the engine's filesystem interface layout is not verified on this "
                "platform)";
     return false;
 }
@@ -249,4 +249,4 @@ json set(const std::string &, bool) { return info(); }
 
 #endif
 
-}  // namespace overlay
+}  // namespace lua_mount

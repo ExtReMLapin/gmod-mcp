@@ -73,14 +73,14 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
   (`concurrent_jobs`).
 - `lua_job {fresh_env: true}`: the script's globals stay in its own table instead of leaking into the next job.
 - `lua_exec` results give `chunk_bytes`, `chunkname` and the realm's `generation` (it changes on every map load).
-- **Per-instance Lua overlay** (`lua_overlay`, `instances_launch {overlay}`): one game process loads Lua from a folder
+- **Per-instance Lua mount** (`lua_mount`, `instances_launch {lua_mount}`): one game process loads Lua from a folder
   of your choice (e.g. an addon's git worktree) before every addon, at every map load, so a branch can be tested in
   one test client without touching the shared `addons/` folder, the other clients or the user's game. Agents used to
   re-inject their files by hand after every map load, and tests silently ran on the old code when they forgot.
   Windows only for now.
   gmod-mcp's own Lua tools follow it: `lua_exec_file`, `lua_job {path}`, `lua_check`, `lua_reload` and
   `lua_function_source` find the folder's files first, in the engine's order, and name them like the engine
-  (`@lua/...`). The guide resource and the server instructions explain it to agents ("Branched Lua folder").
+  (`@lua/...`). The guide resource and the server instructions explain it to agents ("Mounted Lua folder").
 - `instances_list` gives each instance's version, uptime, fps, a stalled flag and its Lua error count.
 - `console_wait {regex, count, timeout_s}`: blocks until that many console lines match (the end line of a test batch,
   for example), with progress, and returns them with a cursor for the next wait. Replaces hand-written polling loops.

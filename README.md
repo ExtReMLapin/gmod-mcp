@@ -40,7 +40,7 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
   - [Claude Code plugin](#claude-code-plugin)
 - [Tools](#tools)
   - [Long-running Lua jobs](#long-running-lua-jobs)
-  - [Testing a branch: the Lua overlay](#testing-a-branch-the-lua-overlay)
+  - [Testing a branch: the mounted Lua folder](#testing-a-branch-the-mounted-lua-folder)
 - [How it works](#how-it-works)
 - [Several games at once](#several-games-at-once)
 - [Configuration](#configuration)
@@ -139,7 +139,7 @@ Remove it with `/plugin uninstall gmod-mcp@gmod-mcp`.
 | Area | Tools |
 |---|---|
 | Session | `status`, `map_list`, `map_load`, `disconnect`, `game_quit`, `game_terminate`, `wait_for`, `wait_frames` |
-| Lua | `lua_exec`, `lua_exec_file`, `lua_reload` (run an addon file again from the disk, in its realms), `lua_check` (syntax and globals of a snippet, file or whole addon, without running it), `lua_job` (long work spread over frames, with progress; `async: true` with `lua_job_status` / `lua_job_cancel`), `lua_inspect`, `lua_overlay` (this game loads Lua from your worktree first), `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
+| Lua | `lua_exec`, `lua_exec_file`, `lua_reload` (run an addon file again from the disk, in its realms), `lua_check` (syntax and globals of a snippet, file or whole addon, without running it), `lua_job` (long work spread over frames, with progress; `async: true` with `lua_job_status` / `lua_job_cancel`), `lua_inspect`, `lua_mount` (this game loads Lua from your worktree first), `lua_file_write` / `_read` / `_list` / `_delete`, `tests_run` (GLuaTest format) |
 | Hooks | `hook_list`, `hook_trace`, `perf_hook_cost` |
 | Console | `console_exec` (`a 1; b 2` runs two commands like the console; an unknown command is an error; convars it sets are read back), `console_read`, `console_wait` (block until N lines match, e.g. the end of a batch), `console_buffer`, `convar_get`, `convar_set`, `concommand_list` |
 | Errors | `errors_since`, `errors_clear` (Lua errors from all three realms, with stack) |
@@ -183,29 +183,29 @@ results, and `args` (also `job.args`) for the call's arguments. `async: true` re
 (`lua_job_status`, `lua_job_cancel`), and `fresh_env: true` keeps the script's globals out of the game's `_G`. The agent learns this protocol from the tool description and the
 `write-lua-job` prompt.
 
-### Testing a branch: the Lua overlay
+### Testing a branch: the mounted Lua folder
 
 Every game process loads the addons from the same `garrysmod/addons/` folder, so an agent that works in a git worktree
 of an addon cannot test its branch in one test client without changing the folder every other client (and your own
-game) uses. The overlay solves this per process: `lua_overlay {path: "D:/dev/my-addon-wt"}` (or
-`instances_launch {overlay: "D:/dev/my-addon-wt"}` for a new test client) makes that one game look for Lua files in the
+game) uses. The mounted folder solves this per process: `lua_mount {path: "D:/dev/my-addon-wt"}` (or
+`instances_launch {lua_mount: "D:/dev/my-addon-wt"}` for a new test client) makes that one game look for Lua files in the
 worktree before every addon. `include()`, autorun files and `AddCSLuaFile` then get the branch's files, at every map
 load, and the other games keep the installed addon.
 
 ```
-instances_launch {count: 1, owner: "fork-a", overlay: "D:/dev/my-addon-wt", map: "gm_construct"}
+instances_launch {count: 1, owner: "fork-a", lua_mount: "D:/dev/my-addon-wt", map: "gm_construct"}
 lua_function_source {realm: "server", expr: "MyAddon.Update"}   -> source: the worktree's file
 ```
 
 - `path` is the addon's root (the folder that contains `lua/`) or its `lua/` folder, absolute. Its `gamemodes/` folder
   is overlaid too, and so are its materials, sounds and models.
-- **It applies to files loaded from then on.** Code that already runs is not run again: after `lua_overlay`, call
-  `map_load`. `instances_launch {overlay}` sets it before the first map, so nothing more is needed there.
-- `lua_overlay {}` shows the current overlay and the engine's Lua search paths; `lua_overlay {path: null}` removes it
+- **It applies to files loaded from then on.** Code that already runs is not run again: after `lua_mount`, call
+  `map_load`. `instances_launch {lua_mount}` sets it before the first map, so nothing more is needed there.
+- `lua_mount {}` shows the current mounted folder and the engine's Lua search paths; `lua_mount {path: null}` removes it
   (from the next map load).
-- The engine caches Lua files by name and file time; `lua_overlay` empties that cache when it changes (so an addon file
+- The engine caches Lua files by name and file time; `lua_mount` empties that cache when it changes (so an addon file
   and its worktree copy with the same name and time cannot be mixed up).
-- What sees the branched folder (checked in game): autorun files, `include()`, `AddCSLuaFile` (the client gets the
+- What sees the mounted folder (checked in game): autorun files, `include()`, `AddCSLuaFile` (the client gets the
   folder's copy), the console's `lua_openscript` / `lua_openscript_cl`, `file.Read` / `file.Find` with `"LUA"`, and
   gmod-mcp's `lua_exec_file`, `lua_job {path}`, `lua_check`, `lua_reload` and `lua_function_source`, which look in the
   same order as the engine. Not affected: materials, sounds, models, `data/`.
@@ -218,7 +218,7 @@ lua_function_source {realm: "server", expr: "MyAddon.Update"}   -> source: the w
 - Windows game clients only for now: not on Linux (the engine's filesystem interface is not verified there) nor on a
   dedicated server (its filesystem interface is not reachable the same way).
 - How it works: the engine's own search paths (`IFileSystem::AddSearchPath` at the head of the Lua path IDs), put back
-  in front at every map start; see [docs/REVERSE.md](docs/REVERSE.md#lua-overlay-search-paths). Nothing is written to
+  in front at every map start; see [docs/REVERSE.md](docs/REVERSE.md#lua-mount-search-paths). Nothing is written to
   the game folder.
 
 ## How it works

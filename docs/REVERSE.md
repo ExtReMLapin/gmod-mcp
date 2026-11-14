@@ -19,9 +19,9 @@ No decompiled code is copied into the repository; only signatures, offsets and b
 - **slot 9 `MountLua(pathID)`**: mounts `lua` then (unless the ID is `LuaMenu`) `gamemodes` for that Lua path ID;
   slot 10 `MountLuaAdd(dir, pathID)` adds one folder (`IFileSystem::AddSearchPath(full, id, 5)`, i.e. the tail of
   GMod's LUA priority group); slot 11 `UnMountLua(pathID)` removes every path of the ID; slot 17 `EmptyCache()`
-  (position in the header; used by the Lua overlay).
+  (position in the header; used by the Lua mount).
 
-### Lua overlay: search paths
+### Lua mount: search paths
 
 `bin/win64/filesystem_stdio.dll`, `CreateInterface("VFileSystem022")`, primary vtable (IAppSystem takes 5 slots, then
 the SDK 2013 order, checked by body): **7 `AddSearchPath(path, pathID, addType)`** (re-adding a path+ID moves it, no
@@ -35,11 +35,11 @@ duplicate), **8 `RemoveSearchPath(path, pathID)`**, **13 `GetSearchPath(pathID, 
 - `lua_shared` loads a file only if its full path maps back to a `MOD`-relative name (`FullPathToRelativePathEx(full,
   "MOD")`), and caches it under that name with its file time.
 
-So the overlay adds its root to the END of `MOD` (addType 23: tail of the last group), its `lua`/`gamemodes` to
+So the mounted folder adds its root to the END of `MOD` (addType 23: tail of the last group), its `lua`/`gamemodes` to
 `lsv` and `lcl` (head), and hooks
 `ILuaShared` slot 9 (vtable entry patched in this process only) to put them back in front right after every
 `MountLua`. The root must NOT be at the head of `MOD`: `MountLuaAdd("lua")` resolves the `lua` folder through `MOD`,
-so an overlay at the head made the engine mount the overlay's `lua/` instead of `garrysmod/lua` (seen live 2026-11-14:
+so a root at the head made the engine mount that folder's `lua/` instead of `garrysmod/lua` (seen live 2026-11-14:
 no base Lua, Lua errors everywhere, black sky). It is not added to `GAME` either. Not analysed: how `client.dll` mounts `lcl` (live check), the Linux layouts.
 
 ### `CLuaInterface` (implements `ILuaInterface : ILuaBase`)

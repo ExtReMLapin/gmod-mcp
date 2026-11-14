@@ -20,7 +20,7 @@ void register_world();
 void register_render();
 void register_docs();
 void register_reports();
-void register_overlay();
+void register_lua_mount();
 void register_lua_tools();
 void register_jobs();
 void register_instances();

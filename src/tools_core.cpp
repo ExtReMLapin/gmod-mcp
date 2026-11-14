@@ -8,7 +8,7 @@
 #include "jobs.h"
 #include "ljdump.h"
 #include "mcp.h"
-#include "overlay.h"
+#include "lua_mount.h"
 #include "platform/platform.h"
 #include "realms.h"
 #include "tools.h"
@@ -77,11 +77,11 @@ static std::string normalize(std::string p) {
 }
 
 // Chunk name for a file, as the engine names it: relative to the game folder (e.g. @lua/mcpagent_tmp/x.lua), or, for
-// a file of the branched Lua folder (lua_overlay), relative to that folder's root (@lua/my_addon/x.lua: the engine
+// a file of the mounted Lua folder (lua_mount), relative to that folder's root (@lua/my_addon/x.lua: the engine
 // names it through the MOD search path, where the root is listed).
 static std::string chunk_for(const std::string &abs) {
     std::string na = normalize(abs), game = normalize(agent::config().game_dir) + "/";
-    std::string ov = overlay::current();
+    std::string ov = lua_mount::current();
     if (!ov.empty()) {
         ov = normalize(ov) + "/";
         if (util::to_lower(na).rfind(util::to_lower(ov), 0) == 0) return "@" + na.substr(ov.size());
@@ -90,15 +90,15 @@ static std::string chunk_for(const std::string &abs) {
     return "@" + na;
 }
 
-// Where a relative path may be, in this order: the temporary directory (lua/mcpagent_tmp/), the branched Lua folder
-// when one is set (lua_overlay: <root>/<path>, <root>/lua/<path>, <root>/gamemodes/<path>, ahead of the game like the
+// Where a relative path may be, in this order: the temporary directory (lua/mcpagent_tmp/), the mounted Lua folder
+// when one is set (lua_mount: <root>/<path>, <root>/lua/<path>, <root>/gamemodes/<path>, ahead of the game like the
 // engine does), the game folder (garrysmod/<path>), then where include() looks (lua/, gamemodes/, addons/*/lua/,
 // addons/*/gamemodes/).
 static std::vector<std::string> lua_candidates(const std::string &rel) {
     namespace fs = std::filesystem;
     const auto &c = agent::config();
     std::vector<std::string> out{c.tmp_dir + "/" + rel};
-    std::string ov = overlay::current();
+    std::string ov = lua_mount::current();
     if (!ov.empty()) {
         out.push_back(ov + "/" + rel);
         out.push_back(ov + "/lua/" + rel);
@@ -313,8 +313,8 @@ std::vector<std::string> find_game_lua(const std::string &path, std::string &err
         if (fs::is_regular_file(fs::u8path(p), ec) && std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
     };
     std::string low = util::to_lower(rel);
-    // The branched Lua folder first, like the engine.
-    std::string ov = overlay::current();
+    // The mounted Lua folder first, like the engine.
+    std::string ov = lua_mount::current();
     if (!ov.empty()) {
         if (low.rfind("lua/", 0) == 0 || low.rfind("gamemodes/", 0) == 0) add(ov + "/" + rel);
         add(ov + "/lua/" + rel);
@@ -582,11 +582,11 @@ void register_core() {
     json exec_file = exec_props;
     exec_file["path"] = {{"type", "string"},
                          {"description", "Absolute path on the game's disk (e.g. a file in your git worktree), or relative: looked up in "
-                                         "lua/mcpagent_tmp/, then the branched Lua folder if any (lua_overlay), then the game folder ('addons/x/lua/y.lua'), then lua/, gamemodes/ and "
+                                         "lua/mcpagent_tmp/, then the mounted Lua folder if any (lua_mount), then the game folder ('addons/x/lua/y.lua'), then lua/, gamemodes/ and "
                                          "addons/*/lua/ (include() style)."}};
     mcp::register_tool({"lua_exec_file", "Execute a Lua file",
-                        "Like lua_exec but reads the code from a file on the game's disk (with a branched Lua folder, see "
-                        "lua_overlay, a relative path finds its files first, like the engine). The chunk is named after the real path "
+                        "Like lua_exec but reads the code from a file on the game's disk (with a mounted Lua folder, see "
+                        "lua_mount, a relative path finds its files first, like the engine). The chunk is named after the real path "
                         "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks, or `chunkname` (e.g. the "
                         "addon-relative name of a file from your git worktree). Prefer it to pasting a file into lua_exec's "
                         "code: it saves the tokens of the file on every call. With `fields`, only the test's verdict comes back.",
@@ -606,7 +606,7 @@ void register_core() {
                         "Reads an addon or gamemode file from the disk again and runs it in its realms, to test an edit without "
                         "reloading the map. Use it instead of include() in lua_exec: on the client, include() runs the copy the "
                         "server sent when the map loaded, not the file on disk, so an edit is silently ignored. Looks under "
-                        "the branched Lua folder if any (lua_overlay), then lua/, gamemodes/, addons/*/lua|gamemodes/: the engine's order, "
+                        "the mounted Lua folder if any (lua_mount), then lua/, gamemodes/, addons/*/lua|gamemodes/: the engine's order, "
                         "so the copy the game would load (other matches are listed). Errors name the real file. "
                         "Running a file again redefines its functions and hooks; what it built at load time (entities, timers, "
                         "net strings) is not reset. Returns ok and, per realm, the lua_exec result or its error.",
@@ -624,7 +624,7 @@ void register_core() {
          json{{"properties",
                {{"realm", realm_prop("Lua state whose parser and globals are used: 'menu' (default, always present), 'client' or 'server'.")},
                 {"code", {{"type", "string"}, {"description", "Lua code to check (instead of path)."}}},
-                {"path", {{"type", "string"}, {"description", "File or folder to check (instead of code): absolute, or relative (looked up in lua/mcpagent_tmp/, the branched Lua folder if any, the game folder "
+                {"path", {{"type", "string"}, {"description", "File or folder to check (instead of code): absolute, or relative (looked up in lua/mcpagent_tmp/, the mounted Lua folder if any, the game folder "
                                                            "e.g. 'addons/my_addon/lua', then lua/, gamemodes/, addons/*/lua/)."}}},
                 {"globals", {{"type", "boolean"}, {"description", "Also list unknown and written globals (default true)."}}},
                 {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}, {"description", "Max entries per list (default 200)."}}}}}},
@@ -682,7 +682,7 @@ void register_all() {
     register_lua_tools();
     register_jobs();
     register_instances();
-    register_overlay();
+    register_lua_mount();
     // Long-running tools executable as MCP tasks (declared after all tools are registered).
     for (const char *n : {"events_wait", "reports_read"}) mcp::set_task_support(n, "optional");
 }

@@ -13,7 +13,7 @@ Cases (default: a f):
          the shared cache stays valid under concurrent writes, no temporary file left behind
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
-  overlay instances_launch {overlay}: -mcp_overlay passed to the client (stand-in game), bad folders refused
+  lua_mount instances_launch {lua_mount}: -mcp_lua_mount passed to the client (stand-in game), bad folders refused
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
   fuzz   400 random messages (random JSON shapes, ids, params, invalid UTF-8): the bridge survives and still answers
@@ -24,7 +24,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans overlay orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -700,21 +700,21 @@ def case_orphans():
     shutil.rmtree(game, ignore_errors=True)
 
 
-def case_overlay():
-    """instances_launch {overlay} (B1): the client starts with -mcp_overlay "<folder>", a path with spaces stays one
+def case_lua_mount():
+    """instances_launch {lua_mount} (B1): the client starts with -mcp_lua_mount "<folder>", a path with spaces stays one
     argument; a folder without lua/, a relative path or a quote is refused before anything starts."""
-    print("== OVERLAY: instances_launch passes the overlay folder to the client", flush=True)
+    print("== LUA_MOUNT: instances_launch passes the mounted folder to the client", flush=True)
     if os.name != "nt":
         print("   (Windows only: instances_launch is Windows only)", flush=True)
         return
     fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
     if not os.path.exists(fake):
-        check("OVERLAY stand-in game built next to the bridge", False, fake)
+        check("LUA_MOUNT stand-in game built next to the bridge", False, fake)
         return
     import shutil
     game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
     shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
-    work = tempfile.mkdtemp(prefix="gmcp-overlay-")
+    work = tempfile.mkdtemp(prefix="gmcp-mounted folder-")
     wt = os.path.join(work, "my addon wt")
     os.makedirs(os.path.join(wt, "lua", "autorun"))
     os.makedirs(os.path.join(work, "nolua"))
@@ -723,23 +723,23 @@ def case_overlay():
     env["GMCP_FAKE_ARGV"] = argv_file
     b = Bridge(port, env)
 
-    def launch(overlay, timeout=40):
-        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 5, "game_dir": game, "overlay": overlay}}, timeout)
+    def launch(mounted folder, timeout=40):
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 5, "game_dir": game, "lua_mount": mounted folder}}, timeout)
         return (r or {}).get("result", {})
 
     for bad, word in ((os.path.join(work, "nolua"), "lua"), ("relative/dir", "absolute"), (wt + '"', "character"), (os.path.join(work, "missing"), "not found")):
         res = launch(bad)
         sc = res.get("structuredContent", {})
-        check("OVERLAY refused before starting anything: " + word, res.get("isError") and word in json.dumps(sc) and not sc.get("silent_pids") and not os.path.exists(argv_file), sc)
+        check("LUA_MOUNT refused before starting anything: " + word, res.get("isError") and word in json.dumps(sc) and not sc.get("silent_pids") and not os.path.exists(argv_file), sc)
     res = launch(os.path.join(wt, "lua"))
     sc = res.get("structuredContent", {})
     pids = sc.get("silent_pids", [])
     line = open(argv_file, encoding="mbcs", errors="replace").read() if os.path.exists(argv_file) else ""
-    check("OVERLAY the client got -mcp_overlay with the addon root, quoted (spaces kept)", ('-mcp_overlay "%s"' % wt) in line, line)
-    check("OVERLAY the timeout answer names the overlay", sc.get("overlay") == wt, sc)
+    check("LUA_MOUNT the client got -mcp_lua_mount with the addon root, quoted (spaces kept)", ('-mcp_lua_mount "%s"' % wt) in line, line)
+    check("LUA_MOUNT the timeout answer names the mounted folder", sc.get("lua_mount") == wt, sc)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     time.sleep(1)
-    check("OVERLAY stand-in closed", not any(alive(p) for p in pids), pids)
+    check("LUA_MOUNT stand-in closed", not any(alive(p) for p in pids), pids)
     b.close()
     shutil.rmtree(game, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
@@ -942,13 +942,13 @@ def case_retex():
     b.close()
 
 
-def case_overlay_live():
-    """Live (Windows, Steam running, no other game): O-6 two clients launched with two different overlays and one
-    without; O-8 same file name and time in the game and the overlay, with and without empty_cache. Folders come from
-    OVERLAY_A / OVERLAY_B (each holds lua/mcpagent_tmp/ovtest_shared.lua returning its own tag) and the game's
+def case_lua_mount_live():
+    """Live (Windows, Steam running, no other game): O-6 two clients launched with two different mounted folders and one
+    without; O-8 same file name and time in the game and the mounted folder, with and without empty_cache. Folders come from
+    LUA_MOUNT_A / LUA_MOUNT_B (each holds lua/mcpagent_tmp/ovtest_shared.lua returning its own tag) and the game's
     lua/mcpagent_tmp/ovtest_shared.lua returns "main"."""
-    print("== OVERLAY LIVE: per-instance overlays (O-6, O-8)", flush=True)
-    a, bdir = os.environ["OVERLAY_A"], os.environ["OVERLAY_B"]
+    print("== LUA_MOUNT LIVE: per-instance mounted folders (O-6, O-8)", flush=True)
+    a, bdir = os.environ["LUA_MOUNT_A"], os.environ["LUA_MOUNT_B"]
     b = Bridge(27080)
 
     def call(tool, args, timeout=300):
@@ -958,36 +958,36 @@ def case_overlay_live():
 
     ids = {}
     for tag, ov in (("A", a), ("B", bdir), ("none", None)):
-        args = {"count": 1, "map": "gm_construct", "owner": "overlay-live", "sound": False}
-        if ov: args["overlay"] = ov
+        args = {"count": 1, "map": "gm_construct", "owner": "mounted folder-live", "sound": False}
+        if ov: args["lua_mount"] = ov
         sc, err = call("instances_launch", args)
         ins = sc.get("instances", [])
-        check("OVLIVE client %s launched with map" % tag, not err and len(ins) == 1 and ins[0].get("map") == "gm_construct", sc)
+        check("MOUNTLIVE client %s launched with map" % tag, not err and len(ins) == 1 and ins[0].get("map") == "gm_construct", sc)
         if ins: ids[tag] = ins[0]["instance"]
     expect = {"A": "branch", "B": "branch2", "none": "main"}
     for tag, inst in ids.items():
         sc, err = call("lua_exec", {"instance": inst, "realm": "server", "code": "return include('mcpagent_tmp/ovtest_shared.lua'), OVTEST_AUTORUN"})
-        check("OVLIVE client %s runs its own copy (%s)" % (tag, expect[tag]), sc.get("values", [None])[0] == expect[tag], sc)
+        check("MOUNTLIVE client %s runs its own copy (%s)" % (tag, expect[tag]), sc.get("values", [None])[0] == expect[tag], sc)
         sc, err = call("lua_exec", {"instance": inst, "realm": "client", "code": "return OVTEST_AUTORUN"})
-        check("OVLIVE client %s client realm" % tag, (sc.get("values") or [None])[0] == ({"A": "client from overlay", "B": "client from overlay 2"}.get(tag)), sc)
-    # O-8: same name and time in the game and overlay A: which copy does include() return?
+        check("MOUNTLIVE client %s client realm" % tag, (sc.get("values") or [None])[0] == ({"A": "client from mounted folder", "B": "client from mounted folder 2"}.get(tag)), sc)
+    # O-8: same name and time in the game and mounted folder A: which copy does include() return?
     if "A" in ids:
         game_copy = os.path.join(os.environ["GMOD_LUA_TMP"], "ovtest_shared.lua")
         ov_copy = os.path.join(a, "lua", "mcpagent_tmp", "ovtest_shared.lua")
         st = os.stat(game_copy)
         os.utime(ov_copy, (st.st_atime, st.st_mtime))
         for ec in (False, True):
-            call("lua_overlay", {"instance": ids["A"], "path": a, "empty_cache": ec})
+            call("lua_mount", {"instance": ids["A"], "path": a, "empty_cache": ec})
             sc, err = call("lua_exec", {"instance": ids["A"], "realm": "server", "code": "return include('mcpagent_tmp/ovtest_shared.lua')"})
             print("   O-8 same mtime, empty_cache=%s -> include returns %r" % (ec, sc.get("values")), flush=True)
-            check("OVLIVE O-8 same name and time, empty_cache=%s: the overlay copy wins" % ec, sc.get("values") == ["branch"], sc)
-    call("instances_close", {"owner": "overlay-live"}, 60)
+            check("MOUNTLIVE O-8 same name and time, empty_cache=%s: the mounted folder copy wins" % ec, sc.get("values") == ["branch"], sc)
+    call("instances_close", {"owner": "mounted folder-live"}, 60)
     b.close()
 
 
 def case_edge_live():
     """Live edge cases (Windows, Steam running, no other game): async jobs and map loads, cancel twice, yield inside
-    pcall, 100 async jobs, overlay switch / removal / deleted folder / accented path, closing a client while it loads."""
+    pcall, 100 async jobs, mounted folder switch / removal / deleted folder / accented path, closing a client while it loads."""
     print("== EDGE LIVE: corner cases against a real client", flush=True)
     import shutil
     b = Bridge(27080)
@@ -1027,7 +1027,7 @@ def case_edge_live():
     sc, err = call("lua_job_status", dict(I, id=jid3))
     check("EDGE async job of a realm destroyed by map_load: a clear error", err and ("not_found" in json.dumps(sc) or "realm" in json.dumps(sc)), sc)
 
-    # Overlay corner cases.
+    # Mounted folder corner cases.
     base = tempfile.mkdtemp(prefix="gmcp-edge-")
     ova = os.path.join(base, "ov A é")
     ovb = os.path.join(base, "ovB")
@@ -1035,11 +1035,11 @@ def case_edge_live():
         os.makedirs(os.path.join(d, "lua", "mcpagent_tmp"))
         with open(os.path.join(d, "lua", "mcpagent_tmp", "edge_ov.lua"), "w", encoding="utf-8") as f:
             f.write("return '%s'\n" % tag)
-    sc, err = call("lua_overlay", dict(I, path=None))
-    check("EDGE removing an overlay when none is set is fine", not err, sc)
-    sc, err = call("lua_overlay", dict(I, path=ova))
-    check("EDGE overlay with spaces and an accent in the path", not err and sc.get("mount_hook") is True, sc)
-    sc, err = call("lua_overlay", dict(I, path=ovb))
+    sc, err = call("lua_mount", dict(I, path=None))
+    check("EDGE removing a mounted folder when none is set is fine", not err, sc)
+    sc, err = call("lua_mount", dict(I, path=ova))
+    check("EDGE mounted folder with spaces and an accent in the path", not err and sc.get("mount_hook") is True, sc)
+    sc, err = call("lua_mount", dict(I, path=ovb))
     check("EDGE switching A -> B without a map load: A removed", not err and sc.get("removed", {}).get("lsv:lua") is True, sc)
     call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
     sc, err = call("lua_exec", dict(I, realm="server", code="return include('mcpagent_tmp/edge_ov.lua')"))
@@ -1047,10 +1047,10 @@ def case_edge_live():
     shutil.rmtree(ovb, ignore_errors=True)
     call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
     sc, err = call("lua_exec", dict(I, realm="server", code="return GAMEMODE ~= nil, file.Exists('mcpagent_tmp/edge_ov.lua', 'LUA')"))
-    check("EDGE overlay folder deleted while set: the map still loads, the file is just gone", sc.get("values") == [True, False], sc)
-    sc, err = call("lua_overlay", dict(I))
-    check("EDGE overlay status still answers (base Lua mounted)", not err and sc.get("base_lua_mounted") is True, sc)
-    call("lua_overlay", dict(I, path=None))
+    check("EDGE mounted folder deleted while set: the map still loads, the file is just gone", sc.get("values") == [True, False], sc)
+    sc, err = call("lua_mount", dict(I))
+    check("EDGE mounted folder status still answers (base Lua mounted)", not err and sc.get("base_lua_mounted") is True, sc)
+    call("lua_mount", dict(I, path=None))
     shutil.rmtree(base, ignore_errors=True)
 
     # Close a client while it is still loading its map.
@@ -1067,10 +1067,10 @@ def case_edge_live():
     b.close()
 
 
-def case_overlay_ecosystem():
-    """Live (Windows, Steam running, no other game): every way Lua is loaded, with a branched Lua folder holding an
+def case_lua_mount_ecosystem():
+    """Live (Windows, Steam running, no other game): every way Lua is loaded, with a mounted Lua folder holding an
     addon that exists nowhere else (autorun + shared + server + client files)."""
-    print("== OVERLAY ECOSYSTEM: the Lua tools and engine paths with a branched folder", flush=True)
+    print("== LUA_MOUNT ECOSYSTEM: the Lua tools and engine paths with a mounted folder", flush=True)
     base = tempfile.mkdtemp(prefix="gmcp-ovx-")
     ov = os.path.join(base, "my addon wt")
     files = {
@@ -1090,9 +1090,9 @@ def case_overlay_ecosystem():
         res = (r or {}).get("result", {})
         return res.get("structuredContent", {}), bool(res.get("isError"))
 
-    sc, err = call("instances_launch", {"count": 1, "map": "gm_construct", "owner": "ovx", "sound": False, "overlay": ov})
+    sc, err = call("instances_launch", {"count": 1, "map": "gm_construct", "owner": "ovx", "sound": False, "lua_mount": ov})
     inst = (sc.get("instances") or [{}])[0].get("instance")
-    check("OVX client launched with the folder from its first map", not err and inst and sc.get("overlay"), sc)
+    check("OVX client launched with the folder from its first map", not err and inst and sc.get("lua_mount"), sc)
     if not inst:
         b.close(); return
     I = {"instance": inst}
@@ -1103,7 +1103,7 @@ def case_overlay_ecosystem():
     sc, err = call("lua_function_source", dict(I, realm="server", expr="OVX.Shared"))
     check("OVX lua_function_source finds the folder's file, matches", sc.get("matches_disk") is True and "my addon wt" in sc.get("file", ""), sc)
     sc, err = call("lua_check", dict(I, realm="server", path="ovx"))
-    check("OVX lua_check of a folder that only exists in the branched folder", not err and sc.get("ok") is True, sc)
+    check("OVX lua_check of a folder that only exists in the mounted folder", not err and sc.get("ok") is True, sc)
     sc, err = call("lua_exec_file", dict(I, realm="server", path="ovx/sv.lua"))
     check("OVX lua_exec_file finds it and names it like the engine", not err and sc.get("chunkname") == "@lua/ovx/sv.lua", sc)
     sc, err = call("lua_job", dict(I, realm="server", path="ovx/sh.lua"))
@@ -1126,7 +1126,7 @@ def case_overlay_ecosystem():
     sc, err = call("lua_function_source", dict(I, realm="server", expr="OVX.Shared"))
     check("OVX lua_function_source matches again", sc.get("matches_disk") is True, sc)
     # Removal: from the next map load the addon is gone (it exists nowhere else).
-    call("lua_overlay", dict(I, path=None))
+    call("lua_mount", dict(I, path=None))
     call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
     sc, err = call("lua_exec", dict(I, realm="server", code="return OVX == nil"))
     check("OVX removed: the next map load runs without it", sc.get("values") == [True], sc)
@@ -1138,8 +1138,8 @@ def case_overlay_ecosystem():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live, "edge_live": case_edge_live, "overlay_ecosystem": case_overlay_ecosystem}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "overlay", "orphan", "fuzz"]:
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))

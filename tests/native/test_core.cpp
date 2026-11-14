@@ -11,8 +11,8 @@
 #include "console.h"
 #include "coordinator.h"
 #include "mcp.h"
-#include "overlay.h"
-#include "overlay.h"
+#include "lua_mount.h"
+#include "lua_mount.h"
 #include "tools.h"
 #include "util.h"
 
@@ -135,9 +135,9 @@ static void test_small_b6() {
     CHECK(hung.find("still running") != std::string::npos && hung.find("game_terminate") != std::string::npos);
 }
 
-// B1 overlay: which folders are accepted as an overlay root (no game needed for this part).
-static void test_overlay_paths() {
-    fs::path t = fs::temp_directory_path() / "gmod-mcp-coretests-overlay";
+// B1 lua_mount: which folders are accepted as a mount root (no game needed for this part).
+static void test_lua_mount_paths() {
+    fs::path t = fs::temp_directory_path() / "gmod-mcp-coretests-mounted folder";
     std::error_code ec;
     fs::remove_all(t, ec);
     touch(t / "addon" / "lua" / "autorun" / "x.lua");
@@ -148,13 +148,13 @@ static void test_overlay_paths() {
     auto ok = [&](const fs::path &in, const fs::path &want) {
         root.clear();
         err.clear();
-        bool r = overlay::normalize_root(in.u8string(), root, err);
+        bool r = lua_mount::normalize_root(in.u8string(), root, err);
         return r && same(root, want) && root.back() != '/' && root.back() != '\\';
     };
     auto bad = [&](const std::string &in, const char *word) {
         root.clear();
         err.clear();
-        bool r = overlay::normalize_root(in, root, err);
+        bool r = lua_mount::normalize_root(in, root, err);
         return !r && root.empty() && err.find(word) != std::string::npos;
     };
     CHECK(ok(t / "addon", t / "addon"));                                   // the addon root
@@ -173,14 +173,14 @@ static void test_overlay_paths() {
     CHECK(bad((t / "addon").u8string() + ";C:/x", "character"));
     CHECK(bad((t / "addon").u8string() + "\nx", "character"));
     // The module reads back what the bridge puts on the client's command line (quoted, spaces, backslashes).
-    auto args = util::split_args(R"("C:\Games\gmod_win64.exe" -multirun -mcp -mcp_overlay "D:\dev\my addon wt" +fps_max 20)");
-    CHECK(util::flag_value(args, "-mcp_overlay") == R"(D:\dev\my addon wt)");
-    CHECK(util::flag_value(util::split_args("gmod -mcp"), "-mcp_overlay").empty());
+    auto args = util::split_args(R"("C:\Games\gmod_win64.exe" -multirun -mcp -mcp_lua_mount "D:\dev\my addon wt" +fps_max 20)");
+    CHECK(util::flag_value(args, "-mcp_lua_mount") == R"(D:\dev\my addon wt)");
+    CHECK(util::flag_value(util::split_args("gmod -mcp"), "-mcp_lua_mount").empty());
     // The tool refuses a bad path at once (before touching the game's main thread).
-    tools::register_overlay();
-    json r = mcp::call_tool("lua_overlay", json{{"path", "addons/pba"}});
+    tools::register_lua_mount();
+    json r = mcp::call_tool("lua_mount", json{{"path", "addons/pba"}});
     CHECK(r.value("isError", false) && r.dump().find("invalid_params") != std::string::npos);
-    r = mcp::call_tool("lua_overlay", json{{"path", (t / "nolua").u8string()}});
+    r = mcp::call_tool("lua_mount", json{{"path", (t / "nolua").u8string()}});
     CHECK(r.value("isError", false) && r.dump().find("lua") != std::string::npos);
 }
 
@@ -213,7 +213,7 @@ int main() {
     test_errors_map_tags();
     test_small_b6();
     test_srcds_error_parsing();
-    test_overlay_paths();
+    test_lua_mount_paths();
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;
     fs::remove_all(root.parent_path(), ec);
@@ -259,15 +259,15 @@ int main() {
     std::string chunk;
     CHECK(tools::resolve_lua_file("pba/core.lua", abs, chunk, err) && chunk == "@addons/pba/lua/pba/core.lua");
 
-    // Branched Lua folder (overlay): the tools look where the engine looks, in the same order (the overlay first), and
-    // name its files like the engine (relative to the overlay root: "@lua/x.lua"). Seen live 2026-11-14: lua_reload,
-    // lua_check and lua_function_source did not find a file that only exists in the overlay.
+    // Mounted Lua folder (lua_mount): the tools look where the engine looks, in the same order (the mounted folder first), and
+    // name its files like the engine (relative to the mount root: "@lua/x.lua"). Seen live 2026-11-14: lua_reload,
+    // lua_check and lua_function_source did not find a file that only exists in the mounted folder.
     {
         fs::path ov = root.parent_path() / "ov wt";
         touch(ov / "lua/ovx/sh.lua");
         touch(ov / "lua/pba/core.lua");           // shadows the installed addon's copy
         touch(ov / "gamemodes/ovgm/gamemode/init.lua");
-        overlay::set_current_for_tests(ov.u8string());
+        lua_mount::set_current_for_tests(ov.u8string());
         CHECK(tools::resolve_lua_file("ovx/sh.lua", abs, chunk, err) && same(abs, ov / "lua/ovx/sh.lua") && chunk == "@lua/ovx/sh.lua");
         CHECK(tools::resolve_lua_file("pba/core.lua", abs, chunk, err) && same(abs, ov / "lua/pba/core.lua") && chunk == "@lua/pba/core.lua");
         CHECK(tools::resolve_lua_file("lua/ovx/sh.lua", abs, chunk, err) && same(abs, ov / "lua/ovx/sh.lua"));  // a source name
@@ -277,14 +277,14 @@ int main() {
         CHECK(tools::resolve_lua_file("t.lua", abs, chunk, err) && same(abs, root / "lua/mcpagent_tmp/t.lua"));  // tmp still first
         CHECK(tools::resolve_lua_file("autorun/a.lua", abs, chunk, err) && same(abs, root / "lua/autorun/a.lua"));  // not shadowed
         CHECK(tools::resolve_lua_file((ov / "lua/ovx/sh.lua").u8string(), abs, chunk, err) && chunk == "@lua/ovx/sh.lua");  // absolute
-        // lua_reload: the overlay's copy first, the addon's listed after it.
+        // lua_reload: the mounted folder's copy first, the addon's listed after it.
         auto all = tools::find_game_lua("pba/core.lua", err);
         CHECK(all.size() == 2 && same(all[0], ov / "lua/pba/core.lua") && same(all[1], root / "addons/pba/lua/pba/core.lua"));
         all = tools::find_game_lua("ovx/sh.lua", err);
         CHECK(all.size() == 1 && same(all[0], ov / "lua/ovx/sh.lua"));
         err.clear();
         CHECK(!tools::resolve_lua_path("nope.lua", false, abs, err) && err.find("ov wt") != std::string::npos);  // listed when missing
-        overlay::set_current_for_tests("");
+        lua_mount::set_current_for_tests("");
         CHECK(tools::resolve_lua_file("pba/core.lua", abs, chunk, err) && same(abs, root / "addons/pba/lua/pba/core.lua"));
         CHECK(!tools::resolve_lua_file("ovx/sh.lua", abs, chunk, err));
     }

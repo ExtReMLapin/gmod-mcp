@@ -41,9 +41,9 @@ std::string instructions() {
     s += "Documentation: api_search (ground truth: what actually exists in each realm), wiki_search / wiki_page "
          "(https://wiki.facepunch.com/gmod/). Full guide: resource mcpagent://guide.\n";
     s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator.\n";
-    s += "Testing a branch of an addon: lua_overlay {path: <your worktree>} (or instances_launch {overlay}) makes ONE game load "
+    s += "Testing a branch of an addon: lua_mount {path: <your worktree>} (or instances_launch {lua_mount}) makes ONE game load "
          "Lua from that folder first; it takes effect at the next map_load, and the engine then names those files "
-         "\"@lua/...\". Details: guide section \"Branched Lua folder\".";
+         "\"@lua/...\". Details: guide section \"Mounted Lua folder\".";
     return s;
 }
 
@@ -118,14 +118,14 @@ end
 return found
 ```
 
-## Branched Lua folder (lua_overlay)
-`lua_overlay {path}` plugs a folder into ONE game process: typically the git worktree of an addon (the folder that
+## Mounted Lua folder (lua_mount)
+`lua_mount {path}` plugs a folder into ONE game process: typically the git worktree of an addon (the folder that
 contains `lua/`). From then on every Lua lookup of that game looks in the folder FIRST, then in the game and its addons.
 Other games (other test clients, the user's own game) are not affected. Windows game clients only (not srcds, not Linux).
 
 When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
 set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it
-(`path: null`) also applies from the next map load. `instances_launch {overlay}` starts a client with it from its first
+(`path: null`) also applies from the next map load. `instances_launch {lua_mount}` starts a client with it from its first
 map.
 
 Which file is used, per Lua path (e.g. `my_addon/core.lua`):
@@ -136,7 +136,7 @@ Which file is used, per Lua path (e.g. `my_addon/core.lua`):
 
 What sees the folder (checked live):
 
-| Way code is loaded | With a branched folder |
+| Way code is loaded | With a mounted folder |
 |---|---|
 | autorun files, `include()`, `AddCSLuaFile` (the client gets the folder's copy) | folder first |
 | console `lua_openscript` / `lua_openscript_cl` | folder first |
@@ -155,12 +155,12 @@ compares the running function with the folder's file (`matches_disk`). A `git ch
 files at once; the running code changes only when it is loaded again.
 
 Typical flow:
-1. `instances_launch {count: 1, owner: "<you>", overlay: "D:/dev/my-addon-wt", map: "gm_construct"}` (or, on a client
-   you already have: `lua_overlay {path}` then `map_load`).
-2. `lua_overlay {}`: `overlay` is your folder, `base_lua_mounted: true`, the folder heads `search_paths.lsv` and `.lcl`.
+1. `instances_launch {count: 1, owner: "<you>", lua_mount: "D:/dev/my-addon-wt", map: "gm_construct"}` (or, on a client
+   you already have: `lua_mount {path}` then `map_load`).
+2. `lua_mount {}`: `lua_mount` is your folder, `base_lua_mounted: true`, the folder heads `search_paths.lsv` and `.lcl`.
 3. `lua_function_source {realm: "server", expr: "MyAddon.Update"}`: `file` is in your folder, `matches_disk: true`.
 4. Edit, then `lua_reload` or `map_load`, then test.
-5. Done: `instances_close {owner}` (or `lua_overlay {path: null}` then `map_load`).
+5. Done: `instances_close {owner}` (or `lua_mount {path: null}` then `map_load`).
 
 If `base_lua_mounted` is false, the game's own `lua/` is missing from the server paths: remove the folder at once.
 

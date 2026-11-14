@@ -208,7 +208,7 @@ void register_jobs() {
                 {"code", {{"type", "string"}, {"description", "Lua source. Use the `job` object described above."}}},
                 {"path", {{"type", "string"},
                           {"description", "Instead of code: a file, absolute (e.g. in your git worktree) or relative (lua/mcpagent_tmp/, "
-                                          "the branched Lua folder if any, then the game folder, then lua/, gamemodes/, addons/*/lua/). Errors then point to the file. "
+                                          "the mounted Lua folder if any, then the game folder, then lua/, gamemodes/, addons/*/lua/). Errors then point to the file. "
                                           "Prefer it to pasting a file's content into code."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"])."}}},

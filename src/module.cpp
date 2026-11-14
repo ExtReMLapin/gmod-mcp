@@ -8,7 +8,7 @@
 #include "events.h"
 #include "http_server.h"
 #include "installer.h"
-#include "overlay.h"
+#include "lua_mount.h"
 #include "jobs.h"
 #include "log.h"
 #include "luaapi.h"
@@ -162,15 +162,15 @@ static bool start(lua_State *L) {
 
     tools::register_all();
 
-    // -mcp_overlay "<folder>": a test client started on a worktree's code (instances_launch {overlay}).
-    std::string ov = util::flag_value(args, "-mcp_overlay", "");
+    // -mcp_lua_mount "<folder>": a test client started on a worktree's code (instances_launch {lua_mount}).
+    std::string ov = util::flag_value(args, "-mcp_lua_mount", "");
     if (!ov.empty()) {
         std::string root, oerr, why;
-        if (!overlay::normalize_root(ov, root, oerr)) logx::warn("-mcp_overlay ignored: %s", oerr.c_str());
-        else if (!overlay::supported(&why)) logx::warn("-mcp_overlay ignored: %s", why.c_str());
+        if (!lua_mount::normalize_root(ov, root, oerr)) logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());
+        else if (!lua_mount::supported(&why)) logx::warn("-mcp_lua_mount ignored: %s", why.c_str());
         else {
-            nlohmann::json r = overlay::set(root, false);
-            if (!r.value("ok", false)) logx::warn("-mcp_overlay failed: %s", r.dump().c_str());
+            nlohmann::json r = lua_mount::set(root, false);
+            if (!r.value("ok", false)) logx::warn("-mcp_lua_mount failed: %s", r.dump().c_str());
         }
     }
 

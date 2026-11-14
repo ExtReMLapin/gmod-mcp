@@ -1,27 +1,27 @@
-// Overlay folder check (pure: shared by the module and the bridge).
+// Mounted folder check (pure: shared by the module and the bridge).
 #include <filesystem>
 
-#include "overlay.h"
+#include "lua_mount.h"
 #include "util.h"
 
-namespace overlay {
+namespace lua_mount {
 
 namespace fs = std::filesystem;
 
 bool normalize_root(const std::string &in, std::string &root, std::string &err) {
     root.clear();
     if (in.empty()) {
-        err = "empty path: pass the overlay folder, or null to remove the overlay";
+        err = "empty path: pass the folder to mount, or null to unmount it";
         return false;
     }
-    // A quote or line break would break the -mcp_overlay command line; ';' separates the engine's path lists.
+    // A quote or line break would break the -mcp_lua_mount command line; ';' separates the engine's path lists.
     if (in.find_first_of("\";\r\n") != std::string::npos) {
         err = "invalid character in the path (quote, ';' or line break)";
         return false;
     }
     fs::path p = fs::u8path(in);
     if (!p.is_absolute()) {
-        err = "the overlay path must be absolute (e.g. D:/dev/my-addon-worktree): " + in;
+        err = "the folder to mount must be an absolute path (e.g. D:/dev/my-addon-worktree): " + in;
         return false;
     }
     p = p.lexically_normal();
@@ -46,4 +46,4 @@ bool normalize_root(const std::string &in, std::string &root, std::string &err) 
     return true;
 }
 
-}  // namespace overlay
+}  // namespace lua_mount

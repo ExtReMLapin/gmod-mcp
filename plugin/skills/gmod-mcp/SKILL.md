@@ -89,8 +89,8 @@ first).
   to every sub-agent's calls) and never `instances_close {all: true}` (it would close the others' clients). Tell each
   sub-agent in its brief to launch with an `owner` label of its own, pass `instance` on every call, and close with
   `instances_close {owner}`.
-- **Testing a branch of an addon** (a git worktree): launch the client with `instances_launch {overlay: "<worktree>"}`
-  (or call `lua_overlay {path}` then `map_load` on a running one). That game then loads the worktree's Lua before the
+- **Testing a branch of an addon** (a git worktree): launch the client with `instances_launch {lua_mount: "<worktree>"}`
+  (or call `lua_mount {path}` then `map_load` on a running one). That game then loads the worktree's Lua before the
   installed addon, at every map load; other games are not affected. Do not re-inject files with `lua_exec` after each
   map load, and check with `lua_function_source` that the function under test comes from the worktree. Windows only.
 - A client that never answers (gmod-mcp did not load in it): `instances_launch` returns its pid in `silent_pids`;

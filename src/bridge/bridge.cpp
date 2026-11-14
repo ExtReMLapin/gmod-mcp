@@ -41,7 +41,7 @@
 #include "bridge_snapshot.h"
 #include "mcp_protocol.h"
 #include "platform/platform.h"
-#include "overlay.h"
+#include "lua_mount.h"
 #include "util.h"
 
 using json = nlohmann::json;
@@ -715,9 +715,9 @@ json bridge_tools() {
             {"sound", {{"type", "boolean"}, {"description", "Keep sound on (default true). false saves CPU when sound does not matter."}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
             {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
-            {"overlay", {{"type", "string"}, {"maxLength", 1024},
+            {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
                          {"description", "Absolute folder whose Lua these clients load before every addon's (e.g. your git worktree of "
-                                         "the addon: its root or its lua/ folder). Applies from their first map load; see lua_overlay. "
+                                         "the addon: its root or its lua/ folder). Applies from their first map load; see lua_mount. "
                                          "Windows only."}}},
             {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
@@ -898,10 +898,10 @@ json launch_tool(const json &args, const json &token) {
     std::string map = args.value("map", "");
     std::string owner = args.value("owner", "");
     // Checked before anything starts: a bad folder must not leave clients behind.
-    std::string overlay_root;
-    if (args.contains("overlay") && args["overlay"].is_string() && !args["overlay"].get<std::string>().empty()) {
+    std::string mount_root;
+    if (args.contains("lua_mount") && args["lua_mount"].is_string() && !args["lua_mount"].get<std::string>().empty()) {
         std::string oerr;
-        if (!overlay::normalize_root(args["overlay"].get<std::string>(), overlay_root, oerr)) return tool_error("invalid_params", "overlay: " + oerr);
+        if (!lua_mount::normalize_root(args["lua_mount"].get<std::string>(), mount_root, oerr)) return tool_error("invalid_params", "lua_mount: " + oerr);
     }
     std::string how, root = find_game_root(args.value("game_dir", ""), how);
     if (root.empty())
@@ -914,7 +914,7 @@ json launch_tool(const json &args, const json &token) {
     else opts += " -w 640 -h 360 +fps_max 20 +fps_max_nofocus 20";  // narrower than 640 crashes the client
     if (!sound) opts += " -nosound";
     // The folder was checked: no quote or line break can end the argument.
-    if (!overlay_root.empty()) opts += " -mcp_overlay \"" + overlay_root + "\"";
+    if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"";
     SetEnvironmentVariableA("SteamAppId", "4000");
     SetEnvironmentVariableA("SteamGameId", "4000");
     std::string exe = root + "\\gmod_win64.exe";
@@ -980,7 +980,7 @@ json launch_tool(const json &args, const json &token) {
                                                          "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
                                                          "the silent ones with instances_close {pids}."}}},
                               {"silent_pids", silent}, {"answered", answered},
-                              {"overlay", overlay_root.empty() ? json(nullptr) : json(overlay_root)}},
+                              {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)}},
                          true);
     }
     // Maps, all at once.
@@ -1013,7 +1013,7 @@ json launch_tool(const json &args, const json &token) {
     int fps_cap = preset == "normal" ? 30 : 20;
     json res{{"instances", results}, {"game_dir", root}, {"found_by", how}, {"preset", preset}, {"keep", keep},
              {"fps_max", fps_cap},
-             {"overlay", overlay_root.empty() ? json(nullptr) : json(overlay_root)},
+             {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)},
              {"fps_note", "these clients run at most " + std::to_string(fps_cap) + " fps (fps_max, also when unfocused): "
                           "per-frame costs and frame-to-frame behaviour differ from a normal game; raise it with "
                           "convar_set fps_max for timing work"},

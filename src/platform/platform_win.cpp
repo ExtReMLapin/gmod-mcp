@@ -43,7 +43,7 @@ std::vector<std::string> lua_shared_names() { return {"lua_shared.dll"}; }
 std::vector<std::string> tier0_names() { return {"tier0.dll"}; }
 std::vector<std::string> engine_names() { return {"engine.dll"}; }
 // The client loads filesystem_stdio.dll. A dedicated server does not (its filesystem lives elsewhere, not reachable
-// through dedicated.dll's CreateInterface: seen live 2026-11-14), so the overlay is client only for now.
+// through dedicated.dll's CreateInterface: seen live 2026-11-14), so the mounted folder is client only for now.
 std::vector<std::string> filesystem_names() { return {"filesystem_stdio.dll"}; }
 
 bool patch_pointer(void **slot, void *value) {
