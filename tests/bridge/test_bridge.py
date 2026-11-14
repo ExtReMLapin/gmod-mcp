@@ -1067,7 +1067,78 @@ def case_edge_live():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live, "edge_live": case_edge_live}
+def case_overlay_ecosystem():
+    """Live (Windows, Steam running, no other game): every way Lua is loaded, with a branched Lua folder holding an
+    addon that exists nowhere else (autorun + shared + server + client files)."""
+    print("== OVERLAY ECOSYSTEM: the Lua tools and engine paths with a branched folder", flush=True)
+    base = tempfile.mkdtemp(prefix="gmcp-ovx-")
+    ov = os.path.join(base, "my addon wt")
+    files = {
+        "lua/autorun/ovx_init.lua": 'AddCSLuaFile()\nAddCSLuaFile("ovx/sh.lua")\nAddCSLuaFile("ovx/cl.lua")\ninclude("ovx/sh.lua")\n'
+                                    'if SERVER then include("ovx/sv.lua") else include("ovx/cl.lua") end\n',
+        "lua/ovx/sh.lua": 'OVX = OVX or {}\nfunction OVX.Shared() return "sh v1" end\n',
+        "lua/ovx/sv.lua": 'function OVX.Server() return "sv v1" end\n',
+        "lua/ovx/cl.lua": 'function OVX.Client() return "cl v1" end\n',
+    }
+    for rel, text in files.items():
+        os.makedirs(os.path.dirname(os.path.join(ov, rel)), exist_ok=True)
+        with open(os.path.join(ov, rel), "w", encoding="utf-8") as f: f.write(text)
+    b = Bridge(27080)
+
+    def call(tool, args, timeout=300):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    sc, err = call("instances_launch", {"count": 1, "map": "gm_construct", "owner": "ovx", "sound": False, "overlay": ov})
+    inst = (sc.get("instances") or [{}])[0].get("instance")
+    check("OVX client launched with the folder from its first map", not err and inst and sc.get("overlay"), sc)
+    if not inst:
+        b.close(); return
+    I = {"instance": inst}
+    sc, err = call("lua_exec", dict(I, realm="server", code="return OVX.Shared(), OVX.Server(), debug.getinfo(OVX.Shared, 'S').source"))
+    check("OVX server: autorun, include, engine name @lua/...", sc.get("values") == ["sh v1", "sv v1", "@lua/ovx/sh.lua"], sc)
+    sc, err = call("lua_exec", dict(I, realm="client", code="return OVX.Shared(), OVX.Client(), OVX.Server == nil"))
+    check("OVX client realm: AddCSLuaFile copies from the folder, server file not sent", sc.get("values") == ["sh v1", "cl v1", True], sc)
+    sc, err = call("lua_function_source", dict(I, realm="server", expr="OVX.Shared"))
+    check("OVX lua_function_source finds the folder's file, matches", sc.get("matches_disk") is True and "my addon wt" in sc.get("file", ""), sc)
+    sc, err = call("lua_check", dict(I, realm="server", path="ovx"))
+    check("OVX lua_check of a folder that only exists in the branched folder", not err and sc.get("ok") is True, sc)
+    sc, err = call("lua_exec_file", dict(I, realm="server", path="ovx/sv.lua"))
+    check("OVX lua_exec_file finds it and names it like the engine", not err and sc.get("chunkname") == "@lua/ovx/sv.lua", sc)
+    sc, err = call("lua_job", dict(I, realm="server", path="ovx/sh.lua"))
+    check("OVX lua_job {path} finds it", not err, sc)
+    sc, err = call("console_exec", dict(I, realm="server", cmd="lua_openscript ovx/sv.lua"))
+    check("OVX console lua_openscript finds it", not err and any("ovx/sv.lua" in l["text"] for l in sc.get("output", [])), sc)
+    # Edit: no autorefresh; lua_function_source says the running code is stale; lua_reload runs the folder's copy.
+    with open(os.path.join(ov, "lua/ovx/sh.lua"), "w", encoding="utf-8") as f:
+        f.write('OVX = OVX or {}\nfunction OVX.Shared() return "sh v2" end\n')
+    time.sleep(3)
+    sc, err = call("lua_exec", dict(I, realm="server", code="return OVX.Shared()"))
+    check("OVX no autorefresh: still the old code after an edit", sc.get("values") == ["sh v1"], sc)
+    sc, err = call("lua_function_source", dict(I, realm="server", expr="OVX.Shared"))
+    check("OVX lua_function_source reports the edit (matches_disk false)", sc.get("matches_disk") is False, sc)
+    sc, err = call("lua_reload", dict(I, path="ovx/sh.lua"))
+    check("OVX lua_reload runs the folder's copy in server and client", not err and sc.get("ok") is True and "my addon wt" in sc.get("file", ""), sc)
+    sc, err = call("lua_exec", dict(I, realm="server", code="return OVX.Shared()"))
+    sc2, err2 = call("lua_exec", dict(I, realm="client", code="return OVX.Shared()"))
+    check("OVX after lua_reload both realms run v2", sc.get("values") == ["sh v2"] and sc2.get("values") == ["sh v2"], [sc, sc2])
+    sc, err = call("lua_function_source", dict(I, realm="server", expr="OVX.Shared"))
+    check("OVX lua_function_source matches again", sc.get("matches_disk") is True, sc)
+    # Removal: from the next map load the addon is gone (it exists nowhere else).
+    call("lua_overlay", dict(I, path=None))
+    call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
+    sc, err = call("lua_exec", dict(I, realm="server", code="return OVX == nil"))
+    check("OVX removed: the next map load runs without it", sc.get("values") == [True], sc)
+    sc, err = call("lua_reload", dict(I, path="ovx/sh.lua"))
+    check("OVX removed: lua_reload no longer finds the folder's files", err and "not_found" in json.dumps(sc), sc)
+    call("instances_close", {"owner": "ovx"}, 60)
+    b.close()
+    import shutil
+    shutil.rmtree(base, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "overlay": case_overlay, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "overlay_live": case_overlay_live, "edge_live": case_edge_live, "overlay_ecosystem": case_overlay_ecosystem}
 for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "overlay", "orphan", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)

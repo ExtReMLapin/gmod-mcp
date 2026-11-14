@@ -2,6 +2,7 @@
 
 #include <set>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -42,6 +43,8 @@ bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs,
 json project_values(json result, const json &args);
 // `fields` on an object result (status): keeps only these top-level keys.
 json project_keys(json result, const json &args);
+// lua_reload's lookup: every file matching an include()-style or game-relative path, in the engine's order.
+std::vector<std::string> find_game_lua(const std::string &path, std::string &err);
 
 // The `job` protocol of lua_job (tool description, also used by the write-lua-job prompt).
 const char *job_protocol();

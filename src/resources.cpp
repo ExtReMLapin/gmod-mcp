@@ -40,7 +40,10 @@ std::string instructions() {
          "Details: lua_job description, prompt write-lua-job.\n";
     s += "Documentation: api_search (ground truth: what actually exists in each realm), wiki_search / wiki_page "
          "(https://wiki.facepunch.com/gmod/). Full guide: resource mcpagent://guide.\n";
-    s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator.";
+    s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator.\n";
+    s += "Testing a branch of an addon: lua_overlay {path: <your worktree>} (or instances_launch {overlay}) makes ONE game load "
+         "Lua from that folder first; it takes effect at the next map_load, and the engine then names those files "
+         "\"@lua/...\". Details: guide section \"Branched Lua folder\".";
     return s;
 }
 
@@ -114,6 +117,52 @@ for i, ent in ipairs(ents.GetAll()) do
 end
 return found
 ```
+
+## Branched Lua folder (lua_overlay)
+`lua_overlay {path}` plugs a folder into ONE game process: typically the git worktree of an addon (the folder that
+contains `lua/`). From then on every Lua lookup of that game looks in the folder FIRST, then in the game and its addons.
+Other games (other test clients, the user's own game) are not affected. Windows game clients only (not srcds, not Linux).
+
+When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
+set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it
+(`path: null`) also applies from the next map load. `instances_launch {overlay}` starts a client with it from its first
+map.
+
+Which file is used, per Lua path (e.g. `my_addon/core.lua`):
+- in the folder (`<folder>/lua/my_addon/core.lua`): the folder's copy, even if the installed addon has one;
+- only in the game or an addon: still loaded from there (the rest of the addon, other addons, the gamemode);
+- deleted in your branch but still in the installed addon: STILL loaded, from the addon;
+- `<folder>/gamemodes/` works the same way for gamemode files.
+
+What sees the folder (checked live):
+
+| Way code is loaded | With a branched folder |
+|---|---|
+| autorun files, `include()`, `AddCSLuaFile` (the client gets the folder's copy) | folder first |
+| console `lua_openscript` / `lua_openscript_cl` | folder first |
+| `file.Read` / `file.Find` / `file.Exists` with `"LUA"` | see the folder's files (`"GAME"` does not) |
+| gmod-mcp tools given a relative Lua path: `lua_exec_file`, `lua_job {path}`, `lua_check`, `lua_reload`, `lua_function_source` | folder first, same order as the engine; a miss lists the folder's paths too |
+| materials, sounds, models, `data/` | not affected |
+
+Names: the engine names a file of the folder relative to the folder's root. `debug.getinfo(f).source` is
+`@lua/my_addon/core.lua`, not `@addons/my_addon/lua/my_addon/core.lua` as for the installed addon. Code that identifies
+a caller by its file path sees another name. gmod-mcp's tools use the same names as the engine (`chunkname` overrides).
+
+Editing a file of the folder: there is no autorefresh, saving a file does not reload it. To run an edit:
+`lua_reload {path: "my_addon/core.lua"}` (runs the folder's copy again in its realms; what the file built at load time
+is not reset) or `map_load` for a clean state. Check with `lua_function_source {realm, expr: "MyAddon.Update"}`: it
+compares the running function with the folder's file (`matches_disk`). A `git checkout` in the worktree changes the
+files at once; the running code changes only when it is loaded again.
+
+Typical flow:
+1. `instances_launch {count: 1, owner: "<you>", overlay: "D:/dev/my-addon-wt", map: "gm_construct"}` (or, on a client
+   you already have: `lua_overlay {path}` then `map_load`).
+2. `lua_overlay {}`: `overlay` is your folder, `base_lua_mounted: true`, the folder heads `search_paths.lsv` and `.lcl`.
+3. `lua_function_source {realm: "server", expr: "MyAddon.Update"}`: `file` is in your folder, `matches_disk: true`.
+4. Edit, then `lua_reload` or `map_load`, then test.
+5. Done: `instances_close {owner}` (or `lua_overlay {path: null}` then `map_load`).
+
+If `base_lua_mounted` is false, the game's own `lua/` is missing from the server paths: remove the folder at once.
 
 ## Prompts and resources
 Prompts (slash commands): `write-lua-job`, `debug-errors`, `run-tests`, `check-map`.

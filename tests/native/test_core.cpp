@@ -12,6 +12,7 @@
 #include "coordinator.h"
 #include "mcp.h"
 #include "overlay.h"
+#include "overlay.h"
 #include "tools.h"
 #include "util.h"
 
@@ -257,6 +258,36 @@ int main() {
     // resolve_lua_file gives the chunk name relative to the game folder.
     std::string chunk;
     CHECK(tools::resolve_lua_file("pba/core.lua", abs, chunk, err) && chunk == "@addons/pba/lua/pba/core.lua");
+
+    // Branched Lua folder (overlay): the tools look where the engine looks, in the same order (the overlay first), and
+    // name its files like the engine (relative to the overlay root: "@lua/x.lua"). Seen live 2026-11-14: lua_reload,
+    // lua_check and lua_function_source did not find a file that only exists in the overlay.
+    {
+        fs::path ov = root.parent_path() / "ov wt";
+        touch(ov / "lua/ovx/sh.lua");
+        touch(ov / "lua/pba/core.lua");           // shadows the installed addon's copy
+        touch(ov / "gamemodes/ovgm/gamemode/init.lua");
+        overlay::set_current_for_tests(ov.u8string());
+        CHECK(tools::resolve_lua_file("ovx/sh.lua", abs, chunk, err) && same(abs, ov / "lua/ovx/sh.lua") && chunk == "@lua/ovx/sh.lua");
+        CHECK(tools::resolve_lua_file("pba/core.lua", abs, chunk, err) && same(abs, ov / "lua/pba/core.lua") && chunk == "@lua/pba/core.lua");
+        CHECK(tools::resolve_lua_file("lua/ovx/sh.lua", abs, chunk, err) && same(abs, ov / "lua/ovx/sh.lua"));  // a source name
+        CHECK(tools::resolve_lua_file("ovgm/gamemode/init.lua", abs, chunk, err) && same(abs, ov / "gamemodes/ovgm/gamemode/init.lua") &&
+              chunk == "@gamemodes/ovgm/gamemode/init.lua");
+        CHECK(tools::resolve_lua_path("ovx", true, abs, err) && same(abs, ov / "lua/ovx"));  // a folder (lua_check)
+        CHECK(tools::resolve_lua_file("t.lua", abs, chunk, err) && same(abs, root / "lua/mcpagent_tmp/t.lua"));  // tmp still first
+        CHECK(tools::resolve_lua_file("autorun/a.lua", abs, chunk, err) && same(abs, root / "lua/autorun/a.lua"));  // not shadowed
+        CHECK(tools::resolve_lua_file((ov / "lua/ovx/sh.lua").u8string(), abs, chunk, err) && chunk == "@lua/ovx/sh.lua");  // absolute
+        // lua_reload: the overlay's copy first, the addon's listed after it.
+        auto all = tools::find_game_lua("pba/core.lua", err);
+        CHECK(all.size() == 2 && same(all[0], ov / "lua/pba/core.lua") && same(all[1], root / "addons/pba/lua/pba/core.lua"));
+        all = tools::find_game_lua("ovx/sh.lua", err);
+        CHECK(all.size() == 1 && same(all[0], ov / "lua/ovx/sh.lua"));
+        err.clear();
+        CHECK(!tools::resolve_lua_path("nope.lua", false, abs, err) && err.find("ov wt") != std::string::npos);  // listed when missing
+        overlay::set_current_for_tests("");
+        CHECK(tools::resolve_lua_file("pba/core.lua", abs, chunk, err) && same(abs, root / "addons/pba/lua/pba/core.lua"));
+        CHECK(!tools::resolve_lua_file("ovx/sh.lua", abs, chunk, err));
+    }
 
     // `fields` projection.
     json r{{"ok", true}, {"result", {{"values", json::array({json{{"pass", 3}, {"fails", json::array()}, {"log", std::string(5000, 'x')}}, 7})}, {"n", 2}}}};

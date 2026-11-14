@@ -205,6 +205,16 @@ lua_function_source {realm: "server", expr: "MyAddon.Update"}   -> source: the w
   (from the next map load).
 - The engine caches Lua files by name and file time; `lua_overlay` empties that cache when it changes (so an addon file
   and its worktree copy with the same name and time cannot be mixed up).
+- What sees the branched folder (checked in game): autorun files, `include()`, `AddCSLuaFile` (the client gets the
+  folder's copy), the console's `lua_openscript` / `lua_openscript_cl`, `file.Read` / `file.Find` with `"LUA"`, and
+  gmod-mcp's `lua_exec_file`, `lua_job {path}`, `lua_check`, `lua_reload` and `lua_function_source`, which look in the
+  same order as the engine. Not affected: materials, sounds, models, `data/`.
+- A file of the folder hides the installed addon's file with the same Lua path; files only in the game are still
+  loaded, including a file your branch deleted.
+- The engine names the folder's files from the folder's root: `debug.getinfo(f).source` is `@lua/my_addon/x.lua`, not
+  `@addons/my_addon/lua/my_addon/x.lua`.
+- No autorefresh: after an edit, `lua_reload {path}` (or `map_load`), then `lua_function_source` to check that the
+  running function is the file's.
 - Windows game clients only for now: not on Linux (the engine's filesystem interface is not verified there) nor on a
   dedicated server (its filesystem interface is not reachable the same way).
 - How it works: the engine's own search paths (`IFileSystem::AddSearchPath` at the head of the Lua path IDs), put back

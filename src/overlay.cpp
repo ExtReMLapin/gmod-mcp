@@ -25,6 +25,11 @@ std::string current() {
     return g_root;
 }
 
+void set_current_for_tests(const std::string &root) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_root = root;
+}
+
 #ifdef _WIN32
 
 // IFileSystem ("VFileSystem022", filesystem_stdio) primary vtable slots, verified in the x64 Windows binary

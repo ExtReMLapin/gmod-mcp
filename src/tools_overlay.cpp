@@ -28,17 +28,21 @@ static json lua_overlay_tool(const json &args) {
 void register_overlay() {
     mcp::register_tool(
         {"lua_overlay", "Load Lua from another folder first",
-         "Per-instance code overlay: makes THIS game process look for Lua files in a folder of your choice (e.g. the git "
-         "worktree of an addon) before every addon, so include(), autorun files and AddCSLuaFile get your branch's "
-         "files instead of the installed addon's, at every map load, without touching the shared addons/ folder or other "
-         "instances. `path`: the addon's root (the folder that contains lua/) or its lua/ folder, absolute. "
-         "IMPORTANT: it applies to files loaded from now on; code already running is not re-run, so call map_load "
-         "right after (then check with lua_function_source or debug.getinfo that the function comes from your file). "
-         "Only Lua is overlaid (not materials or sounds). The result says base_lua_mounted: false if the game's own lua/ went missing (then remove the overlay). path: null removes the overlay "
-         "(from the next map load). Without `path`: the current overlay and the engine's Lua search paths (lsv = "
-         "server, lcl = client). A test client can also start with one: instances_launch {overlay}. empty_cache "
-         "(default true) empties the engine's Lua file cache so an older copy with the same name and time is not "
-         "served. Windows game clients only for now (unsupported_platform on Linux; not on a dedicated server).",
+         "Branched Lua folder: plugs a folder (e.g. the git worktree of an addon: the folder that contains lua/) into "
+         "THIS game process only. Every Lua lookup of this game then looks there first: autorun, include(), "
+         "AddCSLuaFile (the client gets the folder's copy), lua_openscript, file.Read/Find with \"LUA\", and gmod-mcp's "
+         "own lua_exec_file / lua_job {path} / lua_check / lua_reload / lua_function_source. A file in the folder hides "
+         "the installed addon's file of the same Lua path; files only in the game are still loaded. Other games are "
+         "not affected. IT TAKES EFFECT AT THE NEXT MAP LOAD: call map_load right after (code already running stays "
+         "until loaded again). No autorefresh: after an edit, lua_reload {path} or map_load; check with "
+         "lua_function_source. The engine names the folder's files from the folder's root (debug.getinfo source "
+         "\"@lua/my_addon/x.lua\", not \"@addons/my_addon/lua/my_addon/x.lua\"). Only Lua (not materials, sounds, "
+         "data/). `path`: the addon's root or its lua/ folder, absolute; null removes it (from the next map load); "
+         "omitted: the current folder and the engine's Lua search paths (lsv = server, lcl = client). If the result "
+         "says base_lua_mounted: false, remove the folder at once. A test client can start with one: instances_launch "
+         "{overlay}. empty_cache (default true) empties the engine's Lua file cache. Windows game clients only "
+         "(unsupported_platform on Linux; refused on a dedicated server). Full guide: resource mcpagent://guide, "
+         "section \"Branched Lua folder\".",
          json{{"properties",
                {{"path", {{"type", json::array({"string", "null"})},
                           {"description", "Overlay folder (absolute), or null / \"\" to remove it. Omit to read the current state."}}},
