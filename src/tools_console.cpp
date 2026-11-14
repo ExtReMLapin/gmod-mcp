@@ -176,7 +176,13 @@ static json console_exec_tool(const json &args) {
     for (const auto &st : stmts) {
         auto parts = util::split_args(st);
         if (parts.empty() || parts.size() > 2) continue;
-        json g = agent::rt(r, "convar_get", json{{"name", parts[0]}}, 5.0);
+        // Read it where it lives: a convar an addon creates in the client or server realm is not visible from the menu.
+        json g;
+        for (int rr : {r, (int)realms::CLIENT, (int)realms::SERVER}) {
+            if (rr != r && (r != realms::MENU || !agent::realm_present(rr))) continue;
+            g = agent::rt(rr, "convar_get", json{{"name", parts[0]}}, 5.0);
+            if (g.value("ok", false)) break;
+        }
         if (!g.value("ok", false)) continue;  // a command, or a protected convar
         json c{{"value", g["result"].value("value", json())}};
         if (g["result"].contains("number")) c["number"] = g["result"]["number"];

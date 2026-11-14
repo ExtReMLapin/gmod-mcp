@@ -20,7 +20,18 @@ IsColor = function() return false end
 
 __mcpagent = {}
 __mcpagent_native = { realm = "server", mode = "client", version = "test", generation = 7 }
-for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua" }) do
+-- Convars: GetConVar (GMod's cached wrapper) must never be used by the runtime: in the menu state its cache keeps a
+-- ConVar whose engine object an addon re-creates at every map load, and the next call crashed the game (0.3.2).
+bit = bit or { band = function(a, b) return 0 end }
+local fake_cv = { GetFlags = function() return 0 end, GetName = function() return "x" end, GetHelpText = function() return "" end,
+	GetDefault = function() return "0" end, GetString = function() return "1" end, GetFloat = function() return 1 end }
+fake_cv.__index = fake_cv
+function ConVarExists(n) return true end
+function GetConVar(n) error("cached GetConVar used (crash risk)") end
+function GetConVar_Internal(n) return setmetatable({}, fake_cv) end
+function RunConsoleCommand() end
+game = game or { ConsoleCommand = function() end }
+for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua" }) do
 	local f = assert(loadfile(dir .. "/" .. name))
 	f()
 end
@@ -315,6 +326,15 @@ r = run_job({ code = "job:sleep(0) job:sleep(-5) job:frames(0) job:frames('x') r
 check(r.ok and r.result.state == "done", "odd sleep/frames arguments do not break the job")
 r = run_job({ code = "coroutine.yield('weird', 1) return 2" })
 check(r.ok and r.result.values[1] == 2, "plain coroutine.yield with odd values")
+
+r = call("convar_get", { name = "pba_x" })
+check(r.ok and r.result.number == 1, "convar_get uses the uncached GetConVar_Internal" .. (r.ok and "" or (" " .. tostring(r.error and r.error.message))))
+r = call("convar_set", { name = "pba_x", value = 2 })
+check(r.ok, "convar_set uses the uncached GetConVar_Internal" .. (r.ok and "" or (" " .. tostring(r.error and r.error.message))))
+local realm0 = A.realm A.realm = "menu"
+r = call("status", {})
+A.realm = realm0
+check(r.ok and r.result.fps_max == 1, "status reads fps_max without the cached GetConVar" .. (r.ok and "" or (" " .. tostring(r.error and r.error.message))))
 
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

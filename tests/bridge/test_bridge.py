@@ -1363,7 +1363,50 @@ def case_feedback():
         check("FEEDBACK %s option true: same as default" % where, "Feedback: while you work" in on2, on2[-300:])
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback}
+def case_convar_crash():
+    """Live regression (crash seen in 0.3.2, RETEX 2026-11-14): console_exec / convar_get from the MENU realm on
+    convars that an addon creates at every map load. The menu's GetConVar cache kept the old ConVar object, freed at
+    the map change, and the next call crashed the game (call to address 0)."""
+    print("== CONVAR CRASH: menu-side convar queries across map loads", flush=True)
+    base = tempfile.mkdtemp(prefix="gmcp-cvcrash-")
+    for rel, text in (("lua/autorun/client/mcp_regress_cv.lua", 'CreateClientConVar("mcp_regress_cl", "0", true)\n'),
+                      ("lua/autorun/server/mcp_regress_cv.lua", 'CreateConVar("mcp_regress_sv", "0")\n')):
+        os.makedirs(os.path.dirname(os.path.join(base, rel)), exist_ok=True)
+        with open(os.path.join(base, rel), "w") as f: f.write(text)
+    b = Bridge(27080)
+
+    def call(tool, args, timeout=300):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError")), r
+
+    sc, err, _ = call("instances_launch", {"count": 1, "map": "gm_construct", "owner": "cvcrash", "sound": False, "lua_mount": base})
+    inst = (sc.get("instances") or [{}])[0].get("instance")
+    pid = (sc.get("instances") or [{}])[0].get("pid")
+    check("CVCRASH client launched", inst, sc)
+    if not inst: b.close(); return
+    I = {"instance": inst}
+    alive_all = True
+    for k in range(3):
+        for cmd in ("mcp_regress_cl %d" % (k + 1), "mcp_regress_sv %d" % (k + 1)):
+            call("console_exec", dict(I, realm="menu", cmd=cmd), 60)
+            call("convar_get", dict(I, realm="menu", name=cmd.split()[0]), 60)
+        call("map_load", dict(I, map="gm_construct", timeout_s=120), 180)
+        time.sleep(1)
+        if pid and not alive(pid):
+            alive_all = False
+            break
+    sc, err, _ = call("console_exec", dict(I, realm="menu", cmd="mcp_regress_cl 9"), 60)
+    check("CVCRASH the game survives menu-side queries of addon convars across 3 map loads",
+          alive_all and pid and alive(pid), {"alive": alive(pid) if pid else None})
+    check("CVCRASH and the value still reads back", sc.get("convars", {}).get("mcp_regress_cl", {}).get("value") == "9", sc)
+    call("instances_close", {"owner": "cvcrash"}, 60)
+    b.close()
+    import shutil
+    shutil.rmtree(base, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash}
 for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "version", "feedback", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)

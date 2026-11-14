@@ -168,7 +168,7 @@ end
 function H.convar_get(args)
 	local name = args.name
 	if not ConVarExists or not ConVarExists(name) then A.fail("not_found", "unknown convar: " .. tostring(name)) end
-	local cv = GetConVar(name)
+	local cv = A.convar(name)
 	if not cv then
 		-- Exists for the engine but inaccessible from Lua (FCVAR_PROTECTED, rcon_password...) or a plain command.
 		A.fail("protected", "convar protected or inaccessible from Lua (or a command, not a convar): " .. tostring(name))
@@ -191,7 +191,7 @@ end
 function H.convar_set(args)
 	local name = args.name
 	if not ConVarExists(name) then A.fail("not_found", "unknown convar: " .. tostring(name)) end
-	local cv = GetConVar(name)
+	local cv = A.convar(name)
 	if not cv or bit.band(cv:GetFlags(), 32) ~= 0 then A.fail("protected", "convar protected or inaccessible from Lua: " .. name) end
 	run_cmd({ name, tostring(args.value) })
 	return { requested = true, previous = cv and cv:GetString() or J.null }

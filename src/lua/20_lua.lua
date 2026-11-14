@@ -102,7 +102,7 @@ end
 function H.status(args)
 	local s = { realm = A.realm, generation = A.generation, lua_memory_kb = collectgarbage("count"), runtime_age_s = SysTime() - A.injected_at }
 	local function cv(name)
-		local c = GetConVar and GetConVar(name)
+		local c = A.convar(name)
 		return c and c:GetFloat() or nil
 	end
 	s.fps_max, s.host_timescale = cv("fps_max"), cv("host_timescale")

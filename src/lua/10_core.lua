@@ -307,6 +307,15 @@ function A.dispatch(payload)
 	return s
 end
 
+-- Convars: always the engine's current object. GMod's GetConVar caches the ConVar userdata per name
+-- (includes/util.lua, ConVarCache); in the menu state, which survives map changes, a cached ConVar of a convar that an
+-- addon re-creates at every map load points to freed memory after the change, and calling it crashed the game (seen
+-- in 0.3.2: console_exec -> convar_get from the menu). GetConVar_Internal is the uncached engine lookup.
+function A.convar(name)
+	if GetConVar_Internal then return GetConVar_Internal(name) end
+	return GetConVar and GetConVar(name)
+end
+
 -- Compilation: native.compile (luaL_loadbuffer, exact chunk name); falls back to CompileString.
 function A.compile(code, chunk)
 	if native.compile then return native.compile(code, chunk) end
