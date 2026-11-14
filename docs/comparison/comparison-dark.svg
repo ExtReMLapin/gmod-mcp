@@ -53,7 +53,6 @@
 <rect class="cell v-yes" x="839" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <text class="star" x="854" y="63" text-anchor="middle">★</text>
 <rect class="cell v-yes" x="872" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
-<text class="star" x="887" y="63" text-anchor="middle">★</text>
 <rect class="cell v-yes" x="905" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="938" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="971" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
@@ -82,7 +81,7 @@
 <rect class="cell v-partial" x="773" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-partial" x="806" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-no" x="839" y="70" width="30" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-unverified" x="872" y="70" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-partial" x="872" y="70" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-yes" x="905" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="938" y="70" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-no" x="971" y="70" width="30" height="16" rx="3" fill="#c94040"/>
@@ -110,7 +109,7 @@
 <rect class="cell v-yes" x="773" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-partial" x="806" y="89" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-no" x="839" y="89" width="30" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-unverified" x="872" y="89" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-partial" x="872" y="89" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-yes" x="905" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="938" y="89" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-no" x="971" y="89" width="30" height="16" rx="3" fill="#c94040"/>
@@ -138,7 +137,7 @@
 <rect class="cell v-no" x="773" y="108" width="30" height="16" rx="3" fill="#c94040"/>
 <rect class="cell v-partial" x="806" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-no" x="839" y="108" width="30" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-unverified" x="872" y="108" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-partial" x="872" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-partial" x="905" y="108" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-yes" x="938" y="108" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-no" x="971" y="108" width="30" height="16" rx="3" fill="#c94040"/>
@@ -165,7 +164,7 @@
 <rect class="cell v-yes" x="740" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="773" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="806" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
-<rect class="cell v-partial" x="839" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
+<rect class="cell v-no" x="839" y="127" width="30" height="16" rx="3" fill="#c94040"/>
 <rect class="cell v-partial" x="872" y="127" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-yes" x="905" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="938" y="127" width="30" height="16" rx="3" fill="#2e9d5b"/>
@@ -250,7 +249,7 @@
 <rect class="cell v-yes" x="773" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="806" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-no" x="839" y="184" width="30" height="16" rx="3" fill="#c94040"/>
-<rect class="cell v-unverified" x="872" y="184" width="30" height="16" rx="3" fill="url(#hatch)"/>
+<rect class="cell v-partial" x="872" y="184" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-partial" x="905" y="184" width="30" height="16" rx="3" fill="#d9a520"/>
 <rect class="cell v-yes" x="938" y="184" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-no" x="971" y="184" width="30" height="16" rx="3" fill="#c94040"/>

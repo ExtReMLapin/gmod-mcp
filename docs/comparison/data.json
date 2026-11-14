@@ -155,7 +155,7 @@
       "id": "long_calls",
       "label": "Long calls",
       "group": "trust",
-      "definition": "yes = MCP Tasks, or progress notifications + cancellation with no blocking server-side timeout <= 30 s on game work; no = a blocking timeout <= 30 s cuts the call, or neither progress nor cancellation; partial = progress without cancellation or vice versa.",
+      "definition": "yes = MCP Tasks, or progress notifications + cancellation with no blocking server-side timeout <= 30 s on game work; no = a blocking timeout <= 30 s cuts the call, or neither progress nor cancellation; partial = progress without cancellation or vice versa. MCP cancellation means handling notifications/cancelled (an SDK doing it counts); a closed HTTP connection alone does not.",
       "lines": [
         "Long",
         "calls"
@@ -165,7 +165,7 @@
       "id": "mcp_spec",
       "label": "MCP spec",
       "group": "trust",
-      "definition": "yes = declares protocol version >= 2025-06-18, handles notifications/cancelled, returns structuredContent with outputSchema; partial = 1-2 of 3; no = none. A verdict needs a line in the server's own code; SDK defaults are not credited.",
+      "definition": "yes = declares protocol version >= 2025-06-18, handles notifications/cancelled, returns structuredContent with outputSchema; partial = 1-2 of 3; no = none. SDK-based servers are credited with what their pinned SDK version implements (evidence: the line pinning the SDK; with only a version range, the lowest allowed version); outputSchema/structuredContent must come from the server's own tool declarations, including typed outputs the SDK turns into a schema.",
       "lines": [
         "MCP",
         "spec"
@@ -412,7 +412,8 @@
           "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/Program.cs#L306"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/GModMcpServer.csproj#L19"
         },
         "ci": {
           "v": "yes",
@@ -524,7 +525,8 @@
           "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/bridge/filebridge.ts#L90"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/pnpm-lock.yaml#L339"
         },
         "ci": {
           "v": "yes",
@@ -636,7 +638,8 @@
           "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/ipc.ts#L94"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/package-lock.json#L37-L38"
         },
         "ci": {
           "v": "partial",
@@ -744,8 +747,8 @@
           "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L145"
         },
         "long_calls": {
-          "v": "partial",
-          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/logTools.ts#L91"
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/mcpHttpServer.ts#L291-L294"
         },
         "mcp_spec": {
           "v": "partial",
@@ -971,11 +974,11 @@
         },
         "long_calls": {
           "v": "no",
-          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L1269"
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L474-L480"
         },
         "mcp_spec": {
           "v": "partial",
-          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L16-L19"
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L16-L22"
         },
         "ci": {
           "v": "partial",
@@ -1083,10 +1086,11 @@
         },
         "long_calls": {
           "v": "no",
-          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/bridge/src/lib.rs#L28"
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L13"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/bun.lock#L41"
         },
         "ci": {
           "v": "partial",
@@ -1195,10 +1199,11 @@
         },
         "long_calls": {
           "v": "no",
-          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/src/bridge.cpp#L31"
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L10-L11"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/bun.lock#L20"
         },
         "ci": {
           "v": "partial",
@@ -1306,10 +1311,11 @@
         },
         "long_calls": {
           "v": "no",
-          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/bridge.ts#L89"
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L127"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/package-lock.json#L485"
         },
         "ci": {
           "v": "no",
@@ -1421,7 +1427,8 @@
           "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L80"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/pyproject.toml#L10"
         },
         "ci": {
           "v": "no",
@@ -1530,10 +1537,11 @@
         },
         "long_calls": {
           "v": "no",
-          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L55"
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/internal/gmod/command.go#L93"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "yes",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/go.sum#L7"
         },
         "ci": {
           "v": "no",
@@ -1641,7 +1649,7 @@
         },
         "long_calls": {
           "v": "no",
-          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4718"
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L503"
         },
         "mcp_spec": {
           "v": "partial",
@@ -1754,10 +1762,11 @@
         },
         "long_calls": {
           "v": "no",
-          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L164-L165"
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L162-L166"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/package.json#L43"
         },
         "ci": {
           "v": "no",
@@ -1864,10 +1873,12 @@
           "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/README.md#L48"
         },
         "long_calls": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/client/GmodRconClient.java"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/pom.xml#L31"
         },
         "ci": {
           "v": "no",
@@ -1974,7 +1985,8 @@
           "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/README.md#L57-L59"
         },
         "long_calls": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L177"
         },
         "mcp_spec": {
           "v": "no",
@@ -2086,7 +2098,8 @@
           "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L19-L23"
         },
         "long_calls": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/crates/gmod-gabp/src/gabp/runtime.rs#L69"
         },
         "mcp_spec": {
           "v": "unverified"
@@ -2195,7 +2208,8 @@
           "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L163"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L119-L132"
         },
         "ci": {
           "v": "no",
@@ -2302,10 +2316,12 @@
           "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/README.md#L71"
         },
         "long_calls": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/server.ts#L67"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "partial",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/package-lock.json#L490"
         },
         "ci": {
           "v": "no",
@@ -2413,7 +2429,8 @@
           "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L38"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L278-L295"
         },
         "ci": {
           "v": "no",
@@ -2630,10 +2647,12 @@
           "v": "unverified"
         },
         "long_calls": {
-          "v": "unverified"
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/transport/file_ipc.py#L220"
         },
         "mcp_spec": {
-          "v": "unverified"
+          "v": "yes",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/pyproject.toml#L12"
         },
         "ci": {
           "v": "no",
