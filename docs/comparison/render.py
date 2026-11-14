@@ -58,6 +58,12 @@ def _check_cell(repo, column, cell, prefixes):
         raise ValueError(f"{where}: cell must be an object")
     if "star" in cell:
         raise ValueError(f"{where}: 'star' is computed by render.py, remove it from the data")
+    if "score" in cell:
+        score = cell["score"]
+        if isinstance(score, bool) or not isinstance(score, int) or score < 0:
+            raise ValueError(f"{where}: 'score' must be a non-negative integer, got {score!r}")
+        if cell.get("v") != "yes":
+            raise ValueError(f"{where}: 'score' is only allowed on a 'yes' cell")
     verdict = cell.get("v")
     if verdict not in VERDICTS:
         raise ValueError(f"{where}: unknown verdict {verdict!r}")
@@ -121,14 +127,23 @@ def load_data(path):
 
 
 def compute_stars(data):
-    """Return {(repo name, column id)} for every cell that is the only 'yes' in its column (realms excluded)."""
+    """Return {(repo name, column id)} for each column winner (realms excluded).
+
+    Among the 'yes' cells of a column: a single one wins; several only compete when every one has a
+    'score', and the unique highest score wins (a tie at the top, or any unscored 'yes', means no star).
+    """
     stars = set()
     for col in data["columns"]:
         if col["id"] == REALMS_ID:
             continue
-        yes = [r["name"] for r in data["repos"] if r["cells"][col["id"]]["v"] == "yes"]
+        yes = [(r["name"], r["cells"][col["id"]]) for r in data["repos"] if r["cells"][col["id"]]["v"] == "yes"]
         if len(yes) == 1:
-            stars.add((yes[0], col["id"]))
+            stars.add((yes[0][0], col["id"]))
+        elif len(yes) > 1 and all("score" in cell for _, cell in yes):
+            best = max(cell["score"] for _, cell in yes)
+            top = [name for name, cell in yes if cell["score"] == best]
+            if len(top) == 1:
+                stars.add((top[0], col["id"]))
     return stars
 
 
@@ -188,7 +203,10 @@ def replace_between_markers(text, block):
 # ----------------------------------------------------------------- svg
 
 def star_sentence(total):
-    return f'★ = the only server with a verified "yes" in this column (out of {total} compared)'
+    return (
+        "★ = column winner: the only server on top of its column "
+        f"(for MCP spec: most current-spec features met, out of {total} compared)"
+    )
 
 
 def _esc(text):

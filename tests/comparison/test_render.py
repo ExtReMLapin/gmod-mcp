@@ -58,6 +58,19 @@ class LoadDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "a/b.*errors.*star"):
             self.load_mutated(mutate)
 
+    def test_rejects_score_on_non_yes_cell(self):
+        def mutate(d):
+            d["repos"][0]["cells"]["screenshot"]["score"] = 1
+        with self.assertRaisesRegex(ValueError, "a/b.*screenshot.*score"):
+            self.load_mutated(mutate)
+
+    def test_rejects_bad_score_value(self):
+        for bad in (-1, 1.5, "3", True):
+            def mutate(d, bad=bad):
+                d["repos"][0]["cells"]["errors"]["score"] = bad
+            with self.assertRaisesRegex(ValueError, "a/b.*errors.*score"):
+                self.load_mutated(mutate)
+
     def test_rejects_star_key_in_realms(self):
         def mutate(d):
             d["repos"][0]["cells"]["realms"]["S"]["star"] = True
@@ -120,6 +133,33 @@ class LoadDataTests(unittest.TestCase):
 class StarTests(unittest.TestCase):
     def setUp(self):
         self.data = render.load_data(FIXTURE)
+
+    def scored(self, mutate):
+        data = fixture_dict()
+        mutate(data)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            return render.load_data(path)["stars"]
+
+    def test_highest_score_wins_among_yes(self):
+        def mutate(d):
+            d["repos"][1]["cells"]["purelua"]["score"] = 5
+            d["repos"][2]["cells"]["purelua"]["score"] = 2
+        stars = self.scored(mutate)
+        self.assertIn(("Pollux12/vscode-gmod-glua-ls", "purelua"), stars)
+        self.assertFalse([s for s in stars if s[0] == "x/a&b" and s[1] == "purelua"])
+
+    def test_tie_at_max_score_gives_no_star(self):
+        def mutate(d):
+            d["repos"][1]["cells"]["purelua"]["score"] = 3
+            d["repos"][2]["cells"]["purelua"]["score"] = 3
+        self.assertFalse([s for s in self.scored(mutate) if s[1] == "purelua"])
+
+    def test_unscored_yes_among_several_gives_no_star(self):
+        def mutate(d):
+            d["repos"][1]["cells"]["purelua"]["score"] = 5
+        self.assertFalse([s for s in self.scored(mutate) if s[1] == "purelua"])
 
     def test_sole_yes_gets_star(self):
         self.assertIn(("a/b", "errors"), self.data["stars"])
@@ -223,7 +263,12 @@ class SvgTests(unittest.TestCase):
 
     def test_svg_explains_star(self):
         n = len(self.data["repos"])
-        sentence = f'★ = the only server with a verified "yes" in this column (out of {n} compared)'
+        sentence = render.star_sentence(n)
+        self.assertEqual(
+            sentence,
+            "★ = column winner: the only server on top of its column "
+            f"(for MCP spec: most current-spec features met, out of {n} compared)",
+        )
         # limit must not change N: it counts every repo in the data, not the drawn ones
         for limit in (None, 2):
             root = ET.fromstring(self.svg(limit=limit))
@@ -233,7 +278,7 @@ class SvgTests(unittest.TestCase):
     def test_svg_star_sentence_fits_canvas(self):
         root = ET.fromstring(self.svg(limit=2))
         width = float(root.get("width"))
-        sentence = [e for e in root.iter(SVG_NS + "text") if "the only server" in "".join(e.itertext())][0]
+        sentence = [e for e in root.iter(SVG_NS + "text") if "column winner" in "".join(e.itertext())][0]
         self.assertLessEqual(float(sentence.get("x")) + len("".join(sentence.itertext())) * render.FOOT_CHAR_W, width)
 
 

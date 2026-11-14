@@ -53,6 +53,7 @@
 <rect class="cell v-yes" x="839" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <text class="star" x="854" y="63" text-anchor="middle">★</text>
 <rect class="cell v-yes" x="872" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
+<text class="star" x="887" y="63" text-anchor="middle">★</text>
 <rect class="cell v-yes" x="905" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="938" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
 <rect class="cell v-yes" x="971" y="51" width="30" height="16" rx="3" fill="#2e9d5b"/>
@@ -270,5 +271,5 @@
 <rect class="sw v-unverified" x="156.2" y="284" width="11" height="11" rx="2" fill="url(#hatch)"/>
 <text class="foot" x="171.2" y="294">not verified</text>
 <text class="foot" x="250.4" y="294">as of 2026-11-14 · pinned commits · code read, nothing executed</text>
-<text class="foot" x="8" y="309">★ = the only server with a verified &quot;yes&quot; in this column (out of 22 compared)</text>
+<text class="foot" x="8" y="309">★ = column winner: the only server on top of its column (for MCP spec: most current-spec features met, out of 22 compared)</text>
 </svg>

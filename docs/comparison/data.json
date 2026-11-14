@@ -165,7 +165,7 @@
       "id": "mcp_spec",
       "label": "MCP spec",
       "group": "trust",
-      "definition": "yes = declares protocol version >= 2025-06-18, handles notifications/cancelled, returns structuredContent with outputSchema; partial = 1-2 of 3; no = none. SDK-based servers are credited with what their pinned SDK version implements (evidence: the line pinning the SDK; with only a version range, the lowest allowed version); outputSchema/structuredContent must come from the server's own tool declarations, including typed outputs the SDK turns into a schema.",
+      "definition": "yes = declares protocol version >= 2025-06-18, handles notifications/cancelled, returns structuredContent with outputSchema; partial = 1-2 of 3; no = none. ★ ranking among yes: count of (protocol 2026-07-28, notifications/cancelled, structured output, progress notifications, Tasks). SDK-based servers are credited with what their pinned SDK version implements (evidence: the line pinning the SDK; with only a version range, the lowest allowed version); outputSchema/structuredContent must come from the server's own tool declarations, including typed outputs the SDK turns into a schema.",
       "lines": [
         "MCP",
         "spec"
@@ -300,6 +300,7 @@
         },
         "mcp_spec": {
           "v": "yes",
+          "score": 5,
           "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/mcp.cpp#L20-L46"
         },
         "ci": {
@@ -1541,6 +1542,7 @@
         },
         "mcp_spec": {
           "v": "yes",
+          "score": 2,
           "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/go.sum#L7"
         },
         "ci": {
@@ -2652,6 +2654,7 @@
         },
         "mcp_spec": {
           "v": "yes",
+          "score": 2,
           "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/pyproject.toml#L12"
         },
         "ci": {
