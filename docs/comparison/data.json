@@ -1,0 +1,2693 @@
+{
+  "as_of": "2026-11-14",
+  "columns": [
+    {
+      "id": "realms",
+      "label": "Realms",
+      "group": "features",
+      "definition": "Lua run in the server (S), client (C) and menu (M) realm. yes = arbitrary Lua with its result; partial = only through console commands, fixed tools, without a result, or once the user writes the game side; no = not reachable."
+    },
+    {
+      "id": "errors",
+      "label": "Errors",
+      "group": "features",
+      "definition": "Lua errors raised anywhere in the game (not only by the call) are captured and readable through a tool. partial = only through the console log or a console capture."
+    },
+    {
+      "id": "reload",
+      "label": "Hot reload",
+      "group": "features",
+      "definition": "Run an edited file again in the running game without a map change. partial = limited (agent code only, one file include, or a redeploy).",
+      "lines": [
+        "Hot re-",
+        "load"
+      ]
+    },
+    {
+      "id": "ents",
+      "label": "Ents",
+      "group": "features",
+      "definition": "Dedicated tools to find and inspect entities and players. partial = a subset (players, status, what is near the player). Generic Lua execution does not count."
+    },
+    {
+      "id": "traces",
+      "label": "Traces",
+      "group": "features",
+      "definition": "Raycasts from an arbitrary origin. partial = only from the player's view."
+    },
+    {
+      "id": "screenshot",
+      "label": "Screenshot",
+      "group": "features",
+      "definition": "Screenshot from an arbitrary viewpoint (position and angles). partial = player view, window or region only.",
+      "lines": [
+        "Screen-",
+        "shot"
+      ]
+    },
+    {
+      "id": "hooks",
+      "label": "Hooks",
+      "group": "features",
+      "definition": "List hooks and trace or instrument their calls. partial = only one of the two, waiting for a hook, or tracing functions."
+    },
+    {
+      "id": "perf",
+      "label": "Perf",
+      "group": "features",
+      "definition": "Profiling of game code. partial = snapshot counters, timing of traced calls, optional profiler, or static analysis without the game."
+    },
+    {
+      "id": "jobs",
+      "label": "Jobs",
+      "group": "features",
+      "definition": "Long Lua work run in the background with status and result. partial = a deferred run, bounded waits, or listeners of a host project."
+    },
+    {
+      "id": "tests",
+      "label": "Tests",
+      "group": "features",
+      "definition": "Automated tests run inside the game. partial = assertion suites without a test runner, or tests against a mocked engine."
+    },
+    {
+      "id": "multi",
+      "label": "Multi-inst.",
+      "group": "features",
+      "definition": "Several games driven at once from one MCP server. partial = pick one server or process among several, without coordination.",
+      "lines": [
+        "Multi",
+        "inst."
+      ]
+    },
+    {
+      "id": "debugger",
+      "label": "Debugger",
+      "group": "features",
+      "definition": "Breakpoints with stepping and locals.",
+      "lines": [
+        "Step",
+        "debug"
+      ]
+    },
+    {
+      "id": "input",
+      "label": "Input",
+      "group": "features",
+      "definition": "Player input injected in the engine (CreateMove, StartCommand, engine +commands). partial = OS-level input (SendKeys, xdotool) that takes the real keyboard and mouse.",
+      "lines": [
+        "In-",
+        "put"
+      ]
+    },
+    {
+      "id": "pure_lua",
+      "label": "Pure Lua",
+      "group": "trust",
+      "definition": "No native code runs inside the game process: the game side is Lua only, or there is no game side.",
+      "lines": [
+        "Pure",
+        "Lua"
+      ]
+    },
+    {
+      "id": "auth",
+      "label": "Auth",
+      "group": "trust",
+      "definition": "yes = token/secret required, or no network listener at all (local IPC such as files or named pipes counts as no network listener). no = a listener that accepts calls without a required secret."
+    },
+    {
+      "id": "no_inject",
+      "label": "No inject",
+      "group": "trust",
+      "definition": "yes = nothing is loaded or written into the game from another process (no injector, remote thread or WriteProcessMemory); loading a module through the game's own require is not injection. An in-process engine hook after a normal module load (e.g. gmod-mcp's lua_mount vtable hook) is not counted.",
+      "lines": [
+        "No",
+        "inject"
+      ]
+    },
+    {
+      "id": "dedicated",
+      "label": "Dedicated",
+      "group": "trust",
+      "definition": "Works with a dedicated server (srcds). partial = limited there.",
+      "lines": [
+        "Dedi-",
+        "cated"
+      ]
+    },
+    {
+      "id": "linux",
+      "label": "Linux",
+      "group": "trust",
+      "definition": "Works with Garry's Mod or srcds on Linux. partial = only part of the tool works there."
+    },
+    {
+      "id": "install",
+      "label": "1-step install",
+      "group": "trust",
+      "definition": "yes = one command (plugin install, npx, extension install) plus at most copying files into the game; partial = several manual steps or an injector; no = the user must build it from source or write the game side first.",
+      "lines": [
+        "1-step",
+        "setup"
+      ]
+    },
+    {
+      "id": "long_calls",
+      "label": "Long calls",
+      "group": "trust",
+      "definition": "yes = MCP Tasks, or progress notifications + cancellation with no blocking server-side timeout <= 30 s on game work; no = a blocking timeout <= 30 s cuts the call, or neither progress nor cancellation; partial = progress without cancellation or vice versa. MCP cancellation means handling notifications/cancelled (an SDK doing it counts); a closed HTTP connection alone does not.",
+      "lines": [
+        "Long",
+        "calls"
+      ]
+    },
+    {
+      "id": "mcp_spec",
+      "label": "MCP spec",
+      "group": "trust",
+      "definition": "yes = declares protocol version >= 2025-06-18, handles notifications/cancelled, returns structuredContent with outputSchema; partial = 1-2 of 3; no = none. ★ ranking among yes: count of (protocol 2026-07-28, notifications/cancelled, structured output, progress notifications, Tasks). SDK-based servers are credited with what their pinned SDK version implements (evidence: the line pinning the SDK; with only a version range, the lowest allowed version); outputSchema/structuredContent must come from the server's own tool declarations, including typed outputs the SDK turns into a schema.",
+      "lines": [
+        "MCP",
+        "spec"
+      ]
+    },
+    {
+      "id": "ci",
+      "label": "Own CI",
+      "group": "trust",
+      "definition": "yes = the repository's CI runs its tests; partial = CI only builds or publishes; no = no CI workflow.",
+      "lines": [
+        "Own",
+        "CI"
+      ]
+    },
+    {
+      "id": "license",
+      "label": "License",
+      "group": "trust",
+      "definition": "yes = LICENSE file present; no = no license file (all rights reserved by default).",
+      "lines": [
+        "Li-",
+        "cense"
+      ]
+    },
+    {
+      "id": "feedback",
+      "label": "Agent feedback",
+      "group": "trust",
+      "definition": "yes = the tool itself invites the agent to report friction (bugs, missing tools, confusing answers) and that report is collected; no = nothing in the tool asks for it.",
+      "lines": [
+        "Feed-",
+        "back"
+      ]
+    }
+  ],
+  "repos": [
+    {
+      "name": "ExtReMLapin/gmod-mcp",
+      "url": "https://github.com/ExtReMLapin/gmod-mcp",
+      "sha": "8c97c40ece7ac06ec60a6821858336de8b2d8d9b",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_core.cpp#L22"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_core.cpp#L22"
+          },
+          "M": {
+            "v": "yes",
+            "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_core.cpp#L22"
+          }
+        },
+        "errors": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_console.cpp#L413"
+        },
+        "reload": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_core.cpp#L614"
+        },
+        "ents": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_world.cpp#L108"
+        },
+        "traces": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_world.cpp#L207"
+        },
+        "screenshot": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_world.cpp#L249"
+        },
+        "hooks": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_lua.cpp#L122"
+        },
+        "perf": {
+          "v": "partial",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_world.cpp#L329"
+        },
+        "jobs": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_jobs.cpp#L212"
+        },
+        "tests": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_lua.cpp#L155"
+        },
+        "multi": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/tools_instances.cpp#L9"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L166-L179"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L166-L179"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L33"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/http_server.cpp#L190-L196"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/installer.cpp#L22"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/module.cpp#L106-L108"
+        },
+        "linux": {
+          "v": "partial",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L374-L375"
+        },
+        "install": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/README.md#L136-L137"
+        },
+        "long_calls": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/mcp.cpp#L297-L298"
+        },
+        "mcp_spec": {
+          "v": "yes",
+          "score": 5,
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/src/mcp.cpp#L20-L46"
+        },
+        "ci": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/.github/workflows/build.yml#L40-L69"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "yes",
+          "evidence": "https://github.com/ExtReMLapin/gmod-mcp/blob/8c97c40ece7ac06ec60a6821858336de8b2d8d9b/plugin/.claude-plugin/plugin.json#L19-L22"
+        }
+      }
+    },
+    {
+      "name": "AmyJeanes/GMod-MCP-Server",
+      "url": "https://github.com/AmyJeanes/GMod-MCP-Server",
+      "sha": "d06e1faa990e6b5cb4de3abb05547385e117092a",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L108"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L107"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L57"
+          }
+        },
+        "errors": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/libraries/sh_capture.lua#L145"
+        },
+        "reload": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/functions/sh_reload_file.lua#L33"
+        },
+        "ents": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L85-L86"
+        },
+        "traces": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/functions/sh_world_trace.lua#L124"
+        },
+        "screenshot": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/functions/cl_screenshot.lua#L143"
+        },
+        "hooks": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/functions/sh_debug_record.lua#L25"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
+        },
+        "jobs": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/libraries/libraries/sh_jobs.lua#L1-L3"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
+        },
+        "input": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/functions/sh_player_walk.lua#L93"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L28"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L28"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L28"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/lua/mcp/libraries/sv_launch_intent.lua#L48"
+        },
+        "linux": {
+          "v": "partial",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/Host/GameProcessManager.cs#L68"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L9-L21"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/Program.cs#L306"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/server/GModMcpServer/GModMcpServer.csproj#L19"
+        },
+        "ci": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/.github/workflows/ci.yml#L63"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/AmyJeanes/GMod-MCP-Server/blob/d06e1faa990e6b5cb4de3abb05547385e117092a/README.md#L36-L124"
+        }
+      }
+    },
+    {
+      "name": "Sycatle/gmod-mcp",
+      "url": "https://github.com/Sycatle/gmod-mcp",
+      "sha": "c96d79b0ebaa3db8052bd43a51e1a00bec996c18",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/optional/gmod_mcp_runlua/lua/autorun/server/gmod_mcp_runlua.lua#L25"
+          },
+          "C": {
+            "v": "partial",
+            "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/tools/bridge.ts#L285"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/bridge/filebridge.ts#L14"
+          }
+        },
+        "errors": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/addon/gmod_mcp_bridge/lua/gmod_mcp_bridge/server/sv_errors.lua#L4"
+        },
+        "reload": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/proc/reload.ts#L7"
+        },
+        "ents": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/tools/bridge.ts#L112"
+        },
+        "traces": {
+          "v": "partial",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/addon/gmod_mcp_bridge/lua/autorun/client/gmod_mcp_bridge_cl.lua#L513"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/addon/gmod_mcp_bridge/lua/autorun/client/gmod_mcp_bridge_cl.lua#L421"
+        },
+        "hooks": {
+          "v": "partial",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/addon/gmod_mcp_bridge/lua/gmod_mcp_bridge/server/sv_handlers.lua#L97"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/tools/bridge.ts#L97"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/tools/bridge.ts#L97"
+        },
+        "tests": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/addon/gmod_mcp_bridge/lua/gmod_mcp_bridge/server/sv_test.lua#L38"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/README.md#L53"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/tools/bridge.ts#L97"
+        },
+        "input": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/addon/gmod_mcp_bridge/lua/autorun/client/gmod_mcp_bridge_input.lua#L107"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/README.md#L10-L11"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/README.md#L50-L51"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/README.md#L10-L11"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/README.md#L38"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/proc/scripts.ts#L54"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/README.md#L25-L29"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/bridge/filebridge.ts#L90"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/pnpm-lock.yaml#L339"
+        },
+        "ci": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/.github/workflows/ci.yml#L35"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/Sycatle/gmod-mcp/blob/c96d79b0ebaa3db8052bd43a51e1a00bec996c18/src/tools/bridge.ts#L97"
+        }
+      }
+    },
+    {
+      "name": "TomDotBat/gmcl_mcp",
+      "url": "https://github.com/TomDotBat/gmcl_mcp",
+      "sha": "1407d619911508bc45a4fae6b9f962cd44cbc16a",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "no",
+            "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/index.ts#L142"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/index.ts#L142"
+          },
+          "M": {
+            "v": "partial",
+            "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/core/src/lua_bridge.cpp#L83-L85"
+          }
+        },
+        "errors": {
+          "v": "yes",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/index.ts#L194"
+        },
+        "reload": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/index.ts#L126"
+        },
+        "ents": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/index.ts#L152"
+        },
+        "traces": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/index.ts#L152"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/index.ts#L234"
+        },
+        "hooks": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/waitFor.ts#L45"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
+        },
+        "input": {
+          "v": "yes",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L14"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L8"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/core/src/ipc_server.cpp#L106-L109"
+        },
+        "no_inject": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L31"
+        },
+        "dedicated": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L21"
+        },
+        "linux": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L52"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L52-L74"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/src/ipc.ts#L94"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/server/package-lock.json#L37-L38"
+        },
+        "ci": {
+          "v": "partial",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/.github/workflows/build.yml#L42"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/TomDotBat/gmcl_mcp/blob/1407d619911508bc45a4fae6b9f962cd44cbc16a/README.md#L130-L149"
+        }
+      }
+    },
+    {
+      "name": "Pollux12/vscode-gmod-glua-ls",
+      "url": "https://github.com/Pollux12/vscode-gmod-glua-ls",
+      "sha": "20c00690081f72dc2f0ebbf5f9e575ba95182c51",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/runtimeTools.ts#L316"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+          }
+        },
+        "errors": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/logTools.ts#L172"
+        },
+        "reload": {
+          "v": "partial",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/runtimeTools.ts#L321"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+        },
+        "hooks": {
+          "v": "partial",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/runtimeTools.ts#L779"
+        },
+        "perf": {
+          "v": "partial",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/runtimeTools.ts#L779"
+        },
+        "jobs": {
+          "v": "partial",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/runtimeTools.ts#L392"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+        },
+        "debugger": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/runtimeTools.ts#L458"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L155"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/mcpHttpServer.ts#L202"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L155"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L155"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/debugger/gmod_debugger/GmodDebugSetupWizard.ts#L28"
+        },
+        "install": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L145"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/mcpHttpServer.ts#L291-L294"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/src/mcp/mcpHttpServer.ts#L13"
+        },
+        "ci": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/.github/workflows/tests.yml#L49"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/Pollux12/vscode-gmod-glua-ls/blob/20c00690081f72dc2f0ebbf5f9e575ba95182c51/README.md#L133"
+        }
+      }
+    },
+    {
+      "name": "Celant/GmodMCP",
+      "url": "https://github.com/Celant/GmodMCP",
+      "sha": "ba6a5963954fee88ed4c0fe79e93ac37554a2e47",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/module/lua/gmodmcp/tools/console.lua#L48"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/module/lua/gmodmcp/tools/console.lua#L48"
+          },
+          "M": {
+            "v": "yes",
+            "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L55"
+          }
+        },
+        "errors": {
+          "v": "partial",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L98"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "ents": {
+          "v": "partial",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L96"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L102"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        },
+        "input": {
+          "v": "yes",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/module/lua/gmodmcp/tools/input.lua#L8"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L30"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/module/lua/gmodmcp/core/mcp.lua#L24"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L38"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L36"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L38"
+        },
+        "install": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L30-L31"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/module/lua/gmodmcp/tools/console.lua#L53"
+        },
+        "mcp_spec": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/module/lua/gmodmcp/core/mcp.lua#L4"
+        },
+        "ci": {
+          "v": "yes",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/.github/workflows/build.yml#L24"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/Celant/GmodMCP/blob/ba6a5963954fee88ed4c0fe79e93ac37554a2e47/README.md#L94-L103"
+        }
+      }
+    },
+    {
+      "name": "Earu/GTerm",
+      "url": "https://github.com/Earu/GTerm",
+      "sha": "aa6453425ac319e93c8ec7f20926b5371781ad31",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/LuaExecutor.cs#L6-L10"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/LuaExecutor.cs#L6-L10"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L436"
+          }
+        },
+        "errors": {
+          "v": "partial",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L635"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "ents": {
+          "v": "partial",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L793"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/README.md#L15"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L151"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/README.md#L31"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/README.md#L13"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/README.md#L15"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/README.md#L8-L10"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L474-L480"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L16-L22"
+        },
+        "ci": {
+          "v": "partial",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/.github/workflows/build.yml#L48"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/Earu/GTerm/blob/aa6453425ac319e93c8ec7f20926b5371781ad31/MCP/MCPServer.cs#L492"
+        }
+      }
+    },
+    {
+      "name": "mathis1M/gmod-mcp",
+      "url": "https://github.com/mathis1M/gmod-mcp",
+      "sha": "487f8d235ab3b5369a5634d116e933f6e1663e8f",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L273"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L273"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L273"
+          }
+        },
+        "errors": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "ents": {
+          "v": "yes",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L213"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/addon/gmod_mcp/lua/gmod_mcp/client/tools/screenshot.lua#L50"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/bridge/src/lib.rs#L14"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/bridge/src/lib.rs#L17"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/README.md#L90"
+        },
+        "dedicated": {
+          "v": "unverified"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/README.md#L72"
+        },
+        "install": {
+          "v": "yes",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/README.md#L88-L91"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L13"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/bun.lock#L41"
+        },
+        "ci": {
+          "v": "partial",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/.github/workflows/publish.yml#L37"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/mathis1M/gmod-mcp/blob/487f8d235ab3b5369a5634d116e933f6e1663e8f/mcp/server.ts#L165"
+        }
+      }
+    },
+    {
+      "name": "unknown-gd/gm_mcp",
+      "url": "https://github.com/unknown-gd/gm_mcp",
+      "sha": "900947618be235db8392767aff7d0d5363938efe",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "partial",
+            "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L17"
+          },
+          "C": {
+            "v": "partial",
+            "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L17"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+          }
+        },
+        "errors": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "ents": {
+          "v": "partial",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L17"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L17"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L21-L22"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/src/mcp.cpp#L288"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L19"
+        },
+        "dedicated": {
+          "v": "partial",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L45"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L45"
+        },
+        "install": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/README.md#L17"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L10-L11"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/bun.lock#L20"
+        },
+        "ci": {
+          "v": "partial",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/.github/workflows/build.yml#L49"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/unknown-gd/gm_mcp/blob/900947618be235db8392767aff7d0d5363938efe/mcp/server.ts#L139"
+        }
+      }
+    },
+    {
+      "name": "BrownJourney/gmod-mcp",
+      "url": "https://github.com/BrownJourney/gmod-mcp",
+      "sha": "cfc2c34f8ff6cfeba46cba33d8da63538f33ab28",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/lua/autorun/gmod_mcp.lua#L5"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/lua/autorun/gmod_mcp.lua#L5"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/lua/autorun/gmod_mcp.lua#L5"
+          }
+        },
+        "errors": {
+          "v": "partial",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L160"
+        },
+        "reload": {
+          "v": "yes",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L206"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L82-L90"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/lua/autorun/gmod_mcp.lua#L161"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/lua/autorun/gmod_mcp.lua#L1"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/lua/autorun/gmod_mcp.lua#L2"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/lua/autorun/gmod_mcp.lua#L1"
+        },
+        "dedicated": {
+          "v": "unverified"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/README.md#L21"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/README.md#L30-L31"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L127"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/package-lock.json#L485"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/tree/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/tree/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/BrownJourney/gmod-mcp/blob/cfc2c34f8ff6cfeba46cba33d8da63538f33ab28/server/src/index.ts#L81"
+        }
+      }
+    },
+    {
+      "name": "DBOYttt/gmod-mcp",
+      "url": "https://github.com/DBOYttt/gmod-mcp",
+      "sha": "1d0415761495636c56852ce2a6d526acf4e16740",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L80"
+          },
+          "C": {
+            "v": "yes",
+            "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L142"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+          }
+        },
+        "errors": {
+          "v": "partial",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L90"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L61-L62"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L168"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        },
+        "input": {
+          "v": "partial",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/input_controller.py#L20"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/client_manager.py#L81"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L203"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/client_manager.py#L81"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/pty_manager.py#L40"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/pty_manager.py#L40"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/README.md#L8"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L80"
+        },
+        "mcp_spec": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/pyproject.toml#L10"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/tree/1d0415761495636c56852ce2a6d526acf4e16740"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/tree/1d0415761495636c56852ce2a6d526acf4e16740"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/DBOYttt/gmod-mcp/blob/1d0415761495636c56852ce2a6d526acf4e16740/gr_mcp/server.py#L33"
+        }
+      }
+    },
+    {
+      "name": "Shaar-games/gmod_mcp",
+      "url": "https://github.com/Shaar-games/gmod_mcp",
+      "sha": "d04c71bbd27e15cf4d5800c20d4943fd27fe0151",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "no",
+            "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L321"
+          },
+          "C": {
+            "v": "partial",
+            "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L321"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L321"
+          }
+        },
+        "errors": {
+          "v": "partial",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L323"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "multi": {
+          "v": "partial",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L41"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/internal/gmod/remote_windows.go#L68"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L343"
+        },
+        "no_inject": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/internal/gmod/remote_windows.go#L68"
+        },
+        "dedicated": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/README.md#L3"
+        },
+        "linux": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/README.md#L3"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/README.md#L24"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/internal/gmod/command.go#L93"
+        },
+        "mcp_spec": {
+          "v": "yes",
+          "score": 2,
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/go.sum#L7"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/tree/d04c71bbd27e15cf4d5800c20d4943fd27fe0151"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/Shaar-games/gmod_mcp/blob/d04c71bbd27e15cf4d5800c20d4943fd27fe0151/main.go#L305"
+        }
+      }
+    },
+    {
+      "name": "Avrena/srcds-mcp",
+      "url": "https://github.com/Avrena/srcds-mcp",
+      "sha": "a6933a83a540e2a10f8a68e8f166a6e3f6620245",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4698"
+          },
+          "C": {
+            "v": "partial",
+            "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4808"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L14-L17"
+          }
+        },
+        "errors": {
+          "v": "yes",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_diagnostics.lua#L234"
+        },
+        "reload": {
+          "v": "partial",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4725"
+        },
+        "ents": {
+          "v": "partial",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4996"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L14-L17"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L14-L17"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L14-L17"
+        },
+        "perf": {
+          "v": "partial",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4993"
+        },
+        "jobs": {
+          "v": "partial",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4717"
+        },
+        "tests": {
+          "v": "partial",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4702"
+        },
+        "multi": {
+          "v": "partial",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L17"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L14-L17"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L14-L17"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L7-L9"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L11-L12"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L7-L9"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L4-L5"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/README.md#L22"
+        },
+        "install": {
+          "v": "unverified"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L503"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L30"
+        },
+        "ci": {
+          "v": "yes",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/.github/workflows/tests.yml#L29"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/tree/a6933a83a540e2a10f8a68e8f166a6e3f6620245"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/Avrena/srcds-mcp/blob/a6933a83a540e2a10f8a68e8f166a6e3f6620245/srcds_mcp.py#L14-L17"
+        }
+      }
+    },
+    {
+      "name": "beekamai/gmod-mcp",
+      "url": "https://github.com/beekamai/gmod-mcp",
+      "sha": "fe83976f4900855380447a25927abf955c141c21",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "partial",
+            "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L589"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+          }
+        },
+        "errors": {
+          "v": "partial",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L674"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "screenshot": {
+          "v": "partial",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L613"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        },
+        "input": {
+          "v": "partial",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L646"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L575"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L1019"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L575"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L575"
+        },
+        "linux": {
+          "v": "partial",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/window.js#L214"
+        },
+        "install": {
+          "v": "yes",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/README.md#L18"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L162-L166"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/package.json#L43"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/tree/fe83976f4900855380447a25927abf955c141c21"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/tree/fe83976f4900855380447a25927abf955c141c21"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/beekamai/gmod-mcp/blob/fe83976f4900855380447a25927abf955c141c21/src/index.js#L552"
+        }
+      }
+    },
+    {
+      "name": "AngelCen14/gmod-mcp",
+      "url": "https://github.com/AngelCen14/gmod-mcp",
+      "sha": "0a5dafa000aeac1c9900a95c427955ebc1e29fd1",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "partial",
+            "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+          }
+        },
+        "errors": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/resources/application.yaml#L3"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        },
+        "linux": {
+          "v": "unverified"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/README.md#L48"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/client/GmodRconClient.java"
+        },
+        "mcp_spec": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/pom.xml#L31"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/tree/0a5dafa000aeac1c9900a95c427955ebc1e29fd1"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/tree/0a5dafa000aeac1c9900a95c427955ebc1e29fd1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/AngelCen14/gmod-mcp/blob/0a5dafa000aeac1c9900a95c427955ebc1e29fd1/gmod-mcp-springboot/src/main/java/io/github/angelcen14/gmodmcp/service/GModService.java#L16"
+        }
+      }
+    },
+    {
+      "name": "WojciechMichna/GmodMCPServer",
+      "url": "https://github.com/WojciechMichna/GmodMCPServer",
+      "sha": "ca58a1cf323671730397a2fe032cc261c9b96a00",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "no",
+            "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+          }
+        },
+        "errors": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/README.md#L12"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L28"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/README.md#L59"
+        },
+        "dedicated": {
+          "v": "unverified"
+        },
+        "linux": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/README.md#L27"
+        },
+        "install": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/README.md#L57-L59"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L177"
+        },
+        "mcp_spec": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L134"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/tree/ca58a1cf323671730397a2fe032cc261c9b96a00"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/tree/ca58a1cf323671730397a2fe032cc261c9b96a00"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/WojciechMichna/GmodMCPServer/blob/ca58a1cf323671730397a2fe032cc261c9b96a00/src/lib.rs#L153-L169"
+        }
+      }
+    },
+    {
+      "name": "YeqhCorporation/GmodBridgeServer",
+      "url": "https://github.com/YeqhCorporation/GmodBridgeServer",
+      "sha": "6c854598fa0efdfd537b4281dc61ec90516032a4",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "partial",
+            "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/addons/gabp_bridge/lua/gabp_bridge/builtins_mutating.lua#L39"
+          },
+          "C": {
+            "v": "partial",
+            "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/addons/gabp_bridge/lua/gabp_bridge/client_builtins.lua#L44"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+          }
+        },
+        "errors": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "ents": {
+          "v": "partial",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/addons/gabp_bridge/lua/gabp_bridge/builtins_readonly.lua#L49"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "multi": {
+          "v": "partial",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L13-L14"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        },
+        "pure_lua": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L13-L14"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/crates/gmod-gabp/src/gabp/runtime.rs#L47"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L13-L14"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L13"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L51"
+        },
+        "install": {
+          "v": "partial",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L19-L23"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/crates/gmod-gabp/src/gabp/runtime.rs#L69"
+        },
+        "mcp_spec": {
+          "v": "unverified"
+        },
+        "ci": {
+          "v": "yes",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/.github/workflows/build-release-modules.yml#L27"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/YeqhCorporation/GmodBridgeServer/blob/6c854598fa0efdfd537b4281dc61ec90516032a4/README.md#L10"
+        }
+      }
+    },
+    {
+      "name": "gaster4432/gmod-mcp-bridge",
+      "url": "https://github.com/gaster4432/gmod-mcp-bridge",
+      "sha": "a1d9667c95e34055b11060ba5a4a79ed1f8cdb65",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "unverified"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+          }
+        },
+        "errors": {
+          "v": "unverified"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        },
+        "pure_lua": {
+          "v": "unverified"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L194"
+        },
+        "no_inject": {
+          "v": "unverified"
+        },
+        "dedicated": {
+          "v": "unverified"
+        },
+        "linux": {
+          "v": "unverified"
+        },
+        "install": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L64"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L163"
+        },
+        "mcp_spec": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L119-L132"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/tree/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/tree/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/gaster4432/gmod-mcp-bridge/blob/a1d9667c95e34055b11060ba5a4a79ed1f8cdb65/main.py#L16-L29"
+        }
+      }
+    },
+    {
+      "name": "MarwanDevSpace/mcp-garry-codes",
+      "url": "https://github.com/MarwanDevSpace/mcp-garry-codes",
+      "sha": "f52c91e11eaf58e596e92aac53e0f08e1b6cc732",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "no",
+            "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L589"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L589"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L589"
+          }
+        },
+        "errors": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "perf": {
+          "v": "partial",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L432"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "tests": {
+          "v": "partial",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L586"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L589"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/index.ts#L18"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L589"
+        },
+        "dedicated": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L589"
+        },
+        "linux": {
+          "v": "unverified"
+        },
+        "install": {
+          "v": "yes",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/README.md#L71"
+        },
+        "long_calls": {
+          "v": "partial",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/server.ts#L67"
+        },
+        "mcp_spec": {
+          "v": "partial",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/package-lock.json#L490"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/tree/f52c91e11eaf58e596e92aac53e0f08e1b6cc732"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/MarwanDevSpace/mcp-garry-codes/blob/f52c91e11eaf58e596e92aac53e0f08e1b6cc732/src/contracts/tool_definitions.ts#L84"
+        }
+      }
+    },
+    {
+      "name": "moonexpr/jaycemod",
+      "url": "https://github.com/moonexpr/jaycemod",
+      "sha": "60e1b00e604671957f96ff42f210d7cb43d3f7b6",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "yes",
+            "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+          },
+          "C": {
+            "v": "partial",
+            "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L192"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L193"
+          }
+        },
+        "errors": {
+          "v": "yes",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L204"
+        },
+        "reload": {
+          "v": "unverified"
+        },
+        "ents": {
+          "v": "unverified"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        },
+        "jobs": {
+          "v": "partial",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L253"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        },
+        "multi": {
+          "v": "yes",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L10"
+        },
+        "debugger": {
+          "v": "yes",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L218"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L11-L13"
+        },
+        "auth": {
+          "v": "unverified"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L11-L13"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        },
+        "linux": {
+          "v": "unverified"
+        },
+        "install": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L5"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L38"
+        },
+        "mcp_spec": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L278-L295"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/tree/60e1b00e604671957f96ff42f210d7cb43d3f7b6"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/moonexpr/jaycemod/blob/60e1b00e604671957f96ff42f210d7cb43d3f7b6/.devtools/bin/gmod_mcp.py#L190"
+        }
+      }
+    },
+    {
+      "name": "Misakiwww/gmod-vibe-coding",
+      "url": "https://github.com/Misakiwww/gmod-vibe-coding",
+      "sha": "3491197cd285fb058d687ec644a07a57912446dc",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "partial",
+            "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L90"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+          }
+        },
+        "errors": {
+          "v": "partial",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L165"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "ents": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "multi": {
+          "v": "partial",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L275"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "auth": {
+          "v": "yes",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/mcpserver.py#L56"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        },
+        "dedicated": {
+          "v": "yes",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L90"
+        },
+        "linux": {
+          "v": "yes",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L90"
+        },
+        "install": {
+          "v": "unverified"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/mcpserver.py#L114"
+        },
+        "mcp_spec": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/mcpserver.py#L29"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/tree/3491197cd285fb058d687ec644a07a57912446dc"
+        },
+        "license": {
+          "v": "yes",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/LICENSE#L1"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/Misakiwww/gmod-vibe-coding/blob/3491197cd285fb058d687ec644a07a57912446dc/profiles/gmod/tools/mcp_ssh/tools.py#L24"
+        }
+      }
+    },
+    {
+      "name": "TiagoMoscoso/Gmod-Mcp",
+      "url": "https://github.com/TiagoMoscoso/Gmod-Mcp",
+      "sha": "c31ec9905c6ec4fbdc0bfcab68531881ed529c7e",
+      "cells": {
+        "realms": {
+          "S": {
+            "v": "no",
+            "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/catalog.py#L20-L31"
+          },
+          "C": {
+            "v": "no",
+            "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/catalog.py#L20-L31"
+          },
+          "M": {
+            "v": "no",
+            "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/catalog.py#L20-L31"
+          }
+        },
+        "errors": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "reload": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "ents": {
+          "v": "partial",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L57"
+        },
+        "traces": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "screenshot": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "hooks": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "perf": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "jobs": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "tests": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "multi": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "debugger": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        },
+        "input": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/catalog.py#L20-L31"
+        },
+        "pure_lua": {
+          "v": "yes",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/transport/file_ipc.py#L1"
+        },
+        "auth": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/server.py#L28"
+        },
+        "no_inject": {
+          "v": "yes",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/transport/file_ipc.py#L1"
+        },
+        "dedicated": {
+          "v": "unverified"
+        },
+        "linux": {
+          "v": "unverified"
+        },
+        "install": {
+          "v": "unverified"
+        },
+        "long_calls": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/transport/file_ipc.py#L220"
+        },
+        "mcp_spec": {
+          "v": "yes",
+          "score": 2,
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/pyproject.toml#L12"
+        },
+        "ci": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/tree/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e"
+        },
+        "license": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/tree/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e"
+        },
+        "feedback": {
+          "v": "no",
+          "evidence": "https://github.com/TiagoMoscoso/Gmod-Mcp/blob/c31ec9905c6ec4fbdc0bfcab68531881ed529c7e/companion/src/ai_players_companion/mcp/tools.py#L31"
+        }
+      }
+    }
+  ],
+  "picks": [
+    {
+      "label": "Most capabilities",
+      "repo": "ExtReMLapin/gmod-mcp"
+    },
+    {
+      "label": "No binary, pure Lua",
+      "repo": "AmyJeanes/GMod-MCP-Server"
+    },
+    {
+      "label": "Breakpoints / step debug (server only)",
+      "repo": "Pollux12/vscode-gmod-glua-ls"
+    },
+    {
+      "label": "Dedicated-server workflow",
+      "repo": "Sycatle/gmod-mcp"
+    }
+  ]
+}

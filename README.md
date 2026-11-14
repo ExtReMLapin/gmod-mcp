@@ -140,6 +140,15 @@ the plugin replaces it.
 From a shell: `claude plugin marketplace add ExtReMLapin/gmod-mcp`, then `claude plugin install gmod-mcp@gmod-mcp`.
 Remove it with `/plugin uninstall gmod-mcp@gmod-mcp`.
 
+**As of 2026-11-14, gmod-mcp covers the most capabilities of the 22 Garry's Mod MCP servers we compared.** Code read, nothing executed · [method & full table](docs/COMPARISON.md)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/comparison/comparison-dark.svg">
+  <img alt="Capability heatmap of Garry's Mod MCP servers; full table in docs/COMPARISON.md" src="docs/comparison/comparison-light.svg">
+</picture>
+
+Repos: [ExtReMLapin/gmod-mcp](https://github.com/ExtReMLapin/gmod-mcp) · [AmyJeanes/GMod-MCP-Server](https://github.com/AmyJeanes/GMod-MCP-Server) · [Sycatle/gmod-mcp](https://github.com/Sycatle/gmod-mcp) · [TomDotBat/gmcl_mcp](https://github.com/TomDotBat/gmcl_mcp) · [Pollux12/vscode-gmod-glua-ls](https://github.com/Pollux12/vscode-gmod-glua-ls) · [Celant/GmodMCP](https://github.com/Celant/GmodMCP) · [Earu/GTerm](https://github.com/Earu/GTerm) · [mathis1M/gmod-mcp](https://github.com/mathis1M/gmod-mcp) · [14 more](docs/COMPARISON.md)
+
 ## Updates
 
 - **What updates by itself.** With auto-update on (`/plugin` → **Marketplaces** → `gmod-mcp` → **Enable auto-update**),
