@@ -714,7 +714,7 @@ def case_lua_mount():
     import shutil
     game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
     shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
-    work = tempfile.mkdtemp(prefix="gmcp-mounted folder-")
+    work = tempfile.mkdtemp(prefix="gmcp-mount-")
     wt = os.path.join(work, "my addon wt")
     os.makedirs(os.path.join(wt, "lua", "autorun"))
     os.makedirs(os.path.join(work, "nolua"))
@@ -723,8 +723,8 @@ def case_lua_mount():
     env["GMCP_FAKE_ARGV"] = argv_file
     b = Bridge(port, env)
 
-    def launch(mounted folder, timeout=40):
-        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 5, "game_dir": game, "lua_mount": mounted folder}}, timeout)
+    def launch(mount_dir, timeout=40):
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 10, "game_dir": game, "lua_mount": mount_dir}}, timeout)
         return (r or {}).get("result", {})
 
     for bad, word in ((os.path.join(work, "nolua"), "lua"), ("relative/dir", "absolute"), (wt + '"', "character"), (os.path.join(work, "missing"), "not found")):
@@ -958,7 +958,7 @@ def case_lua_mount_live():
 
     ids = {}
     for tag, ov in (("A", a), ("B", bdir), ("none", None)):
-        args = {"count": 1, "map": "gm_construct", "owner": "mounted folder-live", "sound": False}
+        args = {"count": 1, "map": "gm_construct", "owner": "mount-live", "sound": False}
         if ov: args["lua_mount"] = ov
         sc, err = call("instances_launch", args)
         ins = sc.get("instances", [])
@@ -981,7 +981,7 @@ def case_lua_mount_live():
             sc, err = call("lua_exec", {"instance": ids["A"], "realm": "server", "code": "return include('mcpagent_tmp/ovtest_shared.lua')"})
             print("   O-8 same mtime, empty_cache=%s -> include returns %r" % (ec, sc.get("values")), flush=True)
             check("MOUNTLIVE O-8 same name and time, empty_cache=%s: the mounted folder copy wins" % ec, sc.get("values") == ["branch"], sc)
-    call("instances_close", {"owner": "mounted folder-live"}, 60)
+    call("instances_close", {"owner": "mount-live"}, 60)
     b.close()
 
 
@@ -1138,8 +1138,57 @@ def case_lua_mount_ecosystem():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem}
-for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "fuzz"]:
+def case_edge():
+    """Edge cases of the bridge's own tools, no game (2026-11-14): nothing launched, unicode owners, wrong argument
+    types, a mounted folder inside the game folder."""
+    print("== EDGE: bridge tools with odd input (no game)", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env)
+
+    def call(tool, args, timeout=20):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        if r is None: return None, None
+        if "error" in r: return r["error"], True  # JSON-RPC level error (schema)
+        res = r.get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    sc, err = call("instances_close", {"owner": "nobody"})
+    check("EDGE close by owner with nothing launched: an error, nothing closed", err and not (sc or {}).get("closed"), sc)
+    sc, err = call("instances_list", {"owner": "équipe-中文"})
+    check("EDGE instances_list with a unicode owner and no game: empty, no error", err is False and sc.get("instances") == [] and sc.get("owner_filter") == "équipe-中文", sc)
+    # game_dir points nowhere: even if a check regressed, no real game could start from this test.
+    nowhere = os.path.join(tempfile.gettempdir(), "gmcp-no-game-here")
+    for tool, args, key in (("instances_launch", {"count": "two"}, "count"), ("instances_launch", {"count": 0}, "count"),
+                            ("instances_launch", {"count": 99}, "count"), ("instances_launch", {"lua_mount": 5}, "lua_mount"),
+                            ("instances_launch", {"preset": "turbo"}, "preset"), ("instances_launch", {"sound": "no"}, "sound"),
+                            ("instances_launch", {"map": "../../etc"}, "map"), ("instances_launch", {"bogus": 1}, "bogus"),
+                            ("instances_close", {"pids": "abc"}, "pids"), ("instances_close", {"pids": [-1]}, None),
+                            ("instances_close", {"owner": 12}, "owner"), ("instances_close", {"instances": "client-1"}, "instances"),
+                            ("instance_select", {"instance": 5}, "instance")):
+        if tool == "instances_launch": args = dict(args, game_dir=nowhere)
+        sc, err = call(tool, args)
+        check("EDGE %s %s refused, naming the argument" % (tool, json.dumps(args)),
+              err is True and (key is None or key in json.dumps(sc)), sc)
+    sc, err = call("instances_launch", {"lua_mount": "relative/path", "game_dir": nowhere})
+    check("EDGE lua_mount relative path refused before launching",
+          err and ("absolute" in json.dumps(sc) or (os.name != "nt" and "unsupported" in json.dumps(sc))), sc)
+    if os.name == "nt":
+        import shutil
+        game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+        fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+        if os.path.exists(fake): shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        inside = os.path.join(game, "garrysmod", "addons", "myaddon")
+        os.makedirs(os.path.join(inside, "lua"))
+        sc, err = call("instances_launch", {"lua_mount": inside, "game_dir": game, "timeout_s": 10}, 30)
+        check("EDGE lua_mount inside the game folder refused before launching", err and "inside the game folder" in json.dumps(sc), sc)
+        shutil.rmtree(game, ignore_errors=True)
+    r = b.req("ping", {}, 5)
+    check("EDGE bridge still answers after the odd calls", r is not None and "result" in r, r)
+    b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge}
+for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))

@@ -30,11 +30,15 @@ local function encode_string(s)
 			step = 1
 		else
 			local need = (c >= 0xC2 and c <= 0xDF) and 1 or (c >= 0xE0 and c <= 0xEF) and 2 or (c >= 0xF0 and c <= 0xF4) and 3 or 0
+			-- Strict UTF-8 (RFC 3629), as the module's JSON parser checks it: the second byte's range excludes overlong
+			-- forms (E0, F0), UTF-16 surrogates (ED) and code points above U+10FFFF (F4).
+			local lo2 = c == 0xE0 and 0xA0 or c == 0xF0 and 0x90 or 0x80
+			local hi2 = c == 0xED and 0x9F or c == 0xF4 and 0x8F or 0xBF
 			local ok = need > 0 and i + need <= len
 			if ok then
 				for k = 1, need do
 					local cc = string_byte(s, i + k)
-					if cc < 0x80 or cc > 0xBF then ok = false break end
+					if cc < (k == 1 and lo2 or 0x80) or cc > (k == 1 and hi2 or 0xBF) then ok = false break end
 				end
 			end
 			if ok then

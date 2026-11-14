@@ -45,6 +45,9 @@ json project_values(json result, const json &args);
 json project_keys(json result, const json &args);
 // lua_reload's lookup: every file matching an include()-style or game-relative path, in the engine's order.
 std::vector<std::string> find_game_lua(const std::string &path, std::string &err);
+// Non-negotiable network rule: "" if the console line may run, else why it is refused (connect/redirect/retry to a
+// server that is not this machine, in any of its statements).
+std::string forbidden_network_cmd(const std::string &line);
 
 // The `job` protocol of lua_job (tool description, also used by the write-lua-job prompt).
 const char *job_protocol();

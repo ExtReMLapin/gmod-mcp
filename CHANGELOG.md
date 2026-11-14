@@ -6,6 +6,17 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
 
 ### Fixes
 
+- **A console line could still connect to a remote server.** The network rule split the line its own way and kept a
+  quote open across a line break, so `echo "a` + line break + `connect 1.2.3.4` passed as one `echo` but ran as an
+  `echo` and a `connect`. It now checks exactly the statements that run.
+- **Some text broke a whole answer.** The runtime let UTF-16 surrogates, overlong 3-byte sequences and code points above
+  U+10FFFF through, which the module's JSON parser refuses: the call failed with `bad_runtime_output`. They are escaped
+  like any invalid byte. `mcpagent://config` no longer fails on a game path that is not valid UTF-8.
+- **The bridge accepted bad arguments for its own tools.** `instances_launch {count: 0}` answered with no client, and an
+  `lua_mount` that is not a string or an unknown `preset` were ignored and real clients started. Arguments are now checked
+  against each tool's schema first, and the error names the argument.
+- lua_mount refuses a folder inside the game folder (garrysmod itself or an installed addon): the engine already
+  searches it.
 - **Test clients started together could lose gmod-mcp.** The crash guard was one marker file shared by every game: a
   client that started while another was loading took that for a crash and skipped gmod-mcp, and a real crash blocked
   every later launch until someone deleted the file. Each process now has its own marker, checked by the module: a
