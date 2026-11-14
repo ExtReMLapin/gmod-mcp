@@ -144,3 +144,19 @@ if(MSVC)
 else()
   target_link_libraries(gmod-mcp-coretests PRIVATE dl pthread)
 endif()
+
+# --- Conformance host: the module's real MCP/HTTP server (CORE_SOURCES, the DLL's code) without the game, plus the
+# fixtures of the official MCP conformance suite and a token-adding loopback relay (tests/conformance/). Test-only: the
+# fixtures live in this executable and nowhere else (never in the DLL, the bridge or a release package).
+add_executable(gmod-mcp-conformance-host
+  tests/conformance/conformance_host.cpp tests/conformance/fixtures.cpp tests/conformance/relay.cpp
+  ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+target_include_directories(gmod-mcp-conformance-host PRIVATE src tests/conformance ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
+target_link_libraries(gmod-mcp-conformance-host PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
+if(MSVC)
+  target_compile_options(gmod-mcp-conformance-host PRIVATE /utf-8 /EHsc /permissive- /wd4100 /wd4996)
+  target_compile_definitions(gmod-mcp-conformance-host PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  target_link_libraries(gmod-mcp-conformance-host PRIVATE ws2_32 bcrypt iphlpapi user32)
+else()
+  target_link_libraries(gmod-mcp-conformance-host PRIVATE dl pthread)
+endif()

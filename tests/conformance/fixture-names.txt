@@ -1,0 +1,7 @@
+test://static-text
+test://static-binary
+test://watched-resource
+test://template/
+test://embedded-resource
+test://mixed-content-resource
+greet

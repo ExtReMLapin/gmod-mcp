@@ -1,0 +1,24 @@
+{
+  "suite_version": "0.2.0-alpha.12",
+  "runs": {
+    "2026-07-28": [],
+    "2025-11-25": [
+      {"scenario": "logging-set-level", "check": "logging-set-level",
+       "reason": "by design: the server declares no logging capability, so logging/setLevel is not offered (-32601)"},
+      {"scenario": "tools-call-with-logging", "check": "tools-call-with-logging",
+       "reason": "by design: the scenario starts with logging/setLevel, which is not offered (no logging capability)"},
+      {"scenario": "tools-call-sampling", "check": "tools-call-sampling",
+       "reason": "by design: the server never sends requests (sampling/createMessage) to the client in the 2025-11-25 era; the 2026-07-28 input_required flow replaces them and passes"},
+      {"scenario": "tools-call-elicitation", "check": "tools-call-elicitation",
+       "reason": "by design: the server never sends requests (elicitation/create) to the client in the 2025-11-25 era; the 2026-07-28 input_required flow replaces them and passes"},
+      {"scenario": "elicitation-sep1034-defaults", "check": "elicitation-sep1034-general",
+       "reason": "by design: needs a server-initiated elicitation/create request, which this server does not send in the 2025-11-25 era"},
+      {"scenario": "elicitation-sep1330-enums", "check": "elicitation-sep1330-general",
+       "reason": "by design: needs a server-initiated elicitation/create request, which this server does not send in the 2025-11-25 era"},
+      {"scenario": "resources-subscribe", "check": "resources-subscribe",
+       "reason": "by design: legacy resources/subscribe would need a standalone GET stream, which this server does not offer; the 2026-07-28 subscriptions/listen is offered"},
+      {"scenario": "resources-unsubscribe", "check": "resources-unsubscribe",
+       "reason": "by design: legacy resources/unsubscribe needs resources/subscribe first, which is not offered (see resources-subscribe)"}
+    ]
+  }
+}

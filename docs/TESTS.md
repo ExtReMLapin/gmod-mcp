@@ -364,6 +364,14 @@ server on Linux), `srcds_run_x64 ... +sv_lan 1 +map gm_construct`.
 
 ## Official conformance suite
 
+Run in CI (`tests/conformance/run.py`) against `gmod-mcp-conformance-host`: the module's real MCP/HTTP server code
+without the game, the suite's fixture tools/prompts/resources (test-only, `tests/conformance/fixtures.cpp`, never in the
+DLL or the bridge) and a relay adding the bearer token. Suite pinned in `tests/conformance/expected-failures.json`
+(`0.2.0-alpha.12`), which lists the checks absent by design. 2026-07-28: 37/37 required scenarios pass; 2025-11-25: 22/30,
+the 8 others are by design (logging, server-initiated sampling/elicitation, legacy `resources/subscribe`). Not scored
+(Tasks extension) and failing: the module's tasks never park for input (`input_required` task status), never report a
+protocol-level `failed` task with an `error`, and `tasks/get` does not check `Mcp-Name`. The manual run below predates the host.
+
 `@modelcontextprotocol/conformance@0.2.0-alpha.12 server --requirements 2026-07-28`, against a test client (`-multirun`,
 no map) through a local relay that adds the bearer token (the suite cannot send one) and logs the traffic. Run on
 2026-11-11 with the **old** module (before the fixes below): 103 checks passed, 73 failed. With the new module: 120

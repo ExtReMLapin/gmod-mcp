@@ -60,6 +60,22 @@ using Emit = std::function<void(const json &message)>;
 // goes away. Returns the final JSON-RPC response body ("" for a notification).
 std::string execute(Prepared &p, int &http_status, const Emit &emit, std::shared_ptr<std::atomic<bool>> cancel);
 
+// Seam for test hosts (the conformance host, tests/conformance/). Never set by the module: the hooks are empty there and
+// the request handling is unchanged. It lets a host answer some requests itself and add entries to the lists, while the
+// protocol layer (headers, _meta, eras, SSE, tasks, caching hints) stays the module's own.
+struct RequestHooks {
+    // Called for tools/call, prompts/get and resources/read once the request passed the protocol checks (inside the
+    // request's reqctx scope). Return true to answer: `result` is then the JSON-RPC result, or `error` is set to
+    // {"code","message","data"?,"httpStatus"?} to answer with a JSON-RPC error. `emit` is the SSE stream, or null.
+    std::function<bool(const std::string &method, const json &params, const json &client_caps, bool modern, const Emit *emit,
+                       json &result, json &error)>
+        intercept;
+    // Entries appended to the result of prompts/list ("prompts"), resources/list ("resources") and
+    // resources/templates/list ("resourceTemplates"). Called with the method name; returns an array or null.
+    std::function<json(const std::string &method)> list_extra;
+};
+void set_request_hooks(RequestHooks hooks);
+
 // Direct tool call (used by the relay and internal tests); returns the MCP CallToolResult.
 json call_tool(const std::string &name, const json &args);
 

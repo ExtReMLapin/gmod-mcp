@@ -26,7 +26,9 @@ static std::map<std::string, size_t> g_index;
 static RelayFn g_relay;
 static PeersFn g_peers;
 static std::string g_instructions;
+static RequestHooks g_hooks;  // empty in the module: only the conformance host sets it
 
+void set_request_hooks(RequestHooks hooks) { g_hooks = std::move(hooks); }
 void set_relay(RelayFn fn) { g_relay = std::move(fn); }
 void set_peers(PeersFn fn) { g_peers = std::move(fn); }
 void set_instructions(std::string s) { g_instructions = std::move(s); }
@@ -429,6 +431,29 @@ static json complete(const json &id, const json &params) {
     return rpc_result(id, json{{"completion", {{"values", values}, {"total", total}, {"hasMore", total > values.size()}}}});
 }
 
+// Test-host seam (RequestHooks::intercept): true when the host answered the request, `out` being the JSON-RPC response.
+static bool hooked(const json &id, const std::string &method, const json &params, Ctx &c, json &out) {
+    if (!g_hooks.intercept) return false;
+    json result, error;
+    if (!g_hooks.intercept(method, params, c.client_caps, c.era == tasks::Era::Modern, c.emit, result, error)) return false;
+    if (error.is_object() && !error.empty()) {
+        if (error.contains("httpStatus")) c.http_status = error["httpStatus"].get<int>();
+        out = rpc_error(id, error.value("code", err::kInternalError), error.value("message", std::string()), error.value("data", json(nullptr)));
+    } else {
+        out = rpc_result(id, std::move(result));
+    }
+    return true;
+}
+
+// Test-host seam (RequestHooks::list_extra): the host's entries appended to a list.
+static json with_extra(const std::string &method, json list) {
+    if (g_hooks.list_extra) {
+        json extra = g_hooks.list_extra(method);
+        if (extra.is_array()) for (auto &e : extra) list.push_back(e);
+    }
+    return list;
+}
+
 static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     is_notification = !msg.contains("id");
     json id = msg.value("id", json(nullptr));
@@ -487,6 +512,8 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
         std::string name = params["name"];
         const Tool *t = find_tool(name);
         if (!t) return rpc_error(id, err::kInvalidParams, "unknown tool: " + name);
+        json hooked_out;
+        if (hooked(id, method, params, c, hooked_out)) return hooked_out;
         json a = params.value("arguments", json::object());
         if (a.is_null()) a = json::object();
         bool legacy_task = c.era == tasks::Era::Legacy && params.contains("task") && params["task"].is_object();
@@ -516,10 +543,13 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     if (c.era == tasks::Era::Legacy && method == "tasks/result") return unwrap_rpc(id, tasks::result(params));
     if (c.era == tasks::Era::Legacy && method == "tasks/list") return unwrap_rpc(id, tasks::list(params));
     if (c.era == tasks::Era::Modern && method == "tasks/update") return unwrap_rpc(id, tasks::update(params));
-    if (method == "resources/list") return rpc_result(id, json{{"resources", resources::list()}, {"ttlMs", 0}, {"cacheScope", "private"}});
+    if (method == "resources/list")
+        return rpc_result(id, json{{"resources", with_extra(method, resources::list())}, {"ttlMs", 0}, {"cacheScope", "private"}});
     if (method == "resources/templates/list")
-        return rpc_result(id, json{{"resourceTemplates", resources::templates()}, {"ttlMs", 0}, {"cacheScope", "private"}});
+        return rpc_result(id, json{{"resourceTemplates", with_extra(method, resources::templates())}, {"ttlMs", 0}, {"cacheScope", "private"}});
     if (method == "resources/read") {
+        json hooked_out;
+        if (hooked(id, method, params, c, hooked_out)) return hooked_out;
         std::string uri = params.value("uri", "");
         json res = resources::read(uri);
         // Not found: err::kInvalidParams since 2026-07-28 (err::kResourceNotFoundLegacy before).
@@ -528,8 +558,11 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
             return rpc_error(id, err::kInternalError, res["__error"].value("message", "resource unavailable"), json{{"uri", uri}, {"code", res["__error"]["code"]}});
         return rpc_result(id, json{{"contents", json::array({res})}, {"ttlMs", 0}, {"cacheScope", "private"}});
     }
-    if (method == "prompts/list") return rpc_result(id, json{{"prompts", prompts::list()}, {"ttlMs", 0}, {"cacheScope", "private"}});
+    if (method == "prompts/list")
+        return rpc_result(id, json{{"prompts", with_extra(method, prompts::list())}, {"ttlMs", 0}, {"cacheScope", "private"}});
     if (method == "prompts/get") {
+        json hooked_out;
+        if (hooked(id, method, params, c, hooked_out)) return hooked_out;
         std::string err;
         json r = prompts::get(params.value("name", ""), params.value("arguments", json::object()), err);
         if (r.is_null()) return rpc_error(id, err::kInvalidParams, err);
