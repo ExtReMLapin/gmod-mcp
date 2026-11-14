@@ -159,7 +159,9 @@ static void test_overlay_paths() {
     CHECK(ok(t / "addon", t / "addon"));                                   // the addon root
     CHECK(ok(t / "addon" / "lua", t / "addon"));                           // its lua/ folder
     CHECK(ok(fs::u8path((t / "addon" / "lua").u8string() + "/"), t / "addon"));  // trailing separator
-    CHECK(ok(fs::u8path((t / "addon").u8string() + "\\"), t / "addon"));
+#ifdef _WIN32
+    CHECK(ok(fs::u8path((t / "addon").u8string() + "\\"), t / "addon"));  // a backslash is a separator on Windows only
+#endif
     CHECK(ok(t / "my addon wt", t / "my addon wt"));                       // spaces are fine
     CHECK(bad((t / "nolua").u8string(), "lua"));                           // no lua/ inside
     CHECK(bad((t / "missing").u8string(), "not found"));
