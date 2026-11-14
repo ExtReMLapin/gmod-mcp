@@ -350,6 +350,8 @@ server on Linux), `srcds_run_x64 ... +sv_lan 1 +map gm_construct`.
 | X-24 | Official conformance suite, 2026-07-28 requirements (from Windows through WSL's localhost forwarding) | ✅ 120 passed, the same as on Windows (only the suite's fixture scenarios fail) |
 | X-25 | 2026-11-14, Windows srcds (`D:\gmod-srcds`, `+ip 127.0.0.1 +sv_lan 1`), test_bridge.py `retex` + `b` | 27/30 first: Lua errors from chunks without a .lua name were not parsed from the console (fixed, coretests +4), echo is blocked from server Lua without an engine path on srcds (test uses convars), no menu realm (test skips it). After the fixes: ✅ 29/29 |
 | X-26 | 2026-11-14, Windows srcds: `lua_overlay` | the filesystem interface is not in filesystem_stdio (not loaded) nor reachable through dedicated.dll's CreateInterface: the overlay now says it is client only |
+| X-27 | 2026-11-14, Linux srcds in WSL (reinstalled, app 4020 `-beta x86-64`), test_bridge.py `retex` + `b` with the Linux bridge | 27/29 first: `console capture: none`, this libtier0 exports no `SpewOutputFunc`, only the LoggingSystem. Added a LoggingSystem listener (`console_capture: logging`), used when SpewOutputFunc is missing (Windows tier0, client and srcds, only has SpewOutputFunc): ✅ 29/29 |
+| X-28 | Mixed: one bridge managing a Windows client, a Windows srcds and a Linux srcds (WSL) at once | all three in instances_list, calls routed by `instance`. To check first: WSL2 does not share 127.0.0.1 with Windows unless networking is "mirrored", and the Linux module has its own token (~/.config/gmod-mcp/token) | ⏳ asked by the user 2026-11-14 |
 
 ## Official conformance suite
 

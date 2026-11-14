@@ -151,6 +151,32 @@ static SpewRetval_t our_spew(SpewType_t type, const char *msg) {
     return r;
 }
 
+// --- Logging system (newer tier0, e.g. the x86-64 Linux dedicated server: no SpewOutputFunc export) ---
+// Layout of the public logging API (Alien Swarm SDK, tier0/logging.h): a listener is an object whose first virtual
+// function is Log(const LoggingContext_t *, const char *). Registered next to the engine's own listeners (console,
+// log file), so the game's output is unchanged.
+struct LoggingContext {
+    int channel;
+    int flags;
+    int severity;  // 0 message, 1 warning, 2 assert, 3 error
+    unsigned char color[4];
+};
+class LoggingListener {
+public:
+    virtual void Log(const LoggingContext *ctx, const char *msg) {
+        if (t_log_depth > 0) return;
+        ++t_log_depth;
+        int sev = ctx ? ctx->severity : 0;
+        feed(sev >= 0 && sev <= 3 ? sev : SPEW_MESSAGE, msg);
+        --t_log_depth;
+    }
+    static thread_local int t_log_depth;
+};
+thread_local int LoggingListener::t_log_depth = 0;
+static LoggingListener g_listener;
+using ListenerFn = void (*)(LoggingListener *);
+static ListenerFn g_unregister_listener = nullptr;
+
 // --- -condebug fallback: incremental reading of console.log ---
 static std::atomic<bool> g_tail_run{false};
 static std::thread g_tail_thread;
@@ -188,6 +214,13 @@ std::string install(const std::string &condebug_path) {
         g_method = "spew";
         return g_method;
     }
+    auto reg = reinterpret_cast<ListenerFn>(plat::find_symbol(t0, "LoggingSystem_RegisterLoggingListener"));
+    g_unregister_listener = reinterpret_cast<ListenerFn>(plat::find_symbol(t0, "LoggingSystem_UnregisterLoggingListener"));
+    if (reg && g_unregister_listener) {
+        reg(&g_listener);
+        g_method = "logging";
+        return g_method;
+    }
     if (!condebug_path.empty()) {
         g_tail_run = true;
         g_tail_thread = std::thread(tail_loop, condebug_path);
@@ -211,6 +244,7 @@ void maintain() {
 
 void uninstall() {
     if (g_method == "spew" && g_get_spew && g_get_spew() == our_spew) g_set_spew(g_prev.load());
+    if (g_method == "logging" && g_unregister_listener) g_unregister_listener(&g_listener);
     if (g_tail_run) {
         g_tail_run = false;
         if (g_tail_thread.joinable()) g_tail_thread.join();

@@ -17,7 +17,8 @@ struct Line {
     std::string text;
 };
 
-// Installs the capture. Returns the method used ("spew", "condebug" or "none").
+// Installs the capture. Returns the method used: "spew" (tier0 SpewOutputFunc), "logging" (tier0 LoggingSystem
+// listener, newer tier0 such as the x86-64 Linux dedicated server), "condebug" (console.log tail) or "none".
 std::string install(const std::string &condebug_path);
 void uninstall();
 // Called every frame: checks that the spew hook is still in place.
