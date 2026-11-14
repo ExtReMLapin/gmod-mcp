@@ -34,7 +34,7 @@ void register_overlay() {
          "instances. `path`: the addon's root (the folder that contains lua/) or its lua/ folder, absolute. "
          "IMPORTANT: it applies to files loaded from now on; code already running is not re-run, so call map_load "
          "right after (then check with lua_function_source or debug.getinfo that the function comes from your file). "
-         "The folder's materials/sounds/models also win over the game's (GAME path). path: null removes the overlay "
+         "Only Lua is overlaid (not materials or sounds). The result says base_lua_mounted: false if the game's own lua/ went missing (then remove the overlay). path: null removes the overlay "
          "(from the next map load). Without `path`: the current overlay and the engine's Lua search paths (lsv = "
          "server, lcl = client). A test client can also start with one: instances_launch {overlay}. empty_cache "
          "(default true) empties the engine's Lua file cache so an older copy with the same name and time is not "

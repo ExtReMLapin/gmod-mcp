@@ -35,9 +35,12 @@ duplicate), **8 `RemoveSearchPath(path, pathID)`**, **13 `GetSearchPath(pathID, 
 - `lua_shared` loads a file only if its full path maps back to a `MOD`-relative name (`FullPathToRelativePathEx(full,
   "MOD")`), and caches it under that name with its file time.
 
-So the overlay adds its root to `MOD` and `GAME` (head), its `lua`/`gamemodes` to `lsv` and `lcl` (head), and hooks
+So the overlay adds its root to the END of `MOD` (addType 23: tail of the last group), its `lua`/`gamemodes` to
+`lsv` and `lcl` (head), and hooks
 `ILuaShared` slot 9 (vtable entry patched in this process only) to put them back in front right after every
-`MountLua`. Not analysed: how `client.dll` mounts `lcl` (live check), the Linux layouts.
+`MountLua`. The root must NOT be at the head of `MOD`: `MountLuaAdd("lua")` resolves the `lua` folder through `MOD`,
+so an overlay at the head made the engine mount the overlay's `lua/` instead of `garrysmod/lua` (seen live 2026-11-14:
+no base Lua, Lua errors everywhere, black sky). It is not added to `GAME` either. Not analysed: how `client.dll` mounts `lcl` (live check), the Linux layouts.
 
 ### `CLuaInterface` (implements `ILuaInterface : ILuaBase`)
 - 0x9B0-byte allocation; vptr at +0x0.

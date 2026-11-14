@@ -1,13 +1,16 @@
 #include "overlay.h"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
 
 #include <GarrysMod/Lua/LuaShared.h>
 
+#include "agent.h"
 #include "log.h"
 #include "platform/platform.h"
+#include "util.h"
 
 namespace overlay {
 
@@ -63,8 +66,10 @@ static bool ensure(std::string &err) {
 
 static void **vtable(void *obj) { return *static_cast<void ***>(obj); }
 
-static void fs_add(const std::string &path, const char *id) {
-    reinterpret_cast<AddFn>(vtable(g_fs)[kAddSearchPath])(g_fs, path.c_str(), id, 0);
+// GMod's addType = (group << 1) | tail bit, groups 0..11 (docs/REVERSE.md). 0 = before every path; 23 = after every path.
+constexpr int kHead = 0, kTail = (11 << 1) | 1;
+static void fs_add(const std::string &path, const char *id, int add_type = kHead) {
+    reinterpret_cast<AddFn>(vtable(g_fs)[kAddSearchPath])(g_fs, path.c_str(), id, add_type);
 }
 static bool fs_remove(const std::string &path, const char *id) {
     return reinterpret_cast<RemoveFn>(vtable(g_fs)[kRemoveSearchPath])(g_fs, path.c_str(), id);
@@ -144,11 +149,29 @@ json info() {
     std::string root = current();
     void *cur = nullptr;
     plat::safe_read(&vtable(g_ls)[kMountLua], &cur, sizeof cur);
+    json lsv = fs_paths("lsv");
+    std::string base = util::to_lower(agent::config().game_dir + "/lua/");
+    std::replace(base.begin(), base.end(), '/', '\\');
+    // Only meaningful once the engine has mounted the server Lua paths (a map is loaded or loading): at the main menu
+    // lsv holds at most the overlay's own folders.
+    std::string ov = util::to_lower(root);
+    std::replace(ov.begin(), ov.end(), '/', '\\');
+    bool engine_mounted = false, base_ok = false;
+    for (const auto &p : lsv) {
+        std::string l = util::to_lower(p.get<std::string>());
+        if (ov.empty() || l.rfind(ov, 0) != 0) engine_mounted = true;
+        if (l == base) base_ok = true;
+    }
+    if (!engine_mounted) base_ok = true;
     json r{{"overlay", root.empty() ? json(nullptr) : json(root)},
+           {"base_lua_mounted", base_ok},
            {"mount_hook", cur == reinterpret_cast<void *>(&hooked_mount)},
            {"hook_calls", g_hook_calls},
            {"hook_path_ids", g_hook_ids},
-           {"search_paths", {{"lsv", fs_paths("lsv")}, {"lcl", fs_paths("lcl")}}}};
+           {"search_paths", {{"lsv", lsv}, {"lcl", fs_paths("lcl")}}}};
+    if (!base_ok)
+        r["warning"] = "the game's own lua/ folder is missing from the server Lua paths: the game cannot run its base Lua. "
+                       "Remove the overlay (lua_overlay {path: null}) and close this client.";
     return json{{"ok", true}, {"result", r}};
 }
 
@@ -159,7 +182,6 @@ json set(const std::string &root, bool empty_cache) {
     json removed = json::object();
     if (!old.empty()) {
         removed["MOD"] = fs_remove(old, "MOD");
-        removed["GAME"] = fs_remove(old, "GAME");
         for (const char *id : {"lsv", "lcl"}) {
             removed[std::string(id) + ":lua"] = fs_remove(old + "\\lua", id);
             if (is_dir(old + "\\gamemodes")) removed[std::string(id) + ":gamemodes"] = fs_remove(old + "\\gamemodes", id);
@@ -171,8 +193,10 @@ json set(const std::string &root, bool empty_cache) {
     }
     if (!root.empty()) {
         // lua_shared only loads a file whose full path maps back to a MOD-relative name: the root must be a MOD path.
-        fs_add(root, "MOD");
-        fs_add(root, "GAME");  // the overlay's materials, sounds and models win too
+        // At the END of MOD: the engine finds the base "lua" and "gamemodes" folders through MOD (MountLuaAdd), and an
+        // overlay at the head made it mount the overlay's lua/ INSTEAD of garrysmod/lua (seen live 2026-11-14: no
+        // base Lua, errors everywhere, black sky). Not added to GAME either: only Lua is overlaid.
+        fs_add(root, "MOD", kTail);
         add_lua(root, "lsv");
         add_lua(root, "lcl");
         if (!hook(true, err)) return json{{"ok", false}, {"error", {{"code", "hook_failed"}, {"message", err}}}};
