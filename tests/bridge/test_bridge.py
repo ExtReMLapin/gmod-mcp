@@ -1225,7 +1225,28 @@ def case_version():
     fake.stop(); b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version}
+def case_version_live():
+    """Live (Windows, Steam running, no other game; the game's module must be OLDER than this bridge, e.g. the previous
+    release's DLL put back in garrysmod/lua/bin): a client launched by this bridge, then any tool result warns."""
+    print("== VERSION LIVE: an older module in the game", flush=True)
+    b = Bridge(27080)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "version-live", "sound": False}}, 300)
+    ins = ((r or {}).get("result", {}).get("structuredContent", {}).get("instances") or [{}])
+    inst = ins[0].get("instance")
+    check("VERSION LIVE client launched", inst, r)
+    time.sleep(4)
+    r = b.req("tools/call", {"name": "status", "arguments": {"instance": inst} if inst else {}}, 30)
+    res = (r or {}).get("result", {})
+    first = (res.get("content") or [{}])[0].get("text", "")
+    sc = res.get("structuredContent", {})
+    print("   module", sc.get("agent_version"), "| bridge", bridge_version(), flush=True)
+    check("VERSION LIVE the result starts with the warning naming both versions",
+          first.startswith("WARNING") and str(sc.get("agent_version")) in first and bridge_version() in first, first[:300])
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "version-live"}}, 60)
+    b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live}
 for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "version", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)
