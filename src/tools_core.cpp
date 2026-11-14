@@ -613,8 +613,10 @@ void register_core() {
                                               "server then client (shared file)."}};
     mcp::register_tool({"lua_reload", "Reload a Lua file from disk",
                         "Reads an addon or gamemode file from the disk again and runs it in its realms, to test an edit without "
-                        "reloading the map. Use it instead of include() in lua_exec: on the client, include() runs the copy the "
-                        "server sent when the map loaded, not the file on disk, so an edit is silently ignored. Looks under "
+                        "reloading the map, in every realm it belongs to in one call. On the machine that hosts the game (singleplayer "
+                        "or listen server) include() from lua_exec also reads the edited file, in the server and the client realm "
+                        "(checked live); a client connected to a separate server (e.g. a local srcds) only has the copies that "
+                        "server sent, so there lua_reload is the way to run an edit on the client. Looks under "
                         "the mounted Lua folder if any (lua_mount), then lua/, gamemodes/, addons/*/lua|gamemodes/: the engine's order, "
                         "so the copy the game would load (other matches are listed). Errors name the real file. "
                         "Running a file again redefines its functions and hooks; what it built at load time (entities, timers, "

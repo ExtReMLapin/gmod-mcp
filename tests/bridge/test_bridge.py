@@ -1246,7 +1246,81 @@ def case_version_live():
     b.close()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live}
+def case_observe():
+    """Live observations (no pass/fail on behaviour, printed for the docs): client include() of an edited file in
+    singleplayer and listen server, convar_set of a server convar from the default realm, what sound_trace sees, an
+    unknown ent_fire input, bots across a map load, door states."""
+    print("== OBSERVE: facts for the tool descriptions", flush=True)
+    b = Bridge(27080)
+
+    def call(tool, args, timeout=300):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), bool(res.get("isError"))
+
+    def show(label, v): print("   %s: %s" % (label, json.dumps(v, ensure_ascii=False)[:600]), flush=True)
+    sc, err = call("instances_launch", {"count": 1, "map": "gm_construct", "owner": "observe", "sound": True})
+    inst = (sc.get("instances") or [{}])[0].get("instance")
+    check("OBSERVE client launched", inst, sc)
+    if not inst: b.close(); return
+    I = {"instance": inst}
+    tmp = os.path.join(os.environ["GMOD_LUA_TMP"], "incq.lua")
+    def put(v):
+        with open(tmp, "w") as f: f.write("return '%s'\n" % v)
+    for mode, mp in (("singleplayer", 1), ("listen", 2)):
+        put("v1")
+        call("map_load", dict(I, map="gm_construct", maxplayers=mp, timeout_s=120), 180)
+        c1, _ = call("lua_exec", dict(I, realm="client", code="return include('mcpagent_tmp/incq.lua')"))
+        put("v2"); time.sleep(1)
+        c2, _ = call("lua_exec", dict(I, realm="client", code="return include('mcpagent_tmp/incq.lua')"))
+        s2, _ = call("lua_exec", dict(I, realm="server", code="return include('mcpagent_tmp/incq.lua')"))
+        show("Q1 %s client include before/after edit, server after" % mode, [c1.get("values") or c1, c2.get("values") or c2, s2.get("values") or s2])
+    # Q5 bots across a map load (listen server is up now).
+    sc, err = call("bots_add", dict(I, n=1)); show("Q5 bots_add", sc)
+    sc, _ = call("players_list", I); show("Q5 players before map_load", [p.get("name") for p in sc.get("players", [])])
+    call("map_load", dict(I, map="gm_construct", maxplayers=2, timeout_s=120), 180)
+    sc, _ = call("players_list", I); show("Q5 players after map_load", [p.get("name") for p in sc.get("players", [])])
+    # Q2 convar_set of a server convar from the default realm.
+    sc, err = call("convar_set", dict(I, name="sv_gravity", value=555)); show("Q2 convar_set sv_gravity default realm", [err, sc])
+    sc, _ = call("lua_exec", dict(I, realm="server", code="return GetConVar('sv_gravity'):GetString()")); show("Q2 server sees", sc.get("values"))
+    call("convar_set", dict(I, name="sv_gravity", value=600, realm="server"))
+    # Q3 what sound_trace sees.
+    rid = b.start("tools/call", {"name": "sound_trace", "arguments": dict(I, duration_s=4, realm="server")})
+    time.sleep(1)
+    call("lua_exec", dict(I, realm="server", code="sound.Play('buttons/button14.wav', Vector(0,0,0)) Entity(1):EmitSound('buttons/button15.wav') return true"))
+    call("lua_exec", dict(I, realm="client", code="surface.PlaySound('buttons/button16.wav') LocalPlayer():EmitSound('buttons/button17.wav') return true"))
+    r = b.wait(rid, 30)
+    calls = (r or {}).get("result", {}).get("structuredContent", {}).get("calls", [])
+    show("Q3 server sound_trace saw", [c.get("sound", {}).get("name") for c in calls])
+    rid = b.start("tools/call", {"name": "sound_trace", "arguments": dict(I, duration_s=4, realm="client")})
+    time.sleep(1)
+    call("lua_exec", dict(I, realm="server", code="sound.Play('buttons/button14.wav', Vector(0,0,0)) Entity(1):EmitSound('buttons/button15.wav') return true"))
+    call("lua_exec", dict(I, realm="client", code="surface.PlaySound('buttons/button16.wav') LocalPlayer():EmitSound('buttons/button17.wav') return true"))
+    r = b.wait(rid, 30)
+    calls = (r or {}).get("result", {}).get("structuredContent", {}).get("calls", [])
+    show("Q3 client sound_trace saw", [c.get("sound", {}).get("name") for c in calls])
+    # Q4 unknown ent_fire input.
+    sc, err = call("ent_fire", dict(I, id=1, input="BogusInputXyz")); show("Q4 ent_fire unknown input", [err, sc])
+    time.sleep(1)
+    sc, _ = call("console_read", dict(I, regex="BogusInputXyz|unhandled input|Bogus", limit=5)); show("Q4 console", [l.get("text") for l in sc.get("lines", [])])
+    # Q6 door states.
+    sc, _ = call("ent_spawn", dict(I, **{"class": "prop_door_rotating", "pos": [0, 0, 100], "model": "models/props_c17/door01_left.mdl",
+                                   "keyvalues": {"hardware": "1", "distance": "90", "speed": "100"}}))
+    did = sc.get("id") or (sc.get("entity") or {}).get("id")
+    show("Q6 spawned door", sc)
+    if did:
+        sc, _ = call("ent_info", dict(I, id=did)); show("Q6 door closed", sc.get("door"))
+        call("ent_fire", dict(I, id=did, input="Open")); time.sleep(0.3)
+        sc, _ = call("ent_info", dict(I, id=did)); show("Q6 door opening", sc.get("door"))
+        time.sleep(2)
+        sc, _ = call("ent_info", dict(I, id=did)); show("Q6 door open", sc.get("door"))
+    sc, _ = call("ents_find", dict(I, **{"class": "func_door*", "limit": 3})); show("Q6 func_door on the map", sc)
+    call("instances_close", {"owner": "observe"}, 60)
+    os.remove(tmp)
+    b.close()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe}
 for c in sys.argv[2:] or ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "orphan", "edge", "version", "fuzz"]:
     CASES[c]()
 passed = sum(1 for _, ok in results if ok)

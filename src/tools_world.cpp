@@ -160,7 +160,8 @@ void register_world() {
                         std::string("Sends a map I/O input to an entity in the server realm (Entity:Fire(input, param, delay)), e.g. "
                         "Open, Close, Toggle, Lock on a door, or Kill. Returns at once ({fired, id, param, delay}): the effect "
                         "happens on a later frame (after `delay` seconds), so check it with ent_info or wait_for. An input the "
-                        "entity does not know raises no error here. Example: {\"id\": 57, \"input\": \"Open\"}.") + kNeedsMap,
+                        "entity does not know is ignored silently: no error, and nothing in the console (checked live), so always "
+                        "check the effect. Example: {\"id\": 57, \"input\": \"Open\"}.") + kNeedsMap,
                         json{{"properties", {{"id", {{"type", "integer"}, {"minimum", 0}, {"description", "Entity index."}}},
                                              {"input", {{"type", "string"}, {"minLength", 1}, {"description", "Input name, e.g. Open."}}},
                                              {"param", {{"type", "string"}, {"description", "Input parameter (default empty)."}}},
@@ -190,7 +191,8 @@ void register_world() {
     mcp::register_tool({"bots_add", "Add bots",
                         std::string("Adds n bots in the server realm (player.CreateNextBot), named <name>_<k>. Bots need free player "
                         "slots: in singleplayer (map_load maxplayers 1) there are none, so load the map with e.g. maxplayers: 4 first; "
-                        "otherwise error no_slots. Result: {added: [entity summaries], count}.") + kNeedsMap,
+                        "otherwise error no_slots. Bots do not survive a map load (map_load removes them: add them again after it; "
+                        "checked live). Result: {added: [entity summaries], count}.") + kNeedsMap,
                         json{{"properties", {{"n", {{"type", "integer"}, {"minimum", 1}, {"maximum", 127}, {"description", "Number of bots."}}},
                                              {"name", {{"type", "string"}, {"description", "Name prefix (default mcpbot)."}}}}},
                              {"required", {"n"}}},
@@ -312,8 +314,10 @@ void register_render() {
                         "max_calls), then removes its recorder: game behaviour is unchanged. Waits the whole duration (progress "
                         "reported; can run as an MCP task). Result: {event, calls: [{t (s since start), sound: {name, "
                         "original_name, level, pitch, volume, dsp, channel, flags, sound_time, pos, entity}}], recorded, total_calls, "
-                        "capped, duration_s, tracer_removed}. Not seen: sounds that a hook running before the recorder suppressed "
-                        "(returned a value), and sounds that do not go through the EntityEmitSound hook. "
+                        "capped, duration_s, tracer_removed}. Checked live: realm server sees Entity:EmitSound and sound.Play run on "
+                        "the server; realm client sees the client's Entity:EmitSound and the server's sound.Play; surface.PlaySound "
+                        "(UI sounds) is seen by neither. Also not seen: sounds that a hook running before the recorder suppressed "
+                        "(returned a value). "
                         "Example: {\"duration_s\": 3, \"realm\": \"server\"}.") + kNeedsMap,
                         json{{"properties", {{"duration_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600}, {"description", "Recording length in seconds (default 5)."}}},
                                              {"max_calls", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Stop after this many sounds (default 100)."}}},
