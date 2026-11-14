@@ -229,14 +229,20 @@ static json status_tool(const json &args) {
 }
 
 static json exec_payload(const json &args, const std::string &code, const std::string &chunk) {
-    json p{{"code", code}, {"chunkname", chunk}};
-    for (const char *k : {"budget", "depth", "limit", "jit"})
+    json p{{"code", code}, {"chunkname", args.value("chunkname", chunk)}};
+    for (const char *k : {"budget", "jit", "depth", "limit", "max_string"})
         if (args.contains(k)) p[k] = args[k];
     return p;
 }
 
-// With jit: true there is no budget inside the game: wait as long as the longest budget allowed.
-static double exec_timeout(const json &args) { return (args.value("jit", false) ? 120.0 : args.value("budget", 5.0)) + 10.0; }
+// How long the caller waits for the game. There is no budget inside the game by default: an infinite loop freezes it,
+// and this wait (timeout_s, default 60 s, or budget + 10 s) is how the caller finds out.
+static double exec_timeout(const json &args) {
+    if (args.contains("timeout_s")) return args["timeout_s"].get<double>();
+    bool off = args.contains("jit") && args["jit"].is_boolean() && args["jit"].get<bool>();
+    if (args.contains("budget") && !off) return args["budget"].get<double>() + 10.0;
+    return 60.0;
+}
 
 static json lua_exec_tool(const json &args) {
     return project_values(rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec"), exec_timeout(args)), args);
@@ -485,26 +491,45 @@ void register_core() {
                         RO, status_tool});
 
     json exec_props = {{"realm", realm_exec},
-                       {"budget", {{"type", "number"}, {"minimum", 0.05}, {"maximum", 120},
-                                   {"description", "Time budget in seconds (default 5, max 120). Beyond it, execution is interrupted (budget_exceeded)."}}},
+                       {"budget", {{"type", "number"}, {"minimum", 0.05}, {"maximum", 600},
+                                   {"description", "Optional time limit in seconds, best effort (none by default). It stops loops "
+                                                   "written in this code itself (error budget_exceeded), not a loop inside a "
+                                                   "compiled function it calls. Without it, an infinite loop freezes the game: the "
+                                                   "call fails with main_thread_timeout after timeout_s, status shows "
+                                                   "main_thread_stalled, and game_terminate ends the game."}}},
+                       {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600},
+                                      {"description", "How long to wait for the game's answer (default 60, or budget + 10). Past "
+                                                      "it the call fails with main_thread_timeout; the code may still be running."}}},
                        {"jit", {{"type", "boolean"},
-                                {"description", "Keep the LuaJIT compiler on (default false). By default the compiler is off for this "
-                                                "code and every function it defines (hooks, timers, callbacks), so the budget can "
-                                                "interrupt loops, and timings are several times slower than real. Use jit: true to "
-                                                "measure performance: there is no budget then, and a runaway loop freezes the game "
-                                                "(status reports it, game_terminate ends it)."}}},
-                       {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 12}, {"description", "Table serialization depth (default 4)."}}},
-                       {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Max number of elements per table (default 200)."}}}};
+                                {"description", "Obsolete. gmod-mcp no longer turns the LuaJIT compiler off, neither for this code "
+                                                "nor for the functions it defines (hooks and timers run at real speed, timings "
+                                                "are real). jit: true now only ignores `budget`."}}},
+                       {"chunkname", {{"type", "string"}, {"maxLength", 260},
+                                      {"description", "Chunk name: the source shown by debug.getinfo, errors and tracebacks, e.g. "
+                                                      "'@addons/my_addon/lua/my_addon/core.lua' for code that identifies its "
+                                                      "caller by file. Default: '=mcpagent:lua_exec', or the file's path."}}},
+                       {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 200},
+                                  {"description", "Cut tables deeper than this (default: no cut)."}}},
+                       {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000000},
+                                  {"description", "Cut tables longer than this (default: no cut)."}}},
+                       {"max_string", {{"type", "integer"}, {"minimum", 16}, {"maximum", 1073741824},
+                                       {"description", "Cut strings longer than this (default: no cut)."}}}};
     exec_props["fields"] = {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"]): the rest "
                                             "of a large result is dropped before it reaches you."}};
     json exec_code = exec_props;
     exec_code["code"] = {{"type", "string"}, {"description", "Lua code. Use `return` to return values (several allowed)."}};
     mcp::register_tool({"lua_exec", "Execute Lua",
-                        "Executes Lua code in a realm under xpcall + debug.traceback, with a time budget (debug.sethook; the JIT "
-                        "compiler is off for the chunk and the functions it defines, unless jit: true). Returns all serialized return values (values, n), captured print/Msg/MsgN/MsgC "
-                        "(output) and the duration. Non-JSON types: {__type: Vector|Angle|Color|Entity|function|cycle|...}. "
-                        "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, realm_unavailable, client_locked. "
+                        "Executes Lua code in a realm under xpcall + debug.traceback, at full speed (the LuaJIT compiler is "
+                        "left on; no time limit unless `budget`). Returns all serialized return values (values, n), captured "
+                        "print/Msg/MsgN/MsgC (output), duration_ms, chunk_bytes, chunkname and the realm's generation (it "
+                        "changes on every map load: compare it with map_load's result to know which state ran the code). "
+                        "Values come back whole: nothing is cut unless you pass depth, limit or max_string, and then the "
+                        "result says truncated: <count>. A value too big to send (over a million values or 64 MiB of "
+                        "strings, e.g. `return _G`) fails with result_too_large. "
+                        "Non-JSON types: {__type: Vector|Angle|Color|Entity|function|cycle|...}. "
+                        "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, main_thread_timeout, "
+                        "result_too_large, realm_unavailable, client_locked. "
                         "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
                         "Some convars cannot be set from Lua (RunConsoleCommand is refused for protected ones, e.g. "
                         "volume_sfx, silently): use convar_set or console_exec, then read the value back.",
@@ -517,9 +542,9 @@ void register_core() {
                                          "addons/*/lua/ (include() style)."}};
     mcp::register_tool({"lua_exec_file", "Execute a Lua file",
                         "Like lua_exec but reads the code from a file on the game's disk. The chunk is named after the real path "
-                        "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks. Prefer it to pasting a file "
-                        "into lua_exec's code: it saves the tokens of the file on every call. With `fields`, only the "
-                        "test's verdict comes back.",
+                        "(e.g. @lua/mcpagent_tmp/test.lua) for actionable errors and tracebacks, or `chunkname` (e.g. the "
+                        "addon-relative name of a file from your git worktree). Prefer it to pasting a file into lua_exec's "
+                        "code: it saves the tokens of the file on every call. With `fields`, only the test's verdict comes back.",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
 
     json reload_props = exec_props;

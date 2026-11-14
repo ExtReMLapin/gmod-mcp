@@ -178,7 +178,8 @@ return { props = props }
 ```
 
 Also available: `job:sleep(seconds)`, `job:frames(n)`, `job:wait(fn, timeout)`, `job:report(value)` for intermediate
-results, and `job.args` for the call's arguments. The agent learns this protocol from the tool description and the
+results, and `args` (also `job.args`) for the call's arguments. `async: true` returns at once with a job id
+(`lua_job_status`, `lua_job_cancel`), and `fresh_env: true` keeps the script's globals out of the game's `_G`. The agent learns this protocol from the tool description and the
 `write-lua-job` prompt.
 
 ## How it works

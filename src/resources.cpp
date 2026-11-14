@@ -27,8 +27,8 @@ std::string instructions() {
     s += "Lua files: working directory = " + c.tmp_dir +
          " (lua/mcpagent_tmp/). If you share this disk, write there directly then call lua_exec_file(realm, 'name.lua'); otherwise "
          "use lua_file_write. Errors then point to the real file.\n";
-    s += "Long Lua work (more than a few frames: scans, batches of traces, timed tests): do NOT loop inside lua_exec (it freezes the "
-         "game and hits the 5 s budget). Use lua_job: the script runs as a coroutine resumed every frame and MUST cooperate with the "
+    s += "Long Lua work (more than a few frames: scans, batches of traces, timed tests): do NOT loop inside lua_exec (the game is "
+         "frozen until it returns, and a call longer than timeout_s fails with main_thread_timeout). Use lua_job: the script runs as a coroutine resumed every frame and MUST cooperate with the "
          "`job` object: job:step() in loops, job:progress(done, total, msg) to report progress (shown to the user), "
          "job:report(value) for intermediate results, job:sleep(s)/job:frames(n)/job:wait(fn), `return` for the result. "
          "Details: lua_job description, prompt write-lua-job.\n";
@@ -71,7 +71,11 @@ Vector/Angle/Color/Entity/functions/cyclic tables have a `{"__type": ...}` form.
 `print`/`Msg`/`MsgN`/`MsgC` emitted during execution are captured in `output`.
 
 ## Long-running Lua: lua_job
-`lua_exec` runs in one go on the main thread (5 s budget, the game is frozen meanwhile). For anything that spans frames,
+`lua_exec` runs in one go on the main thread (the game is frozen meanwhile; no time limit unless `budget`, so an infinite
+loop freezes the game: the call fails with `main_thread_timeout` after `timeout_s`, `status` shows `main_thread_stalled`,
+`game_terminate` ends it). The LuaJIT compiler is never turned off: code and the functions it defines run at real speed.
+Returned values come back whole unless you pass `depth`/`limit`/`max_string` (the result then says `truncated`); a value
+too big to send (`return _G`) fails with `result_too_large`. For anything that spans frames,
 use `lua_job`: the script runs as a coroutine resumed once per frame and talks to the agent through `job`:
 
 | call | effect |
@@ -81,11 +85,18 @@ use `lua_job`: the script runs as a coroutine resumed once per frame and talks t
 | `job:yield()`, `job:frames(n)`, `job:sleep(s)` | resume on a later frame |
 | `job:wait(fn, timeout)` | resume once `fn()` is true (checked every frame); false on timeout |
 | `job:report(value [, channel])` | intermediate result: returned at the end, live through `reports_read` (`job:<id>`) |
-| `job.args`, `job:elapsed()` | call arguments, seconds since start |
+| `args` (global) = `job.args`, `job:elapsed()` | call arguments, seconds since start |
 | `return ...` | final result |
 
-A resume that runs more than `resume_limit_s` (default 2 s) without yielding is aborted. Cancelling the request stops the
-job at the next frame; a map change destroys it (`realm_reset`). With `timeout_s` >= 15 the call runs as an MCP task.
+A resume that never yields freezes the game (optional `resume_limit_s`: best effort, stops loops written in the script
+itself). Cancelling the request stops the job at the next frame; a map change destroys it (`realm_reset`). With
+`timeout_s` >= 15 the call runs as an MCP task.
+
+Globals the script assigns land in the realm's `_G` and the next job sees them: pass `fresh_env: true` to keep them in the
+job's own table. `async: true` returns the job id at once: `lua_job_status {id, wait_s}` polls it and returns the result
+once finished, `lua_job_cancel {id}` stops it; a job started while another runs in the same realm gets `concurrent_jobs`.
+Pitfall: `EyePos()` / `EyeAngles()` are only meaningful while rendering; in a job they return (0,0,0): use
+`LocalPlayer():EyePos()`.
 
 ```lua
 local found = {}

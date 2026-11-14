@@ -22,11 +22,17 @@ static const char *kJobProtocol =
     "- job:yield() / job:frames(n) / job:sleep(seconds) / job:wait(fn, timeout): resume on a later frame.\n"
     "- job:report(value [, channel]): intermediate result, returned at the end and readable live with reports_read "
     "(channel \"job:<id>\").\n"
-    "- job.args: the `args` object of this call. job:elapsed(): seconds since start.\n"
+    "- args (a global, same table as job.args): the `args` object of this call. job:elapsed(): seconds since start.\n"
+    "Globals the script assigns go to the realm's _G (they outlive the job and the next job sees them) unless "
+    "fresh_env: true.\n"
+    "async: true starts the job and returns its id at once: poll it with lua_job_status, stop it with lua_job_cancel "
+    "(two jobs can then run side by side, e.g. one per realm). A job started while another runs in the same realm is "
+    "reported in concurrent_jobs: their timings and state mix.\n"
+    "Returned values come back whole (no cut unless depth/limit/max_string; then the result says truncated).\n"
     "- `return value, ...` ends the job: the values are the tool result.\n"
-    "A single resume that runs longer than resume_limit_s (default 2 s) without yielding is aborted with an error. "
-    "That limit needs a debug hook and the LuaJIT compiler turned off for the script and the functions it defines: pass "
-    "jit: true for performance measurements (no limit then; a resume that never yields freezes the game). "
+    "The LuaJIT compiler stays on (timings are real). A resume that never yields freezes the game: the call then fails "
+    "after timeout_s and status shows main_thread_stalled. resume_limit_s (optional, best effort) aborts a resume that "
+    "runs that long without yielding, for loops written in the script itself. "
     "Cancelling the request (or the task) stops the coroutine at the next frame. The job dies with its realm (map change). "
     "Example:\n"
     "local hits = 0\n"
@@ -39,6 +45,37 @@ static const char *kJobProtocol =
     "return { hits = hits }";
 
 const char *job_protocol() { return kJobProtocol; }
+
+// Final result of a finished job (from job_poll), shared by lua_job and lua_job_status.
+static json job_result(const json &s, const json &args) {
+    std::string state = s.value("state", "running");
+    std::string id = s.value("id", "");
+    if (state == "done") {
+        json out{{"job_id", id}, {"values", s.value("values", json::array())}, {"n", s.value("n", 0)},
+                 {"reports", s.value("reports", json::array())}, {"output", s.value("output", "")},
+                 {"frames", s["frames"]}, {"resumes", s["resumes"]}, {"cpu_ms", s["cpu_ms"]}, {"elapsed_s", s["elapsed_s"]},
+                 {"generation", s.value("generation", json())}};
+        if (s.value("reports_dropped", 0) > 0) out["reports_dropped"] = s["reports_dropped"];
+        if (s.contains("truncated")) {
+            out["truncated"] = s["truncated"];
+            out["truncated_note"] = s.value("truncated_note", "");
+        }
+        return project_values(ok(out), args);
+    }
+    if (state == "failed") {
+        json e = s.value("error", json::object());
+        return agent::err(e.value("code", "lua_error"), e.value("message", "job failed"),
+                          json{{"job_id", id}, {"traceback", s.value("traceback", "")}, {"reports", s.value("reports", json::array())},
+                               {"output", s.value("output", "")}, {"frames", s["frames"]}, {"elapsed_s", s["elapsed_s"]}});
+    }
+    return agent::err("cancelled", "lua_job cancelled", json{{"job_id", id}});
+}
+
+// "server-12" -> server realm.
+static int realm_of_job(const std::string &id) {
+    size_t dash = id.find('-');
+    return dash == std::string::npos ? -1 : realms::parse(id.substr(0, dash));
+}
 
 static json lua_job_tool(const json &args) {
     int realm = realm_of(args, "realm", realms::SERVER);
@@ -54,13 +91,25 @@ static json lua_job_tool(const json &args) {
     } else {
         return agent::err("invalid_params", "pass `code` or `path`");
     }
-    json p{{"code", code}, {"chunkname", chunk}, {"args", args.value("args", json::object())},
-           {"slice_ms", args.value("slice_ms", 8.0)}, {"resume_limit_s", args.value("resume_limit_s", 2.0)}, {"jit", args.value("jit", false)}};
+    bool async = args.value("async", false);
+    json p{{"code", code}, {"chunkname", args.value("chunkname", chunk)}, {"args", args.value("args", json::object())},
+           {"slice_ms", args.value("slice_ms", 8.0)}, {"fresh_env", args.value("fresh_env", false)}, {"async", async}};
+    for (const char *k : {"resume_limit_s", "jit", "depth", "limit", "max_string"})
+        if (args.contains(k)) p[k] = args[k];
     json start = agent::rt(realm, "job_start", p);
     if (!start.value("ok", false)) return start;
     std::string id = start["result"]["id"];
+    json concurrent = start["result"].value("other_jobs", json());
     uint64_t gen = agent::generation(realm);
     agent::jobs_wake(realm);
+    if (async) {
+        json out{{"job_id", id}, {"state", "running"}, {"realm", realms::name(realm)}, {"generation", start["result"].value("generation", json())},
+                 {"next", "lua_job_status {id: \"" + id + "\"} polls it (wait_s to wait for the end) and returns the result once "
+                          "finished; lua_job_cancel stops it. An uncollected result is dropped after 1 h; the job dies with its "
+                          "realm (map change)."}};
+        if (!concurrent.is_null()) out["concurrent_jobs"] = concurrent;
+        return ok(out);
+    }
     double timeout = args.value("timeout_s", 300.0);
     auto t0 = Clock::now();
     int64_t last_seq = 0;
@@ -90,26 +139,65 @@ static json lua_job_tool(const json &args) {
             }
         }
         std::string state = s.value("state", "running");
-        if (state == "done") {
-            json out{{"job_id", id}, {"values", s.value("values", json::array())}, {"n", s.value("n", 0)},
-                     {"reports", s.value("reports", json::array())}, {"output", s.value("output", "")},
-                     {"frames", s["frames"]}, {"resumes", s["resumes"]}, {"cpu_ms", s["cpu_ms"]}, {"elapsed_s", s["elapsed_s"]}};
-            if (s.value("reports_dropped", 0) > 0) out["reports_dropped"] = s["reports_dropped"];
-            return project_values(ok(out), args);
+        if (state != "running") {
+            json r = job_result(s, args);
+            if (!concurrent.is_null() && r.value("ok", false)) r["result"]["concurrent_jobs"] = concurrent;
+            return r;
         }
-        if (state == "failed") {
-            json e = s.value("error", json::object());
-            return agent::err(e.value("code", "lua_error"), e.value("message", "job failed"),
-                              json{{"job_id", id}, {"traceback", s.value("traceback", "")}, {"reports", s.value("reports", json::array())},
-                                   {"output", s.value("output", "")}, {"frames", s["frames"]}, {"elapsed_s", s["elapsed_s"]}});
-        }
-        if (state == "cancelled") return agent::err("cancelled", "lua_job cancelled", json{{"job_id", id}});
         if (std::chrono::duration<double>(Clock::now() - t0).count() > timeout) {
             agent::rt(realm, "job_cancel", json{{"id", id}}, 5.0);
             return agent::err("timeout", "lua_job still running after " + std::to_string((int)timeout) + " s: cancelled",
                               json{{"job_id", id}, {"progress", last_progress}, {"reports_count", s.value("reports_count", 0)}});
         }
     }
+}
+
+// lua_job_status: one job's state (its result once finished, which also forgets it), or every job of the realms.
+static json lua_job_status_tool(const json &args) {
+    if (!args.contains("id")) {
+        json all = json::array();
+        for (int r : {realms::MENU, realms::CLIENT, realms::SERVER}) {
+            if (!agent::realm_present(r)) continue;
+            json l = agent::rt(r, "job_list", json::object(), 5.0);
+            if (!l.value("ok", false)) continue;
+            for (auto j : l["result"].value("jobs", json::array())) {
+                j["realm"] = realms::name(r);
+                all.push_back(j);
+            }
+        }
+        return ok(json{{"jobs", all}});
+    }
+    std::string id = args["id"];
+    int realm = realm_of_job(id);
+    if (realm < 0) return agent::err("invalid_params", "id: expected a job id like 'server-3'");
+    double wait_s = args.value("wait_s", 0.0);
+    auto t0 = Clock::now();
+    for (;;) {
+        json st = agent::rt(realm, "job_poll", json{{"id", id}, {"peek", true}});
+        if (!st.value("ok", false)) return st;
+        const json &s = st["result"];
+        if (s.value("state", "running") != "running") {
+            json fin = agent::rt(realm, "job_poll", json{{"id", id}});
+            if (!fin.value("ok", false)) return fin;
+            return job_result(fin["result"], args);
+        }
+        if (std::chrono::duration<double>(Clock::now() - t0).count() >= wait_s || reqctx::cancelled()) {
+            return ok(json{{"job_id", id}, {"state", "running"}, {"frames", s["frames"]}, {"elapsed_s", s["elapsed_s"]},
+                           {"cpu_ms", s.value("cpu_ms", json())}, {"progress", s.value("progress", json())},
+                           {"reports_count", s.value("reports_count", 0)}, {"chunkname", s.value("chunkname", json())}});
+        }
+        plat::sleep_ms(100);
+    }
+}
+
+static json lua_job_cancel_tool(const json &args) {
+    std::string id = args["id"];
+    int realm = realm_of_job(id);
+    if (realm < 0) return agent::err("invalid_params", "id: expected a job id like 'server-3'");
+    json r = agent::rt(realm, "job_cancel", json{{"id", id}}, 5.0);
+    if (!r.value("ok", false)) return r;
+    return ok(json{{"job_id", id}, {"cancelled", r["result"].value("cancelled", false)},
+                   {"note", "the job stops at its next frame; its final state stays readable with lua_job_status"}});
 }
 
 void register_jobs() {
@@ -128,13 +216,40 @@ void register_jobs() {
                 {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600},
                                {"description", "Cancel the job after this many seconds (default 300). 15 s or more: runs as an MCP task when the client supports it."}}},
                 {"slice_ms", {{"type", "number"}, {"minimum", 0.5}, {"maximum", 100}, {"description", "Time per frame before job:step() yields (default 8)."}}},
-                {"resume_limit_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 30},
-                                    {"description", "Abort if a single resume runs this long without yielding (default 2)."}}},
+                {"resume_limit_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600},
+                                    {"description", "Optional, best effort: abort a resume that runs this long without yielding "
+                                                    "(loops written in the script itself). None by default."}}},
                 {"jit", {{"type", "boolean"},
-                         {"description", "Keep the LuaJIT compiler on, without resume_limit_s (default false). For timings."}}}}},
+                         {"description", "Obsolete: the compiler is never turned off any more. jit: true now only ignores resume_limit_s."}}},
+                {"async", {{"type", "boolean"},
+                           {"description", "true: start the job and return its id at once (poll with lua_job_status). Default false."}}},
+                {"fresh_env", {{"type", "boolean"},
+                               {"description", "Keep the globals the script assigns in its own table instead of _G (no leak "
+                                               "into later jobs; reads still see _G). Default false."}}},
+                {"chunkname", {{"type", "string"}, {"maxLength", 260},
+                               {"description", "Chunk name shown by debug.getinfo and tracebacks (default: the file's path or "
+                                               "'=mcpagent:job:<realm>')."}}},
+                {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 200}, {"description", "Cut returned tables deeper than this (default: no cut)."}}},
+                {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000000}, {"description", "Cut returned tables longer than this (default: no cut)."}}},
+                {"max_string", {{"type", "integer"}, {"minimum", 16}, {"maximum", 1073741824},
+                                {"description", "Cut returned strings longer than this (default: no cut)."}}}}},
               {"oneOf", json::array({json{{"required", {"code"}}}, json{{"required", {"path"}}}})}},
          json{{"destructiveHint", true}}, lua_job_tool});
     mcp::set_task_support("lua_job", "optional");
+    mcp::register_tool(
+        {"lua_job_status", "State of a Lua job",
+         "With id: the state of a job started by lua_job (frames, elapsed_s, cpu_ms, last progress, reports_count); once it "
+         "has finished, its full result exactly like lua_job's, and the job is then forgotten. wait_s waits up to that long "
+         "for the end. Without id: every job of every realm, running or finished but not collected yet.",
+         json{{"properties",
+               {{"id", {{"type", "string"}, {"description", "Job id returned by lua_job (e.g. 'server-3')."}}},
+                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
+                {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
+                            {"description", "Keep only these keys of each returned table."}}}}}},
+         json{{"readOnlyHint", false}}, lua_job_status_tool});
+    mcp::register_tool({"lua_job_cancel", "Cancel a Lua job", "Stops a running job at its next frame.",
+                        json{{"properties", {{"id", {{"type", "string"}, {"description", "Job id (e.g. 'server-3')."}}}}}, {"required", {"id"}}},
+                        json{{"destructiveHint", true}}, lua_job_cancel_tool});
 }
 
 }  // namespace tools

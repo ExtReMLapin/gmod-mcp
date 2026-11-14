@@ -21,12 +21,31 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
 - `lua_check`, `lua_exec_file` and `lua_job` find relative paths in the game folder too (`addons/x/lua`), and a miss
   lists every place tried.
 - The text of `mcpagent_setup` gives the right plugin install commands.
+- **Results were cut without warning.** `lua_exec` and `lua_job` replaced any string over 64 KiB, and tables deeper
+  than 4 levels or longer than 200 entries, by a stub; a script that read the stub as data saw an empty list. Values
+  now come back whole. `depth`, `limit` and `max_string` cut only when asked, and the result then says
+  `truncated: <count>`. A value too big to send (`return _G`) fails with `result_too_large` instead of freezing the game.
+- **Code loaded through `lua_exec` ran several times slower than real.** The LuaJIT compiler was turned off for the
+  chunk and for every function it defined (hooks, timers), for their whole life, so the time budget could interrupt
+  loops; performance measured through such functions was wrong. gmod-mcp no longer turns the compiler off, and there
+  is no time limit by default: an infinite loop freezes the game, the call fails with `main_thread_timeout` after
+  `timeout_s` (default 60 s), `status` shows `main_thread_stalled` and `game_terminate` ends it. `budget` (and
+  `lua_job`'s `resume_limit_s`) are now optional and best effort. `jit` is obsolete.
+- **`lua_job` scripts that read `args` got nil** (the arguments are in `job.args`): `args` is now a global of the
+  script too.
 
 ### New
 
 - `lua_function_source`: tells whether a function running in the game is the code of its file on disk (bytecode
   compared with the file compiled again), and where it now starts in the file. For test results after an edit.
 - `fields` on `lua_exec`, `lua_exec_file` and `lua_job`: only these keys of returned tables come back.
+- `chunkname` on `lua_exec`, `lua_exec_file` and `lua_job`: the source name that `debug.getinfo` and tracebacks show,
+  e.g. an addon-relative name for code that identifies its caller by file.
+- `lua_job {async: true}` returns a job id at once; `lua_job_status` polls it (or lists every job) and returns the
+  result once finished; `lua_job_cancel` stops it. A job started while another runs in the same realm reports it
+  (`concurrent_jobs`).
+- `lua_job {fresh_env: true}`: the script's globals stay in its own table instead of leaking into the next job.
+- `lua_exec` results give `chunk_bytes`, `chunkname` and the realm's `generation` (it changes on every map load).
 - `instances_list` gives each instance's version, uptime, fps, a stalled flag and its Lua error count.
 - `instances_launch` documents what its presets change (the 20 fps cap hides per-frame cost; `-nosound` changes
   `SoundDuration` of compressed WAVs) and that clients share `data/` and cookies with the user's game.
@@ -35,6 +54,9 @@ From the field feedback of agents that ran up to 17 test clients in parallel.
 
 - Native unit tests without a game (`gmod-mcp-unittests`, `gmod-mcp-coretests`), and a stand-in game for the bridge
   tests, all in CI on Windows and Linux.
+- Lua runtime tests without a game (`tests/lua/runtime_test.lua`, plain LuaJIT 2.1.0-beta3 like the game's, in CI on
+  Linux): whole values, explicit cuts flagged, size guard, chunk names, the compiler left on for defined functions,
+  explicit budgets, job arguments, fresh environments, concurrent and async jobs.
 
 ## 0.3.1
 

@@ -9,10 +9,12 @@ function H.lua_exec(args)
 	local chunk = args.chunkname or ("=mcpagent:" .. A.realm)
 	local fn, cerr = A.compile(code, chunk)
 	if not fn then A.fail("lua_syntax_error", tostring(cerr), { chunkname = chunk, line = (A.compile_error_line(cerr)) }) end
-	local opts = { depth = args.depth or 4, limit = args.limit or 200 }
+	local opts = { depth = args.depth, limit = args.limit, maxstr = args.max_string }
+	-- No budget unless asked (jit: true, the old way to turn it off, wins).
+	local budget = args.jit ~= true and tonumber(args.budget) or nil
 	A.capture_begin()
 	local t0 = SysTime()
-	local ok, res, err, tb, exceeded = A.run_budget(fn, args.jit ~= true and (args.budget or 5))
+	local ok, res, err, tb, exceeded = A.run_budget(fn, budget)
 	local dt = (SysTime() - t0) * 1000
 	local output = A.capture_end()
 	if not ok then
@@ -20,9 +22,8 @@ function H.lua_exec(args)
 		A.fail(exceeded and "budget_exceeded" or "lua_error", tostring(err),
 			{ traceback = tb, output = output, duration_ms = dt })
 	end
-	local values = J.array({})
-	for i = 1, res.n do values[i] = A.serialize(res[i], opts) end
-	return { values = values, n = res.n, output = output, duration_ms = dt }
+	return A.serialize_values(res, opts, { output = output, duration_ms = dt, chunk_bytes = #code, chunkname = chunk,
+		budget_s = budget, generation = A.generation })
 end
 
 function H.lua_inspect(args)

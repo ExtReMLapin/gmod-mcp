@@ -72,10 +72,18 @@ function A.serialize(v, opts, depth, seen)
 	opts = opts or {}
 	depth = depth or 0
 	seen = seen or {}
-	local maxdepth = opts.depth or 4
-	local limit = opts.limit or 200
-	local maxstr = opts.maxstr or 65536
+	-- No cut by default: depth, limit and maxstr apply only when the caller asks (every cut is counted in opts.cut and
+	-- the result says so at the top level). The only guard is the total size (opts.max_nodes values, opts.max_bytes of
+	-- strings): past it, the call fails with result_too_large instead of freezing the game on e.g. `return _G`.
+	local maxdepth = opts.depth or 200
+	local limit = opts.limit or math.huge
+	local maxstr = opts.maxstr or math.huge
 	local tv = type(v)
+	opts.nodes = (opts.nodes or 0) + 1
+	if opts.nodes > (opts.max_nodes or 1000000) then
+		A.fail("result_too_large", "the result has more than " .. (opts.max_nodes or 1000000) .. " values: return only what you " ..
+			"need (`fields`, a summary, a count), pass depth/limit/max_string, or write it to a file (file.Write) and read that")
+	end
 	if v == nil then return J.null end
 	if tv == "boolean" then return v end
 	if tv == "number" then
@@ -85,7 +93,15 @@ function A.serialize(v, opts, depth, seen)
 		return v
 	end
 	if tv == "string" then
-		if #v > maxstr then return { __type = "string", truncated = true, length = #v, value = string.sub(v, 1, maxstr) } end
+		opts.bytes = (opts.bytes or 0) + math.min(#v, maxstr)
+		if opts.bytes > (opts.max_bytes or 67108864) then
+			A.fail("result_too_large", "the result holds more than " .. math.floor((opts.max_bytes or 67108864) / 1048576) ..
+				" MiB of strings: return only what you need (`fields`, a summary), pass max_string, or write it to a file")
+		end
+		if #v > maxstr then
+			opts.cut = (opts.cut or 0) + 1
+			return { __type = "string", truncated = true, length = #v, value = string.sub(v, 1, maxstr) }
+		end
 		return v
 	end
 	if tv == "Vector" then return { __type = "Vector", x = v.x, y = v.y, z = v.z } end
@@ -107,6 +123,7 @@ function A.serialize(v, opts, depth, seen)
 		end
 		if isarr then for i = 1, count do if rawget(v, i) == nil then isarr = false break end end end
 		if depth >= maxdepth then
+			opts.cut = (opts.cut or 0) + 1
 			return { __type = "table", truncated = true, count = count, metatable = metaname }
 		end
 		seen[v] = true
@@ -114,13 +131,17 @@ function A.serialize(v, opts, depth, seen)
 		if isarr and count > 0 then
 			out = J.array({})
 			for i = 1, math.min(count, limit) do out[i] = A.serialize(rawget(v, i), opts, depth + 1, seen) end
-			if count > limit then out[#out + 1] = { __type = "truncated", remaining = count - limit } end
+			if count > limit then
+				opts.cut = (opts.cut or 0) + 1
+				out[#out + 1] = { __type = "truncated", remaining = count - limit }
+			end
 		else
 			out = J.object({})
 			local n = 0
 			for k, val in pairs(v) do
 				n = n + 1
 				if n > limit then
+					opts.cut = (opts.cut or 0) + 1
 					out.__truncated = count - limit
 					break
 				end
@@ -139,6 +160,20 @@ function A.serialize(v, opts, depth, seen)
 	if tv == "IMaterial" then pcall(function() o.name = v:GetName() end) end
 	if tv == "PhysObj" then pcall(function() o.valid = v:IsValid() end) end
 	return o
+end
+
+-- Serializes returned values into out.values / out.n; out.truncated = number of cut values (strings over max_string,
+-- tables deeper than depth or longer than limit), with a note telling how to get them whole.
+function A.serialize_values(res, opts, out)
+	local values = J.array({})
+	for i = 1, res.n do values[i] = A.serialize(res[i], opts) end
+	out.values, out.n = values, res.n
+	if (opts.cut or 0) > 0 then
+		out.truncated = opts.cut
+		out.truncated_note = "some values were cut by the depth / limit / max_string you passed: marked __type = \"truncated\" " ..
+			"or truncated = true. Never read a cut value as data; call again without these limits to get it whole."
+	end
+	return out
 end
 
 -- Output capture during an execution.
@@ -200,14 +235,15 @@ end
 -- Budgeted execution (debug.sethook): returns ok, results (packed table), err, traceback.
 local function pack(...) return { n = select("#", ...), ... } end
 
--- budget == false: no count hook and the LuaJIT compiler stays on (performance measurements). The time budget then
--- cannot interrupt the code. Otherwise the compiler is turned off for fn and every function it defines, because count
--- hooks never fire inside compiled code.
+-- budget nil/false: no time limit and nothing changed for the compiler (an infinite loop freezes the game; the caller
+-- notices through its own timeout and status). With a budget (seconds): best effort. A count hook stops the code past
+-- the deadline; count hooks never fire inside compiled code, so the compiler is turned off for fn's own body only (its
+-- top-level loops), never for the functions it defines (hooks, timers): they run compiled, like the addon's own code.
+-- A loop inside a compiled function it calls is not stopped.
 function A.run_budget(fn, budget, ...)
-	local hooked = budget ~= false
-	budget = budget or 5
-	if hooked and jit and jit.off then pcall(jit.off, fn, true) end
-	local deadline = SysTime() + budget
+	local hooked = budget ~= nil and budget ~= false
+	if hooked and jit and jit.off then pcall(jit.off, fn) end
+	local deadline = SysTime() + (hooked and budget or 0)
 	local oldf, oldmask, oldcount = debug.gethook()
 	local exceeded = false
 	if hooked then
@@ -282,7 +318,7 @@ end
 mcpagent = mcpagent or {}
 function mcpagent.report(channel, value)
 	if type(channel) ~= "string" or channel == "" then error("mcpagent.report: expected a channel (string)", 2) end
-	if native.report then native.report(channel, J.encode(A.serialize(value, { depth = 8, limit = 5000 })), A.realm) end
+	if native.report then native.report(channel, J.encode(A.serialize(value, {})), A.realm) end
 end
 function mcpagent.event(etype, data)
 	if type(etype) ~= "string" then error("mcpagent.event: expected a type (string)", 2) end

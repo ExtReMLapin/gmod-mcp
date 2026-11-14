@@ -44,6 +44,14 @@ jobs:
             "$t"
           done
 
+      - name: Lua runtime tests (no game, LuaJIT 2.1.0-beta3 like the game)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y luajit
+          luajit -v
+          luajit tests/lua/runtime_test.lua src/lua
+
       - name: Bridge tests (no game - closed, fake server, 2026-07-28 client)
         shell: bash
         run: |
