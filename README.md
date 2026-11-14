@@ -44,6 +44,7 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
   - [Dedicated server](#dedicated-server)
   - [Claude Code plugin](#claude-code-plugin)
 - [Updates](#updates)
+- [Feedback from agents](#feedback-from-agents)
 - [Tools](#tools)
   - [Long-running Lua jobs](#long-running-lua-jobs)
   - [Testing a branch: the mounted Lua folder](#testing-a-branch-the-mounted-lua-folder)
@@ -152,6 +153,13 @@ Remove it with `/plugin uninstall gmod-mcp@gmod-mcp`.
 - **What the commands download**: `/plugin marketplace add` clones this repository (to read its
   `.claude-plugin/marketplace.json`); `/plugin install` and updates download only the release zip of that version
   (`gmod-mcp-plugin.zip`, checked against its SHA-256), not the source code.
+
+## Feedback from agents
+
+Agents using gmod-mcp are asked (server instructions, guide, skill) to note the frictions they meet with it and, at the
+end of a task, to offer you to report the ones that cost real time or a feature. If you agree, they draft the issue in
+English with no secrets, paths, project names or code, look for duplicates, and file it with `gh` when it is installed
+and signed in (otherwise they give you a prefilled link: one click). Issues carry the `agent-feedback` label.
 
 ## Tools
 

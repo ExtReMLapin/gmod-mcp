@@ -45,7 +45,13 @@ std::string instructions() {
     s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator.\n";
     s += "Testing a branch of an addon: lua_mount {path: <your worktree>} (or instances_launch {lua_mount}) makes ONE game load "
          "Lua from that folder first; it takes effect at the next map_load, and the engine then names those files "
-         "\"@lua/...\". Details: guide section \"Mounted Lua folder\".";
+         "\"@lua/...\". Details: guide section \"Mounted Lua folder\".\n";
+    s += "Feedback: while you work, note the frictions you meet with gmod-mcp itself (a wrong or unclear description, an error "
+         "without a reason, a missing tool, a workaround you had to write). At the end of your task, only if one cost real "
+         "time or a feature, or came back several times, offer the user in one line to report it to the maintainers: you do "
+         "everything (draft, duplicate search, filing), it costs them nothing. The issue is PUBLIC: no secrets, tokens, "
+         "personal paths, project or addon names, or project code; describe the context in general terms. Procedure: guide "
+         "section \"Reporting frictions\" (repository https://github.com/ExtReMLapin/gmod-mcp).";
     return s;
 }
 
@@ -185,6 +191,47 @@ Typical flow:
 5. Done: `instances_close {owner}` (or `lua_mount {path: null}` then `map_load`).
 
 If `base_lua_mounted` is false, the game's own `lua/` is missing from the server paths: remove the folder at once.
+
+## Reporting frictions
+The maintainers want to hear about every friction agents meet with gmod-mcp, without making work for the user.
+
+1. While you work, note frictions with gmod-mcp itself: a description that was wrong or unclear, an error without a
+   reason, a missing tool or option, a workaround you had to write that gmod-mcp could provide. Sub-agents report theirs
+   to the agent that started them. Not frictions: your own mistakes, problems of the user's project or of the game.
+2. Report only what matters: it cost real time or a feature, or it came back several times. At most one offer per task.
+3. At the end of your task, in one line and in the user's language, offer to report it, and make clear it costs them
+   nothing: e.g. "I hit 2 frictions with gmod-mcp (X, Y). Want me to report them to its maintainers? I do everything:
+   draft, duplicate check and filing on GitHub."
+4. If they agree, write the issue in English, PUBLIC-SAFE: no secrets, tokens, personal paths, user or machine names,
+   project or addon names, or project code. Describe the context in general terms ("testing an audio addon on four test
+   clients"). Use the template below.
+5. Look for duplicates first, in https://github.com/ExtReMLapin/gmod-mcp/issues (open and closed): with `gh issue list
+   --repo ExtReMLapin/gmod-mcp --state all --search "<keywords>"` if gh is available, or by fetching the issues page.
+   If one exists, add a comment with your new facts instead of a new issue. No tool to search: skip this step.
+6. File it:
+   - if `gh auth status` succeeds: `gh issue create --repo ExtReMLapin/gmod-mcp --label agent-feedback --title "[agent] ..."
+     --body-file <file>` (nothing for the user to click), then give them the link;
+   - otherwise open (or give) this URL, filled in and URL-encoded, and tell them one click on "Submit new issue" is
+     left: `https://github.com/ExtReMLapin/gmod-mcp/issues/new?labels=agent-feedback&title=<title>&body=<body>`
+     (keep the body short enough for a URL, about 6000 characters).
+
+Template (body):
+
+```
+## Context
+<what you were doing, in general terms>
+## What happened
+<tool, arguments (shape only), what came back; how often; what it cost>
+## What was expected
+## Workaround used
+## Suggestion
+## Environment
+- gmod-mcp module: <agent_version from status>
+- gmod-mcp plugin / bridge: <if a version warning named another one>
+- Platform: <win64/linux64, client or dedicated server>
+- Coding agent: <Claude Code, Codex, OpenCode... and version if known>
+- Model: <the model you run on>
+```
 
 ## Prompts and resources
 Prompts (slash commands): `write-lua-job`, `debug-errors`, `run-tests`, `check-map`.

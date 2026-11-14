@@ -205,6 +205,22 @@ console). A GMod dedicated server ignores connections from `127.0.0.1`, so use t
 **Stopping it**: the `game_quit` tool with its `instance`, or `quit` in its console. Leave a server the user started
 themselves running unless they ask.
 
+## Reporting frictions to the maintainers
+
+The maintainers of gmod-mcp want every friction agents meet with it, without making work for the user. Follow the
+guide's "Reporting frictions" section (resource `mcpagent://guide`). In short:
+
+- Note frictions with gmod-mcp itself while you work (wrong or unclear description, error without a reason, missing
+  tool, workaround you had to write). When you brief sub-agents that use gmod-mcp, ask them to list theirs in their
+  report.
+- At the end of the task, only for frictions that cost real time or a feature, or came back several times: offer the
+  user, in one line, to report them, and say it costs them nothing (you draft, check duplicates and file).
+- The issue is public, in English: no secrets, tokens, personal paths, project or addon names, or project code.
+  Include the gmod-mcp version (`status`: `agent_version`), platform, coding agent (e.g. Claude Code) and model.
+- Search duplicates in https://github.com/ExtReMLapin/gmod-mcp/issues first when you can. File with `gh issue create
+  --repo ExtReMLapin/gmod-mcp --label agent-feedback` when `gh auth status` succeeds; otherwise give the prefilled
+  `issues/new?labels=agent-feedback&title=...&body=...` URL, one click left for the user.
+
 ## When it still does not answer
 
 - `garrysmod/console.log` (written thanks to `-condebug`): the module's lines start with `[mcpagent]`.
