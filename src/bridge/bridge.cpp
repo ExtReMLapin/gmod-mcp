@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +42,7 @@
 #include "argcheck.h"
 #include "bridge_snapshot.h"
 #include "crashinfo.h"
+#include "fp7137.h"  // FP7137
 #include "mcp_protocol.h"
 #include "platform/platform.h"
 #include "lua_mount.h"
@@ -1023,10 +1025,12 @@ bool file_is(const std::string &p) {
     return "";
 }
 
+thread_local double g_fp7137_progress_offset = 0;  // FP7137: progress already reported while waiting for the lock
+
 [[maybe_unused]] void progress(const json &token, double done, double total, const std::string &message) {
     if (token.is_null()) return;
-    json p{{"progressToken", token}, {"progress", done}, {"message", message}};
-    if (total > 0) p["total"] = total;
+    json p{{"progressToken", token}, {"progress", done + g_fp7137_progress_offset}, {"message", message}};  // FP7137
+    if (total > 0) p["total"] = total + g_fp7137_progress_offset;  // FP7137
     out(json{{"jsonrpc", "2.0"}, {"method", "notifications/progress"}, {"params", p}});
 }
 
@@ -1124,6 +1128,11 @@ json launch_tool(const json &args, const json &token) {
     std::string exe = root + "\\gmod_win64.exe";
     for (auto &c : exe)
         if (c == '/') c = '\\';
+    // FP7137: wait while a map loads in any game (shared lock), then hold the launch slot while the processes are created.
+    fp7137::Gate fp_gate;  // FP7137
+    fp_gate.enter(fp7137::Kind::Launch, "launch", timeout, 60, nullptr, [&](double w, const std::string &why) { progress(token, w, 0, why); });  // FP7137
+    if (!fp_gate.ok()) return fp_gate.error_result();  // FP7137
+    if (fp_gate.waited_s() > 0) g_fp7137_progress_offset = fp_gate.waited_s() + 1;  // FP7137
     std::vector<Launched> started;
     for (int i = 0; i < count; ++i) {
         std::string cmd = "\"" + exe + "\" " + opts;
@@ -1136,6 +1145,7 @@ json launch_tool(const json &args, const json &token) {
             return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(GetLastError()) + ") for " + exe);
         }
         CloseHandle(pi.hThread);
+        fp_gate.note_started();  // FP7137
         Launched l;
         l.pid = pi.dwProcessId;
         l.h = pi.hProcess;
@@ -1145,6 +1155,7 @@ json launch_tool(const json &args, const json &token) {
         l.slot = std::make_shared<EndSlot>();
         started.push_back(l);
     }
+    fp_gate.release();  // FP7137: the settle delay counts from the last start, the slot is no longer needed
     {
         std::lock_guard<std::mutex> lk(g_launch_mu);
         for (auto &l : started) g_launched.push_back(l);
@@ -1197,14 +1208,18 @@ json launch_tool(const json &args, const json &token) {
     std::vector<json> map_res(started.size());
     if (!map.empty()) {
         progress(token, 0, count, "loading " + map);
-        std::vector<std::thread> th;
-        for (size_t i = 0; i < started.size(); ++i)
-            th.emplace_back([&, i] {
+        fp7137::for_each_limited(started.size(), [&](size_t i) {  // FP7137: at most 2 at a time (was one thread per client, all at once)
+                fp7137::Gate fp_map;  // FP7137: after the settle delay, never while another launch starts a game
+                fp_map.enter(fp7137::Kind::MapLoad, "map:" + map, std::max(30.0, timeout - elapsed()), timeout + 10, nullptr, nullptr);  // FP7137
+                if (!fp_map.ok()) {  // FP7137
+                    map_res[i] = fp_map.error_result()["structuredContent"];  // FP7137
+                    return;  // FP7137
+                }
                 json a{{"map", map}, {"instance", started[i].id}, {"timeout_s", std::max(30.0, timeout - elapsed())}};
                 if (args.contains("maxplayers")) a["maxplayers"] = args["maxplayers"];
                 map_res[i] = game_call("map_load", a, std::max(40.0, timeout - elapsed() + 10));
-            });
-        for (auto &t : th) t.join();
+                if (fp_map.waited_s() >= 0.05) map_res[i]["fp7137_waited"] = json{{"waited_s", std::round(fp_map.waited_s() * 10) / 10}, {"waited_reason", fp_map.reason()}};  // FP7137
+        });  // FP7137
         // A client that died during its load: say it crashed (the game's answer is only that nothing answers).
         for (size_t i = 0; i < started.size(); ++i)
             if (map_res[i].contains("error")) {
@@ -1240,6 +1255,7 @@ json launch_tool(const json &args, const json &token) {
             all_ok = all_ok && ok;
             e["map"] = ok ? json(map) : json(nullptr);
             if (!ok) e["map_error"] = map_res[i]["error"];
+            if (map_res[i].contains("fp7137_waited")) e.update(map_res[i]["fp7137_waited"]);  // FP7137
         }
         results.push_back(e);
     }
@@ -1257,7 +1273,9 @@ json launch_tool(const json &args, const json &token) {
         res["warning"] = w + ". Tests on these clients would run the installed addon's code (or no usable Lua): fix it with "
                              "lua_mount {path, instance} then map_load, or close them (instances_close).";
     }
-    return tool_text(res, !all_ok);
+    json fp_res = tool_text(res, !all_ok);  // FP7137
+    fp_gate.annotate(fp_res);  // FP7137
+    return fp_res;  // FP7137
 #endif
 }
 
@@ -1343,6 +1361,34 @@ void close_launched_on_exit() {
 }
 
 void probe_module_version();
+
+// FP7137: the wait before a map_load goes to the game (lock shared with launches), reported to the client as progress.
+void fp7137_gate_map_load(fp7137::Gate &gate, const json &msg, const std::atomic<bool> &cancelled) {
+    json a = params_of(msg).value("arguments", json::object());
+    double t = a.is_object() && a.contains("timeout_s") && a["timeout_s"].is_number() ? a["timeout_s"].get<double>() : 180.0;
+    std::string map = a.is_object() && a.contains("map") && a["map"].is_string() ? a["map"].get<std::string>().substr(0, 64) : "";
+    json token = params_of(msg).value("_meta", json::object()).value("progressToken", json());
+    gate.enter(fp7137::Kind::MapLoad, "map:" + map, t, t + 10, &cancelled, [&](double w, const std::string &why) { progress(token, w, 0, why); });
+}
+
+// FP7137: after the game answered: say how long the call waited, and keep the slot until a background task ends.
+void fp7137_finish_map_load(fp7137::Gate &gate, Relay &r, const json &msg) {
+    if (!r.reached || !r.response.is_object() || !r.response.contains("result") || !r.response["result"].is_object()) return;
+    json &res = r.response["result"];
+    gate.annotate(res);
+    json &task = res.contains("task") && res["task"].is_object() ? res["task"] : res;  // legacy: result.task, modern: the result
+    if (!task.contains("taskId") || !task["taskId"].is_string()) return;
+    std::string id = task["taskId"].get<std::string>();
+    if (gate.waited_s() >= 0.05) task["statusMessage"] = "waited " + std::to_string((int)gate.waited_s()) + " s before the load started: " + gate.reason();
+    json meta = params_of(msg).value("_meta", json());
+    gate.release_when_done([id, meta] {
+        json p{{"taskId", id}};
+        if (meta.is_object()) p["_meta"] = meta;
+        json m{{"jsonrpc", "2.0"}, {"id", "gmod-mcp-bridge-fp7137"}, {"method", "tasks/get"}, {"params", p}};
+        Relay t = relay(m, 20);
+        return t.reached && t.response.contains("result") && t.response["result"].value("status", "") == "working";
+    });
+}
 
 void handle_bridge_tool(const json &msg) {
     json p = params_of(msg);
@@ -1444,14 +1490,27 @@ void handle_request(const json &msg) {
         std::lock_guard<std::mutex> lk(g_cancel_mu);
         g_cancel[key] = cancel;
     }
+    fp7137::Gate fp_gate;  // FP7137
+    if (tool == "map_load") fp7137_gate_map_load(fp_gate, fwd, cancel->cancelled);  // FP7137
+    if (!fp_gate.ok()) {  // FP7137: cancelled while waiting, or the wait would outlast the call's timeout
+        { std::lock_guard<std::mutex> lk(g_cancel_mu); g_cancel.erase(key); }  // FP7137
+        if (!fp_gate.aborted()) out(local_result(msg, fp_gate.error_result()));  // FP7137
+        return;  // FP7137
+    }
     bool is_list = method == "tools/list" || method == "prompts/list" || method == "resources/list" || method == "resources/templates/list";
     // No idle limit on client requests: a tool call or tasks/result may stay silent for a long time. The client ends
     // them by cancelling (the bridge then closes the HTTP request).
-    Relay r = relay(fwd, kNoIdleLimit, cancel, [](const json &m) { out(m); });
+    const double fp_shift = fp_gate.waited_s() > 0 ? fp_gate.waited_s() + 1 : 0;  // FP7137: keep progress increasing
+    Relay r = relay(fwd, kNoIdleLimit, cancel, [fp_shift](const json &m) {  // FP7137 (capture)
+        json n = m;  // FP7137
+        if (fp_shift > 0 && n.value("method", "") == "notifications/progress" && n.contains("params") && n["params"].is_object() && n["params"].contains("progress") && n["params"]["progress"].is_number()) n["params"]["progress"] = n["params"]["progress"].get<double>() + fp_shift;  // FP7137
+        out(n);
+    });
     {
         std::lock_guard<std::mutex> lk(g_cancel_mu);
         g_cancel.erase(key);
     }
+    if (tool == "map_load") fp7137_finish_map_load(fp_gate, r, fwd);  // FP7137
     if (cancel->cancelled) return;  // cancelled by the client: no response (late answers are dropped too)
 
     if (method == "initialize" || method == "server/discover") {
@@ -1730,6 +1789,7 @@ int main(int argc, char **argv) {
     }
     if (g_port <= 0 || g_port > 65535) g_port = 27080;
     g_dir = plat::user_config_dir() + "/gmod-mcp";
+    fp7137::set_dir(g_dir);  // FP7137
     cache_load();
     learn_instance_tools(snapshot().value("tools_legacy", json::array()));
     if (g_watch_parent) watch_parent();

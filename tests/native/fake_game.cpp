@@ -42,6 +42,17 @@ int main(int argc, char **argv) {
             std::fclose(f);
         }
     }
+    // GMCP_FAKE_PID_DIR: like GMCP_FAKE_PID but one file per process (<dir>/<pid>.pid), for tests that start several.
+    const char *piddir = std::getenv("GMCP_FAKE_PID_DIR");
+    if (piddir && *piddir) {
+#ifdef _WIN32
+        std::string path = std::string(piddir) + "\\" + std::to_string((unsigned long)GetCurrentProcessId()) + ".pid";
+        if (FILE *f = std::fopen(path.c_str(), "wb")) {
+            std::fprintf(f, "%lu", (unsigned long)GetCurrentProcessId());
+            std::fclose(f);
+        }
+#endif
+    }
     (void)argc;
     (void)argv;
     const char *trigger = std::getenv("GMCP_FAKE_TRIGGER");
