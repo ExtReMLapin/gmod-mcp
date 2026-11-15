@@ -172,6 +172,19 @@ static int native_uptime(lua_State *L) {
     return 1;
 }
 
+// native.user_config() -> string | nil: the text of garrysmod/cfg/config.cfg as it is on disk right now. Only on a test
+// client (-mcp_test_client). The Lua file library cannot read it (file.Read "GAME" answers nil for cfg/config.cfg).
+static int native_user_config(lua_State *L) {
+    const auto &A = lua::api();
+    std::string text;
+    if (!plat::read_file(g_cfg.game_dir + "/cfg/config.cfg", text) || text.size() > (4u << 20)) {
+        A.pushnil(L);
+        return 1;
+    }
+    A.pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
 // native.compile(code, chunkname) -> function | nil, message
 static int native_compile(lua_State *L) {
     const auto &A = lua::api();
@@ -321,6 +334,12 @@ static bool inject(int realm, lua_State *L, std::string &e) {
     A.setfield(L, -2, "mode");
     A.pushstring(L, g_cfg.version.c_str());
     A.setfield(L, -2, "version");
+    if (g_cfg.test_client) {
+        A.pushboolean(L, 1);
+        A.setfield(L, -2, "test_client");
+        A.pushcclosure(L, native_user_config, 0);
+        A.setfield(L, -2, "user_config");
+    }
     A.pushnumber(L, (double)(g_gen[realm].load() + 1));
     A.setfield(L, -2, "generation");
     A.setfield(L, lua::GLOBALSINDEX, "__mcpagent_native");
@@ -484,6 +503,15 @@ static void check_focus() {
     }
 }
 
+static bool g_close_guard = false;
+
+// The window's close request, on the main thread: queues the convar restore. True when something was queued: the
+// request is then held back for a few frames so the engine runs the commands before it shuts down.
+static bool on_close_request() {
+    json r = call_runtime(realms::MENU, "restore_convars", json::object());
+    return r.value("ok", false) && r["result"].value("restored", 0) > 0;
+}
+
 void pump(lua_State *host) {
     // Re-entrancy guard: user code run by a job may call __mcpagent_pump() itself.
     static bool in_pump = false;
@@ -530,6 +558,10 @@ void pump(lua_State *host) {
         client_allowed();
         check_focus();
     }
+    // A test client (-mcp_test_client) gives the user's values back to the archived convars its command line changed
+    // before the window is closed (the engine saves them at shutdown; see restore_test_client_convars in 30_session.lua).
+    if (g_cfg.test_client && g_cfg.mode == Mode::Client && !g_close_guard && fc % 30 == 0)
+        g_close_guard = plat::install_close_guard(on_close_request, 400);
     jobs::pump(50.0);
 }
 

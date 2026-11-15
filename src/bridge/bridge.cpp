@@ -749,7 +749,7 @@ json bridge_tools() {
          "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
          "Returns their instance ids and pids: pass an id as `instance` on every call. "
          "They close when this session ends unless keep is true; close them earlier with instances_close (not game_quit: "
-         "a clean quit writes their window size over the user's own config). Sub-agents of one Claude Code session share "
+         "it keeps their exit short; a clean quit is safe too, see the convar note below). Sub-agents of one Claude Code session share "
          "this bridge: give each one's clients an `owner` label and close them with instances_close {owner}, never "
          "{all: true}, which would close the other sub-agents' clients too. The game is found through Steam; pass "
          "game_dir (the folder holding gmod_win64.exe) if it is elsewhere. Windows only for now.\n"
@@ -758,7 +758,12 @@ json bridge_tools() {
          "tests). sound: false (-nosound) changes what the engine reports about sounds: SoundDuration of compressed "
          "(ADPCM) WAV files differs (0.49 s instead of 1.24 s seen); keep sound on for sound tests.\n"
          "All clients share the game folder with the user's own game: same addons, cfg, data/ and cookies (sv.db/cl.db). "
-         "A test that writes cookies, data files or archived convars changes the user's game too: clean up after it.\n"
+         "A test that writes cookies, data files or archived convars changes the user's game too: clean up after it. "
+         "The frame cap and the focus options these clients start with (fps_max, fps_max_nofocus, snd_mute_losefocus) are "
+         "archived convars: the module gives each one the user's value from cfg/config.cfg (its default when the file has "
+         "no line) before the client quits cleanly (game_quit, console quit, the Quit button, the window's close button; "
+         "not a `quit` the user types by hand in that client's console), so none of them leaks into the user's config. "
+         "Closing with instances_close kills the process and writes nothing.\n"
          "Tell the user beforehand: the game saves the window size of these clients as its own video setting, so their next "
          "normal start of Garry's Mod opens at that size until they set their resolution back in the video options.\n"
          "Measured cost per client on gm_construct (16-core PC, the game and its 4 browser subprocesses): light about 19% "
@@ -1123,7 +1128,9 @@ json launch_tool(const json &args, const json &token) {
     }
     // Fixed option set (no free arguments). The light preset comes from measurements of what actually saves CPU and
     // memory per client.
-    std::string opts = "-multirun -mcp -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
+    // -mcp_test_client marks the game as one of ours: the module gives the archived convars below back to the user's
+    // values before a clean quit (they would otherwise be saved into the config.cfg the user's own game shares).
+    std::string opts = "-multirun -mcp -mcp_test_client -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
     if (preset == "normal") opts += " -w 640 -h 360 +fps_max 30 +fps_max_nofocus 30";
     else opts += " -w 640 -h 360 +fps_max 20 +fps_max_nofocus 20";  // narrower than 640 crashes the client
     // The engine writes the video mode (HKCU\Software\Valve\Source\garrysmod\Settings: ScreenWidth, ScreenHeight,

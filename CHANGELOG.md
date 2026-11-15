@@ -29,6 +29,21 @@
 - `mcpagent_setup` prints `claude mcp add --scope user ...`: without a scope the entry only exists in the folder where
   the command ran.
 
+- **Test clients no longer leave their frame cap in the user's config.** `instances_launch` starts its clients with
+  `+fps_max 20 +fps_max_nofocus 20 +snd_mute_losefocus 0`. These convars are FCVAR_ARCHIVE (checked on a test client:
+  `fps_max` default 150, `fps_max_nofocus` default 20, `snd_mute_losefocus` default 1; `engine_no_focus_sleep` is not
+  a registered convar in this build), so a clean quit wrote them into `cfg/config.cfg`, which the user's own game shares:
+  a user's `fps_max "240"` became `"20"` after one `game_quit`. The clients now carry `-mcp_test_client` (read by the
+  module as `native.test_client`), and before one quits cleanly the module sets each of those convars back to the value
+  `cfg/config.cfg` has at that moment (read from disk, the user's game may have written it since the launch), or to the
+  convar's default when the file has no line. Covered: `game_quit`, `quit`/`exit` sent with `console_exec` or
+  `engine_cmd`, the main menu's Quit button (`RunGameUICommand("quit")` is wrapped), and the window's close button
+  (X, Alt+F4): the module subclasses the test client's window, queues the restore, holds the close request back 0.4 s
+  and posts it again. Why not a hook at shutdown: the engine writes `config.cfg` before it closes the menu Lua state
+  (`gmod13_close` runs after the write) and the `ShutDown` hook never runs in the menu state (both checked live).
+  Not covered: a `quit` typed by hand in a test client's console, and a game started by hand. `instances_close` kills
+  the process and writes nothing. A client that an older version started and quit may have left `fps_max` 20 in the
+  user's config: set it again.
 - **Test clients no longer overwrite the user's video settings.** `instances_launch` started its clients with
   `-w 640 -h 360`, and the engine wrote that mode (ScreenWidth, ScreenHeight, ScreenMSAA, ...) into
   `HKCU\Software\Valve\Source\garrysmod\Settings` at startup and at exit: the user's own game then

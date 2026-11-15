@@ -783,6 +783,7 @@ def case_lua_mount():
     check("LUA_MOUNT the client got -mcp_lua_mount with the addon root, quoted (spaces kept)", ('-mcp_lua_mount "%s"' % wt) in line, line)
     check("LUA_MOUNT the timeout answer names the mounted folder", sc.get("lua_mount") == wt, sc)
     check("LAUNCH_VIDEO the client got -dxlevel 95 (the engine then neither reads nor writes the user's video settings)", " -dxlevel 95" in line and " -w 640 -h 360" in line, line)
+    check("TEST_CLIENT the client got -mcp_test_client (the module then restores the archived convars before a clean quit)", " -mcp_test_client " in line, line)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     time.sleep(1)
     check("LUA_MOUNT stand-in closed", not any(alive(p) for p in pids), pids)

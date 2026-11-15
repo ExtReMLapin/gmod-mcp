@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <thread>
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -265,6 +266,55 @@ bool send_focus_lost() {
     if (!w) return false;
     SendMessageA(w, WM_ACTIVATE, WA_INACTIVE, 0);
     return true;
+}
+
+// --- Close guard ---
+static WNDPROC g_orig_proc = nullptr;
+static bool (*g_guard_before)() = nullptr;
+static int g_guard_delay_ms = 0;
+static bool g_guard_installed = false;
+static bool g_guard_pending = false;    // a close request is held back (read and written on the window's thread)
+static volatile LONG g_guard_pass = 0;  // the next close request is our own re-post: let it through
+
+static LRESULT CALLBACK close_guard_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    bool close_request = msg == WM_CLOSE || (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE);
+    if (close_request) {
+        if (InterlockedExchange(&g_guard_pass, 0)) {
+            g_guard_pending = false;
+        } else if (g_guard_pending) {
+            return 0;  // already held back: a second click changes nothing
+        } else {
+            bool hold = false;
+            try {
+                hold = g_guard_before && g_guard_before();
+            } catch (...) {
+            }
+            if (hold) {
+                g_guard_pending = true;
+                int delay = g_guard_delay_ms;
+                // The very message again (the engine quits on SC_CLOSE, and ignores a bare WM_CLOSE: seen live).
+                std::thread([h, delay, msg, wp, lp] {
+                    Sleep(delay);
+                    InterlockedExchange(&g_guard_pass, 1);
+                    PostMessageW(h, msg, wp, lp);
+                }).detach();
+                return 0;
+            }
+        }
+    }
+    return CallWindowProcW(g_orig_proc, h, msg, wp, lp);
+}
+
+bool install_close_guard(bool (*before)(), int delay_ms) {
+    if (g_guard_installed) return true;
+    HWND w = nullptr;
+    EnumWindows(find_main_window, reinterpret_cast<LPARAM>(&w));
+    if (!w || !IsWindowUnicode(w)) return false;  // an ANSI window would need the A variants
+    g_guard_before = before;
+    g_guard_delay_ms = delay_ms;
+    g_orig_proc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(w, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(close_guard_proc)));
+    g_guard_installed = g_orig_proc != nullptr;
+    return g_guard_installed;
 }
 
 }  // namespace plat

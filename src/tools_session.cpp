@@ -255,8 +255,11 @@ void register_session() {
                         json{{"properties", {{"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 120}, {"description", "Default 30."}}}}}},
                         json{{"destructiveHint", true}, {"idempotentHint", true}}, disconnect_tool});
     mcp::register_tool({"game_quit", "Quit the game cleanly", "Asks the game to quit cleanly (console `quit`): it saves its config (cfg/config.cfg, video settings) and exits; "
-                        "the MCP server of this instance goes away with it. For test clients started by instances_launch, use "
-                        "instances_close instead (it also keeps the exit short). "
+                        "the MCP server of this instance goes away with it. For test clients started by instances_launch, prefer "
+                        "instances_close (it kills the process: nothing is saved, and the exit is short); game_quit is safe on them "
+                        "too: before quitting, the module gives the archived convars their command line changed (fps_max, "
+                        "fps_max_nofocus, snd_mute_losefocus) the user's values from cfg/config.cfg, or their defaults when the file "
+                        "has no line. "
                         "Result: {quitting: true}.",
                         json::object(), json{{"destructiveHint", true}}, quit_tool});
     mcp::register_tool({"game_terminate", "Kill the game immediately",

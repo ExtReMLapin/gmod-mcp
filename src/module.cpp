@@ -96,6 +96,7 @@ static bool start(lua_State *L) {
         return false;
     }
     auto &cfg = agent::config();
+    cfg.test_client = util::has_flag(args, "-mcp_test_client");
     bool menu = global_true(L, "MENU_DLL");
     bool server = global_true(L, "SERVER");
     g_bootstrap = false;
