@@ -1029,8 +1029,14 @@ json launch_tool(const json &args, const json &token) {
     // memory per client.
     std::string opts = "-multirun -mcp -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
     if (preset == "normal") opts += " -w 640 -h 360 +fps_max 30 +fps_max_nofocus 30";
-    // No graphics options: the video ones (-dxlevel, mat_*) are saved into the user's own settings, for little gain.
     else opts += " -w 640 -h 360 +fps_max 20 +fps_max_nofocus 20";  // narrower than 640 crashes the client
+    // The engine writes the video mode (HKCU\Software\Valve\Source\garrysmod\Settings: ScreenWidth, ScreenHeight,
+    // ScreenMSAA, ...) at startup and at exit, which would overwrite the user's own resolution with 640x360. Both
+    // writes are skipped when -dxlevel is on the command line (engine.dll, read-only disassembly 2026-11-15), and with
+    // it the stored settings are not read either. 95 is the level the engine itself keeps on current hardware
+    // (DXLevel_V1 = 0x5f), so rendering is unchanged. No graphics option other than that one is added (mat_* convars
+    // are archived into cfg/config.cfg, shared with the user's game, for little gain).
+    opts += " -dxlevel 95";
     if (!sound) opts += " -nosound";
     // The folder was checked: no quote or line break can end the argument.
     if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"";

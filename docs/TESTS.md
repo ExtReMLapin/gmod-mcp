@@ -276,9 +276,11 @@ browser subprocesses; private memory):
 
 Crashes: 320x240 and 480x270 with the default HUD crash while loading a map (integer division by zero in client.dll at
 client Lua startup; 5 dumps); the same sizes survived with the HUD off. Minimum width: 640.
-**Side effect**: any client started with `-w/-h` saves that size as the game's video setting (registry
-`HKCU\Software\Valve\Source\garrysmod\Settings`) as soon as it starts, even when closed by game_terminate. Documented in
-the tool description, the skill and the README; the bridge does not touch the user's settings.
+**Side effect (fixed 2026-11-15)**: a client started with `-w/-h` saves that size as the game's video setting (registry
+`HKCU\Software\Valve\Source\garrysmod\Settings`: ScreenWidth, ScreenHeight, ScreenMSAA, ...) at startup and at exit,
+even when closed by game_terminate. Disassembly of engine.dll (read-only) shows both writers are skipped when
+`-dxlevel` is on the command line, and the stored settings are then not read either; `instances_launch` now passes
+`-dxlevel 95` (the engine's own level on current hardware, `DXLevel_V1` = 0x5f). Test I-18 checks the option is passed.
 
 | ID | Check | Expected | Result |
 |---|---|---|---|
@@ -286,6 +288,7 @@ the tool description, the skill and the README; the bridge does not touch the us
 | I-12 | launch (live): 2 light clients with gm_construct, default instance, close all | ids/pids/ports, map on both, progress, default reached, 640x360, both closed, processes gone | ✅ 2026-11-11 (7/7) |
 | I-13 | orphans: a stand-in game in which gmod-mcp never loads (`gmod-mcp-fakegame`), 3 clients with an owner label, 10 s timeout | timeout lists the 3 `silent_pids`; close by pid closes that one only and refuses a foreign pid; an unknown owner closes nothing; close by owner closes the other two; no process left | ✅ 2026-11-13 (6/6, no game) |
 | I-17 | orphans, continued (no game): the timeout gives `answered: []`; `instances_list` without a game is not an error, has no instance, a "no game instance" note and the 3 silent clients with their owner; `{owner: "fork-b"}` lists none; after closing, none listed | ✅ 2026-11-14 (5 new checks, red before: 3 failures; full bridge suite 75/75) |
+| I-18 | launch (no game): the stand-in game's command line (light preset) | carries `-dxlevel 95` (so the engine writes no video settings); a real client must be checked once: registry key identical before and after a launch and an `instances_close` | no-game part: see CHANGELOG; live part ⏳ needs the game |
 | I-14 | Live: 4 clients launched at once (light), all with gmod-mcp | the 4 answer (before 0.3.2, a client could take another's load in progress for a crash and skip gmod-mcp) | ⏳ needs the game |
 | I-15 | Live: crash during the first load (kill a client while its marker exists), then 3 launches | exactly one launch skips gmod-mcp (`last_crash.txt` written), the next ones load it | ⏳ needs the game |
 | I-16 | Live: instances_list health fields on 2 clients | agent_version, uptime_s, fps, main_thread_stalled, lua_errors per instance | ⏳ needs the game |

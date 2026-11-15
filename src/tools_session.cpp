@@ -244,7 +244,7 @@ void register_session() {
                         json{{"destructiveHint", true}, {"idempotentHint", true}}, disconnect_tool});
     mcp::register_tool({"game_quit", "Quit the game cleanly", "Asks the game to quit cleanly (console `quit`): it saves its config (cfg/config.cfg, video settings) and exits; "
                         "the MCP server of this instance goes away with it. For test clients started by instances_launch, use "
-                        "instances_close instead (a clean quit writes their small window size into the user's video settings). "
+                        "instances_close instead (it also keeps the exit short). "
                         "Result: {quitting: true}.",
                         json::object(), json{{"destructiveHint", true}}, quit_tool});
     mcp::register_tool({"game_terminate", "Kill the game immediately",

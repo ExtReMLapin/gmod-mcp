@@ -191,6 +191,10 @@ Typical flow:
 4. Edit, then `lua_reload` or `map_load`, then test.
 5. Done: `instances_close {owner}` (or `lua_mount {path: null}` then `map_load`).
 
+Clients started by `instances_launch` carry `-dxlevel 95`: with it the engine neither reads nor writes the user's video
+settings (resolution, anti-aliasing), so test clients do not change the way the user's own game starts. A client you
+start by hand with `-w`/`-h` does: add `-dxlevel 95` to it.
+
 If `base_lua_mounted` is false, the game's own `lua/` is missing from the server paths: remove the folder at once.
 
 ## Reporting frictions
