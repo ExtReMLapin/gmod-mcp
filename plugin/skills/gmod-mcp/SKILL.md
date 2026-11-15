@@ -198,6 +198,12 @@ game also running, each has its own port and the one holding 27080 relays to the
 call `instances_list`, then pass `instance` (`srcds-<pid>`) to any tool. Calls without `instance` are refused with
 `ambiguous_instance` while several games run.
 
+**A game crashed.** A call to an instance whose process died answers `client_crashed` (`server_crashed` for srcds) with
+`details.dump` (the minidump file name under `crashes/` in the game folder, or null) and `details.exit_code`; `instances_list`
+shows it as `state: "crashed"` for an hour. Relaunch a client with `instances_launch` and rerun what it was doing; the dump
+is for a human, not for you. `instance_gone` means a normal exit (quit, `game_terminate`), `instance_unreachable` a game that
+runs but does not answer.
+
 **Joining it from the local game**: `connect <this machine's LAN address>:27015` (in `console_exec`, or the game
 console). A GMod dedicated server ignores connections from `127.0.0.1`, so use the LAN address (`ipconfig` /
 `ip addr`). The client realm stays available because the server runs on this machine.

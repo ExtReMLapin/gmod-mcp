@@ -42,7 +42,9 @@ std::string instructions() {
          "Details: lua_job description, prompt write-lua-job.\n";
     s += "Documentation: api_search (ground truth: what actually exists in each realm), wiki_search / wiki_page "
          "(https://wiki.facepunch.com/gmod/). Full guide: resource mcpagent://guide.\n";
-    s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator.\n";
+    s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator. "
+         "client_crashed / server_crashed = that game crashed (details.dump names the minidump, for a human): relaunch it with "
+         "instances_launch and rerun what it was doing; instance_gone = it ended normally.\n";
     s += "Testing a branch of an addon: lua_mount {path: <your worktree>} (or instances_launch {lua_mount}) makes ONE game load "
          "Lua from that folder first; it takes effect at the next map_load, and the engine then names those files "
          "\"@lua/...\". Details: guide section \"Mounted Lua folder\".\n";
@@ -241,6 +243,22 @@ Resources: `gmod://errors` and `gmod://console` (subscribable), templates `gmod:
 ## Structured errors
 Every tool returns `isError: true` and `{"error": {"code", "message", "details"}}`. Common codes:
 `realm_unavailable`, `client_locked`, `main_thread_timeout`, `invalid_params`, `lua_error`, `timeout`, `not_found`.
+Calls to another instance (`instance` argument) can also fail with: `unknown_instance`, `instance_unreachable` (its process
+runs but does not answer: frozen or busy; `status {instance}`, `game_terminate {instance}`), `instance_gone` (its process
+ended normally: quit, closed or killed on request) and `client_crashed` / `server_crashed` (see below).
+
+## A game crashed
+`client_crashed` (a client) or `server_crashed` (a dedicated server) means the instance's process ended without a clean
+shutdown. The answer's `details` hold `instance`, `pid`, `dump` (the minidump file name in `crashes/` of the game folder,
+or null when none was found), `exit_code` (when known) and `evidence`. What to do: relaunch a client with
+`instances_launch` (a server must be restarted by whoever runs it); what it held (map, Lua state, running tests) is lost,
+so run the test again. The dump is for a human with a debugger: do not try to read it. A crash is told from a clean quit
+by what the coordinator saw: a goodbye the game sends when it shuts down, a `game_quit`/`game_terminate` sent through it,
+a dump written just before the process ended, then its exit code (0 = quit, 0xC0000005 and other 0xC... = crash). Limits:
+a process killed from outside (Task Manager) with no dump looks like a crash with exit code 1 and `dump: null`; with
+several games crashing together the dump is matched by time only (`dump_matched_by_time_only`). `instances_list` shows
+a crashed instance for an hour as `state: "crashed"` with a `crash` object ({dump, exit_code, evidence}); a map_load in
+flight when the client died answers `client_crashed` too (through `instances_launch {map}`: in that client's `map_error`).
 
 ## Limits
 - No connection to remote servers; the client realm is refused outside singleplayer/listen/srcds loopback.

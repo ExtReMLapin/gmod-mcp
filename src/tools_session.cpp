@@ -225,7 +225,8 @@ void register_session() {
                         "drawings are gone, and the addons' files are loaded again from disk. Changing maxplayers on a running "
                         "game disconnects first (client mode only). Result: {map, gamemode, maxplayers, requested_map, duration_s, "
                         "server_generation, client_generation, warning?}. Errors: not_found (no maps/<map>.bsp), busy (another "
-                        "map_load/disconnect runs), timeout (with which realms are up), cancelled. IMPORTANT: when your client "
+                        "map_load/disconnect runs), timeout (with which realms are up), cancelled. If the game crashes during the load, "
+                        "the call through the coordinator answers client_crashed (dump name in details; relaunch with instances_launch). IMPORTANT: when your client "
                         "runs it as a background MCP task, wait for its result before calling a realm tool: a call made before it "
                         "ends reaches the OLD map's state. Every lua_exec/lua_job result carries the realm's `generation`: equal to "
                         "server_generation/client_generation = the new map's state. Example: {\"map\": \"gm_construct\"}.",

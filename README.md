@@ -320,6 +320,11 @@ flowchart LR
 - With **one** game running, nothing changes: no `instance` needed. With **several**, calls without `instance` are
   refused with `ambiguous_instance` (listing the ids) instead of guessing, and every answer says which game produced it
   (`answered_by`).
+- A game that **crashes** is told apart from one that quit: calls to it answer `client_crashed` (`server_crashed` for a
+  dedicated server) with the name of the crash dump in `crashes/` (when one was written) and the exit code, and
+  `instances_list` shows it as `crashed` for an hour. The coordinator decides from the game's own goodbye at shutdown, a
+  `game_quit`/`game_terminate` sent through it, a dump written just before the process ended, and its exit code. A process
+  killed from outside with no dump looks like a crash with exit code 1.
 - If the game holding the base port exits, the others keep running; within a few seconds one of them takes the base port
   over and the rest register with it.
 

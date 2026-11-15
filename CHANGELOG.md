@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **A game that crashed is no longer taken for one that quit** (point 3 of issue #2). A call to an instance whose process
+  ended without a clean shutdown answers `client_crashed` (`server_crashed` for a dedicated server) instead of a timeout,
+  `instance_unreachable` or `instance_gone`, with `details.dump` (the minidump file name in the game folder's `crashes/`,
+  null when none was written), `details.exit_code` and `details.evidence`. `instances_list` keeps a crashed instance for an
+  hour as `state: "crashed"` with a `crash` object (live ones have `state: "running"`), a `map_load` in flight when the
+  client died reports the crash, and `instances_launch` reports a client that crashed at startup or during its map load
+  (`map_error`). A harness can relaunch with `instances_launch`; the dump is for a human.
+  How it decides: a game that shuts down cleanly says goodbye to the coordinator, and `game_quit` / `game_terminate` sent
+  through it count as asked to end; otherwise a dump written in the 20 s before the process ended (matched by time, never
+  given to two instances) means crashed, then the exit code read through a handle the coordinator holds since the instance
+  registered (0 = quit, 0xC0000005 and other 0xC... = crash). Limit: a process killed from outside with no dump
+  (exit code 1) looks like a crash with `dump: null`; when several games crash together, dumps are matched by time only.
+  Dead instances are now noticed when their process ends, not 10 s later. Tool descriptions, the guide, the skill and the
+  README say what the codes mean.
+
 ## 0.3.5
 
 A crash fix, then the findings of an independent review of everything since 0.3.1, each with a test seen failing
