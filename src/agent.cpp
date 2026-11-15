@@ -215,8 +215,8 @@ static int native_setup_info(lua_State *L) {
     s += "gmod-mcp is listening on " + url + " (this instance: port " + std::to_string(c.port) + ").\n";
     s += "Claude Code - install the plugin (it stays connected while the game is closed), in Claude Code:\n\n";
     s += "  /plugin marketplace add ExtReMLapin/gmod-mcp\n  /plugin install gmod-mcp@gmod-mcp\n\n";
-    s += "  or, without the plugin, in a terminal (then restart Claude Code or use /mcp):\n\n";
-    s += "  claude mcp add --transport http gmod " + url + " --header \"Authorization: Bearer " + c.token + "\"\n\n";
+    s += "  or, without the plugin, in a terminal (--scope user: every folder, not just this one; then restart Claude Code or use /mcp):\n\n";
+    s += "  claude mcp add --scope user --transport http gmod " + url + " --header \"Authorization: Bearer " + c.token + "\"\n\n";
     s += "Other MCP clients (Streamable HTTP), e.g. .mcp.json:\n\n";
     s += "  {\"mcpServers\": {\"gmod\": {\"type\": \"http\", \"url\": \"" + url + "\", \"headers\": {\"Authorization\": \"Bearer " +
          c.token + "\"}}}}\n\n";

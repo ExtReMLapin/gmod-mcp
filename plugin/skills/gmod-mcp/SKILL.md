@@ -25,8 +25,10 @@ Once the server is connected, its own instructions (sent by the server) take ove
 ## 1. Find out where things stand
 
 1. **One `gmod` server only.** The plugin provides it. An older install may also have a manual entry: if
-   `claude mcp get gmod` shows an `http://127.0.0.1:27080/mcp` server, tell the user it duplicates the plugin's and
-   remove it with their agreement (`claude mcp remove gmod`, adding `--scope` if it lives in another scope).
+   `claude mcp get gmod` shows an `http://127.0.0.1:27080/mcp` server, tell the user it duplicates the plugin's (the
+   plugin does not replace it: both stay and every tool is listed twice) and remove it with their agreement
+   (`claude mcp remove gmod`, adding `-s user` if it lives in the user scope; a local-scope entry only from the folder
+   it was added in).
 2. **Is a game listening?** Any HTTP answer means yes (401 without the token is the expected one):
 
    ```bash
@@ -159,8 +161,12 @@ original is saved as `menu.lua.mcpagent.bak`; the game console command `mcpagent
    sounds playing for sound tests. `-windowed` is a preference, so the terminal stays reachable. Do not edit Steam's
    files to set them: tell the user.
 
-If `gmod-mcp-bridge` is not found, the plugin is an old version without the bridge: ask the user to update it
-(`/plugin`, Marketplaces, update gmod-mcp) and restart Claude Code.
+If `gmod-mcp-bridge` is not found, the plugin is an old version without the bridge: ask the user to update it and
+restart Claude Code. Updating by hand takes both commands, in this order, in a shell:
+`claude plugin marketplace update gmod-mcp`, then `claude plugin update gmod-mcp@gmod-mcp` (the second one alone says
+"already at the latest version" while Claude Code's copy of the marketplace is stale). Then restart Claude Code, or
+`/reload-plugins`. Auto-update is off for third-party marketplaces, and no `claude plugin` subcommand turns it on: the
+user does it in `/plugin`, Marketplaces, gmod-mcp, Enable auto-update.
 
 **Other MCP clients** (not Claude Code): in the game console, `mcpagent_setup` prints an HTTP configuration with the
 token. The bridge also works for them as a stdio server: the command `gmod-mcp-bridge` (from the plugin, or from the

@@ -21,6 +21,14 @@
 
 ### Fixes
 
+- **`mcpagent_uninstall` did not always restore the original `menu.lua` byte for byte.** When the original had no final
+  line break (also an empty file, or CRLF without a final line break), the installer added one and removal could not
+  tell. The installer now always adds one line break, the block and one line break, and removal takes exactly those
+  away; a file installed by an older version is restored from the backup. A test covers LF, CRLF, mixed endings and
+  files with and without a final line break.
+- `mcpagent_setup` prints `claude mcp add --scope user ...`: without a scope the entry only exists in the folder where
+  the command ran.
+
 - **Test clients no longer overwrite the user's video settings.** `instances_launch` started its clients with
   `-w 640 -h 360`, and the engine wrote that mode (ScreenWidth, ScreenHeight, ScreenMSAA, ...) into
   `HKCU\Software\Valve\Source\garrysmod\Settings` at startup and at exit: the user's own game then
@@ -40,6 +48,22 @@
   The `instances_launch` and `map_load` descriptions, the server instructions, the guide, the skill and the README now say it
   (what waits, `waited_s` / `waited_reason`, the two errors, what the bridge does not see, games unreachable for 15-18 s
   after a start, launch everything in one call first).
+
+### Docs
+
+- README, from a literal walk through its install steps: updating by hand needs `claude plugin marketplace update
+  gmod-mcp` before `claude plugin update gmod-mcp@gmod-mcp` (alone it answers "already at the latest version"); `claude
+  mcp add` takes `--scope user` (also in the text `mcpagent_setup` prints), otherwise the entry only exists in the
+  folder where it was run; the plugin does not replace a manual `gmod` entry (both stay, tools listed twice: remove it
+  with `claude mcp remove gmod`); the Linux zip is named (`gmod-mcp-linux64.zip`) and the top folder of both zips
+  explained; `mcpagent_setup` and the plugin work with a dedicated server; uninstall keeps `-mcp` until
+  `mcpagent_uninstall` has run, then removes it from the launch options, deletes `menu.lua.mcpagent.bak` and removes the
+  marketplace; auto-update: no `claude plugin` subcommand turns it on (the `/plugin` menu does); the `feedback_offers`
+  opt-out and the "1 userConfig option not yet set" notice; configuration (`GMOD_MCP_PORT` is what works with the
+  plugin, `-mcpport` range, a base port held by another program); manual-path updates; the version warning shows a
+  moment after the game first answers; `lua_function_source` in the tools table; the comparison has its own section; links
+  that broke in the release zip and in the marketplace clone are absolute; the Linux token path honours
+  `XDG_CONFIG_HOME`. The skill carries the update commands and the manual-entry facts.
 
 ## 0.3.5
 
