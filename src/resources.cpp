@@ -45,6 +45,14 @@ std::string instructions() {
     s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator. "
          "client_crashed / server_crashed = that game crashed (details.dump names the minidump, for a human): relaunch it with "
          "instances_launch and rerun what it was doing; instance_gone = it ended normally.\n";
+    // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+    s += "Launches and map loads: starting a game makes the other running games release their GPU resources for 2-10 s, and a "
+         "map load ending then crashes that game (engine bug, Facepunch #7137). The bridge makes instances_launch and map_load "
+         "wait for each other (a call that waited reports waited_s / waited_reason; errors map_load_in_progress / "
+         "launch_in_progress: retry later or with a larger timeout_s). It does not see a game started by hand or a map change "
+         "triggered by Lua or the console: avoid those while other games load or launch. Other games can be unreachable for "
+         "15-18 s after a game starts: wait and retry. Launch all clients in one instances_launch, then work. Guide section "
+         "\"Launches and map loads\".\n";
     s += "Testing a branch of an addon: lua_mount {path: <your worktree>} (or instances_launch {lua_mount}) makes ONE game load "
          "Lua from that folder first; it takes effect at the next map_load, and the engine then names those files "
          "\"@lua/...\". Details: guide section \"Mounted Lua folder\".\n";
@@ -263,6 +271,29 @@ a process killed from outside (Task Manager) with no dump looks like a crash wit
 several games crashing together the dump is matched by time only (`dump_matched_by_time_only`). `instances_list` shows
 a crashed instance for an hour as `state: "crashed"` with a `crash` object ({dump, exit_code, evidence}); a map_load in
 flight when the client died answers `client_crashed` too (through `instances_launch {map}`: in that client's `map_error`).
+
+)";
+    // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+    g += R"(
+## Launches and map loads (several games)
+Starting any Garry's Mod process makes every other running game release and restore its GPU resources for 2-10 s; the
+main thread of those games is blocked meanwhile. A game whose map load ends inside that window crashes (engine bug,
+Facepunch garrysmod-issues #7137).
+- **What the bridge does.** It serialises `instances_launch` and `map_load` for every session that uses it (several
+  Claude sessions and sub-agents included). `instances_launch` waits while any game loads a map. `map_load` (any target
+  instance) waits while a game is being started and for 15 s after the last start. `instances_launch {map}` loads its
+  maps after that delay, 2 at a time.
+- **What you see.** A call that waited carries `waited_s` and `waited_reason` in its result (for `instances_launch {map}`:
+  in each `instances[i]`; for a `map_load` run as a task: in its `statusMessage`) and reports progress while it waits.
+  If the wait would go beyond the call's `timeout_s`, the call fails and nothing was started or sent: `map_load_in_progress`
+  (a launch blocked by a map load) or `launch_in_progress` (a map load blocked by a launch or by the 15 s delay). Retry
+  later, or with a larger `timeout_s`.
+- **What it does not see.** A game started by hand, and a map change triggered by Lua or the console (`changelevel`, `map`
+  sent through `console_exec`): do not do those while other games load or launch.
+- **Unreachable after a launch.** Right after a game starts, the other games can be unreachable for 15-18 s
+  (`instance_unreachable`, timeouts). That is expected: wait and retry. A dead game is `client_crashed`, not a timeout.
+- **Order.** Launch every client you need in ONE `instances_launch` call (with `map` it loads 2 at a time after the
+  settle delay), then work. Avoid interleaving launches with map loads, yours or another session's.
 
 ## Limits
 - No connection to remote servers; the client realm is refused outside singleplayer/listen/srcds loopback.

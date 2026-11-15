@@ -229,7 +229,18 @@ void register_session() {
                         "the call through the coordinator answers client_crashed (dump name in details; relaunch with instances_launch). IMPORTANT: when your client "
                         "runs it as a background MCP task, wait for its result before calling a realm tool: a call made before it "
                         "ends reaches the OLD map's state. Every lua_exec/lua_job result carries the realm's `generation`: equal to "
-                        "server_generation/client_generation = the new map's state. Example: {\"map\": \"gm_construct\"}.",
+                        "server_generation/client_generation = the new map's state. "
+                        // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+                        "Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load "
+                        "ending in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). So a map_load that goes "
+                        "through the bridge (any session, any target instance) first waits while a game is being started "
+                        "(instances_launch) and for 15 s after the last start. A call that waited carries waited_s and waited_reason "
+                        "(and progress; as a task, in statusMessage). If the wait would exceed timeout_s it fails with error "
+                        "launch_in_progress and sends nothing to the game: retry later, or with a larger timeout_s. Not seen by the "
+                        "bridge: a game started by hand, a map change triggered from Lua or the console (changelevel, `map` through "
+                        "console_exec): do not do those while other games load or launch. Right after a game starts, the other games "
+                        "can be unreachable for 15-18 s (instance_unreachable, timeouts): expected, wait and retry. "
+                        "Example: {\"map\": \"gm_construct\"}.",
                         json{{"properties",
                               {{"map", {{"type", "string"}, {"minLength", 1}, {"description", "Name without extension, e.g. gm_construct."}}},
                                {"gamemode", {{"type", "string"}, {"description", "Gamemode (e.g. sandbox). Default: unchanged."}}},

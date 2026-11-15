@@ -774,7 +774,20 @@ json bridge_tools() {
          "crashed during startup or its map load is reported as client_crashed (startup: the whole call's error; map load: that "
          "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. Example: "
          "{\"count\": 2, \"map\": \"gm_construct\", \"owner\": \"fork-a\"}, then pass each returned instance id as "
-         "`instance`."},
+         "`instance`.\n"
+         // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+         "Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load that "
+         "ends in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). So the bridge serialises "
+         "the launches and map loads that go through it, from any session: this call first waits while any game loads a "
+         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time. A call that waited reports waited_s and "
+         "waited_reason (and progress when your client sent a progress token). If the wait would exceed timeout_s it fails "
+         "with error map_load_in_progress and starts nothing: retry later, or with a larger timeout_s. The bridge does NOT "
+         "see a game started by hand or a map change triggered from Lua or the console (changelevel, `map` through "
+         "console_exec): do not do those while other games load or launch.\n"
+         "Right after a game starts, the other games can be unreachable for 15-18 s (instance_unreachable or timeouts): "
+         "expected, wait and retry; it is not a dead game (client_crashed is the signal for a dead one).\n"
+         "Order: launch all the clients you need in ONE call (with `map`, they load 2 at a time after the settle delay), "
+         "then work. Do not interleave launches with map loads, yours or another session's."},
         {"inputSchema",
          {{"type", "object"},
           {"properties",
@@ -1203,7 +1216,7 @@ json launch_tool(const json &args, const json &token) {
                               {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)}},
                          true);
     }
-    // Maps, all at once.
+    // Maps: at most 2 at a time, after the settle delay (FP7137: was all at once).
     json results = json::array();
     std::vector<json> map_res(started.size());
     if (!map.empty()) {

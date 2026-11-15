@@ -37,6 +37,9 @@
   hand is not seen. `instances_launch {map}` loads its maps after that delay and at most 2 at a time instead of all at
   once. Set `GMOD_MCP_FP7137_WORKAROUND=0` to turn it off. Everything is in `src/bridge/fp7137.*` and
   tagged `FP7137`, to be removed when the engine is fixed: see `docs/FP7137.md`.
+  The `instances_launch` and `map_load` descriptions, the server instructions, the guide, the skill and the README now say it
+  (what waits, `waited_s` / `waited_reason`, the two errors, what the bridge does not see, games unreachable for 15-18 s
+  after a start, launch everything in one call first).
 
 ## 0.3.5
 

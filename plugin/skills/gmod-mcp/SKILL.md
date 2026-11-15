@@ -89,6 +89,18 @@ calls without `instance` are refused with `ambiguous_instance`). Close them with
 when the session ends. Its description lists the measured cost per client and the limits (memory is what runs out
 first).
 
+<!-- FP7137: agent-facing text A1-A3, see docs/FP7137.md -->
+- **Launches and map loads.** Starting a game makes every other running GMod release its GPU resources for 2-10 s, and a
+  map load ending in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). The bridge therefore
+  serialises `instances_launch` and `map_load` for every session using it: `map_load` waits while a game is being started
+  and for 15 s after the last start, `instances_launch` waits while any game loads a map, and `instances_launch {map}`
+  loads 2 maps at a time after that delay. A call that waited carries `waited_s` and `waited_reason` (and progress). If the
+  wait would exceed `timeout_s`, it fails with `launch_in_progress` (map_load) or `map_load_in_progress` (launch) and
+  nothing was started: retry later or with a larger `timeout_s`. The bridge does NOT see a game started by hand or a map
+  change triggered by Lua or the console (`changelevel`, `map` through `console_exec`): do not do those while other games
+  load or launch. Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`,
+  timeouts): expected, wait and retry (`client_crashed` is the signal for a dead one). Order: launch all the clients you
+  need in ONE `instances_launch`, then work; do not interleave launches with map loads across sessions.
 - **With sub-agents**: they all share one bridge, so one session. Never use `instance_select` (its default would apply
   to every sub-agent's calls) and never `instances_close {all: true}` (it would close the others' clients). Tell each
   sub-agent in its brief to launch with an `owner` label of its own, pass `instance` on every call, and close with

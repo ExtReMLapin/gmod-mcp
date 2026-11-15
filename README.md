@@ -334,6 +334,16 @@ and `instance_select` sets the default instance of a session. Its description gi
 RAM and a fifth of a CPU core per client. Sub-agents of one Claude Code session share that session: each one labels its
 clients with `owner` and closes only those.
 
+<!-- FP7137: agent-facing text A1-A3, see docs/FP7137.md -->
+Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load ending in
+that window crashes that game (engine bug, [Facepunch garrysmod-issues#7137](https://github.com/Facepunch/garrysmod-issues/issues/7137)).
+The bridge therefore makes `instances_launch` and `map_load` wait for each other (every session of the user shares the
+lock; `waited_s` / `waited_reason` in the result, errors `map_load_in_progress` / `launch_in_progress` when the wait would
+exceed `timeout_s`), and `instances_launch {map}` loads 2 maps at a time after a 15 s settle delay. It does not see a game
+you start by hand, nor a map change triggered by Lua or the console: do not do those while other games load or launch.
+Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`): wait and retry. Best
+order: launch all clients in one `instances_launch`, then work. `GMOD_MCP_FP7137_WORKAROUND=0` turns the wait off.
+
 The clients share the game folder with your own game, including `data/` and the cookies (`sv.db`/`cl.db`): a test
 that writes there changes your game too.
 
