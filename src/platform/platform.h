@@ -34,6 +34,18 @@ std::string current_directory();
 // Start stamp of a process (changes when a pid is reused): 0 = no such process, 1 = alive but unreadable.
 uint64_t process_start_stamp(uint32_t pid);
 
+// A handle on another process that outlives it: once the process has ended, its exit code and end time can still be read
+// (and its pid cannot be mistaken for another process). Windows only; elsewhere open returns nullptr.
+struct ProcInfo {
+    bool exited = false;
+    uint32_t exit_code = 0;  // valid when exited
+    double start_unix = 0;   // seconds since the Unix epoch, 0 = unknown
+    double exit_unix = 0;    // valid when exited, 0 = unknown
+};
+void *process_watch_open(uint32_t pid);                                       // nullptr: no such process, no access, or unsupported
+bool process_watch_query(void *watch, ProcInfo &out, int wait_ms = 0);         // waits up to wait_ms for the process to end
+void process_watch_close(void *watch);
+
 // Platform identifier ("win64", "linux64", "osx64").
 const char *platform_tag();
 // Current pid.

@@ -11,14 +11,19 @@
 #endif
 #include <httplib.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #include "agent.h"
 #include "console.h"
+#include "crashinfo.h"
 #include "http_server.h"
 #include "jobs.h"
 #include "log.h"
@@ -35,14 +40,41 @@ static const double kHeartbeatS = 2.0;
 static const double kDeadAfterS = 10.0;
 static const int kFailuresBeforeElection = 3;
 
+static double unix_now() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
+
+// How an instance ended, worked out once when its process is found dead (crashinfo::judge).
+struct Ending {
+    crashinfo::Verdict verdict;
+    bool exit_known = false;
+    uint32_t exit_code = 0;
+    double ended_unix = 0;
+};
+
+// What the coordinator knows of one instance's process. Shared between its Member entry and, after it is removed, its
+// Gone entry; the watch handle (kept open while the process lives) lets its exit code be read after it ended.
+struct Tracked {
+    std::string id, mode, game_dir;
+    uint32_t pid = 0;
+    uint64_t stamp = 0;  // plat::process_start_stamp(pid) taken while it answered: tells the process from a later pid reuse
+    void *watch = nullptr;
+    double start_unix = 0;
+    double last_seen_unix = 0;
+    bool requested = false;  // game_quit / game_terminate was relayed to it
+    bool goodbye = false;    // its module said it is closing
+    bool ended = false;
+    Ending ending;
+    ~Tracked() { plat::process_watch_close(watch); }
+};
+
 struct Member {
     json info;  // id, mode, port, pid, map, realms
     Clock::time_point last_seen;
-    uint64_t stamp = 0;  // plat::process_start_stamp(pid) taken while it answered: tells the process from a later pid reuse
+    std::shared_ptr<Tracked> t;
 };
 
 static std::mutex g_mu;
 static std::map<std::string, Member> g_members;
+static std::set<std::string> g_claimed_dumps;  // dumps already given to a dead instance (two crashes do not share one)
 static std::atomic<bool> g_run{false};
 static std::thread g_thread;
 static std::atomic<int> g_failures{0};
@@ -62,36 +94,83 @@ static json self_info() {
     return json{{"id", c.instance_id}, {"mode", agent::mode_name()}, {"port", c.port}, {"pid", plat::process_id()},
                 {"map", agent::current_map()}, {"realms", realms_j}, {"agent_version", c.version},
                 {"uptime_s", (int64_t)console::uptime()}, {"fps", fps.is_number() ? json((int)(fps.get<double>() + 0.5)) : json(nullptr)},
-                {"main_thread_stalled", since > 5.0}, {"lua_errors", console::errors_cursor()}};
+                {"main_thread_stalled", since > 5.0}, {"lua_errors", console::errors_cursor()},
+                {"game_dir", c.game_dir}};  // read by the coordinator (where the crash dumps are), not shown by instances_list
 }
 
-// Members recently removed (no heartbeat): their id, pid and when, so a later call gets a useful answer.
+// Members recently removed (process gone, or no heartbeat): so that a later call gets a useful answer, and a crash stays
+// visible in instances_list for a while.
 struct Gone {
-    uint32_t pid;
+    std::shared_ptr<Tracked> t;
     Clock::time_point when;
-    uint64_t stamp;
 };
 static std::map<std::string, Gone> g_gone;
+static const double kCrashShownS = 3600.0;
+
+// Is the process gone? When it is, works out once how it ended. Needs g_mu.
+static bool finalize_locked(Tracked &t) {
+    if (t.ended) return true;
+    plat::ProcInfo pi;
+    bool have = t.watch && plat::process_watch_query(t.watch, pi, 0);
+    bool dead = have ? pi.exited : (t.pid != 0 && !same_process_running(plat::process_start_stamp(t.pid), t.stamp));
+    if (!dead) return false;
+    crashinfo::Facts f;
+    f.requested = t.requested;
+    f.goodbye = t.goodbye;
+    f.exit_known = have && pi.exited;
+    f.exit_code = f.exit_known ? pi.exit_code : 0;
+    f.exit_unix = f.exit_known ? pi.exit_unix : 0;
+    f.start_unix = have && pi.start_unix > 0 ? pi.start_unix : t.start_unix;
+    f.last_seen_unix = t.last_seen_unix;
+    f.now_unix = unix_now();
+    t.ending.exit_known = f.exit_known;
+    t.ending.exit_code = f.exit_code;
+    t.ending.ended_unix = f.exit_known && f.exit_unix > 0 ? f.exit_unix : f.last_seen_unix;
+    // The dumps are only read when nobody asked for the end (a quit never looks at the disk).
+    std::vector<crashinfo::Dump> dumps;
+    if (!f.requested && !f.goodbye) dumps = crashinfo::list_dumps(crashinfo::dump_dirs(t.game_dir));
+    t.ending.verdict = crashinfo::judge(f, dumps, g_claimed_dumps);
+    if (!t.ending.verdict.dump.empty()) {
+        if (g_claimed_dumps.size() > 500) g_claimed_dumps.clear();
+        g_claimed_dumps.insert(t.ending.verdict.dump);
+    }
+    t.ended = true;
+    logx::info("instance %s (pid %u) ended: %s%s", t.id.c_str(), t.pid,
+               t.ending.verdict.cause == crashinfo::Cause::Crashed ? "crashed" : t.ending.verdict.cause == crashinfo::Cause::Quit ? "quit" : "unknown cause",
+               t.ending.verdict.dump.empty() ? "" : (", dump " + t.ending.verdict.dump).c_str());
+    return true;
+}
 
 static void purge_locked() {
     auto now = Clock::now();
     for (auto it = g_members.begin(); it != g_members.end();) {
         double age = std::chrono::duration<double>(now - it->second.last_seen).count();
-        if (age > kDeadAfterS) {
-            logx::info("instance %s removed (no heartbeat for %.0f s)", it->first.c_str(), age);
-            g_gone[it->first] = Gone{it->second.info.value("pid", 0u), it->second.last_seen, it->second.stamp};
-            if (g_gone.size() > 200) g_gone.erase(g_gone.begin());
+        bool dead = finalize_locked(*it->second.t);  // the process ended: no need to wait for the heartbeat timeout
+        if (age > kDeadAfterS || dead) {
+            logx::info("instance %s removed (%s)", it->first.c_str(), dead ? "its process ended" : ("no heartbeat for " + std::to_string((int)age) + " s").c_str());
+            g_gone[it->first] = Gone{it->second.t, it->second.last_seen};
             it = g_members.erase(it);
         } else {
             ++it;
         }
+    }
+    // Forget old ones: after an hour, and past 200 entries the oldest.
+    for (auto it = g_gone.begin(); it != g_gone.end();)
+        it = std::chrono::duration<double>(now - it->second.when).count() > kCrashShownS ? g_gone.erase(it) : std::next(it);
+    while (g_gone.size() > 200) {
+        auto oldest = g_gone.begin();
+        for (auto it = g_gone.begin(); it != g_gone.end(); ++it)
+            if (it->second.when < oldest->second.when) oldest = it;
+        g_gone.erase(oldest);
     }
 }
 
 json instances() {
     json arr = json::array();
     json me = self_info();
+    me.erase("game_dir");
     me["self"] = true;
+    me["state"] = "running";
     me["role"] = is_coordinator() ? "coordinator" : "member";
     me["heartbeat_age_s"] = 0;
     arr.push_back(me);
@@ -101,9 +180,17 @@ json instances() {
     for (auto &kv : g_members) {
         json e = kv.second.info;
         e["self"] = false;
+        e["state"] = "running";
         e["role"] = "member";
         e["heartbeat_age_s"] = std::chrono::duration<double>(now - kv.second.last_seen).count();
         arr.push_back(e);
+    }
+    // Instances that crashed (a clean quit just disappears, as before).
+    for (auto &kv : g_gone) {
+        Tracked &t = *kv.second.t;
+        if (g_members.count(kv.first) || !finalize_locked(t) || t.ending.verdict.cause != crashinfo::Cause::Crashed) continue;
+        arr.push_back(crashinfo::crashed_entry(t.id, t.mode, t.pid, std::max(0.0, unix_now() - t.ending.ended_unix), t.ending.verdict, t.ending.exit_known,
+                                    t.ending.exit_code));
     }
     return arr;
 }
@@ -125,12 +212,35 @@ static json on_heartbeat(const json &in) {
     if (id == agent::config().instance_id) return json{{"ok", true}};
     std::lock_guard<std::mutex> lk(g_mu);
     auto old = g_members.find(id);
-    bool fresh = old == g_members.end();
-    // The stamp is taken at registration, while the process surely runs: after its death it can no longer be read.
-    uint64_t stamp = fresh ? 0 : old->second.stamp;
-    if (stamp == 0) stamp = plat::process_start_stamp(in.value("pid", 0u));
-    g_members[id] = Member{in, Clock::now(), stamp};
-    if (fresh) logx::info("instance %s registered (port %d, %s)", id.c_str(), in.value("port", 0), in.value("mode", "?").c_str());
+    if (in.value("closing", false)) {  // the instance's module closes with the game: a clean shutdown, not a crash
+        if (old != g_members.end()) old->second.t->goodbye = true;
+        return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
+    }
+    json info = in;
+    info.erase("game_dir");
+    info.erase("closing");
+    if (old == g_members.end()) {
+        auto t = std::make_shared<Tracked>();
+        t->id = id;
+        t->mode = in.value("mode", "client");
+        t->game_dir = in.value("game_dir", "");
+        t->pid = in.value("pid", 0u);
+        // The stamp and the handle are taken at registration, while the process surely runs: after its death neither can be read.
+        t->stamp = plat::process_start_stamp(t->pid);
+        t->watch = plat::process_watch_open(t->pid);
+        plat::ProcInfo pi;
+        if (t->watch && plat::process_watch_query(t->watch, pi, 0) && pi.start_unix > 0) t->start_unix = pi.start_unix;
+        t->last_seen_unix = unix_now();
+        g_members[id] = Member{info, Clock::now(), t};
+        g_gone.erase(id);
+        logx::info("instance %s registered (port %d, %s)", id.c_str(), in.value("port", 0), in.value("mode", "?").c_str());
+    } else {
+        Tracked &t = *old->second.t;
+        if (t.stamp == 0) t.stamp = plat::process_start_stamp(t.pid);
+        t.last_seen_unix = unix_now();
+        old->second.info = info;
+        old->second.last_seen = Clock::now();
+    }
     return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
 }
 
@@ -150,17 +260,31 @@ std::string gone_message(const std::string &id, uint32_t pid, double seconds_ago
                         "status {instance}; game_terminate {instance} ends it.";
 }
 
+static json wrap_err(const std::string &code, const std::string &msg, const json &details = json()) {
+    json e{{"error", {{"code", code}, {"message", msg}}}};
+    if (!details.is_null()) e["error"]["details"] = details;
+    return json{{"content", json::array({json{{"type", "text"}, {"text", e.dump()}}})}, {"structuredContent", e}, {"isError", true}};
+}
+
+// The answer for a call to an instance whose process is gone (needs g_mu): crashed, quit, or ended for a reason unknown.
+static json ended_error(Tracked &t) {
+    double ago = std::max(0.0, unix_now() - t.ending.ended_unix);
+    const crashinfo::Verdict &v = t.ending.verdict;
+    if (v.cause == crashinfo::Cause::Crashed) {
+        json details{{"instance", t.id}, {"pid", t.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)}, {"evidence", v.evidence}};
+        if (t.ending.exit_known) details["exit_code"] = t.ending.exit_code;
+        return wrap_err(crashinfo::crash_code(t.mode), crashinfo::crash_message(t.mode, t.id, t.pid, ago, v, t.ending.exit_known, t.ending.exit_code), details);
+    }
+    if (v.cause == crashinfo::Cause::Quit)
+        return wrap_err("instance_gone", crashinfo::quit_message(t.id, t.pid, ago, v.evidence.empty() ? "clean exit" : v.evidence[0]));
+    return wrap_err("instance_gone", gone_message(t.id, t.pid, ago, false));
+}
 
 // Relay of a tools/call to another instance (coordinator only).
 static json relay(const std::string &instance, const std::string &tool, const json &args) {
-    auto wrap_err = [](const std::string &code, const std::string &msg) {
-        json e{{"error", {{"code", code}, {"message", msg}}}};
-        return json{{"content", json::array({json{{"type", "text"}, {"text", e.dump()}}})}, {"structuredContent", e}, {"isError", true}};
-    };
     if (!is_coordinator()) return wrap_err("not_coordinator", "this instance is not the coordinator: call the coordinator (base port)");
     int port = 0;
-    uint32_t pid = 0;
-    uint64_t stamp = 0;
+    std::shared_ptr<Tracked> t;
     Clock::time_point last_seen = Clock::now();
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -169,24 +293,41 @@ static json relay(const std::string &instance, const std::string &tool, const js
         if (it == g_members.end()) {
             auto g = g_gone.find(instance);
             if (g != g_gone.end()) {
+                Tracked &gt = *g->second.t;
+                if (finalize_locked(gt)) return ended_error(gt);
                 double ago = std::chrono::duration<double>(Clock::now() - g->second.when).count();
-                return wrap_err("instance_gone", gone_message(instance, g->second.pid, ago,
-                                                                      same_process_running(plat::process_start_stamp(g->second.pid), g->second.stamp)));
+                return wrap_err("instance_gone", gone_message(instance, gt.pid, ago, true));
             }
             return wrap_err("unknown_instance", "unknown instance: " + instance + " (see instances_list)");
         }
         port = it->second.info.value("port", 0);
-        pid = it->second.info.value("pid", 0u);
-        stamp = it->second.stamp;
+        t = it->second.t;
         last_seen = it->second.last_seen;
+        // Asked to end: when its process goes, that is not a crash.
+        if (tool == "game_quit" || tool == "game_terminate") t->requested = true;
     }
     auto cli = client(port, 900);
     json req{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", args}}}};
     auto res = cli->Post("/mcp", req.dump(), "application/json");
     if (!res) {
-        bool alive = pid && same_process_running(plat::process_start_stamp(pid), stamp);
+        // The connection broke: the process may be ending right now (a crash closes the socket before the process object
+        // is signalled), so give it a moment before deciding between gone and unreachable.
+        plat::ProcInfo pi;
+        if (t->watch) {
+            plat::process_watch_query(t->watch, pi, 1500);
+        } else {
+            for (int i = 0; i < 15; ++i) {
+                {
+                    std::lock_guard<std::mutex> lk(g_mu);
+                    if (finalize_locked(*t)) break;
+                }
+                plat::sleep_ms(100);
+            }
+        }
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (finalize_locked(*t)) return ended_error(*t);
         double ago = std::chrono::duration<double>(Clock::now() - last_seen).count();
-        return wrap_err(alive ? "instance_unreachable" : "instance_gone", gone_message(instance, pid, ago, alive));
+        return wrap_err("instance_unreachable", gone_message(instance, t->pid, ago, true));
     }
     try {
         json r = json::parse(res->body);
@@ -227,6 +368,14 @@ static bool heartbeat() {
     if (res && (res->status == 401 || res->status == 403)) set_link("refused");
     else set_link(res && res->status == 200 ? "registered" : "unreachable");
     return res && res->status == 200;
+}
+
+void say_goodbye() {
+    if (is_coordinator()) return;
+    auto cli = client(agent::config().base_port, 1);
+    cli->set_write_timeout(1, 0);
+    json j{{"id", agent::config().instance_id}, {"port", agent::config().port}, {"closing", true}};
+    cli->Post("/internal/heartbeat", j.dump(), "application/json");
 }
 
 static void loop() {

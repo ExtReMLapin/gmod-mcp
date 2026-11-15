@@ -109,6 +109,39 @@ uint64_t process_start_stamp(uint32_t pid) {
     return r;
 }
 
+static double filetime_unix(const FILETIME &ft) {
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return t < 116444736000000000ull ? 0.0 : (double)(t - 116444736000000000ull) / 1e7;
+}
+
+void *process_watch_open(uint32_t pid) {
+    if (pid == 0) return nullptr;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    return h;  // NULL on failure
+}
+
+bool process_watch_query(void *watch, ProcInfo &out, int wait_ms) {
+    if (!watch) return false;
+    HANDLE h = (HANDLE)watch;
+    out = ProcInfo{};
+    if (WaitForSingleObject(h, wait_ms < 0 ? 0 : (DWORD)wait_ms) == WAIT_OBJECT_0) {
+        DWORD code = 0;
+        if (!GetExitCodeProcess(h, &code)) return false;
+        out.exited = true;
+        out.exit_code = (uint32_t)code;
+    }
+    FILETIME c, e, k, u;
+    if (GetProcessTimes(h, &c, &e, &k, &u)) {
+        out.start_unix = filetime_unix(c);
+        if (out.exited) out.exit_unix = filetime_unix(e);
+    }
+    return true;
+}
+
+void process_watch_close(void *watch) {
+    if (watch) CloseHandle((HANDLE)watch);
+}
+
 bool read_file(const std::string &path, std::string &out) {
     FILE *f = nullptr;
     if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return false;

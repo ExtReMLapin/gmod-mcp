@@ -6,10 +6,13 @@
 
 #include <nlohmann/json.hpp>
 
+
 namespace coordinator {
 
 void start();
 void stop();
+// Member side, when the game shuts down cleanly: tells the coordinator, so that the process going away is not taken for a crash.
+void say_goodbye();
 bool is_coordinator();
 // "coordinator", "registered", "refused" (another token) or "unreachable".
 std::string link_state();

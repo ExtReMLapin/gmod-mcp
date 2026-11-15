@@ -40,6 +40,7 @@
 
 #include "argcheck.h"
 #include "bridge_snapshot.h"
+#include "crashinfo.h"
 #include "mcp_protocol.h"
 #include "platform/platform.h"
 #include "lua_mount.h"
@@ -699,11 +700,14 @@ void announce_lists_changed() {
 
 // --- The bridge's own tools: test clients it launches and closes, and the session's default instance. They live in
 // the bridge because it runs before any game does (the module cannot start the first one) and holds one session.
+struct EndSlot;
 struct Launched {
     uint32_t pid = 0;
     std::string id;
     std::string owner;  // free label given at launch (a sub-agent's name): instances_close {owner} closes only those
     bool keep = false;
+    std::string root;  // game folder it was started from (where its crash dumps go)
+    std::shared_ptr<EndSlot> slot;  // how it ended, worked out once (shared by the copies of this record)
 #ifdef _WIN32
     HANDLE h = nullptr;
 #endif
@@ -764,7 +768,9 @@ json bridge_tools() {
          "user's own), so neither is offered.\n"
          "Result: {instances: [{instance, pid, port, owner?, map? (or map: null + map_error)}], game_dir, found_by, preset, "
          "keep, fps_max, fps_note, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
-         "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. Example: "
+         "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. A client that "
+         "crashed during startup or its map load is reported as client_crashed (startup: the whole call's error; map load: that "
+         "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. Example: "
          "{\"count\": 2, \"map\": \"gm_construct\", \"owner\": \"fork-a\"}, then pass each returned instance id as "
          "`instance`."},
         {"inputSchema",
@@ -827,6 +833,67 @@ bool is_bridge_tool(const std::string &name) { return name == kLaunchName || nam
 
 json tool_text(json structured, bool error);
 
+// How a client this session launched ended: this bridge holds its process handle, so the exit code and end time are known
+// exactly, whatever the coordinator saw. Worked out once (a dump is given to one process only).
+struct EndSlot {
+    std::mutex mu;
+    bool done = false;
+    crashinfo::Verdict verdict;
+    uint32_t exit_code = 0;
+    double ended_unix = 0;
+};
+std::mutex g_claimed_mu;
+std::set<std::string> g_claimed_dumps;
+
+// True when the launched client's process has exited (then `v`, `code` and `ended` are filled).
+bool launched_end(const Launched &l, crashinfo::Verdict &v, uint32_t &code, double &ended) {
+#ifdef _WIN32
+    if (!l.slot) return false;
+    std::lock_guard<std::mutex> lk(l.slot->mu);
+    if (!l.slot->done) {
+        plat::ProcInfo pi;
+        if (!l.h || !plat::process_watch_query((void *)l.h, pi, 0) || !pi.exited) return false;
+        crashinfo::Facts f;
+        f.exit_known = true;
+        f.exit_code = pi.exit_code;
+        f.exit_unix = pi.exit_unix;
+        f.start_unix = pi.start_unix;
+        f.last_seen_unix = pi.exit_unix;
+        f.now_unix = pi.exit_unix;
+        std::vector<crashinfo::Dump> dumps = crashinfo::list_dumps(crashinfo::dump_dirs(l.root + "/garrysmod"));
+        std::lock_guard<std::mutex> ck(g_claimed_mu);
+        l.slot->verdict = crashinfo::judge(f, dumps, g_claimed_dumps);
+        if (!l.slot->verdict.dump.empty()) g_claimed_dumps.insert(l.slot->verdict.dump);
+        l.slot->exit_code = pi.exit_code;
+        l.slot->ended_unix = pi.exit_unix;
+        l.slot->done = true;
+    }
+    v = l.slot->verdict;
+    code = l.slot->exit_code;
+    ended = l.slot->ended_unix;
+    return true;
+#else
+    (void)l; (void)v; (void)code; (void)ended;
+    return false;
+#endif
+}
+
+double unix_now() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
+
+// The error object for a launched client that crashed ({code, message, details}), or null when it still runs or ended normally.
+json launched_crash_error(const Launched &l) {
+    crashinfo::Verdict v;
+    uint32_t code = 0;
+    double ended = 0;
+    if (!launched_end(l, v, code, ended) || v.cause != crashinfo::Cause::Crashed) return json();
+    double ago = std::max(0.0, unix_now() - ended);
+    json details{{"instance", l.id.empty() ? json(nullptr) : json(l.id)}, {"pid", l.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)},
+                 {"evidence", v.evidence}, {"exit_code", code}};
+    return json{{"code", crashinfo::crash_code("client")},
+                {"message", crashinfo::crash_message("client", l.id.empty() ? "started by this session" : l.id, l.pid, ago, v, true, code)},
+                {"details", details}};
+}
+
 // instances_list, completed by the bridge: the owner label of each client it launched, the clients it launched that
 // never answered (gmod-mcp not loaded, still starting), and an optional owner filter. `sc` is the game's answer
 // (or an empty list when no game answers).
@@ -852,7 +919,19 @@ json annotate_instances(json sc, const json &args) {
         if (listed.count(l.pid)) continue;
         if (!want.empty() && l.owner != want) continue;
 #ifdef _WIN32
-        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) continue;  // exited
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) {  // exited: shown when it crashed (a clean quit just goes)
+            crashinfo::Verdict v;
+            uint32_t code = 0;
+            double ended = 0;
+            if (launched_end(l, v, code, ended) && v.cause == crashinfo::Cause::Crashed) {
+                json e = crashinfo::crashed_entry(l.id.empty() ? "pid-" + std::to_string(l.pid) : l.id, "client", l.pid,
+                                                  std::max(0.0, unix_now() - ended), v, true, code);
+                e["launched_by_this_session"] = true;
+                if (!l.owner.empty()) e["owner"] = l.owner;
+                sc["instances"].push_back(e);
+            }
+            continue;
+        }
 #endif
         json x{{"pid", l.pid}, {"note", "launched by this session, not answering: still starting, or gmod-mcp did not load in it "
                                         "(see garrysmod/data/mcpagent/last_crash.txt). instances_close {pids} closes it."}};
@@ -1056,6 +1135,8 @@ json launch_tool(const json &args, const json &token) {
         l.h = pi.hProcess;
         l.keep = keep;
         l.owner = owner;
+        l.root = root;
+        l.slot = std::make_shared<EndSlot>();
         started.push_back(l);
     }
     {
@@ -1071,14 +1152,17 @@ json launch_tool(const json &args, const json &token) {
         json lst = game_call("instances_list", json::object(), 5);
         for (const auto &in : lst.value("instances", json::array()))
             for (auto &l : started)
-                if (in.value("pid", 0u) == l.pid && !found.contains(std::to_string(l.pid))) {
+                if (in.value("pid", 0u) == l.pid && in.value("state", "") != "crashed" && !found.contains(std::to_string(l.pid))) {
                     found[std::to_string(l.pid)] = in;
                     l.id = in.value("id", "");
                     progress(token, (double)found.size(), count, l.id + " answers");
                 }
         for (auto &l : started)
-            if (WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0 && !found.contains(std::to_string(l.pid)))
+            if (WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0 && !found.contains(std::to_string(l.pid))) {
+                json ce = launched_crash_error(l);
+                if (!ce.is_null()) return tool_text(json{{"error", ce}}, true);
                 return tool_error("launch_failed", "client pid " + std::to_string(l.pid) + " exited during startup (Steam not running? see garrysmod/console.log)");
+            }
         if ((int)found.size() < count) std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     {
@@ -1115,6 +1199,12 @@ json launch_tool(const json &args, const json &token) {
                 map_res[i] = game_call("map_load", a, std::max(40.0, timeout - elapsed() + 10));
             });
         for (auto &t : th) t.join();
+        // A client that died during its load: say it crashed (the game's answer is only that nothing answers).
+        for (size_t i = 0; i < started.size(); ++i)
+            if (map_res[i].contains("error")) {
+                json ce = launched_crash_error(started[i]);
+                if (!ce.is_null()) map_res[i] = json{{"error", ce}};
+            }
     }
     // The requested mount is only a request: ask each engine what it really has (the module logs and ignores a folder
     // it cannot apply), so a test never runs on the installed addon's code without the agent knowing.
@@ -1285,6 +1375,28 @@ void add_bridge_tools(json &result) {
     for (const auto &t : bridge_tools()) result["tools"].push_back(t);
 }
 
+// A call for an instance this session launched, while nothing answers on the base port: if that client crashed, say so
+// (the coordinator that would have told is the crashed game itself, or is gone).
+json launched_answer(const json &fwd) {
+    json args = params_of(fwd).value("arguments", json::object());
+    if (!args.is_object() || !args.contains("instance") || !args["instance"].is_string()) return json();
+    std::string id = args["instance"].get<std::string>();
+    std::lock_guard<std::mutex> lk(g_launch_mu);
+    for (const auto &l : g_launched) {
+        if (l.id.empty() || l.id != id) continue;
+        json ce = launched_crash_error(l);
+        if (!ce.is_null()) return tool_text(json{{"error", ce}}, true);
+        crashinfo::Verdict v;
+        uint32_t code = 0;
+        double ended = 0;
+        if (launched_end(l, v, code, ended))
+            return tool_text(json{{"error", {{"code", "instance_gone"},
+                                             {"message", crashinfo::quit_message(l.id, l.pid, std::max(0.0, unix_now() - ended), v.evidence.empty() ? "clean exit" : v.evidence[0])}}}},
+                             true);
+    }
+    return json();
+}
+
 void handle_request(const json &msg) {
     json id = msg["id"];
     std::string method = msg.value("method", "");
@@ -1453,6 +1565,8 @@ void handle_request(const json &msg) {
                 {"note", "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
                          "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
         out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object())), false)));
+    } else if (method == "tools/call" && !launched_answer(fwd).is_null()) {
+        out(local_result(msg, launched_answer(fwd)));
     } else if (method == "tools/call") {
         json text{{"type", "text"}, {"text", not_running_text()}};
         out(local_result(msg, json{{"content", json::array({text})},

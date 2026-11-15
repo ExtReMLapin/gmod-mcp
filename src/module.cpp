@@ -296,6 +296,7 @@ EXPORT int gmod13_close(lua_State *L) {
     if (!g_started) return 0;
     if (agent::config().mode == agent::Mode::Client && L == g_host_L) {
         // Menu state closing = game shutting down.
+        coordinator::say_goodbye();
         coordinator::stop();
         events::stop_watchdog();
         httpsrv::stop();

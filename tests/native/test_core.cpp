@@ -1,5 +1,10 @@
 // Unit tests of the module's tool helpers that need no game: Lua path lookup and the `fields` projection.
 // Built as gmod-mcp-coretests (links the module's sources like gmod-mcp-snapshot), run by the CI.
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+#include <httplib.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -7,18 +12,26 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <set>
 #include <thread>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "agent.h"
 #include "argcheck.h"
 #include "cmdline.h"
 #include "console.h"
 #include "coordinator.h"
+#include "http_server.h"
+#include "crashinfo.h"
 #include "mcp.h"
 #include "lua_mount.h"
 #include "realms.h"
 #include "resources.h"
 #include "tools.h"
+#include "platform/platform.h"
 #include "util.h"
 
 namespace fs = std::filesystem;
@@ -560,8 +573,347 @@ static void test_job_ids() {
     CHECK(tools::job_reset_message(old, 99).empty());  // no generation in the id: the Lua side answers not_found
 }
 
+
+// B6: a game that is gone is told as crashed or quit. Pure decision (judge), dump matching, the folders searched, the
+// exit code read through a handle that outlives the process, and the words of the answer.
+static crashinfo::Facts facts_ended(double exit_unix) {
+    crashinfo::Facts f;
+    f.start_unix = 1000;
+    f.exit_known = true;
+    f.exit_unix = exit_unix;
+    f.last_seen_unix = exit_unix - 1;
+    f.now_unix = exit_unix + 30;
+    return f;
+}
+
+static void test_crash_report() {
+    using crashinfo::Cause;
+    using crashinfo::Dump;
+    using crashinfo::Facts;
+    std::set<std::string> none;
+    std::vector<Dump> dumps{{"gmod_win64_a_1_accessviolation.mdmp", 5000.0}};
+
+    // Exit codes: an NTSTATUS error is an unhandled exception.
+    CHECK(crashinfo::is_exception_exit(0xC0000005u));
+    CHECK(crashinfo::is_exception_exit(0xC0000094u));
+    CHECK(!crashinfo::is_exception_exit(0));
+    CHECK(!crashinfo::is_exception_exit(1));
+    CHECK(!crashinfo::is_exception_exit(0x40010005u));  // Ctrl+C is not an error status
+
+    // The decision. A dump written just before the end: crashed, whatever the exit code says.
+    Facts f = facts_ended(5001.0);
+    f.exit_code = 0xC0000005u;
+    auto v = crashinfo::judge(f, dumps, none);
+    CHECK(v.cause == Cause::Crashed && v.dump == dumps[0].name && !v.dump_ambiguous && !v.evidence.empty());
+    f.exit_code = 0;  // Source's own crash handler may end the process normally after writing the dump
+    CHECK(crashinfo::judge(f, dumps, none).cause == Cause::Crashed);
+    // Asked to end (game_quit/game_terminate) or said goodbye: ended on purpose, even with a dump around and code 1.
+    f.exit_code = 1;
+    f.requested = true;
+    v = crashinfo::judge(f, dumps, none);
+    CHECK(v.cause == Cause::Quit && v.dump.empty());
+    f.requested = false;
+    f.goodbye = true;
+    CHECK(crashinfo::judge(f, dumps, none).cause == Cause::Quit);
+    f.goodbye = false;
+    // Dumps of other processes: older than the process start, long before or after the end, already claimed.
+    CHECK(crashinfo::judge(f, {{"x.mdmp", 900.0}}, none).cause == Cause::Crashed && crashinfo::judge(f, {{"x.mdmp", 900.0}}, none).dump.empty());  // exit 1, no dump: abnormal
+    f.exit_code = 0;
+    CHECK(crashinfo::judge(f, {{"x.mdmp", 900.0}}, none).cause == Cause::Quit);             // before the process even started
+    CHECK(crashinfo::judge(f, {{"x.mdmp", 4900.0}}, none).cause == Cause::Quit);            // 100 s before it ended
+    CHECK(crashinfo::judge(f, {{"x.mdmp", 5100.0}}, none).cause == Cause::Quit);            // long after
+    CHECK(crashinfo::judge(f, dumps, std::set<std::string>{dumps[0].name}).cause == Cause::Quit);  // given to another instance
+    // Exit code only.
+    f.exit_code = 0;
+    v = crashinfo::judge(f, {}, none);
+    CHECK(v.cause == Cause::Quit && v.dump.empty());
+    f.exit_code = 0xC0000094u;
+    v = crashinfo::judge(f, {}, none);
+    CHECK(v.cause == Cause::Crashed && v.dump.empty() && v.evidence.size() >= 1);
+    f.exit_code = 1;
+    CHECK(crashinfo::judge(f, {}, none).cause == Cause::Crashed);  // abnormal exit
+    // Exit code unknown (no handle): dump near the last heartbeat, else unknown.
+    Facts g;
+    g.start_unix = 1000;
+    g.last_seen_unix = 5000;
+    g.now_unix = 5012;
+    CHECK(crashinfo::judge(g, dumps, none).cause == Cause::Crashed);
+    CHECK(crashinfo::judge(g, {}, none).cause == Cause::Unknown);
+    CHECK(crashinfo::judge(g, {{"old.mdmp", 4000.0}}, none).cause == Cause::Unknown);
+    g.goodbye = true;
+    CHECK(crashinfo::judge(g, dumps, none).cause == Cause::Quit);
+    // Start time unknown: no lower bound from it.
+    Facts h = facts_ended(5001.0);
+    h.start_unix = 0;
+    h.exit_code = 0;
+    CHECK(crashinfo::judge(h, dumps, none).cause == Cause::Crashed);
+
+    // Matching: the closest to the end wins, ambiguity is reported, claimed dumps are skipped.
+    Dump m;
+    bool amb = false;
+    std::vector<Dump> two{{"early.mdmp", 4990.0}, {"late.mdmp", 5000.0}};
+    CHECK(crashinfo::match_dump(two, 4980, 5006, 5001, none, m, amb) && m.name == "late.mdmp" && amb);
+    CHECK(crashinfo::match_dump(two, 4980, 5006, 5001, std::set<std::string>{"late.mdmp"}, m, amb) && m.name == "early.mdmp" && !amb);
+    CHECK(!crashinfo::match_dump(two, 5100, 5200, 5150, none, m, amb));
+    CHECK(!crashinfo::match_dump({}, 0, 1e12, 5, none, m, amb));
+
+    // Where the dumps are: next to garrysmod/ (the game root), listed newest first, only .mdmp, missing folders fine.
+    fs::path game = fs::temp_directory_path() / "gmod-mcp-coretests-crash" / "game";
+    std::error_code ec;
+    fs::remove_all(game.parent_path(), ec);
+    fs::create_directories(game / "garrysmod");
+    fs::create_directories(game / "crashes");
+    auto write = [](const fs::path &p, double unix_time) {
+        std::ofstream(p, std::ios::binary) << "MDMP";
+        // file clock now vs system clock now gives the offset between the two epochs
+        auto fnow = fs::file_time_type::clock::now();
+        double snow = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        fs::last_write_time(p, fnow - std::chrono::duration_cast<fs::file_time_type::duration>(std::chrono::duration<double>(snow - unix_time)));
+    };
+    write(game / "crashes" / "gmod_win64_20261114_093156_1_accessviolation.mdmp", 1700000000.0);
+    write(game / "crashes" / "gmod_win64_20261114_093200_1_crash.mdmp", 1700000100.0);
+    write(game / "crashes" / "notes.txt", 1700000200.0);
+    auto dirs = crashinfo::dump_dirs((game / "garrysmod").u8string());
+    CHECK(!dirs.empty() && same(dirs[0], game / "crashes"));
+    auto listed = crashinfo::list_dumps(dirs);
+    CHECK(listed.size() == 2);
+    CHECK(listed.size() == 2 && listed[0].name == "gmod_win64_20261114_093200_1_crash.mdmp" && std::abs(listed[0].mtime - 1700000100.0) < 2.0);
+    CHECK(listed.size() == 2 && std::abs(listed[1].mtime - 1700000000.0) < 2.0);
+    CHECK(crashinfo::list_dumps({(game / "nope").u8string()}).empty());
+    CHECK(crashinfo::list_dumps({}).empty());
+    fs::remove_all(game.parent_path(), ec);
+
+    // The words of the answer: client or server, the dump, the exit code, relaunch for the client, never a "frozen" claim.
+    CHECK(std::string(crashinfo::crash_code("client")) == "client_crashed");
+    CHECK(std::string(crashinfo::crash_code("srcds")) == "server_crashed");
+    crashinfo::Verdict cv;
+    cv.cause = Cause::Crashed;
+    cv.dump = "gmod_win64_20261114_093156_1_accessviolation.mdmp";
+    cv.evidence = {"a crash dump was written"};
+    std::string msg = crashinfo::crash_message("client", "client-9", 777, 4.0, cv, true, 0xC0000005u);
+    CHECK(msg.find("client-9") != std::string::npos && msg.find("777") != std::string::npos);
+    CHECK(msg.find(cv.dump) != std::string::npos && msg.find("crashes") != std::string::npos);
+    CHECK(msg.find("instances_launch") != std::string::npos && msg.find("human") != std::string::npos);
+    CHECK(msg.find("0xC0000005") != std::string::npos);
+    cv.dump.clear();
+    msg = crashinfo::crash_message("client", "client-9", 777, 4.0, cv, true, 1);
+    CHECK(msg.find("No crash dump") != std::string::npos && msg.find("killed") != std::string::npos);
+    msg = crashinfo::crash_message("srcds", "srv", 5, 1.0, cv, false, 0);
+    CHECK(msg.find("server") != std::string::npos && msg.find("instances_launch") == std::string::npos);
+    msg = crashinfo::quit_message("client-9", 777, 4.0, "it was closed on request");
+    CHECK(msg.find("client-9") != std::string::npos && msg.find("closed on request") != std::string::npos && msg.find("crash") == std::string::npos);
+
+    // The same dead-instance entry that instances_list shows.
+    cv.dump = "d.mdmp";
+    json e = crashinfo::crashed_entry("client-9", "client", 777, 4.0, cv, true, 0xC0000005u);
+    CHECK(e.value("state", "") == "crashed" && e.value("id", "") == "client-9" && e.value("pid", 0) == 777);
+    CHECK(e["crash"].value("dump", "") == "d.mdmp" && e["crash"].value("exit_code", 0u) == 0xC0000005u);
+    CHECK(e["crash"]["evidence"].is_array());
+
+#ifdef _WIN32
+    // A handle opened while the process lives still reads its exit code and end time after it ended.
+    {
+        STARTUPINFOA si{};
+        si.cb = sizeof si;
+        PROCESS_INFORMATION pi{};
+        char cmd[] = "cmd.exe /c exit 3221225477";  // 0xC0000005
+        bool started = CreateProcessA(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+        CHECK(started);
+        if (started) {
+            void *w = plat::process_watch_open(pi.dwProcessId);
+            WaitForSingleObject(pi.hProcess, 10000);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            plat::ProcInfo info;
+            CHECK(w != nullptr && plat::process_watch_query(w, info, 5000));
+            CHECK(info.exited && info.exit_code == 0xC0000005u);
+            double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+            CHECK(info.start_unix > now - 60 && info.exit_unix >= info.start_unix && info.exit_unix < now + 5);
+            plat::process_watch_close(w);
+        }
+        // A process that lives: not exited, the start time is known; waiting for it times out.
+        PROCESS_INFORMATION pj{};
+        char cmd2[] = "cmd.exe /c ping -n 30 127.0.0.1 >nul";
+        if (CreateProcessA(nullptr, cmd2, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pj)) {
+            void *w = plat::process_watch_open(pj.dwProcessId);
+            plat::ProcInfo info;
+            CHECK(w != nullptr && plat::process_watch_query(w, info, 100) && !info.exited && info.start_unix > 0);
+            TerminateProcess(pj.hProcess, 1);
+            WaitForSingleObject(pj.hProcess, 10000);
+            CHECK(plat::process_watch_query(w, info, 0) && info.exited && info.exit_code == 1);  // killed from outside: code 1
+            plat::process_watch_close(w);
+            CloseHandle(pj.hThread);
+            CloseHandle(pj.hProcess);
+        }
+    }
+#endif
+    CHECK(plat::process_watch_open(0) == nullptr);
+}
+
+#ifdef _WIN32
+// B6 end to end in one process: this process is the coordinator, a real child process is the "instance" (its module is not
+// there: calls to its port fail like they do for a game that died), and the answers to a call for it are checked after
+// it was ended the ways a game ends: crash with a dump, crash without one, clean exit, asked to quit, said goodbye.
+struct Child {
+    PROCESS_INFORMATION pi{};
+    bool start() {
+        STARTUPINFOA si{};
+        si.cb = sizeof si;
+        char cmd[] = "cmd.exe /c ping -n 30 127.0.0.1 >nul";
+        return CreateProcessA(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi) != 0;
+    }
+    void end(UINT code) {
+        TerminateProcess(pi.hProcess, code);
+        WaitForSingleObject(pi.hProcess, 10000);
+    }
+    ~Child() {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+};
+
+static void test_crash_report_coordinator() {
+    tools::register_core();     // status
+    tools::register_session();  // game_terminate
+    auto &cfg = agent::config();
+    std::string saved_token = cfg.token, saved_id = cfg.instance_id, saved_dir = cfg.game_dir;
+    cfg.token = "coretests-token-0123456789abcdef";
+    cfg.instance_id = "coordinator-test";
+    int port = httpsrv::start(39500, 50, cfg.token);
+    CHECK(port != 0);
+    if (!port) return;
+    cfg.base_port = port;
+    cfg.port = port;
+    coordinator::start();
+    CHECK(coordinator::is_coordinator());
+
+    fs::path game = fs::temp_directory_path() / "gmod-mcp-coretests-crash2" / "game";
+    std::error_code ec;
+    fs::remove_all(game.parent_path(), ec);
+    fs::create_directories(game / "garrysmod");
+    fs::create_directories(game / "crashes");
+    auto write_dump = [&](const char *name) { std::ofstream(game / "crashes" / name, std::ios::binary) << "MDMP"; };
+    auto heartbeat = [&](const std::string &id, const std::string &mode, DWORD pid, bool closing = false) {
+        httplib::Client cli("127.0.0.1", port);
+        cli.set_bearer_token_auth(cfg.token);
+        json j{{"id", id}, {"port", 1}, {"pid", pid}, {"mode", mode}, {"game_dir", (game / "garrysmod").u8string()}, {"map", ""}};
+        if (closing) j["closing"] = true;
+        auto r = cli.Post("/internal/heartbeat", j.dump(), "application/json");
+        return r && r->status == 200;
+    };
+    auto status_of = [&](const std::string &id, const char *tool = "status") {
+        json r = mcp::call_tool(tool, json{{"instance", id}});
+        return r.value("structuredContent", json::object()).value("error", json::object());
+    };
+    auto state_in_list = [&](const std::string &id) {
+        for (const auto &e : coordinator::instances())
+            if (e.value("id", "") == id) return e.value("state", "");
+        return std::string("absent");
+    };
+
+    // 1. A crash with a dump written just before: client_crashed, the dump, the exit code; instances_list shows it as crashed.
+    {
+        Child c;
+        CHECK(c.start());
+        CHECK(heartbeat("crash-1", "client", c.pi.dwProcessId));
+        CHECK(state_in_list("crash-1") == "running");
+        write_dump("gmod_win64_20261114_101010_1_accessviolation.mdmp");
+        c.end(0xC0000005u);
+        json e = status_of("crash-1");
+        CHECK(e.value("code", "") == "client_crashed");
+        CHECK(e.value("message", "").find("gmod_win64_20261114_101010_1_accessviolation.mdmp") != std::string::npos);
+        CHECK(e.value("details", json::object()).value("dump", "") == "gmod_win64_20261114_101010_1_accessviolation.mdmp");
+        CHECK(e.value("details", json::object()).value("exit_code", 0u) == 0xC0000005u);
+        CHECK(state_in_list("crash-1") == "crashed");
+        // The same answer a second time (cached, the dump is not "used up").
+        CHECK(status_of("crash-1").value("code", "") == "client_crashed");
+        json entry;
+        for (const auto &x : coordinator::instances())
+            if (x.value("id", "") == "crash-1") entry = x;
+        CHECK(entry["crash"].value("dump", "") == "gmod_win64_20261114_101010_1_accessviolation.mdmp" && entry.value("pid", 0u) == c.pi.dwProcessId);
+    }
+    // 2. Another crash, no new dump: the first crash's dump is not given again.
+    {
+        Child c;
+        CHECK(c.start() && heartbeat("crash-2", "client", c.pi.dwProcessId));
+        c.end(0xC0000005u);
+        json e = status_of("crash-2");
+        CHECK(e.value("code", "") == "client_crashed" && e["details"]["dump"].is_null());
+    }
+    // 3. A dedicated server that crashed: server_crashed.
+    {
+        Child c;
+        CHECK(c.start() && heartbeat("srv-1", "srcds", c.pi.dwProcessId));
+        c.end(0xC0000094u);
+        CHECK(status_of("srv-1").value("code", "") == "server_crashed");
+    }
+    // 4. A clean exit (code 0): instance_gone, not a crash, not in the list as crashed.
+    {
+        Child c;
+        CHECK(c.start() && heartbeat("quit-1", "client", c.pi.dwProcessId));
+        c.end(0);
+        json e = status_of("quit-1");
+        CHECK(e.value("code", "") == "instance_gone" && e.value("message", "").find("crash") == std::string::npos);
+        CHECK(state_in_list("quit-1") == "absent");
+    }
+    // 5. Said goodbye (its module closed with the game), then the process ended with a code that would otherwise look abnormal.
+    {
+        Child c;
+        CHECK(c.start() && heartbeat("bye-1", "client", c.pi.dwProcessId));
+        write_dump("gmod_win64_20261114_101111_1_crash.mdmp");  // another game's dump around the same time
+        CHECK(heartbeat("bye-1", "client", c.pi.dwProcessId, true));
+        c.end(1);
+        json e = status_of("bye-1");
+        CHECK(e.value("code", "") == "instance_gone" && e.value("message", "").find("crash") == std::string::npos);
+    }
+    // 6. Asked to end through the coordinator (game_terminate relayed to it): ended on request, not a crash. The call itself
+    // fails (nothing listens on the fake port) and the child is still alive then: that is instance_unreachable.
+    {
+        Child c;
+        CHECK(c.start() && heartbeat("req-1", "client", c.pi.dwProcessId));
+        json e = status_of("req-1", "game_terminate");
+        CHECK(e.value("code", "") == "instance_unreachable");
+        c.end(1);
+        e = status_of("req-1");
+        CHECK(e.value("code", "") == "instance_gone" && e.value("message", "").find("asked to end") != std::string::npos);
+    }
+    // 7. The process dies while a call to it is in flight (the connection breaks first, the process object a moment later).
+    {
+        Child c;
+        CHECK(c.start() && heartbeat("flight-1", "client", c.pi.dwProcessId));
+        write_dump("gmod_win64_20261114_101212_1_accessviolation.mdmp");
+        std::thread killer([&] {
+            plat::sleep_ms(400);
+            c.end(0xC0000005u);
+        });
+        json e = status_of("flight-1");  // the call fails at once, then waits for the process to end
+        killer.join();
+        CHECK(e.value("code", "") == "client_crashed");
+        CHECK(e.value("message", "").find("gmod_win64_20261114_101212_1_accessviolation.mdmp") != std::string::npos);
+    }
+    // 8. Alive but not answering: unchanged (instance_unreachable, "still running").
+    {
+        Child c;
+        CHECK(c.start() && heartbeat("hung-1", "client", c.pi.dwProcessId));
+        json e = status_of("hung-1");
+        CHECK(e.value("code", "") == "instance_unreachable" && e.value("message", "").find("still running") != std::string::npos);
+        c.end(1);
+    }
+    // 9. An id that never existed.
+    CHECK(status_of("never-1").value("code", "") == "unknown_instance");
+
+    coordinator::stop();
+    httpsrv::stop();
+    cfg.token = saved_token;
+    cfg.instance_id = saved_id;
+    cfg.game_dir = saved_dir;
+    fs::remove_all(game.parent_path(), ec);
+}
+#endif
+
 int main() {
     test_cmdline();
+    test_crash_report();
     test_console_wait();
     test_errors_map_tags();
     test_errors_filter_before_limit();
@@ -574,6 +926,9 @@ int main() {
     test_argcheck();
     test_job_ids();
     test_lua_mount_paths();
+#ifdef _WIN32
+    test_crash_report_coordinator();
+#endif
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;
     fs::remove_all(root.parent_path(), ec);

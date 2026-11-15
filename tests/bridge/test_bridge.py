@@ -14,6 +14,9 @@ Cases (default: a f):
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
   lua_mount_verify instances_launch {lua_mount}: the result reports the mount each engine really has (fake game server)
+  crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
+         with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
+         in flight when the client dies reports the crash, an old dump is not taken for its own (Windows)
   lua_mount instances_launch {lua_mount}: -mcp_lua_mount passed to the client (stand-in game), bad folders refused
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
@@ -25,7 +28,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify crash orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -244,6 +247,10 @@ class Fake(http.server.BaseHTTPRequestHandler):
             except (OSError, ValueError): pid = 0
             sc = {"instances": [{"id": "fake-%d" % pid, "pid": pid, "port": 1, "mode": "client"}] if pid else []}
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "map_load" and srv.map_load_hook:
+            srv.map_load_hook(args)  # blocks until the test lets the client die: then the connection is cut, no answer
+            self.close_connection = True
+            return
         if name == "lua_mount" and srv.lua_mount_answer:
             with srv.lock: srv.lua_mount_calls.append(args)
             sc = srv.lua_mount_answer(args)
@@ -271,6 +278,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.version, self.token = version, token
         self.instructions = "fake instructions"
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
+        self.map_load_hook = None
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     def handle_error(self, request, client_address):
@@ -847,6 +855,108 @@ def case_lua_mount_verify():
     b.close(); srv.stop()
     shutil.rmtree(game, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
+
+
+def case_crash():
+    """Crash report (B6): a client this session launched that crashed is reported as client_crashed (dump name, exit code),
+    shown by instances_list as crashed, and told apart from a clean exit. The stand-in game ends on a trigger file with a
+    chosen exit code and writes a fake .mdmp into <game>/crashes first; the fake game server plays the module."""
+    print("== CRASH: client_crashed, dump match, clean exit is not a crash", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("CRASH stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+
+    def run(tag, exit_code, dump, old_dump=False, map_name=None):
+        game = tempfile.mkdtemp(prefix="gmcp-crash-game-")
+        shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
+        if old_dump:  # another game's dump, from before this one even started
+            old = os.path.join(crashes, "gmod_win64_20200101_000000_1_crash.mdmp")
+            open(old, "wb").write(b"MDMP"); os.utime(old, (time.time() - 3600, time.time() - 3600))
+        work = tempfile.mkdtemp(prefix="gmcp-crash-"); pid_file, trigger = os.path.join(work, "pid.txt"), os.path.join(work, "go")
+        port, env = free_port(), isolated_config(with_token=True)
+        env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes,
+                   GMCP_FAKE_EXIT=str(exit_code), GMCP_FAKE_DUMP="1" if dump else "0")
+        srv = FakeServer(port, version=bridge_version()); srv.pid_file = pid_file
+        b = Bridge(port, env)
+        out = {"game": game}
+        def pid_now():
+            try: return int(open(pid_file).read().strip() or 0)
+            except (OSError, ValueError): return 0
+        def go(): open(trigger, "w").close()
+        args = {"count": 1, "owner": tag, "timeout_s": 30, "game_dir": game}
+        if map_name:
+            started = threading.Event()
+            def hook(a):
+                started.set(); go()
+                for _ in range(100):
+                    if not alive(pid_now()): break
+                    time.sleep(0.1)
+            srv.map_load_hook = hook
+            args["map"] = map_name
+            r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, 90)
+            out["launch"] = (r or {}).get("result", {}).get("structuredContent", {})
+            out["pid"] = pid_now()
+        else:
+            r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, 60)
+            sc = (r or {}).get("result", {}).get("structuredContent", {})
+            inst = (sc.get("instances") or [{}])[0]
+            out["launch"], out["pid"], out["id"] = sc, pid_now(), inst.get("instance")
+            go()
+            for _ in range(100):
+                if not alive(out["pid"]): break
+                time.sleep(0.1)
+        srv.stop()  # the module is gone with the game: nothing answers any more
+        time.sleep(0.3)
+        r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+        out["list"] = (r or {}).get("result", {}).get("structuredContent", {})
+        r = b.req("tools/call", {"name": "status", "arguments": {"instance": out.get("id") or "x"}}, 20)
+        out["status"] = (r or {}).get("result", {}).get("structuredContent", {})
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": tag}}, 20)
+        b.close()
+        shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+        return out
+
+    DUMP = "gmod_win64_20261114_120000_1_accessviolation.mdmp"
+    # 1. an access violation with a dump written just before.
+    o = run("c1", 0xC0000005, True)
+    e = o["status"].get("error", {})
+    check("CRASH access violation with a dump: client_crashed", e.get("code") == "client_crashed", o["status"])
+    check("CRASH the answer names the dump file, the exit code, the pid and says to relaunch",
+          DUMP in e.get("message", "") and "0xC0000005" in e.get("message", "") and str(o["pid"]) in e.get("message", "") and "instances_launch" in e.get("message", ""), e)
+    check("CRASH details: instance, pid, dump, exit_code, evidence", e.get("details", {}).get("dump") == DUMP and e["details"].get("exit_code") == 0xC0000005
+          and e["details"].get("pid") == o["pid"] and e["details"].get("instance") == o["id"] and e["details"].get("evidence"), e)
+    crashed = [i for i in o["list"].get("instances", []) if i.get("state") == "crashed"]
+    check("CRASH instances_list shows it as crashed with the dump, the owner and the pid",
+          len(crashed) == 1 and crashed[0].get("pid") == o["pid"] and crashed[0].get("crash", {}).get("dump") == DUMP and crashed[0].get("owner") == "c1"
+          and crashed[0]["crash"].get("exit_code") == 0xC0000005, o["list"])
+    check("CRASH it is no longer 'launched_not_answering'", not o["list"].get("launched_not_answering"), o["list"])
+    # 2. a crash that wrote no dump, with an old dump of another game in the folder: the old one is not taken.
+    o = run("c2", 0xC0000005, False, old_dump=True)
+    e = o["status"].get("error", {})
+    check("CRASH access violation without a dump (an hour-old dump in the folder): client_crashed, dump null",
+          e.get("code") == "client_crashed" and e.get("details", {}).get("dump") is None and "No crash dump" in e.get("message", "") and "gmod_win64_2020" not in e.get("message", ""), e)
+    # 3. abnormal exit without any dump.
+    o = run("c3", 1, False)
+    e = o["status"].get("error", {})
+    check("CRASH exit code 1 without a dump: client_crashed, says it may have been killed from outside",
+          e.get("code") == "client_crashed" and "killed" in e.get("message", ""), e)
+    # 4. a clean exit.
+    o = run("c4", 0, False)
+    e = o["status"].get("error", {})
+    check("CRASH exit code 0: instance_gone, not a crash", e.get("code") == "instance_gone" and "crash" not in e.get("message", "").lower(), e)
+    check("CRASH a clean exit is not listed as crashed", not [i for i in o["list"].get("instances", []) if i.get("state") == "crashed"], o["list"])
+    # 5. a map_load in flight when the client dies.
+    o = run("c5", 0xC0000005, True, map_name="gm_construct")
+    inst = (o["launch"].get("instances") or [{}])[0]
+    me = inst.get("map_error", {})
+    check("CRASH map_load in flight when the client crashed: map_error is client_crashed with the dump",
+          me.get("code") == "client_crashed" and DUMP in me.get("message", "") and me.get("details", {}).get("dump") == DUMP, o["launch"])
 
 
 def case_launch():
@@ -1578,8 +1688,8 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "orphan", "edge", "version", "feedback", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "crash", "orphan", "edge", "version", "feedback", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

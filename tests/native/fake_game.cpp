@@ -1,6 +1,9 @@
 // Stand-in for gmod_win64.exe in the bridge tests: a game in which gmod-mcp never loads (it never answers).
 // Lives 120 s at most, so a failed test leaves nothing behind for long. When GMCP_FAKE_ARGV names a file, it appends
 // its raw command line there (one line per start, UTF-8), so a test can check what the bridge passed.
+// Crash mode (tests of the crash report): when GMCP_FAKE_TRIGGER names a file, the game waits for it to exist, then writes
+// a stand-in minidump into the folder GMCP_FAKE_CRASH_DIR (unless GMCP_FAKE_DUMP is 0) and ends at once with the exit code
+// GMCP_FAKE_EXIT (decimal, default 3221225477 = 0xC0000005), like a game that crashed (or, with 0, that quit).
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +44,29 @@ int main(int argc, char **argv) {
     }
     (void)argc;
     (void)argv;
-    std::this_thread::sleep_for(std::chrono::seconds(120));
+    const char *trigger = std::getenv("GMCP_FAKE_TRIGGER");
+    for (int i = 0; i < 1200; ++i) {  // 120 s
+        if (trigger && *trigger) {
+            if (FILE *t = std::fopen(trigger, "rb")) {
+                std::fclose(t);
+                const char *dir = std::getenv("GMCP_FAKE_CRASH_DIR");
+                const char *dump = std::getenv("GMCP_FAKE_DUMP");
+                if (dir && *dir && !(dump && std::string(dump) == "0")) {
+                    std::string p = std::string(dir) + "/gmod_win64_20261114_120000_1_accessviolation.mdmp";
+                    if (FILE *d = std::fopen(p.c_str(), "wb")) {
+                        std::fputs("MDMP", d);
+                        std::fclose(d);
+                    }
+                }
+                const char *code = std::getenv("GMCP_FAKE_EXIT");
+#ifdef _WIN32
+                ExitProcess(code && *code ? (UINT)std::strtoul(code, nullptr, 10) : 0xC0000005u);
+#else
+                return code && *code ? std::atoi(code) : 1;
+#endif
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     return 0;
 }

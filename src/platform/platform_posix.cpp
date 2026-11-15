@@ -101,6 +101,11 @@ uint64_t process_start_stamp(uint32_t pid) {
     return 1;
 }
 
+// No handle that outlives a process that is not our child: exit codes of other processes cannot be read.
+void *process_watch_open(uint32_t) { return nullptr; }
+bool process_watch_query(void *, ProcInfo &, int) { return false; }
+void process_watch_close(void *) {}
+
 bool read_file(const std::string &path, std::string &out) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
