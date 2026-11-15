@@ -82,5 +82,11 @@ int process_has_foreground();
 // Sends WM_ACTIVATE(WA_INACTIVE) to this process's main game window, as Windows does when another window takes the
 // focus. Returns false if no such window was found (or on other platforms).
 bool send_focus_lost();
+// Close guard (Windows only; false elsewhere and when no game window exists yet): subclasses this process's main game
+// window so that a close request (the X button, Alt+F4, the taskbar: WM_SYSCOMMAND SC_CLOSE or WM_CLOSE) first calls
+// `before` on the window's thread. When `before` returns true the request is held back and posted again `delay_ms`
+// later from a helper thread (so it goes through even if the game is frozen); otherwise it goes through at once.
+// Installed once; later calls return true without doing anything.
+bool install_close_guard(bool (*before)(), int delay_ms);
 
 }  // namespace plat

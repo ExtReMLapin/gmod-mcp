@@ -204,6 +204,7 @@ std::vector<std::string> local_ipv4_addresses() {
 
 int process_has_foreground() { return -1; }
 bool send_focus_lost() { return false; }
+bool install_close_guard(bool (*)(), int) { return false; }
 
 bool patch_pointer(void **slot, void *value) {
     long page = sysconf(_SC_PAGESIZE);

@@ -201,6 +201,16 @@ Typical flow:
 4. Edit, then `lua_reload` or `map_load`, then test.
 5. Done: `instances_close {owner}` (or `lua_mount {path: null}` then `map_load`).
 
+Clients started by `instances_launch` carry `-mcp_test_client`. Their command line sets the archived convars `fps_max`,
+`fps_max_nofocus` and `snd_mute_losefocus` (FCVAR_ARCHIVE: a clean quit saves them into `cfg/config.cfg`, which the
+user's own game shares). Before such a client quits cleanly, the module sets each one back to the value `cfg/config.cfg`
+has at that moment (the user's game may have written it since the launch), or to the convar's default when the file has
+no line for it: `game_quit`, a `quit`/`exit` sent with `console_exec`, the main menu's Quit button and the window's close
+button (the X, Alt+F4: the close request is held back 0.4 s while the values are put back) are covered. Not covered: a
+`quit` the user types by hand in that client's console, and a process killed from outside (which writes nothing). A
+`convar_set` of one of these three on such a client is reverted at quit too. `instances_close` kills the process:
+nothing is written. The same options on a game you start by hand are not restored: set them back yourself before it quits.
+
 Clients started by `instances_launch` carry `-dxlevel 95`: with it the engine neither reads nor writes the user's video
 settings (resolution, anti-aliasing), so test clients do not change the way the user's own game starts. A client you
 start by hand with `-w`/`-h` does: add `-dxlevel 95` to it.

@@ -22,6 +22,7 @@ struct Config {
     std::string tmp_dir;   // .../garrysmod/lua/mcpagent_tmp (absolute)
     std::string data_dir;  // .../garrysmod/data/mcpagent (absolute)
     std::string instance_id;
+    bool test_client = false;  // -mcp_test_client: started by the bridge (instances_launch); see native.test_client
     std::string version = GMOD_MCP_VERSION;
 };
 

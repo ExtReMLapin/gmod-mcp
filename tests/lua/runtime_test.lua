@@ -395,6 +395,81 @@ check(rk.ok and rk.result.state == "done" and type(rk.result.reports[1]) == "tab
 local rc = run_job({ code = "for i = 1, 1100 do job:report(i) end return 1" })
 check(rc.ok and #rc.result.reports == 1000 and rc.result.reports_dropped == 100, "report count cap")
 
+-- Test client (launched by the bridge): the archived convars its command line changed (fps_max...) are given back to the
+-- user's values, read from cfg/config.cfg at that moment, before a clean quit; a convar without a line there gets its default.
+do
+	local cfg_text = table.concat({
+		"unbindall", 'bind "a" "+attack"', '// fps_max "1"', 'name "someone"', 'fps_max "240"', "FPS_MAX_NOFOCUS 60",
+		'snd_mute_losefocus "1"', 'fps_max "144"', "" }, "\r\n")
+	local m = A.parse_config_values(cfg_text)
+	check(m.fps_max == "144", "config.cfg: the last line of a convar wins")
+	check(m.fps_max_nofocus == "60" and m.snd_mute_losefocus == "1", "config.cfg: names are case-insensitive, unquoted values read")
+	check(m.name == "someone" and m["//"] == nil and m.bind == nil, "config.cfg: comments and binds are not convars")
+	check(next(A.parse_config_values("")) == nil and next(A.parse_config_values(nil)) == nil, "config.cfg: empty or missing file")
+
+	local state = { fps_max = { "20", "300" }, fps_max_nofocus = { "20", "60" }, engine_no_focus_sleep = { "0", "50" },
+		snd_mute_losefocus = { "0", "1" } }
+	local function get(n) return state[n] and { current = state[n][1], default = state[n][2] } end
+	local names = { "fps_max", "fps_max_nofocus", "engine_no_focus_sleep", "snd_mute_losefocus" }
+	local plan = A.plan_convar_restore(names, 'fps_max "240"\nsnd_mute_losefocus "1"\nengine_no_focus_sleep "bad;x"\n', get)
+	local got = {}
+	for _, c in ipairs(plan) do got[c.name] = c.value end
+	check(got.fps_max == "240" and got.snd_mute_losefocus == "1", "plan: the user's value from config.cfg")
+	check(got.fps_max_nofocus == "60", "plan: no line in config.cfg: the convar's default")
+	check(got.engine_no_focus_sleep == "50", "plan: an unsafe value in config.cfg is ignored, the default is used")
+	check(#plan == 4, "plan: four changes")
+	plan = A.plan_convar_restore({ "fps_max", "nope" }, 'fps_max "20"', get)
+	check(#plan == 0, "plan: nothing to do when the convar already has the user's value; unknown convars skipped")
+
+	-- Wiring: game_quit and console_exec quit/exit on a test client; nothing changes on a user's own game.
+	local log, files = {}, { ["cfg/config.cfg"] = 'fps_max "240"\nsnd_mute_losefocus "1"\n' }
+	local old_rcc, old_gci, old_cmd = RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand
+	RunConsoleCommand = function(...) log[#log + 1] = table.concat({ ... }, " ") end
+	game.ConsoleCommand = function(c) log[#log + 1] = "GAME:" .. c end
+	__mcpagent_native.user_config = function() return files["cfg/config.cfg"] end
+	GetConVar_Internal = function(n)
+		local st = state[n]
+		if not st then return nil end
+		return { GetString = function() return st[1] end, GetDefault = function() return st[2] end, GetName = function() return n end }
+	end
+	local q = call("quit", {})
+	check(q.ok and #log == 1 and log[1] == "GAME:quit\n", "user's own game: quit only: " .. table.concat(log, "|"))
+	log = {}
+	__mcpagent_native.test_client = true
+	q = call("quit", {})
+	local joined = table.concat(log, "|")
+	check(q.ok and q.result.restored == 4, "test client: quit reports the restored convars")
+	check(log[#log] == "GAME:quit\n" and #log == 5, "test client: four restores, then quit: " .. joined)
+	check(joined:find("fps_max 240", 1, true) and joined:find("fps_max_nofocus 60", 1, true)
+		and joined:find("engine_no_focus_sleep 50", 1, true) and joined:find("snd_mute_losefocus 1", 1, true), "test client: the user's values: " .. joined)
+	log = {}
+	check(call("console_exec", { cmd = "quit" }).ok and log[#log] == "GAME:quit\n" and #log == 5, "console_exec quit restores first: " .. table.concat(log, "|"))
+	log = {}
+	call("console_exec", { cmd = "exit" })
+	check(#log == 5 and log[#log] == "GAME:exit\n", "console_exec exit restores first")
+	log = {}
+	local rc = call("restore_convars", {})
+	check(rc.ok and rc.result.restored == 4 and #log == 4, "restore_convars (window close) restores without quitting: " .. table.concat(log, "|"))
+	-- The main menu's Quit button (RunGameUICommand "quit") on a test client.
+	log = {}
+	local old_gui, old_eng = RunGameUICommand, __mcpagent_native.engine_cmd
+	RunGameUICommand = function(c) log[#log + 1] = "GUI:" .. tostring(c) end
+	__mcpagent_native.engine_cmd = function(l) log[#log + 1] = "ENG:" .. l return true end
+	check(A.wrap_menu_quit() and not A.wrap_menu_quit(), "menu quit: wrapped once")
+	RunGameUICommand("quit")
+	check(#log == 5 and log[1] == 'ENG:fps_max "240"' and log[5] == "ENG:quit", "menu quit button: restores, then quits through the console path: " .. table.concat(log, "|"))
+	log = {}
+	RunGameUICommand("openserverbrowser")
+	check(#log == 1 and log[1] == "GUI:openserverbrowser", "other gameui commands pass through")
+	RunGameUICommand, __mcpagent_native.engine_cmd, A.quit_wrapped = old_gui, old_eng, nil
+	log = {}
+	call("console_exec", { cmd = "echo hi" })
+	check(#log == 1 and log[1] == "GAME:echo hi\n", "other commands do not restore")
+	__mcpagent_native.test_client = nil
+	__mcpagent_native.user_config = nil
+	RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand = old_rcc, old_gci, old_cmd
+end
+
 -- A second Lua state (new map): reload the runtime with another generation. Its ids differ from the first state's.
 local function new_state(generation)
 	__mcpagent = {}
