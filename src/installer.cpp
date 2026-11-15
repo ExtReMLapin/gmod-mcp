@@ -96,9 +96,9 @@ std::string ensure_menu_patch(const std::string &game_dir, std::string &err, con
             err = "cannot back up " + path;
             return "";
         }
-        out = s;
-        if (!out.empty() && out.back() != '\n') out += eol;
-        out += eol + want + eol;
+        // Always one line break, the block, one line break: remove_menu_patch takes exactly these two away, so the
+        // original comes back byte for byte (with or without a final line break, empty, CRLF...).
+        out = s + eol + want + eol;
         state = "installed";
     }
     // Never write a menu.lua that does not compile.
@@ -121,14 +121,22 @@ bool remove_menu_patch(const std::string &game_dir, std::string &err) {
     }
     size_t b = 0, e = 0;
     if (!find_block(s, b, e)) return true;
-    // Also drop the line break that follows the block and the blank line added before it.
+    // Take away exactly what ensure_menu_patch added: the line break before the block and the one after it, in the
+    // block's own line-ending style.
+    std::string eol = s.find('\r', b) < e ? "\r\n" : "\n";
     size_t after = e;
-    if (after < s.size() && s[after] == '\r') ++after;
-    if (after < s.size() && s[after] == '\n') ++after;
+    if (s.compare(after, eol.size(), eol) == 0) after += eol.size();
     size_t before = b;
-    if (before >= 2 && s[before - 1] == '\n' && s[before - 2] == '\n') before -= 1;
-    else if (before >= 4 && s.compare(before - 4, 4, "\r\n\r\n") == 0) before -= 2;
-    return write_atomic(path, s.substr(0, before) + s.substr(after), err);
+    if (before >= eol.size() && s.compare(before - eol.size(), eol.size(), eol) == 0) before -= eol.size();
+    std::string out = s.substr(0, before) + s.substr(after);
+    // Installed by an older version, which added a blank line even when the original had no final line break: the
+    // backup of the original says so when it is exactly the result without one line break.
+    std::string orig;
+    if (out.size() >= eol.size() && out.compare(out.size() - eol.size(), eol.size(), eol) == 0 &&
+        plat::read_file(path + ".mcpagent.bak", orig) && orig.size() + eol.size() == out.size() &&
+        out.compare(0, orig.size(), orig) == 0)
+        out = orig;
+    return write_atomic(path, out, err);
 }
 
 }  // namespace installer

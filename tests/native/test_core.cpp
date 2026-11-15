@@ -25,6 +25,7 @@
 #include "console.h"
 #include "coordinator.h"
 #include "http_server.h"
+#include "installer.h"
 #include "crashinfo.h"
 #include "mcp.h"
 #include "lua_mount.h"
@@ -911,7 +912,63 @@ static void test_crash_report_coordinator() {
 }
 #endif
 
+
+// menu.lua loader block: install then remove must give back the original bytes, whatever the original ends with.
+static void test_installer_roundtrip() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-installer";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    struct Case { const char *name; std::string content; };
+    const Case cases[] = {
+        {"lf_trailing", "line1\nline2\n"},
+        {"crlf_trailing", "line1\r\nline2\r\n"},
+        {"lf_no_trailing", "line1\nline2"},
+        {"crlf_no_trailing", "a\r\nb"},
+        {"empty", ""},
+        {"one_char", "x"},
+        {"blank_lines_end", "x\n\n\n"},
+        {"only_newline", "\n"},
+        {"mixed_no_trailing", "a\r\nb\nc"},
+    };
+    for (const auto &c : cases) {
+        std::string g = (base / c.name).u8string();
+        fs::create_directories(base / c.name / "lua" / "menu");
+        std::string menu = g + "/lua/menu/menu.lua", err, got;
+        CHECK(plat::write_file(menu, c.content));
+        CHECK(installer::ensure_menu_patch(g, err) == "installed");
+        plat::read_file(menu, got);
+        CHECK(got.find("-- MCPAGENT BEGIN") != std::string::npos);
+        CHECK(installer::ensure_menu_patch(g, err) == "unchanged");
+        CHECK(installer::remove_menu_patch(g, err));
+        plat::read_file(menu, got);
+        if (got != c.content) std::printf("  roundtrip differs for %s\n", c.name);
+        CHECK(got == c.content);
+        // a second cycle after the removal gives the same result (the backup is already there)
+        CHECK(installer::ensure_menu_patch(g, err) == "installed");
+        CHECK(installer::remove_menu_patch(g, err));
+        plat::read_file(menu, got);
+        CHECK(got == c.content);
+    }
+    // An install written by an older version (blank line before the block, even when the original had no final
+    // newline): the backup tells what the original was.
+    {
+        std::string g = (base / "legacy").u8string();
+        fs::create_directories(base / "legacy" / "lua" / "menu");
+        std::string menu = g + "/lua/menu/menu.lua", err, got, installed;
+        plat::write_file(menu, "a\nb");
+        installer::ensure_menu_patch(g, err);
+        plat::read_file(menu, installed);
+        size_t b = installed.find("-- MCPAGENT BEGIN");
+        plat::write_file(menu, installed.substr(0, b) + "\n" + installed.substr(b));  // old layout: one more line break
+        CHECK(installer::remove_menu_patch(g, err));
+        plat::read_file(menu, got);
+        CHECK(got == "a\nb");
+    }
+    fs::remove_all(base, ec);
+}
+
 int main() {
+    test_installer_roundtrip();
     test_cmdline();
     test_crash_report();
     test_console_wait();
