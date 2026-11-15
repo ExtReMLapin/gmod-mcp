@@ -354,6 +354,16 @@ that writes there changes your game too.
 > started could overwrite it: if your game opens small, set the resolution again in the video options. Clients you
 > start by hand with `-w`/`-h` still save their size: add `-dxlevel 95` to avoid it.)
 
+> **Test clients leave your frame cap and focus options alone.** `instances_launch` starts its clients with `+fps_max 20`
+> (30 for the `normal` preset), `+fps_max_nofocus` and `+snd_mute_losefocus 0`. Those convars are saved into
+> `cfg/config.cfg` when a game quits cleanly, and your own game reads the same file: a test client that quit would have
+> left your `fps_max` at 20. The clients now carry `-mcp_test_client`, and before one quits cleanly (`game_quit`, a `quit`
+> sent through `console_exec`, the main menu's Quit button, the window's close button) the module sets each of these
+> convars back to the value your `config.cfg` has at that moment, or to the convar's default when the file has no line
+> for it. Not covered: a `quit` typed by hand in a test client's console. `instances_close` kills the process, which
+> saves nothing. (A client that older versions started and then quit may have changed `fps_max` in your config: check it
+> in the options.)
+
 ## Configuration
 
 | Launch option | Effect |
