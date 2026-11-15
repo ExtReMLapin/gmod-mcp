@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
   "label": "MCP conformance",
-  "message": "not run (build failure)",
-  "color": "red"
+  "message": "2026-07-28 · 37/37, 2025-11-25 · 22/30 (8 excluded)",
+  "color": "brightgreen"
 }
