@@ -99,7 +99,9 @@ Verdict judge(const Facts &f, const std::vector<Dump> &dumps, const std::set<std
         hi = f.now_unix + kDumpAfter;
         near = f.last_seen_unix + 2;
     }
-    if (f.start_unix > 0) lo = std::max(lo, f.start_unix);
+    // Not before the process started, with a second of slack: the start time and a file's time come from clocks with a
+    // coarse tick, and a dump written within the same tick can read a hair earlier than the start.
+    if (f.start_unix > 0) lo = std::max(lo, f.start_unix - 1.0);
     Dump d;
     bool amb = false;
     if (match_dump(dumps, lo, hi, near, claimed, d, amb)) {

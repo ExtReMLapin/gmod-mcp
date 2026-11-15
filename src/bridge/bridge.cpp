@@ -1392,12 +1392,19 @@ void fp7137_gate_map_load(fp7137::Gate &gate, const json &msg, const std::atomic
 }
 
 // FP7137: after the game answered: say how long the call waited, and keep the slot until a background task ends.
+// The slot is given back before the answer goes out, so a client that reads the answer never sees it still held.
 void fp7137_finish_map_load(fp7137::Gate &gate, Relay &r, const json &msg) {
-    if (!r.reached || !r.response.is_object() || !r.response.contains("result") || !r.response["result"].is_object()) return;
+    if (!r.reached || !r.response.is_object() || !r.response.contains("result") || !r.response["result"].is_object()) {
+        gate.release();
+        return;
+    }
     json &res = r.response["result"];
     gate.annotate(res);
     json &task = res.contains("task") && res["task"].is_object() ? res["task"] : res;  // legacy: result.task, modern: the result
-    if (!task.contains("taskId") || !task["taskId"].is_string()) return;
+    if (!task.contains("taskId") || !task["taskId"].is_string()) {
+        gate.release();
+        return;
+    }
     std::string id = task["taskId"].get<std::string>();
     if (gate.waited_s() >= 0.05) task["statusMessage"] = "waited " + std::to_string((int)gate.waited_s()) + " s before the load started: " + gate.reason();
     json meta = params_of(msg).value("_meta", json());

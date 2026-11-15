@@ -968,6 +968,7 @@ static void test_installer_roundtrip() {
 }
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
     test_installer_roundtrip();
     test_cmdline();
     test_crash_report();
