@@ -109,9 +109,9 @@ first).
   client; `Entity:GetName`/`SetName` are server-only); `EyePos()`/`EyeAngles()` are only reliable inside rendering
   hooks (use `LocalPlayer():EyePos()` in a `lua_job`).
 
-- **Tell the user before launching**: Garry's Mod saves the window size of these clients as its own video setting, so
-  their next normal start opens at that size until they set their resolution back in the video options. Closing the
-  clients does not undo it.
+- The launched clients carry `-dxlevel 95`, so they neither read nor write the user's video settings (resolution,
+  anti-aliasing). Without that option, a client started with `-w`/`-h` overwrites them: if you start a client yourself
+  (Linux, or by hand), add `-dxlevel 95` and tell the user.
 - If the tool cannot find the game, pass `game_dir` (see "Finding the game folder" above).
 - On Linux, start extra clients by hand with `-multirun` and load maps with `map_load` and the client's `instance`
   (not `+map`: a game that loads a map while another window has the focus can grab the mouse).

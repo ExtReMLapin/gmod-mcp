@@ -19,6 +19,16 @@
   Dead instances are now noticed when their process ends, not 10 s later. Tool descriptions, the guide, the skill and the
   README say what the codes mean.
 
+### Fixes
+
+- **Test clients no longer overwrite the user's video settings.** `instances_launch` started its clients with
+  `-w 640 -h 360`, and the engine wrote that mode (ScreenWidth, ScreenHeight, ScreenMSAA, ...) into
+  `HKCU\Software\Valve\Source\garrysmod\Settings` at startup and at exit: the user's own game then
+  started at 640x360 without anti-aliasing. Both writes are skipped when `-dxlevel` is on the command line (read in
+  engine.dll, read-only), and the stored settings are then not read either, so the clients now carry `-dxlevel 95`, the
+  level the engine keeps on current hardware. Settings damaged by an earlier version are not repaired: set the
+  resolution again in the video options.
+
 ## 0.3.5
 
 A crash fix, then the findings of an independent review of everything since 0.3.1, each with a test seen failing

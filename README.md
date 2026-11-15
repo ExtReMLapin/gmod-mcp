@@ -337,10 +337,12 @@ clients with `owner` and closes only those.
 The clients share the game folder with your own game, including `data/` and the cookies (`sv.db`/`cl.db`): a test
 that writes there changes your game too.
 
-> **Your resolution after test clients.** Garry's Mod saves the window size it was started with as its video setting,
-> as soon as it starts. After an agent has run test clients, your next normal start of the game opens at their small
-> size: set your resolution back in the video options. (Closing them with `game_terminate` or `instances_close` avoids
-> the other settings a clean quit would save, but not this one.)
+> **Test clients leave your video settings alone.** Garry's Mod normally saves the window size it was started with as
+> its video setting (resolution, anti-aliasing, ... in the registry). `instances_launch` starts its clients with
+> `-dxlevel 95`, the level the engine keeps on current hardware: with that option the engine neither reads nor writes
+> those settings, so your own resolution is still there at your next start. (Clients that older versions of gmod-mcp
+> started could overwrite it: if your game opens small, set the resolution again in the video options. Clients you
+> start by hand with `-w`/`-h` still save their size: add `-dxlevel 95` to avoid it.)
 
 ## Configuration
 
