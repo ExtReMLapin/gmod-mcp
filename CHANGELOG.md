@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.6
+
+Guards against an engine crash when a game starts while another finishes a map load (Garry's Mod issue 7137),
+reports crashed games as such, keeps test clients out of the user's video settings and config, and fixes the install
+steps found by a literal walk-through of the README.
 
 ### Features
 
