@@ -1,9 +1,11 @@
 // FP7137 workaround (launch / map_load lock): pure decisions, expiry of stale entries, and the shared lock itself.
 // Removed with the workaround, see docs/FP7137.md.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -327,10 +329,49 @@ static void test_stale_and_switch() {
     }
 }
 
+static void test_stagger() {
+    CHECK(parallel_limit(0, true) == 0 && parallel_limit(1, true) == 1 && parallel_limit(2, true) == 2);
+    CHECK(parallel_limit(3, true) == 2 && parallel_limit(8, true) == 2);  // at most 2 maps at a time
+    CHECK(parallel_limit(8, false) == 8 && parallel_limit(0, false) == 0);  // workaround off: all at once
+
+    auto run = [](size_t n, std::vector<int> &seen, int &peak) {
+        std::atomic<int> now{0}, mx{0};
+        std::mutex mu;
+        for_each_limited(n, [&](size_t i) {
+            int c = ++now;
+            int m = mx.load();
+            while (c > m && !mx.compare_exchange_weak(m, c)) {}
+            sleep_ms(80);
+            --now;
+            std::lock_guard<std::mutex> lk(mu);
+            seen.push_back((int)i);
+        });
+        peak = mx.load();
+    };
+    put_env("GMOD_MCP_FP7137_WORKAROUND", nullptr);
+    std::vector<int> seen;
+    int peak = 0;
+    run(7, seen, peak);
+    std::sort(seen.begin(), seen.end());
+    CHECK(peak == 2 && seen == (std::vector<int>{0, 1, 2, 3, 4, 5, 6}));  // every item once, 2 at a time
+    seen.clear();
+    run(1, seen, peak);
+    CHECK(peak == 1 && seen == (std::vector<int>{0}));
+    seen.clear();
+    run(0, seen, peak);
+    CHECK(peak == 0 && seen.empty());
+    put_env("GMOD_MCP_FP7137_WORKAROUND", "0");
+    seen.clear();
+    run(5, seen, peak);
+    CHECK(peak == 5 && seen.size() == 5);  // kill switch: all at once, as before
+    put_env("GMOD_MCP_FP7137_WORKAROUND", nullptr);
+}
+
 void test_fp7137() {
     test_pure();
     test_gate();
     test_stale_and_switch();
+    test_stagger();
     put_env("GMOD_MCP_FP7137_SETTLE_MS", nullptr);
     for (const auto &d : g_dirs) {
         std::error_code ec;

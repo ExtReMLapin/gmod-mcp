@@ -10,7 +10,8 @@
   share a lock: `instances_launch` waits while any game loads a map, and `map_load` waits while a game is being
   started and for 15 s after the last start. The wait is bounded by the call's `timeout_s` (error `map_load_in_progress`
   / `launch_in_progress`), reported as progress, and in the result (`waited_s`, `waited_reason`). A game started by
-  hand is not seen. Set `GMOD_MCP_FP7137_WORKAROUND=0` to turn it off. Everything is in `src/bridge/fp7137.*` and
+  hand is not seen. `instances_launch {map}` loads its maps after that delay and at most 2 at a time instead of all at
+  once. Set `GMOD_MCP_FP7137_WORKAROUND=0` to turn it off. Everything is in `src/bridge/fp7137.*` and
   tagged `FP7137`, to be removed when the engine is fixed: see `docs/FP7137.md`.
 
 ## 0.3.5

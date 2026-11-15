@@ -4,7 +4,8 @@
 // other running game release and restore its D3D9 resources for 2-10 s, starting ~0.3 s after the process is created.
 // A game whose map load ends inside that window crashes in shaderapidx9. So, while the bug lives:
 //   - instances_launch waits while any game loads a map (started through a bridge);
-//   - map_load waits while a launch is in progress and until `settle_ms` after the last game process was started.
+//   - map_load waits while a launch is in progress and until `settle_ms` after the last game process was started;
+//   - instances_launch {map} loads its maps at most kMaxParallelMaps at a time (after that same delay).
 // State is a small file in the bridge's config folder, shared by all bridges and guarded by an OS file lock. Every
 // entry names its owner process and carries an expiry, so a dead bridge never leaves a stale lock.
 //
@@ -23,6 +24,7 @@
 namespace fp7137 {
 
 constexpr int64_t kDefaultSettleMs = 15000;
+constexpr size_t kMaxParallelMaps = 2;  // FP7137: instances_launch {map} loads at most this many maps at once
 
 bool enabled();         // FP7137: false when GMOD_MCP_FP7137_WORKAROUND=0
 int64_t settle_ms();    // FP7137: settle delay after the last game process start
@@ -58,6 +60,11 @@ Verdict launch_verdict(const State &s, int64_t now_ms);
 Verdict map_load_verdict(const State &s, int64_t now_ms, int64_t settle_ms);
 // True when the verdict's known earliest moment already lies beyond the deadline: waiting is pointless.
 bool exceeds_deadline(const Verdict &v, int64_t deadline_ms);
+
+// How many maps at once for n clients (n when the workaround is off).
+size_t parallel_limit(size_t n, bool workaround_enabled);
+// Runs fn(0..n-1) on threads, at most parallel_limit(n, enabled()) at a time; returns when all are done.
+void for_each_limited(size_t n, const std::function<void(size_t)> &fn);
 
 // --- Shared lock ---
 

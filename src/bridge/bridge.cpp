@@ -1118,9 +1118,7 @@ json launch_tool(const json &args, const json &token) {
     std::vector<json> map_res(started.size());
     if (!map.empty()) {
         progress(token, 0, count, "loading " + map);
-        std::vector<std::thread> th;
-        for (size_t i = 0; i < started.size(); ++i)
-            th.emplace_back([&, i] {
+        fp7137::for_each_limited(started.size(), [&](size_t i) {  // FP7137: at most 2 at a time (was one thread per client, all at once)
                 fp7137::Gate fp_map;  // FP7137: after the settle delay, never while another launch starts a game
                 fp_map.enter(fp7137::Kind::MapLoad, "map:" + map, std::max(30.0, timeout - elapsed()), timeout + 10, nullptr, nullptr);  // FP7137
                 if (!fp_map.ok()) {  // FP7137
@@ -1131,8 +1129,7 @@ json launch_tool(const json &args, const json &token) {
                 if (args.contains("maxplayers")) a["maxplayers"] = args["maxplayers"];
                 map_res[i] = game_call("map_load", a, std::max(40.0, timeout - elapsed() + 10));
                 if (fp_map.waited_s() >= 0.05) map_res[i]["fp7137_waited"] = json{{"waited_s", std::round(fp_map.waited_s() * 10) / 10}, {"waited_reason", fp_map.reason()}};  // FP7137
-            });
-        for (auto &t : th) t.join();
+        });  // FP7137
     }
     // The requested mount is only a request: ask each engine what it really has (the module logs and ignores a folder
     // it cannot apply), so a test never runs on the installed addon's code without the agent knowing.

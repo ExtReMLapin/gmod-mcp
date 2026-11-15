@@ -1052,6 +1052,24 @@ def case_fp7137():
     check("FP7137 kill switch off: map_load right after a launch does not wait", "waited_s" not in sc_b and not res_b.get("isError"), sc_b)
     a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
     a.close(); b.close(); srv.stop()
+    # 12. FP7137 (B5): instances_launch {map} loads after the settle delay and at most 2 maps at a time; with the kill
+    # switch off all 3 at once and no wait.
+    for off in (False, True):
+        port, env, srv = fp_setup(workaround="0" if off else None, hold={"*": 1.2})
+        a = Bridge(port, env)
+        res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(count=3, map="gm_m", timeout_s=60), 90), 90)
+        ins = sc_a.get("instances", [])
+        last_pid = (pid_times(srv) or [0])[-1]
+        first_load = min([m[1] for m in srv.map_log] or [0])
+        tag = "FP7137 kill switch off: " if off else "FP7137 "
+        check(tag + "instances_launch {map, count 3}: all three loaded", not res_a.get("isError") and len(ins) == 3 and all(i.get("map") == "gm_m" for i in ins) and len(srv.map_log) == 3, sc_a)
+        if off:
+            check(tag + "the three loads overlap (3 at once) and nobody waited", srv.map_max == 3 and not any("waited_s" in i for i in ins), {"max": srv.map_max, "ins": ins})
+        else:
+            check(tag + "at most 2 maps load at the same time", srv.map_max == 2, srv.map_max)
+            check(tag + "no load starts before the settle delay (2.5 s here) after the last process start", first_load - last_pid >= 2.0, {"gap": first_load - last_pid})
+        a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+        a.close(); srv.stop()
     shutil.rmtree(game, ignore_errors=True)
 
 

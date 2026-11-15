@@ -242,6 +242,22 @@ Verdict map_load_verdict(const State &s, int64_t now_ms, int64_t settle) {
 
 bool exceeds_deadline(const Verdict &v, int64_t deadline_ms) { return v.wait && v.ready_at_ms > 0 && v.ready_at_ms > deadline_ms; }
 
+size_t parallel_limit(size_t n, bool workaround_enabled) {
+    if (!workaround_enabled) return n;
+    return std::min(n, kMaxParallelMaps);
+}
+
+void for_each_limited(size_t n, const std::function<void(size_t)> &fn) {
+    size_t limit = parallel_limit(n, enabled());
+    std::atomic<size_t> next{0};
+    std::vector<std::thread> th;
+    for (size_t w = 0; w < limit; ++w)
+        th.emplace_back([&] {
+            for (size_t i; (i = next.fetch_add(1)) < n;) fn(i);
+        });
+    for (auto &t : th) t.join();
+}
+
 // --- Gate ---
 
 void Gate::enter(Kind kind, const std::string &tag, double budget_s, double hold_s, const std::atomic<bool> *cancelled,
