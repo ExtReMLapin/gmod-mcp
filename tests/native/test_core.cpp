@@ -24,6 +24,7 @@
 #include "cmdline.h"
 #include "console.h"
 #include "coordinator.h"
+#include "gmod_mcp_reply.h"
 #include "http_server.h"
 #include "installer.h"
 #include "crashinfo.h"
@@ -967,6 +968,73 @@ static void test_installer_roundtrip() {
     fs::remove_all(base, ec);
 }
 
+// Issue #5: a foreign program on the base port must not be reported as a token mismatch. A gmod-mcp coordinator that
+// refuses the token (401 from gmod-mcp) is "refused"; any other answer (404, 403, a 401 of another program) is "foreign".
+static void test_port_conflict_link() {
+    // Pure: what counts as a gmod-mcp answer.
+    CHECK(gmcp::is_gmod_mcp_reply(true, ""));  // the signature header alone is enough
+    CHECK(gmcp::is_gmod_mcp_reply(false, R"({"error":{"code":"unauthorized","message":"missing or invalid bearer token"}})"));  // 0.3.6
+    CHECK(gmcp::is_gmod_mcp_reply(false, R"({"jsonrpc":"2.0","id":1,"result":{}})"));
+    CHECK(!gmcp::is_gmod_mcp_reply(false, ""));
+    CHECK(!gmcp::is_gmod_mcp_reply(false, "<html><body>404 Not Found</body></html>"));
+    CHECK(!gmcp::is_gmod_mcp_reply(false, R"({"error":"unauthorized"})"));
+    CHECK(!gmcp::is_gmod_mcp_reply(false, R"({"error":{"code":401}})"));
+
+    // The module's own server signs every answer, the rejections included.
+    auto &cfg = agent::config();
+    std::string saved_token = cfg.token, saved_id = cfg.instance_id;
+    int saved_base = cfg.base_port, saved_port = cfg.port;
+    cfg.token = "coretests-token-0123456789abcdef";
+    cfg.instance_id = "port-conflict-test";
+    int real = httpsrv::start(39700, 50, cfg.token);
+    CHECK(real != 0);
+    if (!real) return;
+    {
+        httplib::Client cli("127.0.0.1", real);
+        auto r = cli.Post("/mcp", "{}", "application/json");  // no token: 401
+        CHECK(r && r->status == 401 && r->has_header(gmcp::kSignatureHeader));
+        cli.set_bearer_token_auth(cfg.token);
+        auto ok = cli.Post("/mcp", R"({"jsonrpc":"2.0","id":1,"method":"ping"})", "application/json");
+        CHECK(ok && ok->status == 200 && ok->has_header(gmcp::kSignatureHeader));
+    }
+
+    // A program that is not gmod-mcp holds the base port; the member's heartbeat gets its answers.
+    struct Case { int status; const char *body; const char *header; const char *expect; };
+    const Case cases[] = {
+        {404, "<html>not found</html>", nullptr, "foreign"},                                  // the case of the issue
+        {403, "", nullptr, "foreign"},
+        {401, R"({"error":"unauthorized"})", nullptr, "foreign"},                           // another program's 401
+        {401, R"({"error":{"code":"unauthorized","message":"x"}})", nullptr, "refused"},    // gmod-mcp 0.3.6 coordinator
+        {401, "", "X-Gmod-Mcp", "refused"},                                                  // gmod-mcp 0.3.7+ coordinator
+    };
+    for (const Case &c : cases) {
+        httplib::Server foreign;
+        foreign.Post(R"(.*)", [&](const httplib::Request &, httplib::Response &res) {
+            res.status = c.status;
+            if (c.header) res.set_header(c.header, "0.3.7");
+            if (*c.body) res.set_content(c.body, "application/json");
+        });
+        int fport = foreign.bind_to_any_port("127.0.0.1");
+        std::thread t([&] { foreign.listen_after_bind(); });
+        cfg.base_port = fport;
+        cfg.port = real;
+        coordinator::start();  // registers with the "coordinator" on fport: one synchronous heartbeat
+        CHECK(!coordinator::is_coordinator());
+        std::string got = coordinator::link_state();
+        if (got != c.expect) std::printf("  HTTP %d %s -> link_state '%s', expected '%s'
+", c.status, c.body, got.c_str(), c.expect);
+        CHECK(got == c.expect);
+        coordinator::stop();
+        foreign.stop();
+        t.join();
+    }
+    httpsrv::stop();
+    cfg.token = saved_token;
+    cfg.instance_id = saved_id;
+    cfg.base_port = saved_base;
+    cfg.port = saved_port;
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
     test_installer_roundtrip();
@@ -984,6 +1052,7 @@ int main() {
     test_argcheck();
     test_job_ids();
     test_lua_mount_paths();
+    test_port_conflict_link();
 #ifdef _WIN32
     test_crash_report_coordinator();
 #endif
