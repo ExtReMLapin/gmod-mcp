@@ -87,7 +87,7 @@ no base Lua, Lua errors everywhere, black sky). It is not added to `GAME` either
 ## `bin/win64/tier0.dll`
 
 Relevant exports:
-- `SpewOutputFunc(SpewOutputFunc_t)` / `GetSpewOutputFunc()`: the Source 2013 spew mechanism (`SpewRetval_t (*)(SpewType_t, const char *)`).
+- `SpewOutputFunc(SpewOutputFunc_t)` / `GetSpewOutputFunc()`: the Source 2013 spew mechanism (`SpewRetval_t (*)(SpewType_t, const char *)`). **Gone from the Windows x86-64 tier0 of 2026-11-19** (sha256 ca36907c...): console capture then uses the logging listener (`LoggingSystem_RegisterLoggingListener`, slot 0 `Log(ctx, msg)`, ctx = {channel, flags, severity, color}; checked on that build, and the capture works live).
   Used to capture the console by chaining the previous function.
 - `GetSpewOutputColor()`, `GetSpewOutputLevel()`, `GetSpewOutputGroup()`.
 - `GMOD_SpewBufferStart/End/Flush` (GMod-specific, unused).

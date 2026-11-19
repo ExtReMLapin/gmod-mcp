@@ -206,7 +206,7 @@ static SpewRetval_t our_spew(SpewType_t type, const char *msg) {
     return r;
 }
 
-// --- Logging system (newer tier0, e.g. the x86-64 Linux dedicated server: no SpewOutputFunc export) ---
+// --- Logging system (newer tier0: the x86-64 Linux dedicated server, and Windows x86-64 since 2026-11-19: no SpewOutputFunc export) ---
 // Layout of the public logging API (Alien Swarm SDK, tier0/logging.h): a listener is an object whose first virtual
 // function is Log(const LoggingContext_t *, const char *). Registered next to the engine's own listeners (console,
 // log file), so the game's output is unchanged.
