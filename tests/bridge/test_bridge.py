@@ -14,6 +14,8 @@ Cases (default: a f):
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
   lua_mount_verify instances_launch {lua_mount}: the result reports the mount each engine really has (fake game server)
+  launch_options instances_launch {fps_max, fps_max_nofocus, commands, launch_args} (Issue #10): command line, commands in
+         order before the map, convars to restore listed for the module, bad options refused before anything starts
   crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
          in flight when the client dies reports the crash, an old dump is not taken for its own (Windows)
@@ -267,6 +269,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if name == "map_load" and srv.map_hold is not None:  # FP7137 tests: a map load that takes srv.map_hold[map] s
             t0 = time.time()
             with srv.lock:
+                srv.order.append(("map_load", args.get("map")))
                 srv.map_active += 1; srv.map_max = max(srv.map_max, srv.map_active); srv.map_log.append([args.get("map"), t0, None])
                 entry = srv.map_log[-1]
             time.sleep(srv.map_hold.get(args.get("map"), srv.map_hold.get("*", 0.5)))
@@ -274,6 +277,12 @@ class Fake(http.server.BaseHTTPRequestHandler):
                 srv.map_active -= 1; entry[2] = time.time()
             sc = {"map": args.get("map"), "duration_s": time.time() - t0}
             return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": False}))
+        if name == "console_exec" and srv.exec_answer:  # Issue #10: instances_launch {commands}
+            with srv.lock:
+                srv.exec_calls.append(args); srv.order.append(("console_exec", args.get("cmd")))
+            sc = srv.exec_answer(args)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc,
+                                        "isError": "error" in sc}))
         if name == "lua_mount" and srv.lua_mount_answer:
             with srv.lock: srv.lua_mount_calls.append(args)
             sc = srv.lua_mount_answer(args)
@@ -302,6 +311,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.instructions = "fake instructions"
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
         self.map_load_hook = None
+        self.exec_answer, self.exec_calls, self.order = None, [], []  # Issue #10: console_exec answers and the order of console_exec / map_load calls
         self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
         self.extra_instances = []  # FP7137 tests (issue #7): games the bridge never started, as instances_list shows them (with "loading")
         threading.Thread(target=self.serve_forever, daemon=True).start()
@@ -1036,6 +1046,94 @@ def case_lua_mount_verify():
     answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}
     res, sc = launch(None)
     check("LUA_MOUNT_VERIFY no lua_mount requested: no check, no warning", not res.get("isError") and len(srv.lua_mount_calls) == n and "warning" not in sc, sc)
+    b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def case_launch_options():
+    """Issue #10: instances_launch {fps_max, fps_max_nofocus, commands, launch_args}. The stand-in game records its command
+    line, the fake game server records the console_exec and map_load calls. Bad options are refused before anything starts."""
+    print("== LAUNCH_OPTIONS: instances_launch passes fps_max, extra options and startup commands (Issue #10)", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("LAUNCH_OPTIONS stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-opts-")
+    pid_file, argv_file = os.path.join(work, "pid.txt"), os.path.join(work, "argv.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_ARGV=argv_file, GMOD_MCP_FP7137_WORKAROUND="0")  # no 15 s settle delay before the map
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    srv.map_hold = {"*": 0.1}
+    srv.exec_answer = lambda a: {"cmd": a.get("cmd"), "realm": "menu", "via": "menu"}
+    b = Bridge(port, env)
+
+    def launch(extra, timeout=60):
+        for f in (pid_file, argv_file):
+            if os.path.exists(f): os.remove(f)
+        args = {"count": 1, "owner": "opts", "timeout_s": 20, "game_dir": game}
+        args.update(extra)
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "opts"}}, 20)
+        return res, res.get("structuredContent", {}), line
+
+    # 1. no option: the preset's frame cap, nothing else added, the game is not asked for anything.
+    res, sc, line = launch({})
+    check("LAUNCH_OPTIONS default: +fps_max 20 +fps_max_nofocus 20, no restore list, no command", " +fps_max 20 +fps_max_nofocus 20" in line and "-mcp_restore_convars" not in line and not srv.exec_calls and sc.get("fps_max") == 20, (line, sc))
+    # 2. fps_max alone: the unfocused cap follows it; the result says what the clients run at.
+    res, sc, line = launch({"preset": "normal", "fps_max": 120})
+    check("LAUNCH_OPTIONS fps_max 120 overrides the preset, fps_max_nofocus follows", " +fps_max 120 +fps_max_nofocus 120" in line and "+fps_max 30" not in line and sc.get("fps_max") == 120 and sc.get("fps_max_nofocus") == 120, (line, sc))
+    check("LAUNCH_OPTIONS the fps_note names the value", "120" in sc.get("fps_note", ""), sc.get("fps_note"))
+    # 3. both, 0 = no cap.
+    res, sc, line = launch({"fps_max": 300, "fps_max_nofocus": 0})
+    check("LAUNCH_OPTIONS fps_max 300 and fps_max_nofocus 0 (no cap when unfocused)", " +fps_max 300 +fps_max_nofocus 0" in line and sc.get("fps_max") == 300 and sc.get("fps_max_nofocus") == 0, (line, sc))
+    res, sc, line = launch({"fps_max": 0})
+    check("LAUNCH_OPTIONS fps_max 0 = no cap, reported as such", " +fps_max 0 +fps_max_nofocus 0" in line and sc.get("fps_max") == 0 and "no cap" in sc.get("fps_note", "").lower(), (line, sc))
+    # 4. launch_args and commands: argv, restore list, commands in order, before the map.
+    srv.exec_calls.clear(); srv.order.clear()
+    res, sc, line = launch({"launch_args": ["-noborder", "+cl_showfps", "1"], "commands": ["fps_max 240", "toggle snd_mute_losefocus; echo hi"], "map": "gm_construct"}, 90)
+    check("LAUNCH_OPTIONS launch_args come after the fixed options, one token each", " -dxlevel 95 -noborder +cl_showfps 1" in line.replace(" -nosound", ""), line)
+    check("LAUNCH_OPTIONS the convars the options may change are listed for the module (-mcp_restore_convars)", " -mcp_restore_convars fps_max,snd_mute_losefocus,echo,cl_showfps" in line + " ", line)
+    inst = (sc.get("instances") or [{}])[0]
+    check("LAUNCH_OPTIONS the commands ran on the client, one statement each, in order", [c.get("cmd") for c in srv.exec_calls] == ["fps_max 240", "toggle snd_mute_losefocus", "echo hi"] and all(c.get("instance") == inst.get("instance") for c in srv.exec_calls), srv.exec_calls)
+    check("LAUNCH_OPTIONS the commands ran before the map load", [o[0] for o in srv.order] == ["console_exec"] * 3 + ["map_load"], srv.order)
+    check("LAUNCH_OPTIONS the result lists the commands and the arguments", [c.get("cmd") for c in inst.get("commands", [])] == ["fps_max 240", "toggle snd_mute_losefocus", "echo hi"] and all(c.get("ok") for c in inst.get("commands", [])) and sc.get("launch_args") == ["-noborder", "+cl_showfps", "1"] and not res.get("isError"), sc)
+    # 5. a command the game rejects: reported on the instance, the others still run, isError.
+    srv.exec_calls.clear()
+    srv.exec_answer = lambda a: {"error": {"code": "not_found", "message": "unknown"}} if a.get("cmd") == "nope 1" else {"cmd": a.get("cmd"), "realm": "menu"}
+    res, sc, line = launch({"commands": ["nope 1", "echo after"]})
+    inst = (sc.get("instances") or [{}])[0]
+    cmds = inst.get("commands", [])
+    check("LAUNCH_OPTIONS a failed command is reported, the next one still runs, isError", res.get("isError") and len(cmds) == 2 and cmds[0].get("ok") is False and "unknown" in json.dumps(cmds[0]) and cmds[1].get("ok") is True and len(srv.exec_calls) == 2, sc)
+    srv.exec_answer = lambda a: {"cmd": a.get("cmd"), "realm": "menu"}
+    # 6. refused before anything starts: invalid_params naming the option.
+    bad = [({"fps_max": 5}, "fps_max"), ({"fps_max_nofocus": 5000}, "fps_max_nofocus"), ({"fps_max": "fast"}, "fps_max"),
+           ({"commands": ["quit"]}, 'quit'), ({"commands": ["echo ok", "connect 8.8.8.8"]}, 'connect'), ({"commands": ["map gm_flatgrass"]}, "map option"),
+           ({"launch_args": ["-multirun"]}, "-multirun"), ({"launch_args": ["-mcpport", "1"]}, "-mcpport"), ({"launch_args": ["-w", "1920"]}, '-w'),
+           ({"launch_args": ["-dxlevel", "81"]}, "-dxlevel"), ({"launch_args": ["+connect", "1.2.3.4"]}, "+connect"), ({"launch_args": ["+map", "gm_x"]}, "map option"),
+           ({"launch_args": ["-mcp_test_client"]}, "-mcp_test_client"), ({"launch_args": ["-windowed"]}, "-windowed"), ({"launch_args": ["-a b"]}, "launch_args"),
+           ({"launch_args": ["-condebug"]}, "-condebug")]
+    for extra, word in bad:
+        res, sc, line = launch(extra)
+        err = sc.get("error", {})
+        check("LAUNCH_OPTIONS refused before starting anything: %s" % json.dumps(extra), res.get("isError") and (err.get("code") == "invalid_params" or "invalid" in json.dumps(res).lower()) and word in json.dumps(sc) and not line, sc)
+    check("LAUNCH_OPTIONS the refused launches never reached the game", not srv.exec_calls[2:], srv.exec_calls)
+    # 7. the tool description says where the options are listed.
+    r = b.req("tools/list", {})
+    tool = next((t for t in (r or {}).get("result", {}).get("tools", []) if t["name"] == "instances_launch"), {})
+    d = tool.get("description", "")
+    props = tool.get("inputSchema", {}).get("properties", {})
+    check("LAUNCH_OPTIONS the schema offers fps_max, fps_max_nofocus, commands, launch_args", all(k in props for k in ("fps_max", "fps_max_nofocus", "commands", "launch_args")), list(props))
+    check("LAUNCH_OPTIONS the description points at the option and command lists", "developer.valvesoftware.com/wiki/Command_line_options" in d and "concommand_list" in d and "api_search" in d, d[-600:])
     b.close(); srv.stop()
     shutil.rmtree(game, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
@@ -2171,8 +2269,8 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "crash", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
