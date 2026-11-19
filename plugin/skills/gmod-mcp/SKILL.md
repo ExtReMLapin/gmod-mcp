@@ -112,9 +112,11 @@ first).
   and for 15 s after the last start, `instances_launch` waits while any game loads a map, and `instances_launch {map}`
   loads 2 maps at a time after that delay. A call that waited carries `waited_s` and `waited_reason` (and progress). If the
   wait would exceed `timeout_s`, it fails with `launch_in_progress` (map_load) or `map_load_in_progress` (launch) and
-  nothing was started: retry later or with a larger `timeout_s`. The bridge does NOT see a game started by hand or a map
-  change triggered by Lua or the console (`changelevel`, `map` through `console_exec`): do not do those while other games
-  load or launch. Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`,
+  nothing was started: retry later or with a larger `timeout_s`. `instances_launch` also waits for a map load the bridge did
+  not start (console `map` / `changelevel`, Lua, a script talking to the game: every game reports `loading` in
+  `instances_list`; `waited_reason` starts with `map_load_outside_bridge`), and `map_load` lists such games as
+  `other_games_loading`. The bridge cannot hold back a game started by hand, or a console/Lua map load started while a
+  launch is creating its processes: do not do those while other games load or launch. Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`,
   timeouts): expected, wait and retry (`client_crashed` is the signal for a dead one). Order: launch all the clients you
   need in ONE `instances_launch`, then work; do not interleave launches with map loads across sessions.
 - **With sub-agents**: they all share one bridge, so one session. Never use `instance_select` (its default would apply

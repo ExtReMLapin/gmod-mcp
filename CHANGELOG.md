@@ -21,6 +21,18 @@
   to a foreign program is `foreign` in `status` (`coordinator_link`) with a log line saying the port is held by another
   program; `refused` (token) is only for a real gmod-mcp coordinator. The skill checks for `401` plus the header, and
   explains how to find and handle the program.
+- **Map loads the bridge does not see no longer crash a game that is being started** (issue #7, Garry's Mod issue 7137).
+  The launch/`map_load` lock only knew the calls that went through a bridge: a map loaded from the console (`map`,
+  `changelevel`), from Lua (`RunConsoleCommand`) or by a script talking HTTP straight to a game was not serialised against
+  `instances_launch`, and a launch starting while it ended could crash it. Every game now reports `loading` (a map load in
+  progress, whatever started it) with its heartbeat, sent at once when a load starts or ends, and `instances_list` shows it.
+  `instances_launch` waits while any game loads (`waited_s`, `waited_reason` starting with `map_load_outside_bridge`; at the
+  call's `timeout_s` it fails with `map_load_in_progress` and starts nothing). `map_load` does not wait for such loads but
+  lists the other games that were loading when it started (`other_games_loading`). Still not covered: a game you start by
+  hand, a game without gmod-mcp, and a console or Lua map load started while a launch is creating its processes (the bridge
+  only delays its own calls). Everything is tagged `FP7137` and obeys `GMOD_MCP_FP7137_WORKAROUND=0` (see
+  `docs/FP7137.md`); the agent-facing texts (server instructions, `instances_launch` / `map_load` descriptions, guide,
+  skill, README) say so.
 
 ## 0.3.6
 
