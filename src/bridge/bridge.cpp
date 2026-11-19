@@ -43,6 +43,7 @@
 #include "bridge_snapshot.h"
 #include "crashinfo.h"
 #include "fp7137.h"  // FP7137
+#include "gmod_mcp_reply.h"
 #include "mcp_protocol.h"
 #include "platform/platform.h"
 #include "lua_mount.h"
@@ -170,6 +171,8 @@ enum class Link { Unknown, Up, Down };
 std::atomic<Link> g_link{Link::Unknown};
 std::mutex g_why_mu;
 std::string g_why;  // why the game is unreachable
+std::atomic<bool> g_conflict{false};  // issue #5: the base port is held by a program that is not gmod-mcp (g_why says what answered)
+std::atomic<int> g_found_port{0};     // issue #5: a gmod-mcp found on a later port while in conflict (0: none, or not looked for yet)
 std::atomic<bool> g_initialized{false};
 std::atomic<bool> g_listed{false};      // the client has fetched at least one list
 std::atomic<bool> g_served_offline{false};  // the bridge answered with an offline list or description
@@ -181,7 +184,29 @@ std::string why_down() {
     return g_why;
 }
 
+// The port_conflict error (issue #5): another program answers on the port, so the game is not "not running": it may be
+// running fine, on another port.
+std::string port_conflict_text() {
+    std::string port = std::to_string(g_port);
+    return "127.0.0.1:" + port + " is held by another program, not by gmod-mcp (" + why_down() + ")" +
+           (g_found_port ? "; a gmod-mcp answers on 127.0.0.1:" + std::to_string(g_found_port) + ": set GMOD_MCP_PORT=" + std::to_string(g_found_port) : "") +
+           ". Find it: Get-NetTCPConnection -LocalPort " + port + " (Windows PowerShell) or ss -ltnp 'sport = :" + port +
+           "' (Linux). Free the port, or set the GMOD_MCP_PORT environment variable to the port the game took (its "
+           "console line `[mcpagent] active: ... http://127.0.0.1:<port>/mcp` says which) and restart the MCP client. "
+           "See the README section \"Configuration\" and the gmod-mcp skill section \"When it still does not answer\".";
+}
+
+// The code of the error answered when the game cannot be reached.
+const char *unreachable_code() { return g_conflict ? "port_conflict" : "game_not_running"; }
+
+// What the server instructions say first while the game cannot be reached.
+std::string offline_prefix() {
+    if (g_conflict) return "port_conflict: the game may be running, but this bridge cannot reach it. " + port_conflict_text() + "\n\n";
+    return "The game is not running right now: start it with -mcp; the tools come back by themselves.\n\n";
+}
+
 std::string not_running_text() {
+    if (g_conflict) return "port_conflict: " + port_conflict_text();
     return "Garry's Mod is not reachable on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
            "). Start the game with the -mcp launch option (the gmod-mcp skill knows how); the tools come back by "
            "themselves once it answers, no reconnection needed.";
@@ -234,7 +259,47 @@ void set_down(const std::string &why) {
         std::lock_guard<std::mutex> lk(g_why_mu);
         g_why = why;
     }
+    g_conflict = false;
+    g_found_port = 0;
     g_link = Link::Down;
+}
+
+// Issue #5: the port answers, but not as gmod-mcp. Looks at the next ports for a real gmod-mcp (the module takes the next
+// free one when the base port is busy) so that the message can name it. Returns its port, or 0. Slow (a refused loopback
+// connection can take 300 ms on Windows): runs on a background thread, see probe_next_ports.
+int find_gmod_mcp_port(const std::string &token) {
+    for (int p = g_port + 1; p <= g_port + 15 && p <= 65535; ++p) {
+        httplib::Client c("127.0.0.1", p);
+        c.set_connection_timeout(0, 300000);
+        c.set_read_timeout(1, 0);
+        c.set_write_timeout(1, 0);
+        auto r = c.Post("/mcp", httplib::Headers{{"Authorization", "Bearer " + token}},
+                        R"({"jsonrpc":"2.0","id":"gmod-mcp-bridge-port-probe","method":"ping"})", "application/json");
+        if (r && gmcp::is_gmod_mcp_reply(r->has_header(gmcp::kSignatureHeader), r->body)) return p;
+    }
+    return 0;
+}
+
+// At most one probe at a time, at most every 10 s: the answer is read by the next error message.
+void probe_next_ports(const std::string &token) {
+    static std::atomic<bool> running{false};
+    static std::atomic<long long> last_ms{-100000};
+    long long now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now - last_ms < 10000 || running.exchange(true)) return;
+    last_ms = now;
+    std::thread([token] {
+        int p = find_gmod_mcp_port(token);
+        if (g_conflict) g_found_port = p;
+        running = false;
+    }).detach();
+}
+
+void set_port_conflict(int status, const std::string &token) {
+    int found = g_found_port;  // what the last probe found stays while the conflict lasts
+    set_down("it answered HTTP " + std::to_string(status) + " without the gmod-mcp signature");
+    g_found_port = found;
+    g_conflict = true;
+    probe_next_ports(token);
 }
 
 using NoteFn = std::function<void(const json &)>;
@@ -359,12 +424,22 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
     }
     r.reached = true;
     r.status = res->status;
+    // Issue #5: who answered? gmod-mcp signs its answers (older modules: JSON body). Anything else is a foreign program.
+    const bool ours = gmcp::is_gmod_mcp_reply(res->has_header(gmcp::kSignatureHeader), body);
+    const bool stream = res->get_header_value("Content-Type").find("text/event-stream") != std::string::npos;
+    if (!ours && !stream && (res->status >= 400 || !body.empty())) {
+        r.reached = false;
+        set_port_conflict(res->status, token);
+        return r;
+    }
     if (res->status == 401) {
         r.reached = false;
         set_down("the game rejected the token in " + g_dir + "/token");
         return r;
     }
     g_link = Link::Up;
+    g_conflict = false;
+    g_found_port = 0;
     if (!sse && !body.empty()) {
         try {
             json m = json::parse(body);
@@ -977,7 +1052,7 @@ json game_call(const std::string &tool, json args, double timeout_s) {
     json m{{"jsonrpc", "2.0"}, {"id", "gmod-mcp-bridge-internal"}, {"method", "tools/call"},
            {"params", {{"name", tool}, {"arguments", std::move(args)}}}};
     Relay r = relay(m, timeout_s);
-    if (!r.reached) return json{{"error", {{"code", "game_not_running"}, {"message", why_down()}}}};
+    if (!r.reached) return json{{"error", {{"code", unreachable_code()}, {"message", g_conflict ? port_conflict_text() : why_down()}}}};
     if (!r.response.contains("result")) return json{{"error", {{"code", "rpc_error"}, {"message", r.response.value("error", json::object()).value("message", "no result")}}}};
     return r.response["result"].value("structuredContent", json::object());
 }
@@ -1584,16 +1659,14 @@ void handle_request(const json &msg) {
             res = json{{"serverInfo", snap["serverInfo"]}, {"instructions", snap.value("instructions", offline_instructions())},
                        {"capabilities", snap.value(method == "initialize" ? "capabilities_legacy" : "capabilities_modern", json::object())}};
             if (method == "server/discover") res["supportedVersions"] = snap.value("supportedVersions", all_versions());
-            res["instructions"] = "The game is not running right now: start it with -mcp; the tools come back by themselves.\n\n" +
-                                  res["instructions"].get<std::string>();
+            res["instructions"] = offline_prefix() + res["instructions"].get<std::string>();
         } else if (!res.is_object()) {
             res = json{{"capabilities", json::object()},
                        {"serverInfo", {{"name", "gmod-mcp"}, {"version", kBridgeVersion}}},
                        {"instructions", offline_instructions()}};
             if (method == "server/discover") res["supportedVersions"] = all_versions();
         } else if (res.contains("instructions") && res["instructions"].is_string()) {
-            res["instructions"] = "The game is not running right now: start it with -mcp; the tools come back by themselves.\n\n" +
-                                  res["instructions"].get<std::string>();
+            res["instructions"] = offline_prefix() + res["instructions"].get<std::string>();
         }
         if (method == "server/discover") res["ttlMs"] = 0;  // do not keep this offline answer
         if (method == "initialize") {
@@ -1654,15 +1727,16 @@ void handle_request(const json &msg) {
         out(local_result(msg, json::object()));
     } else if (method == "tools/call" && tool == "instances_list") {
         json sc{{"instances", json::array()},
-                {"note", "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
-                         "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
+                {"note", g_conflict ? "no game instance reachable: port_conflict: " + port_conflict_text()
+                                    : "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
+                                          "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
         out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object())), false)));
     } else if (method == "tools/call" && !launched_answer(fwd).is_null()) {
         out(local_result(msg, launched_answer(fwd)));
     } else if (method == "tools/call") {
         json text{{"type", "text"}, {"text", not_running_text()}};
         out(local_result(msg, json{{"content", json::array({text})},
-                                   {"structuredContent", {{"error", {{"code", "game_not_running"}, {"message", not_running_text()}}}}},
+                                   {"structuredContent", {{"error", {{"code", unreachable_code()}, {"message", not_running_text()}}}}},
                                    {"isError", true}}));
     } else {
         out(rpc_error(id, err::kInternalError, not_running_text()));

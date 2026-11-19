@@ -1005,13 +1005,13 @@ static void test_port_conflict_link() {
         {403, "", nullptr, "foreign"},
         {401, R"({"error":"unauthorized"})", nullptr, "foreign"},                           // another program's 401
         {401, R"({"error":{"code":"unauthorized","message":"x"}})", nullptr, "refused"},    // gmod-mcp 0.3.6 coordinator
-        {401, "", "X-Gmod-Mcp", "refused"},                                                  // gmod-mcp 0.3.7+ coordinator
+        {401, "", "X-Gmod-Mcp", "refused"},                                                  // gmod-mcp coordinator that signs its answers
     };
     for (const Case &c : cases) {
         httplib::Server foreign;
         foreign.Post(R"(.*)", [&](const httplib::Request &, httplib::Response &res) {
             res.status = c.status;
-            if (c.header) res.set_header(c.header, "0.3.7");
+            if (c.header) res.set_header(c.header, "0.3.6");
             if (*c.body) res.set_content(c.body, "application/json");
         });
         int fport = foreign.bind_to_any_port("127.0.0.1");
@@ -1021,8 +1021,7 @@ static void test_port_conflict_link() {
         coordinator::start();  // registers with the "coordinator" on fport: one synchronous heartbeat
         CHECK(!coordinator::is_coordinator());
         std::string got = coordinator::link_state();
-        if (got != c.expect) std::printf("  HTTP %d %s -> link_state '%s', expected '%s'
-", c.status, c.body, got.c_str(), c.expect);
+        if (got != c.expect) std::printf("  HTTP %d %s -> link_state '%s', expected '%s'\n", c.status, c.body, got.c_str(), c.expect);
         CHECK(got == c.expect);
         coordinator::stop();
         foreign.stop();

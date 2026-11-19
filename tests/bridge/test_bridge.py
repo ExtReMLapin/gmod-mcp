@@ -497,7 +497,7 @@ def case_portconflict():
         b = Bridge(port, env)
         r = b.req("initialize", INIT)
         ins = (r or {}).get("result", {}).get("instructions", "")
-        check("PORT_CONFLICT [%s] instructions do not say the game is not running" % label, ins and "game is not running" not in ins.lower() and "port_conflict" in ins, ins[:300])
+        check("PORT_CONFLICT [%s] instructions do not say the game is not running" % label, ins.startswith("port_conflict") and "not running right now" not in ins and "GMOD_MCP_PORT" in ins, ins[:300])
         r = b.req("tools/call", {"name": "status", "arguments": {}})
         res = (r or {}).get("result", {})
         err = res.get("structuredContent", {}).get("error", {})
@@ -524,8 +524,12 @@ def case_portconflict():
     port, env = two_free_ports(), isolated_config(with_token=True)
     foreign = Foreign(port); game = FakeServer(port + 1, version=bridge_version())
     b = Bridge(port, env); b.req("initialize", INIT)
-    r = b.req("tools/call", {"name": "status", "arguments": {}})
-    msg = (r or {}).get("result", {}).get("structuredContent", {}).get("error", {}).get("message", "")
+    msg = ""
+    for _ in range(12):  # the next ports are probed in the background (a refused loopback connection is slow on Windows)
+        r = b.req("tools/call", {"name": "status", "arguments": {}})
+        msg = (r or {}).get("result", {}).get("structuredContent", {}).get("error", {}).get("message", "")
+        if "GMOD_MCP_PORT=%d" % (port + 1) in msg: break
+        time.sleep(1)
     check("PORT_CONFLICT the message names the gmod-mcp instance found on the next port", "port_conflict" in json.dumps(r) and "GMOD_MCP_PORT=%d" % (port + 1) in msg, msg)
     # The foreign program leaves, the game takes the port: back to normal with no restart.
     foreign.stop(); game.stop(); game = FakeServer(port, version=bridge_version())

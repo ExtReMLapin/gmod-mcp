@@ -24,6 +24,7 @@
 #include "agent.h"
 #include "console.h"
 #include "crashinfo.h"
+#include "gmod_mcp_reply.h"
 #include "http_server.h"
 #include "jobs.h"
 #include "log.h"
@@ -344,7 +345,8 @@ static json relay(const std::string &instance, const std::string &tool, const js
 
 // Member side: one heartbeat; returns true when the coordinator answered.
 // State of this member's link to the coordinator, for status: "registered", "refused" (another token: the coordinator
-// answers 401, so this game is not reachable through it) or "unreachable".
+// answers 401, so this game is not reachable through it), "foreign" (issue #5: the base port is held by a program that is
+// not gmod-mcp) or "unreachable".
 static std::mutex g_link_mu;
 static std::string g_link = "unknown";
 std::string link_state() {
@@ -352,7 +354,7 @@ std::string link_state() {
     std::lock_guard<std::mutex> lk(g_link_mu);
     return g_link;
 }
-static void set_link(const std::string &state) {
+static void set_link(const std::string &state, int status = 0) {
     std::lock_guard<std::mutex> lk(g_link_mu);
     if (state == g_link) return;
     g_link = state;
@@ -360,13 +362,23 @@ static void set_link(const std::string &state) {
         logx::warn("the coordinator on port %d refused this instance (HTTP 401: it uses another token). This game is not "
                    "reachable through it: give every game the same gmod-mcp config folder (APPDATA on Windows, "
                    "XDG_CONFIG_HOME or ~/.config on Linux)", agent::config().base_port);
+    else if (state == "foreign")
+        logx::warn("port %d is held by another program: it answered HTTP %d and is not a gmod-mcp coordinator (this has nothing to do "
+                   "with the token). This game is not reachable through that port: find the program (Get-NetTCPConnection "
+                   "-LocalPort %d on Windows, ss -ltnp on Linux) and free the port, or set the GMOD_MCP_PORT environment "
+                   "variable of the MCP client to this game's port (%d)",
+                   agent::config().base_port, status, agent::config().base_port, agent::config().port);
 }
 
 static bool heartbeat() {
     auto cli = client(agent::config().base_port, 3);
     auto res = cli->Post("/internal/heartbeat", self_info().dump(), "application/json");
-    if (res && (res->status == 401 || res->status == 403)) set_link("refused");
-    else set_link(res && res->status == 200 ? "registered" : "unreachable");
+    // Who answered? gmod-mcp signs its answers (modules up to 0.3.6 send no header: JSON body); a 200 is a coordinator whatever its form.
+    if (!res) set_link("unreachable");
+    else if (res->status == 200) set_link("registered");
+    else if (!gmcp::is_gmod_mcp_reply(res->has_header(gmcp::kSignatureHeader), res->body)) set_link("foreign", res->status);
+    else if (res->status == 401 || res->status == 403) set_link("refused");
+    else set_link("unreachable");
     return res && res->status == 200;
 }
 
@@ -413,7 +425,7 @@ void start() {
     });
     if (!is_coordinator()) {
         if (heartbeat()) logx::info("registered with the coordinator on port %d", agent::config().base_port);
-        else if (link_state() != "refused") logx::warn("coordinator on port %d did not answer (will retry)", agent::config().base_port);
+        else if (link_state() != "refused" && link_state() != "foreign") logx::warn("coordinator on port %d did not answer (will retry)", agent::config().base_port);
     }
     g_run = true;
     g_thread = std::thread(loop);

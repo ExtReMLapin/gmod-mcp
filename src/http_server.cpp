@@ -13,6 +13,7 @@
 #include <mutex>
 #include <thread>
 
+#include "gmod_mcp_reply.h"
 #include "log.h"
 #include "mcp.h"
 #include "util.h"
@@ -177,6 +178,9 @@ static void setup_routes(httplib::Server &svr) {
     svr.set_write_timeout(60, 0);
     svr.set_payload_max_length(32 * 1024 * 1024);
     svr.set_pre_routing_handler([](const httplib::Request &req, httplib::Response &res) {
+        // Every answer says who it comes from: a client (bridge, other game) tells gmod-mcp from a foreign program that
+        // holds the port (issue #5), the rejections included.
+        res.set_header(gmcp::kSignatureHeader, GMOD_MCP_VERSION);
         // 1. Origin (DNS rebinding): only a local origin is valid. The token is required anyway.
         if (req.has_header("Origin") && !origin_allowed(req.get_header_value("Origin"))) {
             reject(res, 403, "origin_forbidden", "Origin not allowed: only a local origin (localhost, 127.0.0.1, [::1])");

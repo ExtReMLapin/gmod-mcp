@@ -14,7 +14,8 @@ void stop();
 // Member side, when the game shuts down cleanly: tells the coordinator, so that the process going away is not taken for a crash.
 void say_goodbye();
 bool is_coordinator();
-// "coordinator", "registered", "refused" (another token) or "unreachable".
+// "coordinator", "registered", "refused" (another token), "foreign" (the base port is held by a program that is not
+// gmod-mcp) or "unreachable".
 std::string link_state();
 // Error text for a call to an instance that stopped answering: says whether its process is still alive.
 std::string gone_message(const std::string &id, uint32_t pid, double seconds_ago, bool process_alive);
