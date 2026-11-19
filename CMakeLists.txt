@@ -107,7 +107,7 @@ add_custom_command(
   COMMENT "Building the bridge's offline snapshot")
 
 # --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
-add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/launch_opts.cpp src/cmdline.cpp src/next_call.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/lowmem.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/launch_opts.cpp src/cmdline.cpp src/next_call.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
   src/bridge/fp7137.cpp)  # FP7137: the launch/map_load lock, see docs/FP7137.md
 target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)

@@ -3,7 +3,9 @@
 // its raw command line there (one line per start, UTF-8), so a test can check what the bridge passed.
 // Crash mode (tests of the crash report): when GMCP_FAKE_TRIGGER names a file, the game waits for it to exist, then writes
 // a stand-in minidump into the folder GMCP_FAKE_CRASH_DIR (unless GMCP_FAKE_DUMP is 0) and ends at once with the exit code
-// GMCP_FAKE_EXIT (decimal, default 3221225477 = 0xC0000005), like a game that crashed (or, with 0, that quit).
+// GMCP_FAKE_EXIT (decimal, default 3221225477 = 0xC0000005), like a game that crashed (or, with 0, that quit). With
+// GMCP_FAKE_EXIT_DELAY_MS it keeps running that long after the trigger (the dump is written at once): a game whose
+// connections broke before the process object is signalled (issue #8).
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -84,6 +86,8 @@ int main(int argc, char **argv) {
                         std::fclose(d);
                     }
                 }
+                const char *delay = std::getenv("GMCP_FAKE_EXIT_DELAY_MS");
+                if (delay && *delay) std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
                 const char *code = std::getenv("GMCP_FAKE_EXIT");
 #ifdef _WIN32
                 ExitProcess(code && *code ? (UINT)std::strtoul(code, nullptr, 10) : 0xC0000005u);

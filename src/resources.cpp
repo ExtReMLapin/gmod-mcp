@@ -44,7 +44,9 @@ std::string instructions() {
          "(https://wiki.facepunch.com/gmod/). Full guide: resource mcpagent://guide.\n";
     s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator. "
          "client_crashed / server_crashed = that game crashed (details.dump names the minidump, for a human): relaunch it with "
-         "instances_launch and rerun what it was doing; instance_gone = it ended normally.\n";
+         "instances_launch and rerun what it was doing; instance_gone = it ended normally; instance_hung = frozen with no sign of life "
+         "(close it, relaunch); instances_list state \"hung\" = main thread blocked for 60 s (180 s while loading), stalled_s and fps_low_s "
+         "say how long; instances_launch refuses with low_memory when the machine cannot hold more clients (ignore_low_memory overrides).\n";
     // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
     s += "Launches and map loads: starting a game makes the other running games release their GPU resources for 2-10 s, and a "
          "map load ending then crashes that game (engine bug, Facepunch #7137). The bridge makes instances_launch and map_load "
@@ -288,7 +290,7 @@ Calls to another instance (`instance` argument) can also fail with: `unknown_ins
 held the directory of instances ended and another is taking the role over, or has not heard from that instance yet: nothing
 was sent, retry after `details.retry_after_s`; the plugin already waits a few seconds before giving it to you), `instance_unreachable` (its process
 runs but does not answer: frozen or busy; `status {instance}`, `game_terminate {instance}`), `instance_gone` (its process
-ended normally: quit, closed or killed on request) and `client_crashed` / `server_crashed` (see below).
+ended normally: quit, closed or killed on request), `instance_hung` and `client_crashed` / `server_crashed` (see below).
 
 ## Reading results
 Every result is one JSON object, sent twice with the same content: `structuredContent` and one text block. Some clients show
@@ -325,6 +327,28 @@ a process killed from outside (Task Manager) with no dump looks like a crash wit
 several games crashing together the dump is matched by time only (`dump_matched_by_time_only`). `instances_list` shows
 a crashed instance for an hour as `state: "crashed"` with a `crash` object ({dump, exit_code, evidence}); a map_load in
 flight when the client died answers `client_crashed` too (through `instances_launch {map}`: in that client's `map_error`).
+A call in flight to an instance that dies is answered at once, not at its own timeout: the coordinator and, for the clients
+it launched, the bridge watch the process. `details.memory` ({free_commit_mb, free_ram_mb}, measured when the crash is
+reported) is added, with a sentence when the free commit is under 4 GB: out of memory is a likely cause (exit code
+0xC000041D, no dump).
+
+## A game is hung, or the machine is out of memory
+- **Hung.** `instances_list` gives every instance `stalled_s` (seconds its main thread has been blocked, 0 when it ticks) and
+  `fps_low_s` (seconds the frame rate has stayed under 10 fps, 0 when fine; not counted while it loads: measurements taken
+  while it is above 0 are suspect). `fps` is counted over the last 3 s. After 60 s of blocked main thread (180 s while a map
+  load is in progress) or of silence from a process that still runs, the entry is `state: "hung"` with a `note`: it will not
+  recover by itself, close it with `instances_close {pids}` (or `game_terminate {instance}`) and relaunch; results measured on
+  it since it stalled are void. `state: "unresponsive"` is the first stage: no heartbeat for 10 s but the process runs.
+  A call in flight to an instance whose process runs but sent no heartbeat for 30 s fails with `instance_hung`
+  (`details`: `instance`, `pid`, `silent_s`); a client whose heartbeats still come keeps the call waiting for its own timeout.
+- **Out of memory.** `instances_launch` checks the machine before starting anything: free commit (virtual memory: RAM plus
+  page file) must cover 1.6 GB per client plus 1 GB for the rest of the machine, free RAM 1.2 GB per client (a measured
+  light client holds about 1.55 GB of commit and 1.2 GB of RAM). Otherwise it fails with `low_memory` and starts nothing:
+  `details` = {free_commit_mb, free_ram_mb, running_clients (every session), per_client_mb, count, needed_commit_mb,
+  needed_ram_mb}. Close clients you no longer use, start fewer, or pass `ignore_low_memory: true`.
+- **Telling infrastructure from test results.** `low_memory`, `instance_hung`, `client_crashed`, `server_crashed`,
+  `instance_gone`, `instance_unreachable`, `coordinator_changing`, `game_not_running` and `port_conflict` are about the
+  machine or the games, never about the code under test: a harness should stop and report them, not count a failed test.
 
 )";
     // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)

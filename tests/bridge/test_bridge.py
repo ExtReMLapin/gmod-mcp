@@ -21,6 +21,7 @@ Cases (default: a f):
   launch_mount_first Issue #6: instances_launch checks (and re-applies) the lua_mount before any map loads, no map for a client
          without it, coordinator_changing waited out (fake server, stand-in game)
   close_coordinator Issue #6: instances_close of the coordinator says the role moved and to whom; instances_list warns beforehand
+  lowmem instances_launch refuses under low free memory (low_memory), ignore_low_memory, free memory in a crash report
   crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
          in flight when the client dies reports the crash, an old dump is not taken for its own (Windows)
@@ -41,7 +42,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash fp7137 orphan portconflict unseen handover launch_mount_first close_coordinator fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash lowmem fp7137 orphan portconflict unseen handover launch_mount_first close_coordinator fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -1189,7 +1190,7 @@ def case_crash():
         return
     import shutil
 
-    def run(tag, exit_code, dump, old_dump=False, map_name=None):
+    def run(tag, exit_code, dump, old_dump=False, map_name=None, cut_first=False, inflight=False):
         game = tempfile.mkdtemp(prefix="gmcp-crash-game-")
         shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
         os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
@@ -1200,6 +1201,7 @@ def case_crash():
         port, env = free_port(), isolated_config(with_token=True)
         env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes,
                    GMCP_FAKE_EXIT=str(exit_code), GMCP_FAKE_DUMP="1" if dump else "0")
+        if cut_first: env["GMCP_FAKE_EXIT_DELAY_MS"] = "800"  # Issue #8: the connection breaks, the process object is signalled later
         srv = FakeServer(port, version=bridge_version()); srv.pid_file = pid_file
         b = Bridge(port, env)
         out = {"game": game}
@@ -1212,6 +1214,7 @@ def case_crash():
             started = threading.Event()
             def hook(a):
                 started.set(); go()
+                if cut_first: return  # Issue #8: the answer is cut at once, the process is still there for a moment
                 for _ in range(100):
                     if not alive(pid_now()): break
                     time.sleep(0.1)
@@ -1225,7 +1228,19 @@ def case_crash():
             sc = (r or {}).get("result", {}).get("structuredContent", {})
             inst = (sc.get("instances") or [{}])[0]
             out["launch"], out["pid"], out["id"] = sc, pid_now(), inst.get("instance")
-            go()
+            if inflight:
+                # Issue #8: a call waits on the client (the fake game server holds it open, like a game that does not answer) when
+                # the client dies: the answer must come at once, not when the call times out.
+                box = {}
+                def call(): box["r"] = b.req("tools/call", {"name": "silent_hang", "arguments": {"instance": out["id"]}}, 60)
+                th = threading.Thread(target=call); th.start()
+                time.sleep(1.0)
+                t0 = time.time(); go()
+                th.join(45)
+                out["inflight"] = (box.get("r") or {}).get("result", {}).get("structuredContent", {})
+                out["inflight_s"] = time.time() - t0
+            else:
+                go()
             for _ in range(100):
                 if not alive(out["pid"]): break
                 time.sleep(0.1)
@@ -1275,6 +1290,111 @@ def case_crash():
     me = inst.get("map_error", {})
     check("CRASH map_load in flight when the client crashed: map_error is client_crashed with the dump",
           me.get("code") == "client_crashed" and DUMP in me.get("message", "") and me.get("details", {}).get("dump") == DUMP, o["launch"])
+    # 6. Issue #8: the map_load connection breaks first and the process object is signalled 0.8 s later (a real crash closes the
+    # sockets before the process is signalled): map_error was game_not_running, with no crash entry.
+    o = run("c6", 0xC0000005, True, map_name="gm_construct", cut_first=True)
+    inst = (o["launch"].get("instances") or [{}])[0]
+    me = inst.get("map_error", {})
+    check("CRASH Issue #8: a client that dies during its map load (connection cut before the process ends): map_error is client_crashed with the dump, not game_not_running",
+          me.get("code") == "client_crashed" and DUMP in me.get("message", "") and me.get("details", {}).get("dump") == DUMP, o["launch"])
+    # 7. Issue #8: a call in flight on a client that dies is answered at once.
+    o = run("c7", 0xC0000005, True, inflight=True)
+    fl = o.get("inflight", {}).get("error", {})
+    check("CRASH Issue #8: a call in flight when the client crashes answers client_crashed with the dump",
+          fl.get("code") == "client_crashed" and DUMP in fl.get("message", "") and fl.get("details", {}).get("dump") == DUMP, o.get("inflight"))
+    check("CRASH Issue #8: ... within a few seconds (the call itself would have waited 30 s)", o.get("inflight_s", 99) < 6, o.get("inflight_s"))
+    # 8. the same with a clean exit: not a crash, still answered at once.
+    o = run("c8", 0, False, inflight=True)
+    fl = o.get("inflight", {}).get("error", {})
+    check("CRASH Issue #8: a call in flight when the client quits cleanly answers instance_gone, not client_crashed",
+          fl.get("code") == "instance_gone" and o.get("inflight_s", 99) < 6, o.get("inflight"))
+def case_lowmem():
+    """Issue #8: instances_launch refuses to start games when the free memory does not cover them (low_memory, with the figures),
+    unless ignore_low_memory; a crash report carries the free memory. The free memory is given by GMOD_MCP_FAKE_FREE_COMMIT_MB /
+    GMOD_MCP_FAKE_FREE_RAM_MB (the bridge measures the machine otherwise); stand-in game, fake game server, Windows."""
+    print("== LOWMEM: low_memory before any game starts, ignore_low_memory, free memory in a crash report", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("LOWMEM stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+
+    def session(commit, ram, args, crash=False, others=0):
+        game = tempfile.mkdtemp(prefix="gmcp-mem-game-")
+        shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
+        work = tempfile.mkdtemp(prefix="gmcp-mem-"); pid_dir, trigger = os.path.join(work, "pids"), os.path.join(work, "go")
+        os.makedirs(pid_dir)
+        port, env = free_port(), isolated_config(with_token=True)
+        env.update(GMCP_FAKE_PID_DIR=pid_dir, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes, GMCP_FAKE_EXIT="3221225477",
+                   GMOD_MCP_FAKE_FREE_COMMIT_MB=str(commit), GMOD_MCP_FAKE_FREE_RAM_MB=str(ram))
+        srv = FakeServer(port, version=bridge_version()); srv.pid_dir = pid_dir
+        srv.extra_instances = [{"id": "other-%d" % i, "pid": 4000000 + i, "port": 1, "mode": "client", "state": "running"} for i in range(others)]
+        b = Bridge(port, env)
+        a = {"count": 1, "owner": "mem", "timeout_s": 30, "game_dir": game}
+        a.update(args)
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": a}, 90)
+        out = {"launch": (r or {}).get("result", {}).get("structuredContent", {}), "is_error": (r or {}).get("result", {}).get("isError")}
+        out["started"] = len(os.listdir(pid_dir))
+        if crash:
+            open(trigger, "w").close()
+            for _ in range(100):
+                if not any(alive(int(open(os.path.join(pid_dir, f)).read() or 0)) for f in os.listdir(pid_dir)): break
+                time.sleep(0.1)
+            inst = (out["launch"].get("instances") or [{}])[0]
+            srv.stop(); time.sleep(0.3)
+            r = b.req("tools/call", {"name": "status", "arguments": {"instance": inst.get("instance", "x")}}, 20)
+            out["status"] = (r or {}).get("result", {}).get("structuredContent", {})
+            r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+            out["list"] = (r or {}).get("result", {}).get("structuredContent", {})
+        else:
+            srv.stop()
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "mem"}}, 20)
+        b.close()
+        shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+        return out
+
+    # 1. The report of the issue: 11 clients run, 1.8 GB of commit is free, one more client is asked for.
+    o = session(1780, 6000, {}, others=11)
+    e = o["launch"].get("error", {})
+    d = e.get("details", {})
+    check("LOWMEM free commit 1780 MB, 11 clients running: low_memory, isError, nothing started", e.get("code") == "low_memory" and o["is_error"] is True and o["started"] == 0, o)
+    check("LOWMEM details: free_commit_mb, free_ram_mb, running_clients, per_client_mb, count, needed_commit_mb",
+          d.get("free_commit_mb") == 1780 and d.get("free_ram_mb") == 6000 and d.get("running_clients") == 11 and d.get("per_client_mb") == 1600
+          and d.get("count") == 1 and d.get("needed_commit_mb", 0) > 1780, e)
+    check("LOWMEM the message says how to go on (instances_close, ignore_low_memory)", "instances_close" in e.get("message", "") and "ignore_low_memory" in e.get("message", "") and "Nothing was started" in e.get("message", ""), e)
+    # 2. ignore_low_memory starts anyway.
+    o = session(1780, 6000, {"ignore_low_memory": True}, others=11)
+    check("LOWMEM ignore_low_memory: the client starts", o["started"] == 1 and not o["launch"].get("error"), o)
+    # 3. plenty of memory.
+    o = session(100000, 60000, {})
+    check("LOWMEM plenty of memory: the client starts", o["started"] == 1 and not o["launch"].get("error"), o)
+    # 4. free RAM alone is too low.
+    o = session(100000, 500, {})
+    check("LOWMEM free RAM 500 MB: low_memory", o["launch"].get("error", {}).get("code") == "low_memory" and o["started"] == 0, o)
+    # 5. the need grows with the count: 3 clients fit in 6000 MB of commit, 4 do not.
+    o = session(6000, 60000, {"count": 3})
+    check("LOWMEM 3 clients with 6000 MB of commit: they start", o["started"] == 3, o)
+    o = session(6000, 60000, {"count": 4})
+    check("LOWMEM 4 clients with 6000 MB of commit: low_memory, none started", o["launch"].get("error", {}).get("code") == "low_memory" and o["started"] == 0, o)
+    # 6. a crash report names the free memory.
+    o = session(1800, 900, {"ignore_low_memory": True}, crash=True)
+    e = o.get("status", {}).get("error", {})
+    check("LOWMEM client_crashed carries the free memory in details.memory and says memory is low",
+          e.get("code") == "client_crashed" and e.get("details", {}).get("memory", {}).get("free_commit_mb") == 1800
+          and e["details"]["memory"].get("free_ram_mb") == 900 and "Memory is low" in e.get("message", ""), e)
+    crashed = [i for i in o.get("list", {}).get("instances", []) if i.get("state") == "crashed"]
+    check("LOWMEM instances_list crash entry carries the memory too", len(crashed) == 1 and crashed[0].get("crash", {}).get("memory", {}).get("free_commit_mb") == 1800, o.get("list"))
+    # 7. plenty of memory at the crash: the figures, no hint.
+    o = session(60000, 30000, {}, crash=True)
+    e = o.get("status", {}).get("error", {})
+    check("LOWMEM a crash with plenty of memory: the figures without the low-memory sentence",
+          e.get("code") == "client_crashed" and e.get("details", {}).get("memory", {}).get("free_commit_mb") == 60000 and "Memory is low" not in e.get("message", ""), e)
+
+
 # --- FP7137: the launch / map_load lock shared by every bridge (docs/FP7137.md). Removed with the workaround. ---
 def fp_setup(settle_ms=2500, workaround=None, hold=None):
     """A fake game server, a config folder shared by the bridges of the scenario, a folder where each stand-in game
@@ -2515,8 +2635,8 @@ def case_close_coordinator():
     shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

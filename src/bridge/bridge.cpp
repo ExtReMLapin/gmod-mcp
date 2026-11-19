@@ -42,6 +42,7 @@
 #include "argcheck.h"
 #include "bridge_snapshot.h"
 #include "crashinfo.h"
+#include "lowmem.h"
 #include "gamedir.h"
 #include "launch_opts.h"  // Issue #10
 #include "fp7137.h"  // FP7137
@@ -219,11 +220,17 @@ std::string not_running_text() {
 // A request in flight: cancelling it closes its HTTP connection right away, even while the stream is silent.
 struct Inflight {
     std::atomic<bool> cancelled{false};
+    std::atomic<bool> process_ended{false};  // issue #8: the launched client this call waits on died: the connection was cut to answer at once
     bool legacy = true;  // a request of a pre-2026-07-28 era (cancellation is also forwarded as a notification)
     std::mutex mu;
     httplib::Client *cli = nullptr;
     void cancel() {
         cancelled = true;
+        std::lock_guard<std::mutex> lk(mu);
+        if (cli) cli->stop();
+    }
+    void abort_for_process_end() {
+        process_ended = true;
         std::lock_guard<std::mutex> lk(mu);
         if (cli) cli->stop();
     }
@@ -256,6 +263,7 @@ struct Relay {
     bool refused = false;  // unreachable because the connection was never made (refused, or no answer to the connect): nothing was sent
     int status = 0;
     json response;         // final JSON-RPC response (null for notifications)
+    bool aborted = false;  // issue #8: cut because the launched client the call waited on died (reached is true: the game itself is fine)
 };
 
 void set_down(const std::string &why) {
@@ -399,6 +407,11 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
             r.reached = true;
             return r;
         }
+        if (cancel->process_ended) {
+            r.reached = true;
+            r.aborted = true;
+            return r;
+        }
         cancel->cli = &cli;
     }
     // A refused connection right after the game answered is retried briefly (a burst of calls, a busy accept queue);
@@ -406,7 +419,7 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
     bool was_up = g_link == Link::Up;
     auto res = cli.Post("/mcp", h, payload, "application/json", receiver);
     for (int delay_ms : {100, 300}) {
-        if (res || !was_up || res.error() != httplib::Error::Connection || decided || (cancel && cancel->cancelled)) break;
+        if (res || !was_up || res.error() != httplib::Error::Connection || decided || (cancel && (cancel->cancelled || cancel->process_ended))) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
         res = cli.Post("/mcp", h, payload, "application/json", receiver);
     }
@@ -417,6 +430,11 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
     if (!res) {
         if (cancel && cancel->cancelled) {
             r.reached = true;  // we closed it ourselves
+            return r;
+        }
+        if (cancel && cancel->process_ended) {  // issue #8: we cut it because the client it waited on died
+            r.reached = true;
+            r.aborted = true;
             return r;
         }
         auto e = res.error();
@@ -932,8 +950,13 @@ json bridge_tools() {
          "Video settings: the clients start with -dxlevel 95, so the engine neither reads nor writes the user's stored video "
          "mode (resolution, anti-aliasing): the user's own game keeps its resolution.\n"
          "Measured cost per client on gm_construct (16-core PC, the game and its 4 browser subprocesses): light about 19% "
-         "of one core and 1.5 GB of RAM; normal 24% and 1.5 GB. Eight clients: about 1.5 cores and 12 GB. Memory is the "
-         "limit, not CPU. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
+         "of one core, 1.55 GB of commit (virtual memory) and 1.2 GB of RAM; normal 24% and the same memory. Eight clients: "
+         "about 1.5 cores and 12 GB. Memory is the limit, not CPU: a machine out of commit makes every game crash "
+         "(0xC000041D, no dump), so before starting anything this call checks the free commit and free RAM and refuses with "
+         "the error low_memory {details: free_commit_mb, free_ram_mb, running_clients (all sessions), per_client_mb, count, "
+         "needed_commit_mb, needed_ram_mb} when they do not cover the clients asked for (1.6 GB of commit each plus 1 GB "
+         "for the rest of the machine, 1.2 GB of RAM each); nothing is started then. Close clients you no longer use "
+         "(instances_close), start fewer, or pass ignore_low_memory: true to start anyway. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
          "size barely matters, and a client narrower than 640 pixels crashes while loading a map (integer division by zero "
          "in client.dll at client Lua startup: seen at 480x270 and 320x240; it only survived with the HUD turned off). "
          "-textmode and lower graphics settings were measured: no real gain (and graphics settings would be saved into the "
@@ -978,6 +1001,7 @@ json bridge_tools() {
             {"launch_args", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 160}}},  // Issue #10
                              {"description", "Extra engine command-line tokens, one per element, e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]. Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, window mode, -dxlevel, -condebug, -game), +connect, +map. Options: https://developer.valvesoftware.com/wiki/Command_line_options"}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
+            {"ignore_low_memory", {{"type", "boolean"}, {"description", "Start even when the free memory does not cover the clients asked for (error low_memory otherwise). Default false: a machine out of memory crashes every game on it."}}},
             {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
                          {"description", "Absolute folder whose Lua these clients load before every addon's (e.g. your git worktree of "
@@ -1046,13 +1070,15 @@ std::mutex g_claimed_mu;
 std::set<std::string> g_claimed_dumps;
 
 // True when the launched client's process has exited (then `v`, `code` and `ended` are filled).
-bool launched_end(const Launched &l, crashinfo::Verdict &v, uint32_t &code, double &ended) {
+// `wait_ms`: how long to wait for a process that has not ended yet. A crash closes the game's sockets before the process object is
+// signalled, so a call that just failed on a broken connection asks again after a moment (issue #8).
+bool launched_end(const Launched &l, crashinfo::Verdict &v, uint32_t &code, double &ended, int wait_ms = 0) {
 #ifdef _WIN32
     if (!l.slot) return false;
     std::lock_guard<std::mutex> lk(l.slot->mu);
     if (!l.slot->done) {
         plat::ProcInfo pi;
-        if (!l.h || !plat::process_watch_query((void *)l.h, pi, 0) || !pi.exited) return false;
+        if (!l.h || !plat::process_watch_query((void *)l.h, pi, wait_ms) || !pi.exited) return false;
         crashinfo::Facts f;
         f.exit_known = true;
         f.exit_code = pi.exit_code;
@@ -1073,7 +1099,7 @@ bool launched_end(const Launched &l, crashinfo::Verdict &v, uint32_t &code, doub
     ended = l.slot->ended_unix;
     return true;
 #else
-    (void)l; (void)v; (void)code; (void)ended;
+    (void)l; (void)v; (void)code; (void)ended; (void)wait_ms;
     return false;
 #endif
 }
@@ -1081,17 +1107,17 @@ bool launched_end(const Launched &l, crashinfo::Verdict &v, uint32_t &code, doub
 double unix_now() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
 
 // The error object for a launched client that crashed ({code, message, details}), or null when it still runs or ended normally.
-json launched_crash_error(const Launched &l) {
+json launched_crash_error(const Launched &l, int wait_ms = 0) {
     crashinfo::Verdict v;
     uint32_t code = 0;
     double ended = 0;
-    if (!launched_end(l, v, code, ended) || v.cause != crashinfo::Cause::Crashed) return json();
+    if (!launched_end(l, v, code, ended, wait_ms) || v.cause != crashinfo::Cause::Crashed) return json();
     double ago = std::max(0.0, unix_now() - ended);
     json details{{"instance", l.id.empty() ? json(nullptr) : json(l.id)}, {"pid", l.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)},
                  {"evidence", v.evidence}, {"exit_code", code}};
-    return json{{"code", crashinfo::crash_code("client")},
-                {"message", crashinfo::crash_message("client", l.id.empty() ? "started by this session" : l.id, l.pid, ago, v, true, code)},
-                {"details", details}};
+    std::string message = crashinfo::crash_message("client", l.id.empty() ? "started by this session" : l.id, l.pid, ago, v, true, code);
+    lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low
+    return json{{"code", crashinfo::crash_code("client")}, {"message", message}, {"details", details}};
 }
 
 // instances_list, completed by the bridge: the owner label of each client it launched, the clients it launched that
@@ -1146,6 +1172,8 @@ json annotate_instances(json sc, const json &args) {
                                                   std::max(0.0, unix_now() - ended), v, true, code);
                 e["launched_by_this_session"] = true;
                 if (!l.owner.empty()) e["owner"] = l.owner;
+                json mem = lowmem::memory_json(lowmem::current());  // issue #8
+                if (!mem.is_null()) e["crash"]["memory"] = mem;
                 sc["instances"].push_back(e);
             }
             continue;
@@ -1404,6 +1432,24 @@ json launch_tool(const json &args, const json &token) {
         std::string inside = lua_mount::refuse_inside_game(mount_root, root + "/garrysmod");
         if (!inside.empty()) return tool_error("invalid_params", "lua_mount: " + inside);
     }
+    // Issue #8: memory first. A machine out of commit crashes every game on it (11 clients, 1.8 GB free: all died, no dump).
+    {
+        lowmem::Memory mem = lowmem::current();
+        if (mem.known && !args.value("ignore_low_memory", false)) {
+            std::set<uint32_t> alive;
+            json lst = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
+            for (const auto &e : lst.value("instances", json::array()))
+                if (e.is_object() && e.value("state", "") != "crashed" && e.value("mode", "client") != "srcds") alive.insert(e.value("pid", 0u));
+            {
+                std::lock_guard<std::mutex> lk(g_launch_mu);
+                for (const auto &l : g_launched)
+                    if (l.h && WaitForSingleObject(l.h, 0) == WAIT_TIMEOUT) alive.insert(l.pid);
+            }
+            alive.erase(0u);
+            lowmem::Verdict lv = lowmem::check_launch(mem, count, (int)alive.size(), false);
+            if (lv.refuse) return tool_text(json{{"error", {{"code", "low_memory"}, {"message", lv.message}, {"details", lv.details}}}}, true);
+        }
+    }
     // Fixed option set (no free arguments). The light preset comes from measurements of what actually saves CPU and
     // memory per client.
     // -mcp_test_client marks the game as one of ours: the module gives the archived convars below back to the user's
@@ -1585,9 +1631,14 @@ json launch_tool(const json &args, const json &token) {
                 if (fp_map.waited_s() >= 0.05) map_res[i]["fp7137_waited"] = json{{"waited_s", std::round(fp_map.waited_s() * 10) / 10}, {"waited_reason", fp_map.reason()}};  // FP7137
         });  // FP7137
         // A client that died during its load: say it crashed (the game's answer is only that nothing answers).
+        // Issue #8: when the answer says nothing answers (the connection broke), the process object may be signalled a moment
+        // later than the socket closes: wait for it before concluding the client lives.
         for (size_t i = 0; i < started.size(); ++i)
             if (map_res[i].contains("error") && mount_ok[i]) {
-                json ce = launched_crash_error(started[i]);
+                std::string code = map_res[i]["error"].is_object() ? map_res[i]["error"].value("code", "") : "";
+                bool broken = code == "game_not_running" || code == "port_conflict" || code == "instance_gone" || code == "instance_unreachable" ||
+                              code == "coordinator_changing" || code == "relay_error" || code == "rpc_error";
+                json ce = launched_crash_error(started[i], broken ? 2500 : 0);
                 if (!ce.is_null()) map_res[i] = json{{"error", ce}};
             }
         // With the map loaded the engine's server Lua paths exist: look again, for the base Lua (a mounted folder that hides
@@ -1866,7 +1917,7 @@ json launched_answer(const json &fwd) {
     std::lock_guard<std::mutex> lk(g_launch_mu);
     for (const auto &l : g_launched) {
         if (l.id.empty() || l.id != id) continue;
-        json ce = launched_crash_error(l);
+        json ce = launched_crash_error(l, 2500);  // issue #8: the connection broke, the process object follows a moment later
         if (!ce.is_null()) return tool_text(json{{"error", ce}}, true);
         crashinfo::Verdict v;
         uint32_t code = 0;
@@ -1878,6 +1929,41 @@ json launched_answer(const json &fwd) {
     }
     return json();
 }
+
+#ifdef _WIN32
+// Issue #8: while a call for a client this session launched is in flight, watches that client's process: when it ends the
+// connection is cut (the coordinator that relays the call may be the dead game, or an older module that does not watch) and
+// the caller gets the crash answer at once instead of waiting for the call's own timeout.
+struct ProcessWatch {
+    std::atomic<bool> stop{false};
+    std::thread th;
+    HANDLE dup = nullptr;
+    ProcessWatch(const json &fwd, const std::shared_ptr<Inflight> &cancel) {
+        json args = params_of(fwd).value("arguments", json::object());
+        if (!args.is_object() || !args.contains("instance") || !args["instance"].is_string()) return;
+        std::string id = args["instance"].get<std::string>();
+        {
+            std::lock_guard<std::mutex> lk(g_launch_mu);
+            for (const auto &l : g_launched)
+                if (!l.id.empty() && l.id == id && l.h) DuplicateHandle(GetCurrentProcess(), l.h, GetCurrentProcess(), &dup, SYNCHRONIZE, FALSE, 0);
+        }
+        if (!dup) return;
+        th = std::thread([this, cancel] {
+            while (!stop) {
+                if (WaitForSingleObject(dup, 200) == WAIT_OBJECT_0) {
+                    if (!stop) cancel->abort_for_process_end();
+                    return;
+                }
+            }
+        });
+    }
+    ~ProcessWatch() {
+        stop = true;
+        if (th.joinable()) th.join();
+        if (dup) CloseHandle(dup);
+    }
+};
+#endif
 
 void handle_request(const json &msg) {
     json id = msg["id"];
@@ -1938,14 +2024,26 @@ void handle_request(const json &msg) {
             out(n);
         });
     };
+#ifdef _WIN32
+    std::unique_ptr<ProcessWatch> watch;
+    if (method == "tools/call" && tool != "game_quit" && tool != "game_terminate") watch = std::make_unique<ProcessWatch>(fwd, cancel);  // issue #8: those two end the process on purpose
+#endif
     Relay r = do_relay();
-    if (method == "tools/call" && !cancel->cancelled) r = ride_out_handover(std::move(r), do_relay, &cancel->cancelled, id);  // issue #6
+    if (method == "tools/call" && !cancel->cancelled && !r.aborted) r = ride_out_handover(std::move(r), do_relay, &cancel->cancelled, id);  // issue #6
+#ifdef _WIN32
+    watch.reset();
+#endif
     {
         std::lock_guard<std::mutex> lk(g_cancel_mu);
         g_cancel.erase(key);
     }
     if (tool == "map_load") fp7137_finish_map_load(fp_gate, r, fwd);  // FP7137
     if (cancel->cancelled) return;  // cancelled by the client: no response (late answers are dropped too)
+    if (r.aborted) {  // issue #8: the launched client this call waited on died
+        json a = launched_answer(fwd);
+        out(local_result(msg, a.is_null() ? tool_error("instance_gone", "the client this call was waiting for ended") : a));
+        return;
+    }
 
     if (method == "initialize" || method == "server/discover") {
         json res;

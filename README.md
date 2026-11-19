@@ -371,7 +371,13 @@ flowchart LR
   dedicated server) with the name of the crash dump in `crashes/` (when one was written) and the exit code, and
   `instances_list` shows it as `crashed` for an hour. The coordinator decides from the game's own goodbye at shutdown, a
   `game_quit`/`game_terminate` sent through it, a dump written just before the process ended, and its exit code. A process
-  killed from outside with no dump looks like a crash with exit code 1.
+  killed from outside with no dump looks like a crash with exit code 1. A call in flight to a game that dies is answered at
+  once, and the answer carries the free memory of the machine (out of memory is a likely cause).
+- A game that is **hung** is flagged: `instances_list` gives `stalled_s` (seconds its main thread has been blocked) and
+  `fps_low_s` (seconds under 10 fps), and the state becomes `hung` after 60 s (180 s during a map load) with the advice to close
+  and relaunch; a call to a frozen process fails with `instance_hung` after 30 s without heartbeat. `instances_launch` checks
+  the free commit and RAM first and refuses with `low_memory` (the figures, how many clients run) when they cannot hold the
+  clients; `ignore_low_memory: true` overrides it.
 - If the game holding the base port exits, the others keep running; within a few seconds one of them takes the base port
   over and the rest register with it.
 

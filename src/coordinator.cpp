@@ -20,7 +20,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -31,6 +33,8 @@
 #include "console.h"
 #include "crashinfo.h"
 #include "gmod_mcp_reply.h"
+#include "health.h"
+#include "lowmem.h"
 #include "http_server.h"
 #include "jobs.h"
 #include "log.h"
@@ -48,6 +52,15 @@ static const double kDeadAfterS = 10.0;
 static const double kFastRetryS = 0.3;          // heartbeat period after a failed one (the coordinator may be gone)
 static const double kHandoverGraceS = 8.0;      // after a take-over: an unknown instance may just not have re-registered yet
 static const double kHandoverRetryS = 1.0;      // retry_after_s advised during the grace period
+
+// Issue #8: waits that tests shorten (set_timing_for_tests).
+static std::atomic<double> g_dead_after_s{kDeadAfterS};
+static std::atomic<double> g_hung_after_s{0};       // 0 = health::kHungAfterS / kHungAfterLoadingS
+static const double kInflightSilentS = 30.0;         // a call in flight is cut when the instance sent no heartbeat for this long
+static std::atomic<double> g_inflight_silent_s{kInflightSilentS};
+static std::atomic<double> g_low_fps_shown_s{health::kLowFpsShownS};
+
+static double steady_s() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
 
 static double unix_now() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
 
@@ -79,10 +92,12 @@ struct Member {
     json info;  // id, mode, port, pid, map, realms
     Clock::time_point last_seen;
     std::shared_ptr<Tracked> t;
+    health::FpsWatch fps_watch;  // issue #8: how long its frame rate stayed low
 };
 
 static std::mutex g_mu;
 static std::map<std::string, Member> g_members;
+static health::FpsWatch g_self_fps;  // this instance's own frame rate, fed by the loop (needs g_mu)
 static std::set<std::string> g_claimed_dumps;  // dumps already given to a dead instance (two crashes do not share one)
 static std::atomic<bool> g_run{false};
 static std::thread g_thread;
@@ -107,6 +122,13 @@ bool in_handover() {
 
 void note_takeover_for_tests(bool on) { g_takeover_ms = on ? steady_ms() : 0; }
 
+void set_timing_for_tests(double dead_after_s, double hung_after_s, double inflight_silent_s, double low_fps_shown_s) {
+    g_dead_after_s = dead_after_s > 0 ? dead_after_s : kDeadAfterS;
+    g_hung_after_s = hung_after_s > 0 ? hung_after_s : 0.0;
+    g_inflight_silent_s = inflight_silent_s > 0 ? inflight_silent_s : kInflightSilentS;
+    g_low_fps_shown_s = low_fps_shown_s > 0 ? low_fps_shown_s : health::kLowFpsShownS;
+}
+
 json handover_info() {
     if (!in_handover()) return json();
     return json{{"state", "changing"}, {"retry_after_s", kHandoverRetryS},
@@ -130,7 +152,8 @@ static json self_info() {
     return json{{"id", c.instance_id}, {"mode", agent::mode_name()}, {"port", c.port}, {"pid", plat::process_id()},
                 {"map", agent::current_map()}, {"realms", realms_j}, {"agent_version", c.version},
                 {"uptime_s", (int64_t)console::uptime()}, {"fps", fps.is_number() ? json((int)(fps.get<double>() + 0.5)) : json(nullptr)},
-                {"main_thread_stalled", since > 5.0}, {"lua_errors", console::errors_cursor()},
+                {"main_thread_stalled", since > 5.0}, {"last_tick_age_s", since < 0 ? 0.0 : std::round(since * 100) / 100},  // issue #8
+                {"lua_errors", console::errors_cursor()},
                 {"loading", agent::map_loading()},  // FP7137 (issue #7): a map load is in progress, whatever started it
                 {"game_dir", c.game_dir}};  // read by the coordinator (where the crash dumps are), not shown by instances_list
 }
@@ -139,7 +162,8 @@ static json self_info() {
 // visible in instances_list for a while.
 struct Gone {
     std::shared_ptr<Tracked> t;
-    Clock::time_point when;
+    Clock::time_point when;  // last heartbeat
+    json info;               // what its last heartbeat said (issue #8: an instance that went silent but whose process lives is still listed)
 };
 static std::map<std::string, Gone> g_gone;
 static const double kCrashShownS = 3600.0;
@@ -183,9 +207,9 @@ static void purge_locked() {
     for (auto it = g_members.begin(); it != g_members.end();) {
         double age = std::chrono::duration<double>(now - it->second.last_seen).count();
         bool dead = finalize_locked(*it->second.t);  // the process ended: no need to wait for the heartbeat timeout
-        if (age > kDeadAfterS || dead) {
+        if (age > g_dead_after_s || dead) {
             logx::info("instance %s removed (%s)", it->first.c_str(), dead ? "its process ended" : ("no heartbeat for " + std::to_string((int)age) + " s").c_str());
-            g_gone[it->first] = Gone{it->second.t, it->second.last_seen};
+            g_gone[it->first] = Gone{it->second.t, it->second.last_seen, it->second.info};
             it = g_members.erase(it);
         } else {
             ++it;
@@ -202,6 +226,33 @@ static void purge_locked() {
     }
 }
 
+static double round1(double v) { return std::round(v * 10) / 10; }
+
+static std::string hung_note(uint32_t pid, double stalled_s, double limit_s, bool silent) {
+    std::string pids = pid ? "{pids: [" + std::to_string(pid) + "]}" : "{pids}";
+    return std::string(silent ? "no heartbeat for " : "its main thread has been blocked for ") + std::to_string((int)stalled_s) + " s (hung after " +
+           std::to_string((int)limit_s) + " s" + (silent ? "; the process still runs: frozen as a whole, crash dialog or debugger" :
+                                                          ": a map load that never ends, an infinite loop or a crash dialog") +
+           "). It will not recover by itself: close it with instances_close " + pids + " (or game_terminate {instance}) and relaunch a client with "
+           "instances_launch; anything measured on it since it stalled is not valid.";
+}
+
+static std::string unresponsive_note(double silent_s, double limit_s) {
+    return "no heartbeat for " + std::to_string((int)silent_s) + " s but its process still runs: busy or frozen. A call to it may fail meanwhile; it is "
+           "listed as hung after " + std::to_string((int)limit_s) + " s without a sign of life (it comes back by itself if it was only a long load).";
+}
+
+// Issue #8: stalled_s, fps_low_s and, past the limit, state "hung" with the advice. `silent`: its heartbeats stopped.
+static void add_health(json &e, double last_tick_age_s, double hb_age_s, bool loading, bool silent, double fps_low_s, uint32_t pid) {
+    health::Assessment a = health::assess(last_tick_age_s, hb_age_s, loading, g_hung_after_s, silent);
+    e["stalled_s"] = round1(a.stalled_s);
+    e["fps_low_s"] = round1(fps_low_s);
+    if (a.hung) {
+        e["state"] = "hung";
+        e["note"] = hung_note(pid, a.stalled_s, a.hung_after_s, silent && last_tick_age_s < health::kStalledShownS);
+    }
+}
+
 json instances() {
     json arr = json::array();
     json me = self_info();
@@ -210,8 +261,9 @@ json instances() {
     me["state"] = "running";
     me["role"] = is_coordinator() ? "coordinator" : "member";
     me["heartbeat_age_s"] = 0;
-    arr.push_back(me);
     std::lock_guard<std::mutex> lk(g_mu);
+    add_health(me, me.value("last_tick_age_s", 0.0), 0, me.value("loading", false), false, g_self_fps.low_s(steady_s(), g_low_fps_shown_s), me.value("pid", 0u));
+    arr.push_back(me);
     purge_locked();
     auto now = Clock::now();
     for (auto &kv : g_members) {
@@ -219,15 +271,37 @@ json instances() {
         e["self"] = false;
         e["state"] = "running";
         e["role"] = "member";
-        e["heartbeat_age_s"] = std::chrono::duration<double>(now - kv.second.last_seen).count();
+        double hb_age = std::chrono::duration<double>(now - kv.second.last_seen).count();
+        e["heartbeat_age_s"] = hb_age;
+        add_health(e, e.value("last_tick_age_s", e.value("main_thread_stalled", false) ? 5.0 : 0.0), hb_age, e.value("loading", false), false,
+                   kv.second.fps_watch.low_s(steady_s(), g_low_fps_shown_s), e.value("pid", 0u));
         arr.push_back(e);
     }
-    // Instances that crashed (a clean quit just disappears, as before).
     for (auto &kv : g_gone) {
         Tracked &t = *kv.second.t;
-        if (g_members.count(kv.first) || !finalize_locked(t) || t.ending.verdict.cause != crashinfo::Cause::Crashed) continue;
-        arr.push_back(crashinfo::crashed_entry(t.id, t.mode, t.pid, std::max(0.0, unix_now() - t.ending.ended_unix), t.ending.verdict, t.ending.exit_known,
-                                    t.ending.exit_code));
+        if (g_members.count(kv.first)) continue;
+        if (!finalize_locked(t)) {
+            // Issue #8: no heartbeat any more but the process lives (frozen as a whole, crash dialog): it used to vanish from the
+            // list. A game that is closing (goodbye, or asked to end) is not shown.
+            if (t.goodbye || t.requested) continue;
+            json e = kv.second.info;
+            double silent_s = std::chrono::duration<double>(now - kv.second.when).count();
+            e["self"] = false;
+            e["role"] = "member";
+            e["state"] = "unresponsive";
+            e["heartbeat_age_s"] = silent_s;
+            add_health(e, e.value("last_tick_age_s", 0.0), silent_s, e.value("loading", false), true, 0, t.pid);
+            if (e["state"] == "unresponsive") e["note"] = unresponsive_note(silent_s, health::assess(0, 0, e.value("loading", false), g_hung_after_s).hung_after_s);
+            arr.push_back(e);
+            continue;
+        }
+        if (t.ending.verdict.cause != crashinfo::Cause::Crashed) continue;
+        // Instances that crashed (a clean quit just disappears, as before).
+        json ce = crashinfo::crashed_entry(t.id, t.mode, t.pid, std::max(0.0, unix_now() - t.ending.ended_unix), t.ending.verdict, t.ending.exit_known,
+                                    t.ending.exit_code);
+        json mem = lowmem::memory_json(lowmem::current());  // issue #8
+        if (!mem.is_null()) ce["crash"]["memory"] = mem;
+        arr.push_back(ce);
     }
     return arr;
 }
@@ -256,6 +330,14 @@ static std::unique_ptr<httplib::Client> client(int port, double read_timeout_s) 
     return cli;
 }
 
+// Issue #8: one heartbeat's frame rate into the member's low-fps watch (not while it loads or its main thread is blocked: those
+// have their own flags).
+static void feed_fps(Member &m, const json &info) {
+    double fps = info.contains("fps") && info["fps"].is_number() ? info["fps"].get<double>() : -1.0;
+    double tick = info.value("last_tick_age_s", info.value("main_thread_stalled", false) ? 5.0 : 0.0);
+    m.fps_watch.feed(steady_s(), fps, info.value("loading", false) || tick >= health::kStalledShownS);
+}
+
 // Coordinator side: heartbeat / registration (upsert).
 static json on_heartbeat(const json &in) {
     if (!is_coordinator()) return json{{"ok", false}, {"error", "not_coordinator"}};
@@ -266,6 +348,8 @@ static json on_heartbeat(const json &in) {
     auto old = g_members.find(id);
     if (in.value("closing", false)) {  // the instance's module closes with the game: a clean shutdown, not a crash
         if (old != g_members.end()) old->second.t->goodbye = true;
+        auto gone = g_gone.find(id);  // issue #8: it may have been listed as unresponsive meanwhile
+        if (gone != g_gone.end()) gone->second.t->goodbye = true;
         return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
     }
     json info = in;
@@ -283,7 +367,8 @@ static json on_heartbeat(const json &in) {
         plat::ProcInfo pi;
         if (t->watch && plat::process_watch_query(t->watch, pi, 0) && pi.start_unix > 0) t->start_unix = pi.start_unix;
         t->last_seen_unix = unix_now();
-        g_members[id] = Member{info, Clock::now(), t};
+        g_members[id] = Member{info, Clock::now(), t, health::FpsWatch()};
+        feed_fps(g_members[id], info);
         g_gone.erase(id);
         logx::info("instance %s registered (port %d, %s)", id.c_str(), in.value("port", 0), in.value("mode", "?").c_str());
     } else {
@@ -292,6 +377,7 @@ static json on_heartbeat(const json &in) {
         t.last_seen_unix = unix_now();
         old->second.info = info;
         old->second.last_seen = Clock::now();
+        feed_fps(old->second, info);
     }
     return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
 }
@@ -325,7 +411,9 @@ static json ended_error(Tracked &t) {
     if (v.cause == crashinfo::Cause::Crashed) {
         json details{{"instance", t.id}, {"pid", t.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)}, {"evidence", v.evidence}};
         if (t.ending.exit_known) details["exit_code"] = t.ending.exit_code;
-        return wrap_err(crashinfo::crash_code(t.mode), crashinfo::crash_message(t.mode, t.id, t.pid, ago, v, t.ending.exit_known, t.ending.exit_code), details);
+        std::string message = crashinfo::crash_message(t.mode, t.id, t.pid, ago, v, t.ending.exit_known, t.ending.exit_code);
+        lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low
+        return wrap_err(crashinfo::crash_code(t.mode), message, details);
     }
     if (v.cause == crashinfo::Cause::Quit)
         return wrap_err("instance_gone", crashinfo::quit_message(t.id, t.pid, ago, v.evidence.empty() ? "clean exit" : v.evidence[0]));
@@ -366,7 +454,41 @@ static json relay(const std::string &instance, const std::string &tool, const js
     }
     auto cli = client(port, 900);
     json req{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", args}}}};
-    auto res = cli->Post("/mcp", req.dump(), "application/json");
+    // Issue #8: the call waits for the instance's answer (up to 900 s), but watches the instance meanwhile: when its process ends
+    // (the connection may stay open: a crash dialog holds the process, a handle may be inherited) or its heartbeats stop for
+    // good, the call is cut and answered at once (client_crashed / instance_hung) instead of at its own timeout.
+    std::string body_text = req.dump();
+    auto fut = std::async(std::launch::async, [&] { return cli->Post("/mcp", body_text, "application/json"); });
+    json cut;  // the answer when the call was cut
+    while (fut.wait_for(std::chrono::milliseconds(250)) != std::future_status::ready) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (finalize_locked(*t)) {
+            cut = ended_error(*t);
+        } else {
+            double silent = -1;
+            auto m = g_members.find(instance);
+            if (m == g_members.end()) {
+                auto g = g_gone.find(instance);
+                if (g != g_gone.end() && g->second.t == t) silent = std::chrono::duration<double>(Clock::now() - g->second.when).count();
+            } else if (m->second.t == t) {
+                silent = std::chrono::duration<double>(Clock::now() - m->second.last_seen).count();
+            }
+            if (silent >= g_inflight_silent_s && !t->goodbye)
+                cut = wrap_err("instance_hung",
+                               "instance " + instance + (t->pid ? " (pid " + std::to_string(t->pid) + ")" : "") + " sent no heartbeat for " + std::to_string((int)silent) +
+                                   " s while this call was in flight, and its process still runs: it is frozen as a whole (crash dialog, debugger, hung driver) and will not "
+                                   "answer, so the call was cut. Close it with game_terminate {instance} or instances_close {pids:[" + std::to_string(t->pid) +
+                                   "]} and relaunch a client with instances_launch (instances_list shows whether it came back meanwhile).",
+                               json{{"instance", instance}, {"pid", t->pid}, {"silent_s", round1(silent)}});
+        }
+        if (!cut.is_null()) break;
+    }
+    if (!cut.is_null()) {
+        do cli->stop();
+        while (fut.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready);
+        return cut;
+    }
+    auto res = fut.get();
     if (!res) {
         // The connection broke: the process may be ending right now (a crash closes the socket before the process object
         // is signalled), so give it a moment before deciding between gone and unreachable.
@@ -486,6 +608,12 @@ static void loop() {
         for (int i = 0; i < (int)(wait_s * 10 + 0.5) && g_run && !g_wake; ++i) plat::sleep_ms(100);  // FP7137: ... && !g_wake
         g_wake = false;  // FP7137
         if (!g_run) break;
+        {  // issue #8: this instance's own frame rate (the others are fed by their heartbeats)
+            json me = self_info();
+            std::lock_guard<std::mutex> lk(g_mu);
+            double fps = me["fps"].is_number() ? me["fps"].get<double>() : -1.0;
+            g_self_fps.feed(steady_s(), fps, me.value("loading", false) || me.value("last_tick_age_s", 0.0) >= health::kStalledShownS);
+        }
         if (is_coordinator()) {
             wait_s = kHeartbeatS;
             std::lock_guard<std::mutex> lk(g_mu);
