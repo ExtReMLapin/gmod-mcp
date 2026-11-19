@@ -46,6 +46,10 @@ void *process_watch_open(uint32_t pid);                                       //
 bool process_watch_query(void *watch, ProcInfo &out, int wait_ms = 0);         // waits up to wait_ms for the process to end
 void process_watch_close(void *watch);
 
+// Memory of the machine (issue #8): free commit (what a new process can still reserve: RAM + page file; Windows
+// ullAvailPageFile) and free RAM, in MB. Windows only: false elsewhere (lowmem::current() reads /proc/meminfo on Linux).
+bool memory_status(uint64_t &free_commit_mb, uint64_t &free_ram_mb);
+
 // Platform identifier ("win64", "linux64", "osx64").
 const char *platform_tag();
 // Current pid.

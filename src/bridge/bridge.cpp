@@ -42,6 +42,7 @@
 #include "argcheck.h"
 #include "bridge_snapshot.h"
 #include "crashinfo.h"
+#include "lowmem.h"
 #include "gamedir.h"
 #include "launch_opts.h"  // Issue #10
 #include "fp7137.h"  // FP7137
@@ -931,8 +932,13 @@ json bridge_tools() {
          "Video settings: the clients start with -dxlevel 95, so the engine neither reads nor writes the user's stored video "
          "mode (resolution, anti-aliasing): the user's own game keeps its resolution.\n"
          "Measured cost per client on gm_construct (16-core PC, the game and its 4 browser subprocesses): light about 19% "
-         "of one core and 1.5 GB of RAM; normal 24% and 1.5 GB. Eight clients: about 1.5 cores and 12 GB. Memory is the "
-         "limit, not CPU. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
+         "of one core, 1.55 GB of commit (virtual memory) and 1.2 GB of RAM; normal 24% and the same memory. Eight clients: "
+         "about 1.5 cores and 12 GB. Memory is the limit, not CPU: a machine out of commit makes every game crash "
+         "(0xC000041D, no dump), so before starting anything this call checks the free commit and free RAM and refuses with "
+         "the error low_memory {details: free_commit_mb, free_ram_mb, running_clients (all sessions), per_client_mb, count, "
+         "needed_commit_mb, needed_ram_mb} when they do not cover the clients asked for (1.6 GB of commit each plus 1 GB "
+         "for the rest of the machine, 1.2 GB of RAM each); nothing is started then. Close clients you no longer use "
+         "(instances_close), start fewer, or pass ignore_low_memory: true to start anyway. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
          "size barely matters, and a client narrower than 640 pixels crashes while loading a map (integer division by zero "
          "in client.dll at client Lua startup: seen at 480x270 and 320x240; it only survived with the HUD turned off). "
          "-textmode and lower graphics settings were measured: no real gain (and graphics settings would be saved into the "
@@ -977,6 +983,7 @@ json bridge_tools() {
             {"launch_args", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 160}}},  // Issue #10
                              {"description", "Extra engine command-line tokens, one per element, e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]. Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, window mode, -dxlevel, -condebug, -game), +connect, +map. Options: https://developer.valvesoftware.com/wiki/Command_line_options"}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
+            {"ignore_low_memory", {{"type", "boolean"}, {"description", "Start even when the free memory does not cover the clients asked for (error low_memory otherwise). Default false: a machine out of memory crashes every game on it."}}},
             {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
                          {"description", "Absolute folder whose Lua these clients load before every addon's (e.g. your git worktree of "
@@ -1090,9 +1097,9 @@ json launched_crash_error(const Launched &l, int wait_ms = 0) {
     double ago = std::max(0.0, unix_now() - ended);
     json details{{"instance", l.id.empty() ? json(nullptr) : json(l.id)}, {"pid", l.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)},
                  {"evidence", v.evidence}, {"exit_code", code}};
-    return json{{"code", crashinfo::crash_code("client")},
-                {"message", crashinfo::crash_message("client", l.id.empty() ? "started by this session" : l.id, l.pid, ago, v, true, code)},
-                {"details", details}};
+    std::string message = crashinfo::crash_message("client", l.id.empty() ? "started by this session" : l.id, l.pid, ago, v, true, code);
+    lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low
+    return json{{"code", crashinfo::crash_code("client")}, {"message", message}, {"details", details}};
 }
 
 // instances_list, completed by the bridge: the owner label of each client it launched, the clients it launched that
@@ -1147,6 +1154,8 @@ json annotate_instances(json sc, const json &args) {
                                                   std::max(0.0, unix_now() - ended), v, true, code);
                 e["launched_by_this_session"] = true;
                 if (!l.owner.empty()) e["owner"] = l.owner;
+                json mem = lowmem::memory_json(lowmem::current());  // issue #8
+                if (!mem.is_null()) e["crash"]["memory"] = mem;
                 sc["instances"].push_back(e);
             }
             continue;
@@ -1387,6 +1396,24 @@ json launch_tool(const json &args, const json &token) {
     if (!mount_root.empty()) {
         std::string inside = lua_mount::refuse_inside_game(mount_root, root + "/garrysmod");
         if (!inside.empty()) return tool_error("invalid_params", "lua_mount: " + inside);
+    }
+    // Issue #8: memory first. A machine out of commit crashes every game on it (11 clients, 1.8 GB free: all died, no dump).
+    {
+        lowmem::Memory mem = lowmem::current();
+        if (mem.known && !args.value("ignore_low_memory", false)) {
+            std::set<uint32_t> alive;
+            json lst = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
+            for (const auto &e : lst.value("instances", json::array()))
+                if (e.is_object() && e.value("state", "") != "crashed" && e.value("mode", "client") != "srcds") alive.insert(e.value("pid", 0u));
+            {
+                std::lock_guard<std::mutex> lk(g_launch_mu);
+                for (const auto &l : g_launched)
+                    if (l.h && WaitForSingleObject(l.h, 0) == WAIT_TIMEOUT) alive.insert(l.pid);
+            }
+            alive.erase(0u);
+            lowmem::Verdict lv = lowmem::check_launch(mem, count, (int)alive.size(), false);
+            if (lv.refuse) return tool_text(json{{"error", {{"code", "low_memory"}, {"message", lv.message}, {"details", lv.details}}}}, true);
+        }
     }
     // Fixed option set (no free arguments). The light preset comes from measurements of what actually saves CPU and
     // memory per client.

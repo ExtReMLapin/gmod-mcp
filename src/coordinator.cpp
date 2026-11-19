@@ -34,6 +34,7 @@
 #include "crashinfo.h"
 #include "gmod_mcp_reply.h"
 #include "health.h"
+#include "lowmem.h"
 #include "http_server.h"
 #include "jobs.h"
 #include "log.h"
@@ -296,8 +297,11 @@ json instances() {
         }
         if (t.ending.verdict.cause != crashinfo::Cause::Crashed) continue;
         // Instances that crashed (a clean quit just disappears, as before).
-        arr.push_back(crashinfo::crashed_entry(t.id, t.mode, t.pid, std::max(0.0, unix_now() - t.ending.ended_unix), t.ending.verdict, t.ending.exit_known,
-                                    t.ending.exit_code));
+        json ce = crashinfo::crashed_entry(t.id, t.mode, t.pid, std::max(0.0, unix_now() - t.ending.ended_unix), t.ending.verdict, t.ending.exit_known,
+                                    t.ending.exit_code);
+        json mem = lowmem::memory_json(lowmem::current());  // issue #8
+        if (!mem.is_null()) ce["crash"]["memory"] = mem;
+        arr.push_back(ce);
     }
     return arr;
 }
@@ -407,7 +411,9 @@ static json ended_error(Tracked &t) {
     if (v.cause == crashinfo::Cause::Crashed) {
         json details{{"instance", t.id}, {"pid", t.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)}, {"evidence", v.evidence}};
         if (t.ending.exit_known) details["exit_code"] = t.ending.exit_code;
-        return wrap_err(crashinfo::crash_code(t.mode), crashinfo::crash_message(t.mode, t.id, t.pid, ago, v, t.ending.exit_known, t.ending.exit_code), details);
+        std::string message = crashinfo::crash_message(t.mode, t.id, t.pid, ago, v, t.ending.exit_known, t.ending.exit_code);
+        lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low
+        return wrap_err(crashinfo::crash_code(t.mode), message, details);
     }
     if (v.cause == crashinfo::Cause::Quit)
         return wrap_err("instance_gone", crashinfo::quit_message(t.id, t.pid, ago, v.evidence.empty() ? "clean exit" : v.evidence[0]));

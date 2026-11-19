@@ -33,6 +33,7 @@
 #include "crashinfo.h"
 #include "health.h"
 #include "jobs.h"
+#include "lowmem.h"
 #include "mcp.h"
 #include "lua_mount.h"
 #include "realms.h"
@@ -798,6 +799,56 @@ static void test_health() {
     w5.feed(2, 3.0, false);
     w5.feed(30, 3.0, false);                                       // a gap in the samples starts over
     CHECK(w5.low_s(30) == 0);
+}
+
+// Issue #8: the memory check before instances_launch, and the memory facts of a crash report.
+static void test_lowmem() {
+    using lowmem::Memory;
+    // Linux /proc/meminfo.
+    Memory m = lowmem::parse_meminfo("MemTotal:       32768000 kB\nMemFree:         1000000 kB\nMemAvailable:    8388608 kB\nSwapFree:        1000 kB\nCommitLimit:    20971520 kB\nCommitted_AS:   10485760 kB\n");
+    CHECK(m.known && m.free_ram_mb == 8192 && m.free_commit_mb == 10240);
+    CHECK(!lowmem::parse_meminfo("").known);
+    CHECK(!lowmem::parse_meminfo("MemTotal: 1 kB\n").known);
+    CHECK(!lowmem::parse_meminfo("MemAvailable: 100 kB\nCommitLimit: 100 kB\n").known);  // Committed_AS missing
+    CHECK(lowmem::parse_meminfo("MemAvailable: 8388608 kB\nCommitLimit: 100 kB\nCommitted_AS: 5000 kB\n").free_commit_mb == 0);  // over-committed: 0, not a huge unsigned number
+
+    auto mem = [](uint64_t commit, uint64_t ram) { Memory x; x.known = true; x.free_commit_mb = commit; x.free_ram_mb = ram; return x; };
+    // Plenty: no refusal.
+    auto v = lowmem::check_launch(mem(60000, 20000), 4, 2, false);
+    CHECK(!v.refuse);
+    // The report of the issue: 11 clients running, free commit 1.8 GB, one more client wanted.
+    v = lowmem::check_launch(mem(1780, 4000), 1, 11, false);
+    CHECK(v.refuse);
+    CHECK(v.details.value("free_commit_mb", 0) == 1780 && v.details.value("running_clients", -1) == 11 && v.details.value("per_client_mb", 0) == (int)lowmem::kPerClientCommitMb);
+    CHECK(v.details.value("count", 0) == 1 && v.details.value("needed_commit_mb", 0) > 1780 && v.details.contains("free_ram_mb"));
+    CHECK(v.message.find("ignore_low_memory") != std::string::npos && v.message.find("11") != std::string::npos && v.message.find("1780") != std::string::npos);
+    // The need grows with the number of clients asked for: enough for one, not for four.
+    uint64_t one = lowmem::kPerClientCommitMb + lowmem::kReserveCommitMb;
+    CHECK(!lowmem::check_launch(mem(one + 10, 20000), 1, 0, false).refuse);
+    CHECK(lowmem::check_launch(mem(one + 10, 20000), 4, 0, false).refuse);
+    CHECK(lowmem::check_launch(mem(one - 10, 20000), 1, 0, false).refuse);
+    // Free RAM counts too (a machine that swaps drops clients to 2-4 fps).
+    CHECK(lowmem::check_launch(mem(60000, 300), 1, 3, false).refuse);
+    CHECK(!lowmem::check_launch(mem(60000, lowmem::kPerClientRamMb * 4), 4, 0, false).refuse);
+    // The caller's override, and an unknown memory, never refuse.
+    CHECK(!lowmem::check_launch(mem(1780, 100), 1, 11, true).refuse);
+    CHECK(!lowmem::check_launch(Memory{}, 8, 11, false).refuse);
+
+    // Crash report facts.
+    json d = json::object();
+    std::string msg = "client c crashed.";
+    lowmem::annotate_crash(mem(1800, 900), d, msg);
+    CHECK(d["memory"].value("free_commit_mb", 0) == 1800 && d["memory"].value("free_ram_mb", 0) == 900);
+    CHECK(msg.find("memory") != std::string::npos && msg.find("1800") != std::string::npos && msg.rfind("client c crashed.", 0) == 0);
+    d = json::object();
+    msg = "client c crashed.";
+    lowmem::annotate_crash(mem(40000, 20000), d, msg);
+    CHECK(d["memory"].value("free_commit_mb", 0) == 40000 && msg == "client c crashed.");  // plenty of memory: the figures, no hint
+    d = json::object();
+    msg = "x";
+    lowmem::annotate_crash(Memory{}, d, msg);
+    CHECK(!d.contains("memory") && msg == "x");
+    CHECK(lowmem::memory_json(Memory{}).is_null() && lowmem::memory_json(mem(5, 6)).value("free_ram_mb", 0) == 6);
 }
 
 // B6: a game that is gone is told as crashed or quit. Pure decision (judge), dump matching, the folders searched, the
@@ -1612,6 +1663,7 @@ int main(int argc, char **argv) {
     test_cmdline();
     test_crash_report();
     test_health();
+    test_lowmem();
     test_console_wait();
     test_errors_map_tags();
     test_errors_filter_before_limit();

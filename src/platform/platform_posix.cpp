@@ -202,6 +202,9 @@ std::vector<std::string> local_ipv4_addresses() {
     return out;
 }
 
+// Windows only (GlobalMemoryStatusEx); on Linux lowmem::current() reads /proc/meminfo itself.
+bool memory_status(uint64_t &, uint64_t &) { return false; }
+
 int process_has_foreground() { return -1; }
 bool send_focus_lost() { return false; }
 bool install_close_guard(bool (*)(), int) { return false; }

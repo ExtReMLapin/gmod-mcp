@@ -236,6 +236,15 @@ std::vector<std::string> local_ipv4_addresses() {
     return out;
 }
 
+bool memory_status(uint64_t &free_commit_mb, uint64_t &free_ram_mb) {
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (!GlobalMemoryStatusEx(&m)) return false;
+    free_commit_mb = (uint64_t)(m.ullAvailPageFile / (1024 * 1024));
+    free_ram_mb = (uint64_t)(m.ullAvailPhys / (1024 * 1024));
+    return true;
+}
+
 int process_has_foreground() {
     HWND fg = GetForegroundWindow();
     if (!fg) return -1;
