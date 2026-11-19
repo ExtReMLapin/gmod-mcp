@@ -232,6 +232,28 @@ static void test_fields_note() {
     CHECK(!plain["result"].contains("fields_note") && !plain["result"].contains("projected"));
 }
 
+// Issue #11: the long waits accept up to an hour (a long series no longer needs chained calls), and nothing on the way
+// cuts a call that long: the coordinator's relay waits for an instance's answer longer than the longest wait.
+static void test_long_waits() {
+    if (mcp::tools().empty()) tools::register_all();
+    struct Cap { const char *tool, *arg; };
+    for (Cap c : {Cap{"wait_for", "timeout_s"}, Cap{"wait_frames", "timeout_s"}, Cap{"events_wait", "timeout_s"}, Cap{"reports_read", "wait_s"},
+                  Cap{"console_wait", "timeout_s"}, Cap{"lua_job_status", "wait_s"}}) {
+        const mcp::Tool *found = nullptr;
+        for (const auto &t : mcp::tools())
+            if (t.name == c.tool) found = &t;
+        CHECK(found != nullptr);
+        if (!found) continue;
+        double max = found->input_schema["properties"][c.arg].value("maximum", 0.0);
+        if (max != 3600) std::printf("%s.%s maximum is %g\n", c.tool, c.arg, max);
+        CHECK(max == 3600);
+    }
+    // Above the cap the schema refuses the call.
+    json too_long = mcp::call_tool("wait_for", json{{"condition", "true"}, {"timeout_s", 3601}});
+    CHECK(too_long.value("isError", false));
+    CHECK(coordinator::kRelayReadTimeoutS >= 3600 + 60);
+}
+
 static json errs_current(const char *realm = nullptr) {
     json a{{"cursor", 0}, {"since_map_load", true}};
     if (realm) a["realm"] = realm;
@@ -2055,6 +2077,7 @@ int main(int argc, char **argv) {
     test_errors_filter_before_limit();
     test_errors_group_by_message();
     test_fields_note();
+    test_long_waits();
     test_errors_load_stamp_order();
     test_small_b6();
     test_srcds_error_parsing();

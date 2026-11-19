@@ -4,6 +4,11 @@
 
 ### Features
 
+- **Long waits accept up to an hour** (issue #11). `wait_for`, `wait_frames`, `events_wait`, `reports_read {wait_s}` and
+  `lua_job_status {wait_s}` took at most 600 s (`console_wait` already took 3600), so a long series needed chained calls. They
+  now take 3600 s. The coordinator's relay of a call to another instance waited at most 900 s for the answer and would have cut
+  a long wait on a test client at 15 minutes: it now waits 3700 s. The MCP client's own tool-call timeout is not ours to change
+  (Claude Code: `MCP_TOOL_TIMEOUT`).
 - **`lua_exec` and `lua_job` report a `RunConsoleCommand` the engine blocked** (issue #11). The engine ignores
   `RunConsoleCommand("fps_max", ...)` (and the other commands on its Lua blacklist) without a word, so an agent believed it had
   changed the frame cap. While the code runs, the runtime now notes the calls that `IsConCommandBlocked` refuses; the result

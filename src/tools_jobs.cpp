@@ -292,7 +292,7 @@ void register_jobs() {
          "for the end. A job id belongs to one Lua state: after a map change (new realm) an id of the old state answers realm_reset. Without id: every job of every realm, running or finished but not collected yet.",
          json{{"properties",
                {{"id", {{"type", "string"}, {"description", "Job id returned by lua_job (e.g. 'server-g3-1')."}}},
-                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
+                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table."}}}}}},
          json{{"readOnlyHint", false}}, lua_job_status_tool});

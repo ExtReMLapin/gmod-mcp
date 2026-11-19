@@ -452,9 +452,9 @@ static json relay(const std::string &instance, const std::string &tool, const js
         // Asked to end: when its process goes, that is not a crash.
         if (tool == "game_quit" || tool == "game_terminate") t->requested = true;
     }
-    auto cli = client(port, 900);
+    auto cli = client(port, kRelayReadTimeoutS);
     json req{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", args}}}};
-    // Issue #8: the call waits for the instance's answer (up to 900 s), but watches the instance meanwhile: when its process ends
+    // Issue #8: the call waits for the instance's answer (up to kRelayReadTimeoutS), but watches the instance meanwhile: when its process ends
     // (the connection may stay open: a crash dialog holds the process, a handle may be inherited) or its heartbeats stop for
     // good, the call is cut and answered at once (client_crashed / instance_hung) instead of at its own timeout.
     std::string body_text = req.dump();
