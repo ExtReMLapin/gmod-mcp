@@ -27,11 +27,12 @@ Cases (default: a f):
   fslow  the fake server keeps a stream silent for 65 s (a client request has no idle limit)
   launch live: instances_launch of 2 light clients with a map, default instance, instances_close (Windows, Steam,
          no other game; the game saves their window size as its video setting)
+  portconflict  a program that is not gmod-mcp holds the port (issue #5): port_conflict, names the port and the fix
   b      live game on 27080, read-only calls (needs the game and the user's token)
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash fp7137 orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash fp7137 orphan portconflict fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -183,7 +184,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         with srv.lock: srv.seen.append((body, dict(self.headers)))
         if self.headers.get("Authorization") != "Bearer " + srv.token:
-            return self.reply_json({"error": "unauthorized"}, 401)
+            return self.reply_json({"error": {"code": "unauthorized", "message": "missing or invalid bearer token"}}, 401)
         if "id" not in body:
             self.send_response(202); self.send_header("Content-Length", "0"); self.end_headers(); return
         rid, method, params = body["id"], body.get("method"), body.get("params", {})
@@ -451,6 +452,93 @@ def case_f(slow=False):
     r = b.req("initialize", INIT)
     check("F version mismatch announced in the instructions", r and r["result"]["instructions"].startswith("Version mismatch") and "9.9.9" in r["result"]["instructions"], r)
     b.close(); srv.stop()
+
+
+class Foreign(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """A program that is not gmod-mcp holding the port: answers every POST with a fixed status and body."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, port, status=404, body=b"<html>not found</html>", ctype="text/html", headers=None):
+        class H(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def log_message(self, *a): pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                for k, v in (headers or {}).items(): self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(body)
+        super().__init__(("127.0.0.1", port), H)
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def stop(self):
+        self.shutdown(); self.server_close()
+
+
+def two_free_ports():
+    while True:
+        p = free_port()
+        s = socket.socket()
+        try: s.bind(("127.0.0.1", p + 1))
+        except OSError: continue
+        finally: s.close()
+        return p
+
+
+def case_portconflict():
+    # Issue #5: a foreign program on the base port was reported as "the game is not running" / "rejected the token".
+    print("== PORT_CONFLICT: a program that is not gmod-mcp holds the port", flush=True)
+    for label, kw in (("404 html", dict(status=404)),
+                      ("403 empty", dict(status=403, body=b"", ctype="text/plain")),
+                      ("401 of another program", dict(status=401, body=b'{"error":"unauthorized"}', ctype="application/json"))):
+        port, env = free_port(), isolated_config(with_token=True)
+        foreign = Foreign(port, **kw)
+        b = Bridge(port, env)
+        r = b.req("initialize", INIT)
+        ins = (r or {}).get("result", {}).get("instructions", "")
+        check("PORT_CONFLICT [%s] instructions do not say the game is not running" % label, ins.startswith("port_conflict") and "not running right now" not in ins and "GMOD_MCP_PORT" in ins, ins[:300])
+        r = b.req("tools/call", {"name": "status", "arguments": {}})
+        res = (r or {}).get("result", {})
+        err = res.get("structuredContent", {}).get("error", {})
+        msg = err.get("message", "")
+        check("PORT_CONFLICT [%s] tool error port_conflict (not game_not_running, not the token)" % label,
+              res.get("isError") and err.get("code") == "port_conflict" and "rejected the token" not in json.dumps(res), r)
+        check("PORT_CONFLICT [%s] the message names the port, the fix and how to find the program" % label,
+              str(port) in msg and "GMOD_MCP_PORT" in msg and "Get-NetTCPConnection" in msg and "ss -ltnp" in msg and "another program" in msg, msg)
+        r = mreq(b, "tools/call", {"name": "status", "arguments": {}})
+        check("PORT_CONFLICT [%s] same error for a 2026-07-28 client" % label, "port_conflict" in json.dumps(r), r)
+        r = b.req("tools/call", {"name": "instances_list", "arguments": {}})
+        check("PORT_CONFLICT [%s] instances_list note names the conflict" % label, "port_conflict" in json.dumps(r) or "another program" in json.dumps(r), r)
+        b.close(); foreign.stop()
+
+    # A foreign 401 and the module's own 401 (0.3.6 body, no signature header) stay apart.
+    port, env = free_port(), isolated_config(with_token=True)
+    old = Foreign(port, status=401, ctype="application/json", body=json.dumps({"error": {"code": "unauthorized", "message": "x"}}).encode())
+    b = Bridge(port, env); b.req("initialize", INIT)
+    r = b.req("tools/call", {"name": "status", "arguments": {}})
+    check("PORT_CONFLICT a gmod-mcp 0.3.6 401 (no signature header) is still 'rejected the token'", "rejected the token" in json.dumps(r) and "port_conflict" not in json.dumps(r), r)
+    b.close(); old.stop()
+
+    # A real gmod-mcp on the next port: the message names it.
+    port, env = two_free_ports(), isolated_config(with_token=True)
+    foreign = Foreign(port); game = FakeServer(port + 1, version=bridge_version())
+    b = Bridge(port, env); b.req("initialize", INIT)
+    msg = ""
+    for _ in range(12):  # the next ports are probed in the background (a refused loopback connection is slow on Windows)
+        r = b.req("tools/call", {"name": "status", "arguments": {}})
+        msg = (r or {}).get("result", {}).get("structuredContent", {}).get("error", {}).get("message", "")
+        if "GMOD_MCP_PORT=%d" % (port + 1) in msg: break
+        time.sleep(1)
+    check("PORT_CONFLICT the message names the gmod-mcp instance found on the next port", "port_conflict" in json.dumps(r) and "GMOD_MCP_PORT=%d" % (port + 1) in msg, msg)
+    # The foreign program leaves, the game takes the port: back to normal with no restart.
+    foreign.stop(); game.stop(); game = FakeServer(port, version=bridge_version())
+    time.sleep(2.5)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("PORT_CONFLICT the port is freed and taken by the game: calls work again", "port_conflict" not in json.dumps(r) and "echo" in json.dumps(r), r)
+    b.close(); game.stop()
 
 
 def mreq(b, method, params=None, timeout=15, meta=None):
@@ -1985,8 +2073,8 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "crash", "fp7137", "orphan", "edge", "version", "feedback", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "crash", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

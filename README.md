@@ -417,7 +417,10 @@ plugin, set the `GMOD_MCP_PORT` environment variable for Claude Code (`--port <n
 yourself, in another MCP client's configuration). It also matters when another program already holds port 27080: the
 game then takes the next free port (its console line `[mcpagent] active: ... http://127.0.0.1:<port>/mcp` says which)
 and the bridge does not look there. Free port 27080, or start the game with `-mcpport <free port>` and set
-`GMOD_MCP_PORT` to that port.
+`GMOD_MCP_PORT` to that port. The bridge recognises the situation: gmod-mcp signs every answer with an `X-Gmod-Mcp`
+header, so a port that answers without it is held by another program, and the tools then answer `port_conflict` (not
+`game_not_running`), naming the port, how to find the program (`Get-NetTCPConnection -LocalPort 27080` on Windows,
+`ss -ltnp` on Linux) and, when it finds one on the next ports, the `GMOD_MCP_PORT` value to use.
 
 Scratch Lua files for the agent go to `garrysmod/lua/mcpagent_tmp/` (`status` gives the absolute path); errors and
 tracebacks then point at the real file.

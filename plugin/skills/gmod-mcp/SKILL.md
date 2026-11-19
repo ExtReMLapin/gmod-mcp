@@ -29,11 +29,19 @@ Once the server is connected, its own instructions (sent by the server) take ove
    plugin does not replace it: both stay and every tool is listed twice) and remove it with their agreement
    (`claude mcp remove gmod`, adding `-s user` if it lives in the user scope; a local-scope entry only from the folder
    it was added in).
-2. **Is a game listening?** Any HTTP answer means yes (401 without the token is the expected one):
+2. **Is a game listening?** Look at the answer, not only at whether there is one. gmod-mcp answers a request without the
+   token with **401** and the header `X-Gmod-Mcp`; another program on the port answers something else (404, 403, a
+   page...):
 
    ```bash
-   curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:27080/mcp     # 401 = up, 000 = nothing listening
+   curl -s -i -X POST http://127.0.0.1:27080/mcp | head -5   # 401 + X-Gmod-Mcp = up, connection refused = nothing listening
    ```
+
+   - 401 with `X-Gmod-Mcp` (a module older than the header sends 401 with a JSON body `{"error":{"code":"unauthorized"...`):
+     the game is up.
+   - Any other status, or a 401 without that header or body: possibly **another program on the port**, not the game
+     (`port_conflict` in the bridge's answers means the same). See "When it still does not answer".
+   - Nothing listening (`000`, connection refused): no game.
 
    On Windows PowerShell, call `curl.exe`, not `curl`.
 3. **Is the module installed?** In the game folder (see below):
@@ -78,7 +86,7 @@ for 64-bit (machine 0x8664) and `4C 01` for 32-bit (0x014C). If neither a 64-bit
 - **Very first start after an install**: add `+map gm_construct`. The module installs its main-menu loader during that
   first map load; later starts need no map (the server is up at the main menu).
 
-Then wait for the server: check the URL from section 1 every 2 seconds, for up to 2 minutes (the first start and a map
+Then wait for the server: check the URL from section 1 every 2 seconds (a 401 with `X-Gmod-Mcp` means up; another answer is not that), for up to 2 minutes (the first start and a map
 load take longer). Run the wait in the background or in one bounded loop, not as many separate calls.
 
 **When it answers**: call the `gmod` tools again. The bridge notices the game within 2 seconds and Claude Code
@@ -264,6 +272,10 @@ guide's "Reporting frictions" section (resource `mcpagent://guide`). In short:
 - No `[mcpagent]` line at all on the very first start: the module only loads with a map; start again with
   `+map gm_construct`.
 - The process is running but the URL gives `000`: wait for the main menu or the map load to finish.
-- Another program holds port 27080: the module takes the next free one (the `active:` line names it). The bridge
-  only talks to the base port: ask the user to set the `GMOD_MCP_PORT` environment variable to that port and restart
-  Claude Code, or better, to free port 27080.
+- **Another program holds port 27080** (the bridge's tools answer `port_conflict`, the console says "port 27080 is held by
+  another program", or the check in section 1 gets an answer that is not 401 + `X-Gmod-Mcp`): the module takes the
+  next free port (the `active:` line names it), but the bridge only talks to the base port. Find the program:
+  `Get-NetTCPConnection -LocalPort 27080 | Select-Object OwningProcess` then `Get-Process -Id <pid>` (Windows
+  PowerShell), `ss -ltnp 'sport = :27080'` (Linux). Never kill it yourself: tell the user what it is. Then either
+  free port 27080, or ask the user to set the `GMOD_MCP_PORT` environment variable to the game's port and restart
+  Claude Code (`port_conflict` names that port when a gmod-mcp answers on one of the next 15).
