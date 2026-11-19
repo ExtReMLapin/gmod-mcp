@@ -4,6 +4,11 @@
 
 ### Features
 
+- **`lua_job {wait: false}` is suggested as `async`** (issue #11). The unknown-argument message answered "did you mean
+  'jit'?" for `wait` (the closest spelling). A small synonym table (`wait`, `await`, `sync`, `blocking`, `nowait`,
+  `background`, `detach`...) now points to `async` when the tool has it. `wait` and `async` are opposites, so the message says
+  so and the corrected `next_call` inverts a boolean (`wait: false` becomes `async: true`); a `wait` that is not a boolean gets
+  the suggestion without a corrected call.
 - **Long waits accept up to an hour** (issue #11). `wait_for`, `wait_frames`, `events_wait`, `reports_read {wait_s}` and
   `lua_job_status {wait_s}` took at most 600 s (`console_wait` already took 3600), so a long series needed chained calls. They
   now take 3600 s. The coordinator's relay of a call to another instance waited at most 900 s for the answer and would have cut

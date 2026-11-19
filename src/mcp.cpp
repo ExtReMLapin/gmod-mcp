@@ -117,8 +117,25 @@ static bool is_subsequence(const std::string &needle, const std::string &hay) {
     return i == needle.size();
 }
 
+// Issue #11: names an agent writes for an argument whose accepted name is not close in spelling ("wait: false" for
+// lua_job's `async`; the edit distance alone answered 'jit'). `opposite`: the meaning is the reverse, so a boolean is inverted.
+struct Synonym {
+    const char *unknown, *accepted;
+    bool opposite;
+};
+static const Synonym kSynonyms[] = {{"wait", "async", true},      {"await", "async", true},       {"blocking", "async", true},
+                                    {"synchronous", "async", true}, {"sync", "async", true},      {"nowait", "async", false},
+                                    {"no_wait", "async", false},  {"background", "async", false}, {"detach", "async", false},
+                                    {"detached", "async", false}, {"nonblocking", "async", false}, {"non_blocking", "async", false}};
+static const Synonym *synonym_for(const json &props, const std::string &u) {
+    for (const auto &s : kSynonyms)
+        if (u == s.unknown && props.contains(s.accepted)) return &s;
+    return nullptr;
+}
+
 // The accepted argument closest to an unknown one ("" when none is close).
 static std::string closest_argument(const json &props, const std::string &u) {
+    if (const Synonym *s = synonym_for(props, u)) return s->accepted;
     std::string best;
     size_t best_d = 4;
     for (auto p = props.begin(); p != props.end(); ++p) {
@@ -142,6 +159,8 @@ static std::string argument_hint(const Tool &t, const json &value) {
             if (props.contains(it.key())) continue;
             std::string best = closest_argument(props, it.key());
             out += " Unknown argument '" + it.key() + "'" + (best.empty() ? "." : " (did you mean '" + best + "'?).");
+            if (const Synonym *s = synonym_for(props, it.key()))
+                if (s->opposite) out += " Note: '" + best + "' means the opposite of '" + it.key() + "' ('" + it.key() + "': false is '" + best + "': true).";
         }
     }
     json req = t.input_schema.value("required", json::array());
@@ -170,7 +189,13 @@ static json corrected_call(const Tool &t, const json &value) {
         }
         std::string best = closest_argument(props, it.key());
         if (best.empty() || value.contains(best) || fixed.contains(best)) return nullptr;
-        fixed[best] = it.value();
+        const Synonym *syn = synonym_for(props, it.key());
+        if (syn && syn->opposite) {
+            if (!it.value().is_boolean()) return nullptr;  // only a boolean can be inverted
+            fixed[best] = !it.value().get<bool>();
+        } else {
+            fixed[best] = it.value();
+        }
         renamed = true;
     }
     if (!renamed) return nullptr;

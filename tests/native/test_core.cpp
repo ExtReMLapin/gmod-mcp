@@ -1678,6 +1678,28 @@ static void test_next_call() {
     // Not offered when the corrected call would still be invalid (a missing required argument).
     json r2 = mcp::call_tool("console_exec", json{{"comand", "echo hi"}, {"realm", "nowhere"}});
     CHECK(r2["structuredContent"]["error"].value("next_call", json()).is_null());
+
+    // Issue #11: lua_job {wait: false} used to be answered "did you mean 'jit'?" (the closest spelling). A wait-like key means
+    // `async`; since `wait` and `async` are opposites, the corrected call inverts a boolean.
+    auto err_of = [](const json &res) { return res["structuredContent"]["error"]; };
+    json w = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"wait", false}});
+    CHECK(w.value("isError", false) && err_of(w).value("message", "").find("did you mean 'async'") != std::string::npos);
+    CHECK(err_of(w).value("message", "").find("did you mean 'jit'") == std::string::npos);
+    CHECK(err_of(w).value("next_call", json()) == (json{{"tool", "lua_job"}, {"arguments", {{"code", "return 1"}, {"async", true}}}}));
+    json w2 = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"wait", true}});
+    CHECK(err_of(w2).value("next_call", json()) == (json{{"tool", "lua_job"}, {"arguments", {{"code", "return 1"}, {"async", false}}}}));
+    json bg = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"background", true}});
+    CHECK(err_of(bg).value("message", "").find("did you mean 'async'") != std::string::npos);
+    CHECK(err_of(bg).value("next_call", json()) == (json{{"tool", "lua_job"}, {"arguments", {{"code", "return 1"}, {"async", true}}}}));
+    // The message says what the suggestion means; a wait given as a number cannot be inverted: suggestion without a corrected call.
+    CHECK(err_of(w).value("message", "").find("opposite") != std::string::npos);
+    json wn = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"wait", 5}});
+    CHECK(err_of(wn).value("message", "").find("did you mean 'async'") != std::string::npos && err_of(wn).value("next_call", json()).is_null());
+    // `async` already given: no corrected call (it would collide). A tool without `async` keeps the generic suggestion.
+    json both = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"async", true}, {"wait", false}});
+    CHECK(err_of(both).value("next_call", json()).is_null());
+    json other = mcp::call_tool("console_exec", json{{"cmd", "echo hi"}, {"wait", false}});
+    CHECK(err_of(other).value("message", "").find("'async'") == std::string::npos);
 }
 
 // Issue #5: a foreign program on the base port must not be reported as a token mismatch. A gmod-mcp coordinator that
