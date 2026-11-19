@@ -225,6 +225,7 @@ bool is_modern(const json &msg) {
 
 struct Relay {
     bool reached = false;  // false: game unreachable (why in g_why)
+    bool refused = false;  // unreachable because the connection was never made (refused, or no answer to the connect): nothing was sent
     int status = 0;
     json response;         // final JSON-RPC response (null for notifications)
 };
@@ -351,6 +352,7 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
             return r;
         }
         auto e = res.error();
+        r.refused = e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout;
         if (e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout)
             set_down("nothing listening: the game is closed or was started without -mcp");
         else
@@ -721,6 +723,53 @@ std::string g_default_instance;
 std::mutex g_itools_mu;
 std::set<std::string> g_instance_tools;  // game tools that take an `instance` argument
 
+// --- Coordinator hand-over (issue #6) ---
+// The game on the base port is the coordinator. When it ends while other games live, another takes the port over within a
+// few seconds (module side); meanwhile nothing answers on the base port, then the new coordinator answers the retryable
+// coordinator_changing for an instance that has not re-registered yet. The bridge rides both out for a few seconds, but
+// only when other instances are known to live: with the only game closed a call must say game_not_running at once.
+double g_handover_wait_s = 10.0;  // GMOD_MCP_HANDOVER_WAIT_S overrides it (tests)
+std::atomic<int64_t> g_multi_seen_ms{0};
+
+int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() + 1; }
+
+// instances_list answer: several live instances seen now means a coordinator change is worth waiting for.
+void note_instances(const json &sc) {
+    int running = 0;
+    for (const auto &e : sc.value("instances", json::array()))
+        if (e.is_object() && e.value("state", "running") == "running") ++running;
+    if (running >= 2) g_multi_seen_ms = steady_ms();
+}
+
+// A client this session launched, that answered once, still runs.
+bool launched_client_alive() {
+    std::lock_guard<std::mutex> lk(g_launch_mu);
+    for (const auto &l : g_launched) {
+        if (l.id.empty()) continue;
+#ifdef _WIN32
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_TIMEOUT) return true;
+#endif
+    }
+    return false;
+}
+
+bool handover_expected() {
+    int64_t t = g_multi_seen_ms.load();
+    return launched_client_alive() || (t != 0 && steady_ms() - t < 30000);
+}
+
+// The result of a tool call is the retryable coordinator_changing: *retry_after gets the advised delay.
+bool coordinator_changing_result(const json &result, double *retry_after) {
+    if (!result.is_object()) return false;
+    const json &sc = result.contains("structuredContent") ? result["structuredContent"] : json();
+    if (!sc.is_object() || !sc.contains("error") || !sc["error"].is_object() || sc["error"].value("code", "") != "coordinator_changing") return false;
+    const json &d = sc["error"].contains("details") ? sc["error"]["details"] : json();
+    if (retry_after) {
+        *retry_after = d.is_object() && d.contains("retry_after_s") && d["retry_after_s"].is_number() ? d["retry_after_s"].get<double>() : 1.0;
+    }
+    return true;
+}
+
 void learn_instance_tools(const json &tools) {
     if (!tools.is_array()) return;
     std::lock_guard<std::mutex> lk(g_itools_mu);
@@ -806,8 +855,9 @@ json bridge_tools() {
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
                          {"description", "Absolute folder whose Lua these clients load before every addon's (e.g. your git worktree of "
                                          "the addon: its root or its lua/ folder). Applies from their first map load; see lua_mount. "
-                                         "The result then reports what each engine really has (instances[i].lua_mount.active); a mount "
-                                         "that is not active is isError with a warning. Windows only."}}},
+                                         "Each engine is asked what it really has BEFORE any map loads (instances[i].lua_mount.active); a missing mount is "
+                                         "applied again, and a client that still has none gets no map (map_error lua_mount_not_active, "
+                                         "isError, warning). Windows only."}}},
             {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
           {"additionalProperties", false}}},
@@ -822,7 +872,10 @@ json bridge_tools() {
          "game_terminate. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
          "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], refused?: [ids, pids or "
          "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error only when nothing was "
-         "closed. Example: {\"owner\": \"fork-a\"}."},
+         "closed. Closing the client that is the coordinator (the game on the base port, see instances_list: role, "
+         "coordinator_warning) while other games live moves that role: the answer says so (closed[i].was_coordinator, "
+         "coordinator_moved_to, warning) and calls of other agents answer coordinator_changing for a few seconds. "
+         "Example: {\"owner\": \"fork-a\"}."},
         {"inputSchema",
          {{"type", "object"},
           {"properties",
@@ -921,6 +974,24 @@ json annotate_instances(json sc, const json &args) {
     std::string want = args.value("owner", "");
     std::set<uint32_t> listed;
     json kept = json::array();
+    note_instances(sc);
+    json coord_warning;  // issue #6: the coordinator is a client this session launched, and other instances depend on it
+    {
+        int running = 0;
+        for (const auto &e : sc.value("instances", json::array()))
+            if (e.is_object() && e.value("state", "running") == "running") ++running;
+        std::lock_guard<std::mutex> lk(g_launch_mu);
+        for (const auto &e : sc.value("instances", json::array())) {
+            if (!e.is_object() || e.value("role", "") != "coordinator" || running < 2) continue;
+            for (const auto &l : g_launched)
+                if (l.pid == e.value("pid", 0u)) {
+                    coord_warning = e.value("id", "?") + " is the coordinator (it holds the directory of instances and relays the calls to the others) and " +
+                                    (l.owner.empty() ? "was launched by this session" : "was launched with owner \"" + l.owner + "\"") +
+                                    ": closing it (instances_close, game_quit) moves the role to another instance, and calls with `instance` answer "
+                                    "coordinator_changing for a few seconds. Close the other clients first, or expect the pause.";
+                }
+        }
+    }
     std::lock_guard<std::mutex> lk(g_launch_mu);
     for (auto e : sc.value("instances", json::array())) {
         uint32_t pid = e.value("pid", 0u);
@@ -960,6 +1031,7 @@ json annotate_instances(json sc, const json &args) {
     }
     if (!silent.empty()) sc["launched_not_answering"] = silent;
     if (!want.empty()) sc["owner_filter"] = want;
+    if (coord_warning.is_string()) sc["coordinator_warning"] = coord_warning;
     return sc;
 }
 
@@ -971,12 +1043,44 @@ json tool_error(const std::string &code, const std::string &message) {
     return tool_text(json{{"error", {{"code", code}, {"message", message}}}}, true);
 }
 
+// Calls `again` while the coordinator role moves (see the hand-over notes above), for at most g_handover_wait_s: nothing
+// listening on the base port while other instances live, or an answer that is coordinator_changing (nothing was
+// executed in either case, so repeating the call is safe). If nothing came back by then, an unreachable game becomes the
+// retryable coordinator_changing instead of game_not_running; an answer that is still coordinator_changing is returned as is.
+Relay ride_out_handover(Relay r, const std::function<Relay()> &again, const std::atomic<bool> *cancelled, const json &id) {
+    auto t0 = std::chrono::steady_clock::now();
+    auto waited = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    for (;;) {
+        double retry = 1.0;
+        bool wait = false;
+        if (!r.reached) wait = r.refused && handover_expected();
+        else if (r.response.is_object() && r.response.contains("result")) wait = coordinator_changing_result(r.response["result"], &retry);
+        if (!wait) return r;
+        if (waited() >= g_handover_wait_s || (cancelled && cancelled->load())) {
+            if (!r.reached) {
+                json e{{"error", {{"code", "coordinator_changing"},
+                                  {"message", "the coordinator (the game on port " + std::to_string(g_port) + ") stopped answering while other instances "
+                                              "live, and none has taken the role over yet (waited " + std::to_string((int)waited()) + " s). Retry in a few seconds; "
+                                              "nothing was sent to the game."},
+                                  {"details", {{"retry_after_s", 3.0}, {"waited_s", std::round(waited() * 10) / 10}}}}}};
+                r.reached = true;
+                r.status = 200;
+                r.response = rpc_result(id, tool_text(e, true));
+            }
+            return r;
+        }
+        double nap = std::min(std::max(retry, 0.3), 1.0);
+        for (double t = 0; t < nap && !(cancelled && cancelled->load()); t += 0.05) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        r = again();
+    }
+}
+
 // A tool of the game, called by the bridge itself (legacy era, no stream). Returns its structuredContent, or
 // {"error": ...} when the game is unreachable or the call failed.
 json game_call(const std::string &tool, json args, double timeout_s) {
     json m{{"jsonrpc", "2.0"}, {"id", "gmod-mcp-bridge-internal"}, {"method", "tools/call"},
            {"params", {{"name", tool}, {"arguments", std::move(args)}}}};
-    Relay r = relay(m, timeout_s);
+    Relay r = ride_out_handover(relay(m, timeout_s), [&] { return relay(m, timeout_s); }, nullptr, m["id"]);
     if (!r.reached) return json{{"error", {{"code", "game_not_running"}, {"message", why_down()}}}};
     if (!r.response.contains("result")) return json{{"error", {{"code", "rpc_error"}, {"message", r.response.value("error", json::object()).value("message", "no result")}}}};
     return r.response["result"].value("structuredContent", json::object());
@@ -1187,6 +1291,7 @@ json launch_tool(const json &args, const json &token) {
     json found = json::object();
     while ((int)found.size() < count && elapsed() < timeout) {
         json lst = game_call("instances_list", json::object(), 5);
+        note_instances(lst);
         for (const auto &in : lst.value("instances", json::array()))
             for (auto &l : started)
                 if (in.value("pid", 0u) == l.pid && in.value("state", "") != "crashed" && !found.contains(std::to_string(l.pid))) {
@@ -1220,8 +1325,40 @@ json launch_tool(const json &args, const json &token) {
                                                          "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
                                                          "the silent ones with instances_close {pids}."}}},
                               {"silent_pids", silent}, {"answered", answered},
-                              {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)}},
+                              {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)},
+                              {"lua_mount_note", mount_root.empty() ? json(nullptr)
+                                                                    : json("the clients that did not answer keep running with -mcp_lua_mount; none was checked or loaded a map. Once one answers "
+                                                                           "(instances_list), check it with lua_mount {instance} before map_load, or close it (instances_close {pids})")}},
                          true);
+    }
+    // The requested mount is only a request: ask each engine what it really has (the module logs and ignores a folder it
+    // cannot apply) BEFORE any map loads, and apply it again where it is missing. A client that still has none gets no map
+    // (a test must never run on the installed addon's code without the agent knowing: issue #6).
+    std::vector<json> mount_res(started.size());
+    std::vector<char> mount_ok(started.size(), 1);
+    json mount_problems = json::array();
+    if (!mount_root.empty()) {
+        progress(token, 0, count, "checking the Lua mount of each client before the map loads");
+        std::vector<std::thread> th;
+        for (size_t i = 0; i < started.size(); ++i)
+            th.emplace_back([&, i] {
+                const std::string iid = started[i].id;
+                json v = lua_mount_verdict(mount_root, game_call("lua_mount", json{{"instance", iid}}, 20));
+                if (!v.value("active", false)) {
+                    json ap = game_call("lua_mount", json{{"instance", iid}, {"path", mount_root}}, 30);
+                    json v2 = lua_mount_verdict(mount_root, ap);
+                    if (v2.value("active", false)) v2["reapplied"] = true;
+                    else if (v.contains("error")) v2["first_check_error"] = v["error"];
+                    v = v2;
+                }
+                mount_res[i] = v;
+            });
+        for (auto &t : th) t.join();
+        for (size_t i = 0; i < started.size(); ++i) {
+            const json &v = mount_res[i];
+            mount_ok[i] = v.value("active", false);
+            if (!v.value("active", false)) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active")));
+        }
     }
     // Maps: at most 2 at a time, after the settle delay (FP7137: was all at once).
     json results = json::array();
@@ -1229,6 +1366,12 @@ json launch_tool(const json &args, const json &token) {
     if (!map.empty()) {
         progress(token, 0, count, "loading " + map);
         fp7137::for_each_limited(started.size(), [&](size_t i) {  // FP7137: at most 2 at a time (was one thread per client, all at once)
+                if (!mount_ok[i]) {
+                    map_res[i] = json{{"error", {{"code", "lua_mount_not_active"},
+                                                 {"message", "map " + map + " not loaded: the Lua mount " + mount_root + " is not active on this client (" +
+                                                                 mount_res[i].value("error", std::string("unknown")) + "), the tests would run the installed addon's code"}}}};
+                    return;
+                }
                 fp7137::Gate fp_map;  // FP7137: after the settle delay, never while another launch starts a game
                 fp_map.enter(fp7137::Kind::MapLoad, "map:" + map, std::max(30.0, timeout - elapsed()), timeout + 10, nullptr, nullptr);  // FP7137
                 if (!fp_map.ok()) {  // FP7137
@@ -1242,28 +1385,29 @@ json launch_tool(const json &args, const json &token) {
         });  // FP7137
         // A client that died during its load: say it crashed (the game's answer is only that nothing answers).
         for (size_t i = 0; i < started.size(); ++i)
-            if (map_res[i].contains("error")) {
+            if (map_res[i].contains("error") && mount_ok[i]) {
                 json ce = launched_crash_error(started[i]);
                 if (!ce.is_null()) map_res[i] = json{{"error", ce}};
             }
-    }
-    // The requested mount is only a request: ask each engine what it really has (the module logs and ignores a folder
-    // it cannot apply), so a test never runs on the installed addon's code without the agent knowing.
-    std::vector<json> mount_res(started.size());
-    json mount_problems = json::array();
-    if (!mount_root.empty()) {
-        progress(token, count, count, "checking the Lua mount of each client");
+        // With the map loaded the engine's server Lua paths exist: look again, for the base Lua (a mounted folder that hides
+        // the game's own lua/ makes a client unusable).
         std::vector<std::thread> th;
         for (size_t i = 0; i < started.size(); ++i)
-            th.emplace_back([&, i] { mount_res[i] = lua_mount_verdict(mount_root, game_call("lua_mount", json{{"instance", started[i].id}}, 20)); });
+            if (!mount_root.empty() && mount_ok[i] && !map_res[i].contains("error"))
+                th.emplace_back([&, i] {
+                    json v = lua_mount_verdict(mount_root, game_call("lua_mount", json{{"instance", started[i].id}}, 20));
+                    if (mount_res[i].value("reapplied", false)) v["reapplied"] = true;
+                    mount_res[i] = v;
+                });
         for (auto &t : th) t.join();
+    }
+    if (!mount_root.empty())
         for (size_t i = 0; i < started.size(); ++i) {
             const json &v = mount_res[i];
-            if (!v.value("active", false)) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active")));
+            if (mount_ok[i] && !v.value("active", false)) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active after the map load")));
             else if (v.value("base_lua_mounted", json()) == json(false))
                 mount_problems.push_back(started[i].id + ": the game's own lua/ folder is missing from its server Lua paths (base Lua not mounted)");
         }
-    }
     bool all_ok = mount_problems.empty();
     for (size_t i = 0; i < started.size(); ++i) {
         const json &in = found[std::to_string(started[i].pid)];
@@ -1336,6 +1480,22 @@ json close_tool(const json &args) {
             }
         }
     }
+    // Issue #6: which of them is the coordinator while other instances live? Its end moves the role: say so.
+    std::string coordinator_before;
+    int others_alive = 0;
+    {
+        bool any_id = false;
+        for (auto &l : todo) any_id = any_id || !l.id.empty();
+        if (any_id) {
+            json lst = game_call("instances_list", json::object(), 5);
+            coordinator_before = lst.value("coordinator_id", "");
+            std::set<std::string> ending;
+            for (auto &l : todo) ending.insert(l.id);
+            for (const auto &e : lst.value("instances", json::array()))
+                if (e.is_object() && e.value("state", "running") == "running" && !ending.count(e.value("id", ""))) ++others_alive;
+        }
+    }
+    bool coordinator_ended = false;
     json closed = json::array();
     for (auto &l : todo) {
         if (!l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
@@ -1346,11 +1506,34 @@ json close_tool(const json &args) {
         json c{{"pid", l.pid}};
         if (!l.id.empty()) c["instance"] = l.id;
         if (!l.owner.empty()) c["owner"] = l.owner;
+        if (!l.id.empty() && l.id == coordinator_before && others_alive > 0) {
+            c["was_coordinator"] = true;
+            coordinator_ended = true;
+        }
         closed.push_back(c);
         std::lock_guard<std::mutex> lk(g_default_mu);
         if (g_default_instance == l.id) g_default_instance.clear();
     }
     json res{{"closed", closed}};
+    if (coordinator_ended) {
+        // The others elect a new coordinator within about a second of the port being released: say who took the role.
+        std::set<std::string> gone;
+        for (const auto &c : closed) gone.insert(c.value("instance", ""));
+        std::string moved_to;
+        auto t0 = std::chrono::steady_clock::now();
+        while (moved_to.empty() && std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < g_handover_wait_s + 2) {
+            json lst = game_call("instances_list", json::object(), 5);
+            std::string id = lst.value("coordinator_id", "");
+            if (!id.empty() && !gone.count(id)) moved_to = id;
+            else std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        for (auto &c : res["closed"])
+            if (c.value("was_coordinator", false)) c["coordinator_moved_to"] = moved_to.empty() ? json(nullptr) : json(moved_to);
+        res["warning"] = "a closed client was the coordinator (the directory of instances): " +
+                         (moved_to.empty() ? std::string("no other instance has taken the role over yet (calls answer coordinator_changing; retry in a few seconds)")
+                                           : "the role moved to " + moved_to + " (it re-registers the others within seconds: calls with `instance` may answer coordinator_changing, retryable)") +
+                         ". Other agents' calls were interrupted for that time.";
+    }
     if (!refused.empty()) {
         res["refused"] = refused;
         res["why_refused"] = "not started by this session (or already closed): close a game this session did not start only if the user asks (game_terminate)";
@@ -1528,11 +1711,15 @@ void handle_request(const json &msg) {
     // No idle limit on client requests: a tool call or tasks/result may stay silent for a long time. The client ends
     // them by cancelling (the bridge then closes the HTTP request).
     const double fp_shift = fp_gate.waited_s() > 0 ? fp_gate.waited_s() + 1 : 0;  // FP7137: keep progress increasing
-    Relay r = relay(fwd, kNoIdleLimit, cancel, [fp_shift](const json &m) {  // FP7137 (capture)
-        json n = m;  // FP7137
-        if (fp_shift > 0 && n.value("method", "") == "notifications/progress" && n.contains("params") && n["params"].is_object() && n["params"].contains("progress") && n["params"]["progress"].is_number()) n["params"]["progress"] = n["params"]["progress"].get<double>() + fp_shift;  // FP7137
-        out(n);
-    });
+    auto do_relay = [&] {
+        return relay(fwd, kNoIdleLimit, cancel, [fp_shift](const json &m) {  // FP7137 (capture)
+            json n = m;  // FP7137
+            if (fp_shift > 0 && n.value("method", "") == "notifications/progress" && n.contains("params") && n["params"].is_object() && n["params"].contains("progress") && n["params"]["progress"].is_number()) n["params"]["progress"] = n["params"]["progress"].get<double>() + fp_shift;  // FP7137
+            out(n);
+        });
+    };
+    Relay r = do_relay();
+    if (method == "tools/call" && !cancel->cancelled) r = ride_out_handover(std::move(r), do_relay, &cancel->cancelled, id);  // issue #6
     {
         std::lock_guard<std::mutex> lk(g_cancel_mu);
         g_cancel.erase(key);
@@ -1616,6 +1803,12 @@ void handle_request(const json &msg) {
                 learn_instance_tools(stored.value("tools", json::array()));
                 add_bridge_tools(r.response["result"]);
             }
+        }
+        if (!tool.empty()) {  // issue #6: a call for another instance that was answered: several games live
+            const json &fa = params_of(fwd).value("arguments", json::object());
+            if (fa.is_object() && fa.contains("instance") && fa["instance"].is_string() && r.response.contains("result") &&
+                !r.response["result"].value("isError", false))
+                g_multi_seen_ms = steady_ms();
         }
         if (tool == "instances_list" && r.response.contains("result") && !r.response["result"].value("isError", false)) {
             json &res = r.response["result"];
@@ -1801,6 +1994,7 @@ int main(int argc, char **argv) {
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
     if (const char *p = std::getenv("GMOD_MCP_PORT")) g_port = std::atoi(p);
+    if (const char *p = std::getenv("GMOD_MCP_HANDOVER_WAIT_S")) g_handover_wait_s = std::max(0.0, std::atof(p));
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--port" && i + 1 < argc) g_port = std::atoi(argv[++i]);

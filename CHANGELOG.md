@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
+  directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
+  `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for
+  three failed heartbeats). Members now try to take the base port over at their first failed heartbeat (the bind only
+  succeeds when nobody holds it), the new coordinator asks every other port of the range to re-register at once, and
+  for 8 s it answers the retryable `coordinator_changing` (with `retry_after_s`) instead of `unknown_instance`
+  for an instance that has not registered yet. The directory is complete again about 3 s after the coordinator ended
+  (about 10 s before). The bridge waits for the new coordinator (up to 10 s) and retries `coordinator_changing`, but
+  only when other instances are known to live: with the only game closed a call still says `game_not_running` at once.
+- **`instances_launch {lua_mount}` never leaves a client without the mount.** Each client is asked what its engine has
+  BEFORE any map loads (it was after, so a client without the mount had already loaded the map), a missing mount is applied
+  again with `lua_mount {path}`, and a client that still has none gets no map (`map_error` `lua_mount_not_active`, isError).
+  An answer lost to a coordinator change while checking is waited out. A launch that times out says its silent clients keep
+  running and must be checked with `lua_mount {instance}` before any `map_load`.
+- **Closing the coordinator says so.** `instances_list` names it (`coordinator_id`, `role`) and warns when it is a client
+  of this session (`coordinator_warning`); `instances_close` reports `was_coordinator` and `coordinator_moved_to`;
+  `game_quit` / `game_terminate` on the coordinator add `coordinator_moved`, `remaining_instances` and a warning.
+
 ## 0.3.6
 
 Guards against an engine crash when a game starts while another finishes a map load (Garry's Mod issue 7137),
