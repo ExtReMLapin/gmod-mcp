@@ -8,6 +8,7 @@
 #include "events.h"
 #include "jobs.h"
 #include "log.h"
+#include "lua_mount.h"
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
@@ -77,6 +78,13 @@ static json map_load_impl(const json &args) {
         uint64_t f0 = jobs::frame_count();
         while (jobs::frame_count() < f0 + 30 && since(tw) < 20.0) plat::sleep_ms(10);
     }
+    // Issue #9: a mounted file edited or checked out behind the engine's back may be served from its Lua file cache (seen once
+    // after a git checkout: the old code ran). Empty it before the realms load, as lua_mount does when it sets the folder.
+    bool mount_cache_emptied = false;
+    if (!lua_mount::current().empty()) {
+        json c = jobs::run_on_main([] { return json(lua_mount::empty_cache()); }, 5.0);
+        if (!jobs::is_timeout(c) && c.is_boolean()) mount_cache_emptied = c.get<bool>();
+    }
     uint64_t gs = agent::generation(realms::SERVER), gc = agent::generation(realms::CLIENT);
     uint64_t cursor = events::cursor_now();
     json p{{"map", map}};
@@ -109,6 +117,17 @@ static json map_load_impl(const json &args) {
                 r["duration_s"] = since(t0);
                 r["requested_map"] = map;
                 if (d.value("map", "") != map) r["warning"] = "the loaded map does not match the requested map";
+                // Issue #9: a mounted folder whose files changed since the realms loaded them (edited during the load), or a
+                // realm that did not get the folder: the running code is not what is on disk.
+                json lm = mount_state(mount_realms());
+                if (!lm.is_null()) {
+                    std::string mw = mount_warning(lm);
+                    if (!mw.empty()) {
+                        r["lua_mount"] = lm;
+                        r["warning"] = r.contains("warning") ? r["warning"].get<std::string>() + "; " + mw : mw;
+                    }
+                    if (mount_cache_emptied) r["lua_cache_emptied"] = true;
+                }
                 return ok(r);
             }
         }
@@ -231,7 +250,10 @@ void register_session() {
                         "realm only. Every Lua state of the previous map is destroyed: its globals, hooks, timers, jobs and debug "
                         "drawings are gone, and the addons' files are loaded again from disk. Changing maxplayers on a running "
                         "game disconnects first (client mode only). Result: {map, gamemode, maxplayers, requested_map, duration_s, "
-                        "server_generation, client_generation, warning?}. Errors: not_found (no maps/<map>.bsp), busy (another "
+                        "server_generation, client_generation, warning?, lua_mount?, lua_cache_emptied?}. With a mounted Lua folder (lua_mount) "
+                        "it empties the engine's Lua file cache before loading (lua_cache_emptied), and when the load ends it checks the "
+                        "folder: if its files changed since the realms loaded them (edited during the load) or a realm did not get the folder, "
+                        "`warning` says so and `lua_mount` is the status.lua_mount object. Errors: not_found (no maps/<map>.bsp), busy (another "
                         "map_load/disconnect runs), timeout (with which realms are up), cancelled. If the game crashes during the load, "
                         "the call through the coordinator answers client_crashed (dump name in details; relaunch with instances_launch). IMPORTANT: when your client "
                         "runs it as a background MCP task, wait for its result before calling a realm tool: a call made before it "

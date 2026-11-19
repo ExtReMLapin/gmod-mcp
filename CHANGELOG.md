@@ -4,6 +4,17 @@
 
 ### Features
 
+- **The mounted Lua folder tells which copy ran, what is out of date, and reloads on demand** (issue #9).
+  `lua_function_source` and `lua_inspect` (on a function) return `from_mount`, the real `disk` path, `mount_has_file`
+  and `provenance` (`mount_in_place_at_load`, `reloaded_from_mount`, `installed`, `not_on_disk`, `no_file`): the engine names a
+  mounted file `@lua/x.lua`, the same as the installed copy, so the name alone could not tell. The module records, when the
+  hook puts the folder in front of a realm's Lua path, the folder's files and their times, and uses that, not the name.
+  `status.lua_mount` lists `stale_files` (files whose time differs from what each realm loaded: modified, added, deleted; an
+  older time after a `git checkout` counts) with the realms each runs in, and `realms_without_mount`; `map_load` empties the
+  engine's Lua file cache first when a folder is mounted and warns when the check finds something. `lua_reload
+  {mounted_changed: true}` runs every changed file again in its realms and reports them per realm; entity, weapon and
+  effect files and deleted files are listed in `skipped`. A reload re-runs the file: it does not undo what the old copy did.
+
 - **`instances_launch` passes frame caps, startup commands and extra engine options to the clients it starts** (issue #10).
   `fps_max` and `fps_max_nofocus` (0 = no cap, or 10 to 1000) replace the preset's frame cap, so a test that needs 45 or
   300 fps no longer has to change the archived `fps_max` with `console_exec` after the launch; the result reports

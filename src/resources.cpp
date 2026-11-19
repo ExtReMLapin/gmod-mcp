@@ -189,11 +189,25 @@ Names: the engine names a file of the folder relative to the folder's root. `deb
 `@lua/my_addon/core.lua`, not `@addons/my_addon/lua/my_addon/core.lua` as for the installed addon. Code that identifies
 a caller by its file path sees another name. gmod-mcp's tools use the same names as the engine (`chunkname` overrides).
 
-Editing a file of the folder: there is no autorefresh, saving a file does not reload it. To run an edit:
-`lua_reload {path: "my_addon/core.lua"}` (runs the folder's copy again in its realms; what the file built at load time
-is not reset) or `map_load` for a clean state. Check with `lua_function_source {realm, expr: "MyAddon.Update"}`: it
-compares the running function with the folder's file (`matches_disk`). A `git checkout` in the worktree changes the
-files at once; the running code changes only when it is loaded again.
+Editing a file of the folder: there is no autorefresh, saving a file does not reload it. `status.lua_mount` tells what is
+out of date: `stale_files` lists the folder's .lua files whose time differs from what each realm loaded (modified, added,
+deleted; a `git checkout` that brings an OLDER file counts too), with the realms each runs in; `realms_without_mount`
+names a realm that loaded before the folder was mounted (it runs the installed copies: `map_load`). `map_load` repeats the
+check when it ends (`warning` and `lua_mount` in its result) and empties the engine's Lua file cache first. To run the edits:
+`lua_reload {mounted_changed: true}` runs again every changed file of the folder in its realms (alphabetical order; deleted
+files and entity/weapon/effect files are listed in `skipped`: `map_load`, or `lua_reload {path}` to force one), or
+`lua_reload {path: "my_addon/core.lua"}` for a single file, or `map_load` for a clean state. A reload re-runs the file: it
+does not undo what the old copy did (hooks or timers under another name, net strings, entities already spawned) and what
+the file built at load time is not reset. Check with `lua_function_source {realm, expr: "MyAddon.Update"}`.
+
+Which copy a function came from: the source name `@lua/my_addon/core.lua` is the same for the folder's copy and for the
+installed copy (a Workshop addon is named that way too). `lua_function_source` and `lua_inspect` (on a function) say
+which one the realm really ran: `from_mount` (true: the folder; false: the installed copy), `disk` (the real file),
+`mount_has_file` (the folder has a file of that name now) and `provenance`: `mount_in_place_at_load` (the module put the
+folder in front of this realm's Lua path right before the realm loaded, and the file was in the folder at that moment: recorded
+at load time, not guessed from the name), `reloaded_from_mount` (the file was run again from the folder with lua_reload),
+`installed`, `not_on_disk` (inside a .gma), `no_file` (code from lua_exec/RunString). Limit: the engine, not the module,
+reads each file, so `from_mount` comes from the folder's content when the realm loaded, not from a trace of each read.
 
 Typical flow:
 1. `instances_launch {count: 1, owner: "<you>", lua_mount: "D:/dev/my-addon-wt", map: "gm_construct"}` (or, on a client

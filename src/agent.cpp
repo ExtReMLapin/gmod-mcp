@@ -17,6 +17,7 @@
 #include "netaddr.h"
 #include "platform/platform.h"
 #include "realms.h"
+#include "lua_mount.h"
 #include "util.h"
 
 using nlohmann::json;
@@ -397,6 +398,7 @@ static void ensure_runtime(int realm, lua_State *L) {
     if (inject(realm, L, e)) {
         g_gen[realm]++;
         g_injected[realm] = true;
+        lua_mount::note_realm_loaded(realm);  // Issue #9: a new Lua state loaded its files (with the mounted folder or not)
         logx::info("runtime injected into realm %s (generation %llu)", realms::name(realm),
                    (unsigned long long)g_gen[realm].load());
         events::publish("runtime_injected", json{{"realm", realms::name(realm)}, {"generation", g_gen[realm].load()}});

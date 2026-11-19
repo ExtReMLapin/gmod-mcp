@@ -39,13 +39,25 @@ json trace_hook(int realm, const std::string &start_tool, const json &start_args
 // Path resolution for lua_exec_file/tests_run (relative to tmp_dir or absolute) + chunk name.
 bool resolve_lua_file(const std::string &path, std::string &abs, std::string &chunkname, std::string &err);
 // Same lookup for a file, or with allow_dir a folder too (lua_check). err lists the places tried.
-bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs, std::string &err);
+// use_mount false skips the mounted folder (the installed copy of a file).
+bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs, std::string &err, bool use_mount = true);
 // Applies the `fields` argument (lua_exec, lua_exec_file, lua_job): keeps only these keys of each returned table.
 json project_values(json result, const json &args);
 // `fields` on an object result (status): keeps only these top-level keys.
 json project_keys(json result, const json &args);
 // lua_reload's lookup: every file matching an include()-style or game-relative path, in the engine's order.
 std::vector<std::string> find_game_lua(const std::string &path, std::string &err);
+// Mounted folder (Issue #9). Where a function's file came from: {from_mount, mount_has_file?, disk?, provenance, note?}.
+json source_provenance(int realm, const std::string &source);
+// status.lua_mount: {path, loaded_with_mount, realms_without_mount, stale_files:[{file, disk, reason, realms}], warning?}
+// for the given realms; null when no folder is mounted.
+json mount_state(const std::vector<int> &realms);
+// One sentence for map_load / status when mounted files changed since they were loaded; "" when all is current.
+std::string mount_warning(const json &state);
+// {reload:[{file, disk, realms, reason}], skipped:[{file, why}]}: what lua_reload {mounted_changed} would run.
+json plan_mount_reload(const json &state);
+// The realms where the mounted folder matters now (server, client) that are up with the runtime.
+std::vector<int> mount_realms();
 // Non-negotiable network rule: "" if the console line may run, else why it is refused (connect/redirect/retry to a
 // server that is not this machine, in any of its statements).
 std::string forbidden_network_cmd(const std::string &line);
