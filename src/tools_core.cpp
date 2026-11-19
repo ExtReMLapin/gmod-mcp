@@ -803,7 +803,10 @@ void register_core() {
                         "result_too_large, realm_unavailable, client_locked. "
                         "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
                         "Some convars cannot be set from Lua (RunConsoleCommand is refused for protected ones, e.g. "
-                        "volume_sfx, silently): use convar_set or console_exec, then read the value back.",
+                        "volume_sfx, fps_max, silently): when the code calls RunConsoleCommand with such a command the result lists it "
+                        "in blocked_console_commands with a warning (only RunConsoleCommand calls made by this code while it runs "
+                        "are seen; a command refused for another reason, e.g. a cheat convar, is not): use convar_set or "
+                        "console_exec, then read the value back.",
                         json{{"properties", exec_code}, {"required", {"code"}}}, json{{"destructiveHint", true}}, lua_exec_tool});
 
     json exec_file = exec_props;

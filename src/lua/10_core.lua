@@ -188,8 +188,8 @@ end
 
 function A.capture_begin()
 	local buf = {}
-	local saved = { print = print, Msg = Msg, MsgN = MsgN, MsgC = MsgC }
-	local frame = { buf = buf, saved = saved, size = 0, dropped = 0 }
+	local saved = { print = print, Msg = Msg, MsgN = MsgN, MsgC = MsgC, RunConsoleCommand = RunConsoleCommand }
+	local frame = { buf = buf, saved = saved, size = 0, dropped = 0, blocked = {}, blocked_seen = {} }
 	capture_stack[#capture_stack + 1] = frame
 	-- Captured output is capped at 1 MiB (a print loop must not exhaust memory); the rest is counted as dropped.
 	local function add(s)
@@ -212,6 +212,24 @@ function A.capture_begin()
 		add(table.concat(parts))
 		return saved.MsgC(...)
 	end
+	-- Issue #11: the engine ignores RunConsoleCommand for the commands on its Lua blacklist, without a word. Note them
+	-- (IsConCommandBlocked is the engine's own test for exactly that list) so the result can say so.
+	if saved.RunConsoleCommand and IsConCommandBlocked then
+		RunConsoleCommand = function(cmd, ...)
+			if type(cmd) == "string" and not frame.blocked_seen[cmd] and IsConCommandBlocked(cmd) then
+				frame.blocked_seen[cmd] = true
+				frame.blocked[#frame.blocked + 1] = cmd
+			end
+			return saved.RunConsoleCommand(cmd, ...)
+		end
+	end
+end
+
+-- The blocked commands noted by a capture, as the fields a result carries (nil when there are none).
+function A.blocked_fields(blocked)
+	if not blocked or #blocked == 0 then return nil end
+	return J.array(blocked), "RunConsoleCommand(" .. table.concat(blocked, ", ") .. ") is blocked from Lua by the engine and did nothing"
+		.. " (it does so silently): use console_exec or convar_set, which go through the engine, then read the value back."
 end
 
 function A.capture_end()
@@ -220,7 +238,7 @@ function A.capture_end()
 	for k, f in pairs(top.saved) do _G[k] = f end
 	local out = table.concat(top.buf)
 	if top.dropped > 0 then out = out .. string.format("\n[mcpagent: output truncated, %d more bytes dropped]\n", top.dropped) end
-	return out
+	return out, top.blocked
 end
 
 -- Cuts the traceback before the runtime's internal frames (xpcall of run_budget / dispatch).

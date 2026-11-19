@@ -83,7 +83,8 @@ json build(const std::string &tool) {
                            {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS}});
         // --- Lua execution
         json exec = obj({{"values", ANYS}, {"n", N}, {"output", S}, {"duration_ms", N}, {"chunk_bytes", N}, {"chunkname", S},
-                         {"budget_s", N}, {"generation", N}, {"truncated", N}, {"projected", STRS}, {"fields_note", S}, {"file", S}},
+                         {"budget_s", N}, {"generation", N}, {"truncated", N}, {"projected", STRS}, {"fields_note", S}, {"file", S},
+                         {"blocked_console_commands", STRS}},
                         {"values", "n"});
         s["lua_exec"] = exec;
         s["lua_exec_file"] = exec;
@@ -108,11 +109,11 @@ json build(const std::string &tool) {
         // --- jobs
         s["lua_job"] = obj({{"job_id", S}, {"state", S}, {"realm", S}, {"generation", N}, {"concurrent_jobs", ANYS}, {"values", ANYS},
                             {"n", N}, {"reports", ANYS}, {"output", S}, {"frames", N}, {"resumes", N}, {"cpu_ms", N}, {"elapsed_s", N},
-                            {"truncated", N}, {"reports_dropped", N}, {"reports_truncated", N}, {"projected", STRS}, {"fields_note", S}},
+                            {"truncated", N}, {"reports_dropped", N}, {"reports_truncated", N}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}},
                            {"job_id"});
         s["lua_job_status"] = obj({{"job_id", S}, {"state", S}, {"frames", N}, {"elapsed_s", N}, {"jobs", ANYS}, {"generation", N},
                                    {"values", ANYS}, {"n", N}, {"reports", ANYS}, {"output", S}, {"resumes", N}, {"cpu_ms", N},
-                                   {"truncated", N}, {"reports_count", N}, {"progress", ANY}, {"projected", STRS}, {"fields_note", S}});
+                                   {"truncated", N}, {"reports_count", N}, {"progress", ANY}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}});
         s["lua_job_cancel"] = obj({{"job_id", S}, {"cancelled", B}}, {"job_id", "cancelled"});
         // --- session
         s["map_list"] = obj({{"maps", STRS}, {"count", N}, {"truncated", B}, {"filter", S}}, {"maps", "count", "truncated"});

@@ -65,6 +65,10 @@ static json job_result(const json &s, const json &args) {
                  {"reports", s.value("reports", json::array())}, {"output", s.value("output", "")},
                  {"frames", s["frames"]}, {"resumes", s["resumes"]}, {"cpu_ms", s["cpu_ms"]}, {"elapsed_s", s["elapsed_s"]},
                  {"generation", s.value("generation", json())}};
+        if (s.contains("blocked_console_commands")) {  // issue #11: RunConsoleCommand of a command the engine blocks from Lua
+            out["blocked_console_commands"] = s["blocked_console_commands"];
+            out["warning"] = s.value("warning", "");
+        }
         if (s.value("reports_dropped", 0) > 0) out["reports_dropped"] = s["reports_dropped"];
         if (s.value("reports_truncated", 0) > 0) out["reports_truncated"] = s["reports_truncated"];
         if (s.contains("truncated")) {

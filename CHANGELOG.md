@@ -4,6 +4,11 @@
 
 ### Features
 
+- **`lua_exec` and `lua_job` report a `RunConsoleCommand` the engine blocked** (issue #11). The engine ignores
+  `RunConsoleCommand("fps_max", ...)` (and the other commands on its Lua blacklist) without a word, so an agent believed it had
+  changed the frame cap. While the code runs, the runtime now notes the calls that `IsConCommandBlocked` refuses; the result
+  carries `blocked_console_commands` and a `warning` pointing at `console_exec` / `convar_set`. Only calls made by the code
+  itself while it runs are seen (a job: during each of its resumes); a command refused for another reason is not.
 - **`fields` says when it projected nothing** (issue #11). On `lua_exec`, `lua_exec_file`, `lua_job` and `lua_job_status`,
   `fields` only keeps keys of returned tables; when the value was a JSON string (`util.TableToJSON`), a number or an
   array, the whole result came back with no word. The result now carries `fields_note` saying so and what to return instead.
