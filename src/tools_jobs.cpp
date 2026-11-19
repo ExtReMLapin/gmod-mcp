@@ -65,6 +65,10 @@ static json job_result(const json &s, const json &args) {
                  {"reports", s.value("reports", json::array())}, {"output", s.value("output", "")},
                  {"frames", s["frames"]}, {"resumes", s["resumes"]}, {"cpu_ms", s["cpu_ms"]}, {"elapsed_s", s["elapsed_s"]},
                  {"generation", s.value("generation", json())}};
+        if (s.contains("blocked_console_commands")) {  // issue #11: RunConsoleCommand of a command the engine blocks from Lua
+            out["blocked_console_commands"] = s["blocked_console_commands"];
+            out["warning"] = s.value("warning", "");
+        }
         if (s.value("reports_dropped", 0) > 0) out["reports_dropped"] = s["reports_dropped"];
         if (s.value("reports_truncated", 0) > 0) out["reports_truncated"] = s["reports_truncated"];
         if (s.contains("truncated")) {
@@ -256,7 +260,7 @@ void register_jobs() {
                                           "the mounted Lua folder if any, then the game folder, then lua/, gamemodes/, addons/*/lua/). Errors then point to the file. "
                                           "Prefer it to pasting a file's content into code."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
-                            {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"])."}}},
+                            {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"]); fields_note says so when no returned value is a table."}}},
                 {"args", {{"type", "object"}, {"description", "Arbitrary data exposed to the script as job.args."}}},
                 {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600},
                                {"description", "Cancel the job after this many seconds (default 300). 15 s or more: runs as an MCP task when the client supports it."}}},
@@ -288,7 +292,7 @@ void register_jobs() {
          "for the end. A job id belongs to one Lua state: after a map change (new realm) an id of the old state answers realm_reset. Without id: every job of every realm, running or finished but not collected yet.",
          json{{"properties",
                {{"id", {{"type", "string"}, {"description", "Job id returned by lua_job (e.g. 'server-g3-1')."}}},
-                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
+                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table."}}}}}},
          json{{"readOnlyHint", false}}, lua_job_status_tool});

@@ -311,7 +311,7 @@ void register_session() {
                         json{{"properties",
                               {{"realm", realm_prop("Evaluation realm (default server).")},
                                {"condition", {{"type", "string"}, {"description", "Lua expression or block with return, e.g. 'IsValid(Entity(1)) and Entity(1):Alive()'."}}},
-                               {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Max wait in seconds (default 10)."}}},
+                               {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Max wait in seconds (default 10)."}}},
                                {"interval_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 60}, {"description", "Seconds between evaluations (default 0 = every frame)."}}}}},
                              {"required", {"condition"}}},
                         RO, wait_for_tool});
@@ -321,7 +321,7 @@ void register_session() {
                         "renders fewer frames in timeout_s (frozen, minimized with a low fps_max_nofocus). A light test client runs "
                         "at 20 fps: 20 frames = 1 s.",
                         json{{"properties", {{"n", {{"type", "integer"}, {"minimum", 1}, {"maximum", 100000}, {"description", "Number of frames to wait."}}},
-                                             {"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600}, {"description", "Max wait in seconds (default 30)."}}}}},
+                                             {"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 3600}, {"description", "Max wait in seconds (default 30)."}}}}},
                              {"required", {"n"}}},
                         RO, wait_frames_tool});
 }

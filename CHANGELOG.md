@@ -4,6 +4,28 @@
 
 ### Features
 
+- **`lua_job {wait: false}` is suggested as `async`** (issue #11). The unknown-argument message answered "did you mean
+  'jit'?" for `wait` (the closest spelling). A small synonym table (`wait`, `await`, `sync`, `blocking`, `nowait`,
+  `background`, `detach`...) now points to `async` when the tool has it. `wait` and `async` are opposites, so the message says
+  so and the corrected `next_call` inverts a boolean (`wait: false` becomes `async: true`); a `wait` that is not a boolean gets
+  the suggestion without a corrected call.
+- **Long waits accept up to an hour** (issue #11). `wait_for`, `wait_frames`, `events_wait`, `reports_read {wait_s}` and
+  `lua_job_status {wait_s}` took at most 600 s (`console_wait` already took 3600), so a long series needed chained calls. They
+  now take 3600 s. The coordinator's relay of a call to another instance waited at most 900 s for the answer and would have cut
+  a long wait on a test client at 15 minutes: it now waits 3700 s. The MCP client's own tool-call timeout is not ours to change
+  (Claude Code: `MCP_TOOL_TIMEOUT`).
+- **`lua_exec` and `lua_job` report a `RunConsoleCommand` the engine blocked** (issue #11). The engine ignores
+  `RunConsoleCommand("fps_max", ...)` (and the other commands on its Lua blacklist) without a word, so an agent believed it had
+  changed the frame cap. While the code runs, the runtime now notes the calls that `IsConCommandBlocked` refuses; the result
+  carries `blocked_console_commands` and a `warning` pointing at `console_exec` / `convar_set`. Only calls made by the code
+  itself while it runs are seen (a job: during each of its resumes); a command refused for another reason is not.
+- **`fields` says when it projected nothing** (issue #11). On `lua_exec`, `lua_exec_file`, `lua_job` and `lua_job_status`,
+  `fields` only keeps keys of returned tables; when the value was a JSON string (`util.TableToJSON`), a number or an
+  array, the whole result came back with no word. The result now carries `fields_note` saying so and what to return instead.
+- **`errors_since {group_by: "message"}`** (issue #11). One entry per distinct message (`message`, `count`, `first_seq`,
+  `first_time`, `last_seq`, `last_time`, `realms`, `map`, `stack`, `addon`), most frequent first, instead of up to 2000
+  mostly identical errors; `limit` caps the groups (`groups_total` counts them) and `next_cursor` covers every error read.
+  The default output is unchanged.
 - **The mounted Lua folder tells which copy ran, what is out of date, and reloads on demand** (issue #9).
   `lua_function_source` and `lua_inspect` (on a function) return `from_mount`, the real `disk` path, `mount_has_file`
   and `provenance` (`mount_in_place_at_load`, `reloaded_from_mount`, `installed`, `not_on_disk`, `no_file`): the engine names a

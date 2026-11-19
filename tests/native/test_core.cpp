@@ -173,6 +173,87 @@ static void test_errors_filter_before_limit() {
     CHECK(rc["errors"].size() == 1 && rc["errors"][0].value("message", "") == "current 2");
 }
 
+// Issue #11: errors_since {group_by: "message"} returns one entry per distinct message (count, first and last occurrence,
+// most frequent first) instead of up to 2000 mostly identical errors; without group_by the output is unchanged.
+static void test_errors_group_by_message() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_g");
+    console::push_error(json{{"realm", "server"}, {"message", "rare"}, {"time", 1.0}});
+    for (int i = 0; i < 5; ++i) console::push_error(json{{"realm", i == 4 ? "client" : "server"}, {"message", "spam"}, {"time", 2.0 + i}});
+    console::push_error(json{{"realm", "server"}, {"message", "twice"}, {"time", 10.0}});
+    console::push_error(json{{"realm", "server"}, {"message", "twice"}, {"time", 11.0}});
+    json plain = mcp::call_tool("errors_since", json{{"cursor", 0}}).value("structuredContent", json::object());
+    CHECK(plain["errors"].size() == 8 && !plain.contains("groups"));  // default output unchanged
+    json r = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "message"}});
+    CHECK(!r.value("isError", true));
+    json sc = r.value("structuredContent", json::object());
+    CHECK(sc.contains("groups") && sc["groups"].is_array() && sc["groups"].size() == 3);
+    if (!(sc.contains("groups") && sc["groups"].size() == 3)) return;
+    const json &g0 = sc["groups"][0], &g1 = sc["groups"][1], &g2 = sc["groups"][2];
+    CHECK(g0.value("message", "") == "spam" && g0.value("count", 0) == 5);  // most frequent first
+    CHECK(g1.value("message", "") == "twice" && g1.value("count", 0) == 2);
+    CHECK(g2.value("message", "") == "rare" && g2.value("count", 0) == 1);
+    CHECK(g0.value("last_seq", 0) == g0.value("first_seq", 0) + 4);  // seq of first and last occurrence
+    CHECK(g0.value("first_time", 0.0) == 2.0 && g0.value("last_time", 0.0) == 6.0);
+    CHECK(g1.value("first_time", 0.0) == 10.0 && g1.value("last_time", 0.0) == 11.0);
+    CHECK(g2.value("first_seq", 1) == g2.value("last_seq", 2) && g2.value("count", 0) == 1);
+    CHECK(g0.contains("realms") && g0["realms"].size() == 2 && g1["realms"].size() == 1);
+    CHECK(g0.value("map", "") == "gm_g");
+    CHECK(sc.value("next_cursor", 0) == plain.value("next_cursor", -1) && sc.contains("map_load"));
+    // The filters still apply before grouping, and `limit` caps the groups (the cut is reported).
+    json rc = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "message"}, {"realm", "client"}}).value("structuredContent", json::object());
+    CHECK(rc["groups"].size() == 1 && rc["groups"][0].value("count", 0) == 1);
+    json rl = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "message"}, {"limit", 2}}).value("structuredContent", json::object());
+    CHECK(rl["groups"].size() == 2 && rl.value("groups_total", 0) == 3);
+    // Any other group_by value is refused by the schema.
+    json bad = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "realm"}});
+    CHECK(bad.value("isError", false));
+}
+
+// Issue #11: `fields` on a result that holds no table (a JSON string from util.TableToJSON, a number) projects nothing: the
+// result must say so (`fields_note`) instead of silently coming back whole.
+static void test_fields_note() {
+    json args{{"fields", {"pass", "fails"}}};
+    auto run = [&](json values) { return tools::project_values(tools::ok(json{{"values", std::move(values)}, {"n", 1}}), args); };
+    json str = run(json::array({"{\"pass\":true,\"fails\":0}"}));
+    CHECK(str["result"].contains("fields_note"));
+    CHECK(str["result"].value("fields_note", "").find("string") != std::string::npos);
+    CHECK(str["result"].value("fields_note", "").find("JSONToTable") != std::string::npos);
+    CHECK(str["result"]["values"][0].is_string());  // the value itself is untouched
+    CHECK(run(json::array({1, 2}))["result"].contains("fields_note"));
+    CHECK(run(json::array())["result"].contains("fields_note"));
+    CHECK(run(json::array({json::array({1})}))["result"].contains("fields_note"));  // an array is not a table of keys
+    // A table was projected: no note. A mix: projected, no note.
+    json tbl = run(json::array({json{{"pass", true}, {"fails", 0}, {"big", "x"}}}));
+    CHECK(!tbl["result"].contains("fields_note") && tbl["result"]["values"][0].size() == 2);
+    CHECK(!run(json::array({"s", json{{"pass", true}}}))["result"].contains("fields_note"));
+    // No `fields`: nothing added.
+    json plain = tools::project_values(tools::ok(json{{"values", json::array({"s"})}, {"n", 1}}), json::object());
+    CHECK(!plain["result"].contains("fields_note") && !plain["result"].contains("projected"));
+}
+
+// Issue #11: the long waits accept up to an hour (a long series no longer needs chained calls), and nothing on the way
+// cuts a call that long: the coordinator's relay waits for an instance's answer longer than the longest wait.
+static void test_long_waits() {
+    if (mcp::tools().empty()) tools::register_all();
+    struct Cap { const char *tool, *arg; };
+    for (Cap c : {Cap{"wait_for", "timeout_s"}, Cap{"wait_frames", "timeout_s"}, Cap{"events_wait", "timeout_s"}, Cap{"reports_read", "wait_s"},
+                  Cap{"console_wait", "timeout_s"}, Cap{"lua_job_status", "wait_s"}}) {
+        const mcp::Tool *found = nullptr;
+        for (const auto &t : mcp::tools())
+            if (t.name == c.tool) found = &t;
+        CHECK(found != nullptr);
+        if (!found) continue;
+        double max = found->input_schema["properties"][c.arg].value("maximum", 0.0);
+        if (max != 3600) std::printf("%s.%s maximum is %g\n", c.tool, c.arg, max);
+        CHECK(max == 3600);
+    }
+    // Above the cap the schema refuses the call.
+    json too_long = mcp::call_tool("wait_for", json{{"condition", "true"}, {"timeout_s", 3601}});
+    CHECK(too_long.value("isError", false));
+    CHECK(coordinator::kRelayReadTimeoutS >= 3600 + 60);
+}
+
 static json errs_current(const char *realm = nullptr) {
     json a{{"cursor", 0}, {"since_map_load", true}};
     if (realm) a["realm"] = realm;
@@ -1627,6 +1708,28 @@ static void test_next_call() {
     // Not offered when the corrected call would still be invalid (a missing required argument).
     json r2 = mcp::call_tool("console_exec", json{{"comand", "echo hi"}, {"realm", "nowhere"}});
     CHECK(r2["structuredContent"]["error"].value("next_call", json()).is_null());
+
+    // Issue #11: lua_job {wait: false} used to be answered "did you mean 'jit'?" (the closest spelling). A wait-like key means
+    // `async`; since `wait` and `async` are opposites, the corrected call inverts a boolean.
+    auto err_of = [](const json &res) { return res["structuredContent"]["error"]; };
+    json w = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"wait", false}});
+    CHECK(w.value("isError", false) && err_of(w).value("message", "").find("did you mean 'async'") != std::string::npos);
+    CHECK(err_of(w).value("message", "").find("did you mean 'jit'") == std::string::npos);
+    CHECK(err_of(w).value("next_call", json()) == (json{{"tool", "lua_job"}, {"arguments", {{"code", "return 1"}, {"async", true}}}}));
+    json w2 = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"wait", true}});
+    CHECK(err_of(w2).value("next_call", json()) == (json{{"tool", "lua_job"}, {"arguments", {{"code", "return 1"}, {"async", false}}}}));
+    json bg = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"background", true}});
+    CHECK(err_of(bg).value("message", "").find("did you mean 'async'") != std::string::npos);
+    CHECK(err_of(bg).value("next_call", json()) == (json{{"tool", "lua_job"}, {"arguments", {{"code", "return 1"}, {"async", true}}}}));
+    // The message says what the suggestion means; a wait given as a number cannot be inverted: suggestion without a corrected call.
+    CHECK(err_of(w).value("message", "").find("opposite") != std::string::npos);
+    json wn = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"wait", 5}});
+    CHECK(err_of(wn).value("message", "").find("did you mean 'async'") != std::string::npos && err_of(wn).value("next_call", json()).is_null());
+    // `async` already given: no corrected call (it would collide). A tool without `async` keeps the generic suggestion.
+    json both = mcp::call_tool("lua_job", json{{"code", "return 1"}, {"async", true}, {"wait", false}});
+    CHECK(err_of(both).value("next_call", json()).is_null());
+    json other = mcp::call_tool("console_exec", json{{"cmd", "echo hi"}, {"wait", false}});
+    CHECK(err_of(other).value("message", "").find("'async'") == std::string::npos);
 }
 
 // Issue #5: a foreign program on the base port must not be reported as a token mismatch. A gmod-mcp coordinator that
@@ -2024,6 +2127,9 @@ int main(int argc, char **argv) {
     test_console_wait();
     test_errors_map_tags();
     test_errors_filter_before_limit();
+    test_errors_group_by_message();
+    test_fields_note();
+    test_long_waits();
     test_errors_load_stamp_order();
     test_small_b6();
     test_srcds_error_parsing();

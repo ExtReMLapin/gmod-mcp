@@ -28,6 +28,9 @@ bool same_process_running(uint64_t now, uint64_t recorded);
 nlohmann::json instances();  // for instances_list
 // Id of the instance serving as coordinator (this one, or the one that answered the last heartbeat; "" if unknown).
 std::string coordinator_id();
+// How long the coordinator waits for an instance's answer to a relayed call (read timeout). Longer than the longest wait a
+// tool accepts (3600 s), or a long wait_for / console_wait through the coordinator would be cut (issue #11).
+constexpr double kRelayReadTimeoutS = 3700;
 // True for kHandoverGraceS seconds after this instance took the base port over from a coordinator that went away: an
 // instance it does not know yet may just not have re-registered (calls to it answer coordinator_changing).
 bool in_handover();

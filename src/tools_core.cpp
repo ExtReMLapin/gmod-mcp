@@ -164,14 +164,28 @@ json project_values(json r, const json &args) {
     if (!args.contains("fields") || !r.value("ok", false) || !r.contains("result")) return r;
     json &res = r["result"];
     if (!res.contains("values") || !res["values"].is_array()) return r;
+    // Issue #11: say so when there was nothing to project (e.g. util.TableToJSON returns a string).
+    size_t projected_tables = 0;
+    std::string seen;
     for (auto &v : res["values"]) {
-        if (!v.is_object()) continue;
+        if (!v.is_object()) {
+            const char *kind = v.is_string() ? "string" : v.is_array() ? "array" : v.is_null() ? "nil" : "number or boolean";
+            if (seen.find(kind) == std::string::npos) seen += (seen.empty() ? "" : ", ") + std::string(kind);
+            continue;
+        }
+        ++projected_tables;
         json kept = json::object();
         for (const auto &f : args["fields"])
             if (f.is_string() && v.contains(f.get<std::string>())) kept[f.get<std::string>()] = v[f.get<std::string>()];
         v = std::move(kept);
     }
     res["projected"] = args["fields"];
+    if (projected_tables == 0)
+        res["fields_note"] = std::string("`fields` projected nothing: none of the returned values is a table with named keys (") +
+                             (seen.empty() ? "no value was returned" : "got: " + seen) +
+                             "), so the result came back whole. `fields` only keeps keys of returned tables: return the table itself, "
+                             "or if the value is a JSON string (util.TableToJSON) return util.JSONToTable(it) instead, "
+                             "or drop `fields`.";
     return r;
 }
 
@@ -770,7 +784,8 @@ void register_core() {
                                        {"description", "Cut strings longer than this (default: no cut)."}}}};
     exec_props["fields"] = {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"]): the rest "
-                                            "of a large result is dropped before it reaches you."}};
+                                            "of a large result is dropped before it reaches you. Only returned tables are projected: when none is "
+                                            "(a JSON string, a number), the result says so in fields_note."}};
     json exec_code = exec_props;
     exec_code["code"] = {{"type", "string"}, {"description", "Lua code. Use `return` to return values (several allowed)."}};
     mcp::register_tool({"lua_exec", "Execute Lua",
@@ -788,7 +803,10 @@ void register_core() {
                         "result_too_large, realm_unavailable, client_locked. "
                         "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
                         "Some convars cannot be set from Lua (RunConsoleCommand is refused for protected ones, e.g. "
-                        "volume_sfx, silently): use convar_set or console_exec, then read the value back.",
+                        "volume_sfx, fps_max, silently): when the code calls RunConsoleCommand with such a command the result lists it "
+                        "in blocked_console_commands with a warning (only RunConsoleCommand calls made by this code while it runs "
+                        "are seen; a command refused for another reason, e.g. a cheat convar, is not): use convar_set or "
+                        "console_exec, then read the value back.",
                         json{{"properties", exec_code}, {"required", {"code"}}}, json{{"destructiveHint", true}}, lua_exec_tool});
 
     json exec_file = exec_props;

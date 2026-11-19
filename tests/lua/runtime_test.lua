@@ -543,5 +543,32 @@ check(gen_b.result.id ~= old_id, "same sequence number, different state: differe
 local stale = call("job_poll", { id = old_id })
 check(not stale.ok and stale.error.code == "not_found", "the new state does not know the old state's id")
 
+-- Issue #11: RunConsoleCommand of a command the engine blocks from Lua does nothing without a word; lua_exec / lua_job
+-- now report it (blocked_console_commands + warning), only for the commands that really are blocked.
+local ran = {}
+local real_rcc = function(cmd, ...) ran[#ran + 1] = cmd end
+RunConsoleCommand = real_rcc
+IsConCommandBlocked = function(c) return c == "fps_max" or c == "volume_sfx" end
+r = call("lua_exec", { code = "RunConsoleCommand('fps_max', '30') RunConsoleCommand('sv_gravity', '500') RunConsoleCommand('fps_max', '40') return 1" })
+check(r.ok and type(r.result.blocked_console_commands) == "table" and #r.result.blocked_console_commands == 1
+	and r.result.blocked_console_commands[1] == "fps_max", "lua_exec reports the blocked command once")
+check(r.ok and type(r.result.warning) == "string" and r.result.warning:find("fps_max", 1, true) and r.result.warning:find("console_exec", 1, true),
+	"lua_exec warning names the command and the tool that works")
+check(#ran == 3 and ran[2] == "sv_gravity", "the calls still reach RunConsoleCommand")
+check(RunConsoleCommand == real_rcc, "RunConsoleCommand is put back after the call")
+r = call("lua_exec", { code = "RunConsoleCommand('sv_gravity', '500') return 1" })
+check(r.ok and r.result.blocked_console_commands == nil and r.result.warning == nil, "no field when nothing was blocked")
+r = call("lua_exec", { code = "RunConsoleCommand('volume_sfx', '0') error('boom')" })
+check(not r.ok and RunConsoleCommand == real_rcc, "RunConsoleCommand is put back after an error")
+r = run_job({ code = "RunConsoleCommand('fps_max', '30') job:frames(1) RunConsoleCommand('volume_sfx', '1') RunConsoleCommand('fps_max', '30') return 1" })
+check(r.ok and r.result.state == "done" and type(r.result.blocked_console_commands) == "table" and #r.result.blocked_console_commands == 2
+	and type(r.result.warning) == "string" and r.result.warning:find("volume_sfx", 1, true), "lua_job reports the blocked commands of all its resumes")
+check(RunConsoleCommand == real_rcc, "RunConsoleCommand is put back between a job's resumes")
+r = run_job({ code = "RunConsoleCommand('sv_gravity', '1') return 1" })
+check(r.ok and r.result.blocked_console_commands == nil, "lua_job: no field when nothing was blocked")
+IsConCommandBlocked = nil
+r = call("lua_exec", { code = "RunConsoleCommand('fps_max', '30') return 1" })
+check(r.ok and r.result.blocked_console_commands == nil, "without IsConCommandBlocked (older game) nothing is claimed")
+
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

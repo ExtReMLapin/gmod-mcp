@@ -16,14 +16,16 @@ function H.lua_exec(args)
 	local t0 = SysTime()
 	local ok, res, err, tb, exceeded = A.run_budget(fn, budget)
 	local dt = (SysTime() - t0) * 1000
-	local output = A.capture_end()
+	local output, blocked = A.capture_end()
 	if not ok then
 		if A.is_fail(err) then A.fail(err.code, err.message, err.details) end
 		A.fail(exceeded and "budget_exceeded" or "lua_error", tostring(err),
 			{ traceback = tb, output = output, duration_ms = dt })
 	end
-	return A.serialize_values(res, opts, { output = output, duration_ms = dt, chunk_bytes = #code, chunkname = chunk,
+	local out = A.serialize_values(res, opts, { output = output, duration_ms = dt, chunk_bytes = #code, chunkname = chunk,
 		budget_s = budget, generation = A.generation })
+	out.blocked_console_commands, out.warning = A.blocked_fields(blocked)
+	return out
 end
 
 function H.lua_inspect(args)
