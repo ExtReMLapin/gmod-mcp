@@ -59,6 +59,12 @@ def check(name, cond, info=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else "  -> " + str(info)[:400]), flush=True)
 
 
+def json_equal(text, value):
+    """True when `text` is JSON that equals `value` (the text block of a result is the JSON of its structuredContent)."""
+    try: return json.loads(text) == value
+    except (ValueError, TypeError): return False
+
+
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
@@ -252,8 +258,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
         if name == "echo":
             h = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("mcp")}
-            return self.reply_json(res({"content": [{"type": "text", "text": "echo"}],
-                                        "structuredContent": {"args": args, "headers": h}}))
+            sc = {"args": args, "headers": h}  # like the module: the text is the JSON of structuredContent
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc, separators=(",", ":"))}],
+                                        "structuredContent": sc}))
         if name == "progress":
             self.sse_start()
             for i in range(1, 4): self.sse(prog(i)); time.sleep(0.05)
@@ -369,6 +376,13 @@ def case_a():
     r = b.req("tools/call", {"name": "status", "arguments": {}})
     res = (r or {}).get("result", {})
     check("A tools/call says not running", res.get("isError") and "game_not_running" in json.dumps(res), r)
+    # Issue #3: the same JSON error shape as the module (what Claude Code shows the model on isError is the text only).
+    texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    err = (res.get("structuredContent") or {}).get("error", {})
+    check("A (issue 3) game_not_running: the only text block is the JSON of structuredContent", len(texts) == 1 and json_equal(texts[0], res.get("structuredContent")), texts)
+    check("A (issue 3) game_not_running error carries code, message with what to do, and details naming the port and why",
+          err.get("code") == "game_not_running" and "-mcp" in err.get("message", "") and
+          err.get("details", {}).get("port") and err.get("details", {}).get("reason"), err)
     check("A ping ok", (b.req("ping") or {}).get("result") == {}, r)
     b.close()
 
@@ -1041,6 +1055,10 @@ def case_lua_mount_verify():
     m = inst.get("lua_mount") or {}
     check("LUA_MOUNT_VERIFY the game has no mount: not active, isError, warning names the instance",
           res.get("isError") and m.get("active") is False and m.get("requested") == wt and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    # Issue #3: the fix named in the warning is also data.
+    check("LUA_MOUNT_VERIFY (issue 3) not active: next_call is lua_mount {path, instance} for the client that lacks it",
+          sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": wt, "instance": inst.get("instance")}}
+          and json_equal(res["content"][0]["text"], sc), sc.get("next_call"))
     # 3. another folder mounted: not active.
     answers["now"] = lambda a: {"lua_mount": "D:\\other", "base_lua_mounted": True}
     res, sc = launch(wt)
@@ -1057,6 +1075,8 @@ def case_lua_mount_verify():
     res, sc = launch(wt)
     m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
     check("LUA_MOUNT_VERIFY base Lua missing: isError and warning", res.get("isError") and m.get("base_lua_mounted") is False and "base" in sc.get("warning", "").lower(), sc)
+    check("LUA_MOUNT_VERIFY (issue 3) base Lua missing: next_call removes the mount (path null) from that client",
+          sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": None, "instance": ((sc.get("instances") or [{}])[0]).get("instance")}}, sc.get("next_call"))
     # 6. no mount requested: the game is not asked.
     n = len(srv.lua_mount_calls)
     answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}
@@ -1330,6 +1350,11 @@ def case_fp7137():
     check("FP7137 a wait longer than timeout_s fails with launch_in_progress and waited_s",
           res.get("isError") and sc.get("error", {}).get("code") == "launch_in_progress" and 4 <= sc.get("waited_s", 0) <= 9 and time.time() - t1 < 12, sc)
     check("FP7137 ... and the game was never asked", all(m[0] != "gm_never" for m in srv.map_log), srv.map_log)
+    # Issue #3: the retry is data too: the same call a little later, with more room to wait (and the text stays the JSON).
+    nc = sc.get("error", {}).get("next_call", {})
+    check("FP7137 (issue 3) launch_in_progress carries next_call: the same map_load, after_s, a larger timeout_s",
+          nc.get("tool") == "map_load" and nc.get("arguments", {}).get("map") == "gm_never" and nc.get("arguments", {}).get("timeout_s", 0) > 5
+          and nc.get("after_s", 0) > 0 and json_equal(res["content"][0]["text"], sc), nc)
     # 3. The bridge that held the lock is gone (pid does not exist), expiry far away: no deadlock, no wait.
     fp_seed(env, [("L", fp_dead_pid(), 3600, "launch"), ("M", fp_dead_pid(), 3600, "map:ghost")])
     res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_b", "timeout_s": 30}, 30), 10)
@@ -1424,6 +1449,10 @@ def case_fp7137():
     res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
     check("FP7137 a launch blocked past timeout_s fails with map_load_in_progress and waited_s", res_a.get("isError") and sc_a.get("error", {}).get("code") == "map_load_in_progress" and 8 <= sc_a.get("waited_s", 0) <= 14, sc_a)
     check("FP7137 ... and no game was started", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    nc = sc_a.get("error", {}).get("next_call", {})
+    check("FP7137 (issue 3) map_load_in_progress carries next_call: the same instances_launch, after_s, a larger timeout_s",
+          nc.get("tool") == "instances_launch" and nc.get("arguments", {}).get("count") == launch_args().get("count") and nc.get("arguments", {}).get("timeout_s", 0) > 10
+          and nc.get("after_s", 0) > 0 and json_equal(res_a["content"][0]["text"], sc_a), nc)
     a.close(); b.close(); srv.stop()
     # 11. Kill switch: the same two bridges, no wait either way.
     port, env, srv = fp_setup(workaround="0", hold={"*": 3.0})
@@ -2015,21 +2044,24 @@ def case_version():
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     res = (r or {}).get("result", {})
     sc = res.get("structuredContent", {})
-    first = (res.get("content") or [{}])[0].get("text", "")
+    texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    first = texts[0] if texts else ""
     bv = bridge_version()
     check("VERSION every tool result carries version_warning naming both versions",
           "0.0.1" in sc.get("version_warning", "") and bv in sc.get("version_warning", ""), sc)
-    check("VERSION the first text the agent reads is the warning, with what to do",
-          first.startswith("WARNING") and "0.0.1" in first and "skill" in first, first[:300])
-    check("VERSION the tool's own answer is still there", sc.get("args") == {} and any(c.get("text") == "echo" for c in res.get("content", [])), res)
+    # Issue #3: no prose block next to the JSON; the warning is a field of the JSON and the text stays the JSON of
+    # structuredContent (code-mode hosts parse it), with the warning as its first key so it is read first.
+    check("VERSION (issue 3) one text block, the JSON of structuredContent, version_warning first, with what to do",
+          len(texts) == 1 and first.startswith('{"version_warning":"') and json_equal(first, sc) and "0.0.1" in first and "skill" in first, texts)
+    check("VERSION the tool's own answer is still there", sc.get("args") == {} and "args" in first, res)
     # The bridge's own tools too (seen in a real update, 2026-11-14: "launch an instance" went through instances_launch
     # and the agent never saw the warning).
     for name, args in (("instance_select", {"instance": None}), ("instances_close", {"owner": "nobody"})):
         r = b.req("tools/call", {"name": name, "arguments": args})
         res = (r or {}).get("result", {})
-        first = (res.get("content") or [{}])[0].get("text", "")
+        t0 = (res.get("content") or [{}])[0].get("text", "")
         check("VERSION the bridge's own %s carries the warning too" % name,
-              first.startswith("WARNING") and "0.0.1" in res.get("structuredContent", {}).get("version_warning", ""), res)
+              t0.startswith('{"version_warning":"') and json_equal(t0, res.get("structuredContent")) and "0.0.1" in res.get("structuredContent", {}).get("version_warning", ""), res)
     check("VERSION the warning explains tools missing from the list", "listed" in first or "list" in first, first[:400])
     fake.stop(); b.close()
     # Same version: no warning.
@@ -2041,7 +2073,7 @@ def case_version():
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     res = (r or {}).get("result", {})
     check("VERSION same version: no warning", "version_warning" not in res.get("structuredContent", {}) and
-          not (res.get("content") or [{}])[0].get("text", "").startswith("WARNING"), res)
+          "version_warning" not in (res.get("content") or [{}])[0].get("text", ""), res)
     fake.stop(); b.close()
 
 
@@ -2056,7 +2088,7 @@ def case_version_live():
     check("VERSION LIVE client launched", inst, r)
     lres = (r or {}).get("result", {})
     check("VERSION LIVE the instances_launch answer itself starts with the warning",
-          (lres.get("content") or [{}])[0].get("text", "").startswith("WARNING"), str(lres)[:300])
+          (lres.get("content") or [{}])[0].get("text", "").startswith('{"version_warning":"'), str(lres)[:300])
     time.sleep(4)
     r = b.req("tools/call", {"name": "status", "arguments": {"instance": inst} if inst else {}}, 30)
     res = (r or {}).get("result", {})
@@ -2064,7 +2096,7 @@ def case_version_live():
     sc = res.get("structuredContent", {})
     print("   module", sc.get("agent_version"), "| bridge", bridge_version(), flush=True)
     check("VERSION LIVE the result starts with the warning naming both versions",
-          first.startswith("WARNING") and str(sc.get("agent_version")) in first and bridge_version() in first, first[:300])
+          first.startswith('{"version_warning":"') and str(sc.get("agent_version")) in first and bridge_version() in first, first[:300])
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "version-live"}}, 60)
     b.close()
 

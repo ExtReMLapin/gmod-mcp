@@ -107,7 +107,7 @@ add_custom_command(
   COMMENT "Building the bridge's offline snapshot")
 
 # --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
-add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/launch_opts.cpp src/cmdline.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/launch_opts.cpp src/cmdline.cpp src/next_call.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
   src/bridge/fp7137.cpp)  # FP7137: the launch/map_load lock, see docs/FP7137.md
 target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)
@@ -140,6 +140,7 @@ add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
 add_executable(gmod-mcp-coretests tests/native/test_core.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
 target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
+target_compile_definitions(gmod-mcp-coretests PRIVATE GMOD_MCP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")  # tests/schema/results.json
 if(MSVC)
   target_compile_options(gmod-mcp-coretests PRIVATE /utf-8 /EHsc /permissive- /wd4100 /wd4996)
   target_compile_definitions(gmod-mcp-coretests PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)

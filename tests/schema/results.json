@@ -1,0 +1,116 @@
+{
+  "_comment": "Issue #3. Representative structuredContent of a SUCCESS result of every tool, written from the code paths that build it (src/tools_*.cpp, src/lua/*.lua); tests/schema/live_check.py checks the same schemas against a running game and can add 'live' cases. test_output_schemas (tests/native/test_core.cpp) validates each against the outputSchema the tool declares (src/output_schemas.cpp). Add a case when a result gains a field or a new variant.",
+  "status": [
+    {"case": "client at the main menu (menu realm only)", "result": {"instance": "client-1", "mode": "client", "agent_version": "0.3.6", "platform": "win64", "pid": 4120, "port": 27080, "coordinator": true, "coordinator_link": "coordinator", "uptime_s": 52.4, "frames": 3012, "last_tick_age_s": 0.01, "main_thread_stalled": false, "perf": {"fps": 59.8, "frametime_avg_ms": 16.7, "frametime_max_ms": 31.2, "samples": 256}, "realms": {"menu": {"available": true, "runtime": true, "generation": 1}, "client": {"available": false, "runtime": false, "generation": 0}, "server": {"available": false, "runtime": false, "generation": 0}}, "client_lock": {"client_allowed": true}, "console_capture": "spew", "tmp_dir": "D:/SteamLibrary/steamapps/common/GarrysMod/garrysmod/lua/mcpagent_tmp", "game_dir": "D:/SteamLibrary/steamapps/common/GarrysMod/garrysmod", "pending_jobs": 0, "menu": {"realm": "menu", "generation": 1, "lua_memory_kb": 5120.5, "runtime_age_s": 52.1, "fps_max": 20, "host_timescale": 1, "version": 250101, "version_str": "2025.01.01", "branch": "x86-64", "in_game": false, "loading": false, "gamemode": "sandbox"}, "map": null, "gamemode": "sandbox", "maxplayers": 1, "gmod_version": 250101, "gmod_version_str": "2025.01.01", "branch": "x86-64", "loading": false, "fps_max": 20, "host_timescale": 1, "answered_by": "client-1"}},
+    {"case": "map loaded, fields projection", "result": {"map": "gm_construct", "realms": {"menu": {"available": true, "runtime": true, "generation": 1}}, "perf": {"fps": null, "frametime_avg_ms": null, "frametime_max_ms": null, "samples": 0}, "projected": ["map", "realms", "perf"], "answered_by": "client-1"}},
+    {"case": "main thread stalled", "result": {"instance": "client-1", "mode": "client", "main_thread_stalled": true, "last_tick_age_s": 41.2, "warning": "the main thread has not run for 41 s (long load, freeze or infinite loop). game_terminate remains available.", "answered_by": "client-1"}}
+  ],
+  "lua_exec": [
+    {"case": "values and output", "result": {"values": [3, {"__type": "Vector", "x": 1, "y": 2, "z": 3}], "n": 2, "output": "hello\n", "duration_ms": 0.21, "chunk_bytes": 24, "chunkname": "=mcpagent:lua_exec", "generation": 4, "answered_by": "client-1"}},
+    {"case": "no return value, empty values", "result": {"values": [], "n": 0, "output": "", "duration_ms": 0.01, "chunk_bytes": 4, "chunkname": "=mcpagent:lua_exec", "generation": 1, "answered_by": "client-1"}},
+    {"case": "cut values", "result": {"values": [{"__type": "table", "truncated": true, "count": 90}], "n": 1, "output": "", "duration_ms": 1, "chunk_bytes": 30, "chunkname": "=mcpagent:lua_exec", "budget_s": 2, "generation": 4, "truncated": 1, "truncated_note": "some values were cut by the depth / limit / max_string you passed.", "next_call": {"tool": "lua_exec", "arguments": {"code": "return t", "realm": "server"}}, "answered_by": "client-1"}},
+    {"case": "fields projection", "result": {"values": [{"pass": 3}], "n": 1, "output": "", "duration_ms": 1, "chunk_bytes": 30, "chunkname": "=mcpagent:lua_exec", "generation": 4, "projected": ["pass"], "answered_by": "client-1"}}
+  ],
+  "lua_exec_file": [
+    {"case": "file run", "result": {"values": [], "n": 0, "output": "loaded\n", "duration_ms": 3.5, "chunk_bytes": 812, "chunkname": "@lua/mcpagent_tmp/t.lua", "generation": 4, "file": "D:/g/garrysmod/lua/mcpagent_tmp/t.lua", "answered_by": "client-1"}}
+  ],
+  "lua_reload": [
+    {"case": "two realms", "result": {"ok": true, "file": "addons/pba/lua/pba/core.lua", "chunkname": "@addons/pba/lua/pba/core.lua", "realms": {"server": {"values": [], "n": 0, "output": "", "duration_ms": 1.2, "chunk_bytes": 100, "chunkname": "@addons/pba/lua/pba/core.lua", "generation": 4}, "client": {"error": {"code": "realm_unavailable", "message": "realm client unavailable"}}}, "other_matches": ["D:/x/core.lua"], "warning": "several files match this path: the first one was run", "answered_by": "client-1"}}
+  ],
+  "lua_check": [
+    {"case": "code with a syntax error", "result": {"ok": false, "realm": "server", "checked": 1, "errors": [{"file": "code", "line": 1, "message": "unexpected symbol near '='"}], "unknown_globals": [], "globals_written": [], "answered_by": "client-1"}},
+    {"case": "folder, lists cut", "result": {"ok": true, "realm": "menu", "checked": 12, "errors": [], "unknown_globals": [{"name": "foo", "file": "lua/a.lua", "line": 3}], "globals_written": [{"name": "X", "file": "lua/a.lua", "line": 1}], "truncated": true, "notes": ["globals not checked: x"], "path": "D:/g/lua/a", "answered_by": "client-1"}}
+  ],
+  "lua_inspect": [
+    {"case": "table with a metatable", "result": {"type": "table", "value": {"a": 1}, "count": 1, "keys": [{"key": "a", "key_type": "string", "type": "number"}], "truncated": false, "metatable": {"type": "table", "name": "Player", "keys": ["__index"], "methods": ["Nick"]}, "answered_by": "client-1"}},
+    {"case": "number", "result": {"type": "number", "value": 42, "answered_by": "client-1"}}
+  ],
+  "lua_function_source": [
+    {"case": "no file", "result": {"source": "=mcpagent:lua_exec", "linedefined": 1, "lastlinedefined": 1, "matches_disk": null, "note": "defined by code that has no file", "answered_by": "client-1"}},
+    {"case": "same code", "result": {"source": "@addons/a/lua/a.lua", "linedefined": 4, "lastlinedefined": 9, "file": "D:/g/addons/a/lua/a.lua", "file_age_s": 120, "matches_disk": true, "line_on_disk": 4, "answered_by": "client-1"}}
+  ],
+  "lua_file_write": [{"case": "write", "result": {"path": "D:/g/garrysmod/lua/mcpagent_tmp/t.lua", "bytes": 17, "exec_path": "t.lua", "answered_by": "client-1"}}],
+  "lua_file_read": [{"case": "read", "result": {"path": "D:/g/garrysmod/lua/mcpagent_tmp/t.lua", "content": "return 1\n", "answered_by": "client-1"}}],
+  "lua_file_list": [{"case": "list", "result": {"dir": "D:/g/garrysmod/lua/mcpagent_tmp", "files": ["t.lua", "sub/u.lua"], "answered_by": "client-1"}}],
+  "lua_file_delete": [{"case": "delete", "result": {"deleted": "D:/g/garrysmod/lua/mcpagent_tmp/t.lua", "answered_by": "client-1"}}],
+  "lua_mount": [
+    {"case": "read the state", "result": {"lua_mount": null, "base_lua_mounted": true, "mount_hook": false, "hook_calls": 0, "hook_path_ids": ["LUA"], "search_paths": {"lsv": ["lua"], "lcl": ["lua"]}, "answered_by": "client-1"}},
+    {"case": "mount a folder", "result": {"lua_mount": "D:/dev/wt", "base_lua_mounted": true, "mount_hook": true, "hook_calls": 3, "search_paths": {"lsv": ["D:/dev/wt/lua"], "lcl": []}, "previous": null, "removed": {"MOD": 0}, "cache_emptied": true, "note": "takes effect at the next map load", "answered_by": "client-1"}}
+  ],
+  "lua_job": [
+    {"case": "async start", "result": {"job_id": "server-g3-1", "state": "running", "realm": "server", "generation": 3, "next": "lua_job_status {id: \"server-g3-1\"} polls it", "next_call": {"tool": "lua_job_status", "arguments": {"id": "server-g3-1", "wait_s": 30}}, "concurrent_jobs": [{"id": "server-g3-0", "elapsed_s": 2.1}], "answered_by": "client-1"}},
+    {"case": "finished", "result": {"job_id": "server-g3-1", "values": [12], "n": 1, "reports": [], "output": "", "frames": 31, "resumes": 31, "cpu_ms": 14.5, "elapsed_s": 1.6, "generation": 3, "reports_dropped": 2, "truncated": 1, "truncated_note": "cut", "answered_by": "client-1"}}
+  ],
+  "lua_job_status": [
+    {"case": "running", "result": {"job_id": "server-g3-1", "state": "running", "frames": 4, "elapsed_s": 0.2, "cpu_ms": 1.1, "progress": {"done": 2, "total": 10, "message": "x", "seq": 2}, "reports_count": 0, "answered_by": "client-1"}},
+    {"case": "every job", "result": {"jobs": [{"id": "server-g3-1", "state": "running", "async": true, "chunkname": "=mcpagent:job:server", "frames": 3, "elapsed_s": 0.1}], "generation": 3, "answered_by": "client-1"}},
+    {"case": "done", "result": {"job_id": "server-g3-1", "values": [], "n": 0, "reports": [], "output": "", "frames": 31, "resumes": 31, "cpu_ms": 14.5, "elapsed_s": 1.6, "generation": 3, "answered_by": "client-1"}}
+  ],
+  "lua_job_cancel": [{"case": "cancel", "result": {"job_id": "server-g3-1", "cancelled": true, "note": "its final state stays readable once with lua_job_status", "answered_by": "client-1"}}],
+  "map_list": [{"case": "filter", "result": {"maps": ["gm_construct", "gm_flatgrass"], "count": 2, "truncated": false, "filter": "gm_", "answered_by": "client-1"}}],
+  "map_load": [
+    {"case": "loaded", "result": {"map": "gm_construct", "gamemode": "sandbox", "maxplayers": 1, "server_generation": 2, "client_generation": 2, "requested_map": "gm_construct", "duration_s": 12.5, "answered_by": "client-1"}},
+    {"case": "another map than requested", "result": {"map": "gm_flatgrass", "requested_map": "gm_construct", "duration_s": 3, "warning": "the loaded map does not match the requested map", "server_generation": 2, "client_generation": 2, "waited_s": 5.5, "waited_reason": "a game process was started 1 s ago", "answered_by": "client-1"}}
+  ],
+  "disconnect": [{"case": "left the game", "result": {"disconnected": true, "was_in_game": true, "duration_s": 1.4, "realms": {"client": false, "server": false, "menu": true}, "answered_by": "client-1"}}],
+  "game_quit": [{"case": "quit", "result": {"quitting": true, "note": "clean shutdown requested; the MCP server will go away with the process", "answered_by": "client-1"}}],
+  "game_terminate": [{"case": "terminate", "result": {"terminating": true, "pid": 4120, "main_thread_stalled": true, "last_tick_age_s": 42.5, "answered_by": "client-1"}}],
+  "wait_for": [{"case": "satisfied", "result": {"satisfied": true, "elapsed_s": 0.3, "polls": 4, "value": true, "answered_by": "client-1"}}],
+  "wait_frames": [{"case": "frames", "result": {"frames": 20, "elapsed_s": 1.01, "answered_by": "client-1"}}],
+  "console_exec": [
+    {"case": "plain command", "result": {"cmd": "echo hi", "realm": "menu", "via": "menu", "output": [{"seq": 41, "t": 12.5, "level": "message", "text": "hi"}], "next_cursor": 42, "output_note": "console lines printed while the command ran", "answered_by": "client-1"}},
+    {"case": "convar, two statements, connect", "result": {"cmd": "fps_max 60; connect 1.2.3.4", "realm": "menu", "via": "mixed", "statements": [{"cmd": "fps_max 60", "via": "menu"}], "blocked_in_lua": true, "connect_result": {"status": "pending", "note": "no outcome"}, "output": [], "next_cursor": 5, "output_note": "x", "convars": {"fps_max": {"value": "60", "number": 60, "requested": "60", "warning": "FCVAR_ARCHIVE"}}, "answered_by": "client-1"}}
+  ],
+  "console_wait": [{"case": "matched", "result": {"matched": 1, "lines": [{"seq": 9, "t": 4.2, "level": "message", "text": "done"}], "next_cursor": 10, "waited_s": 0.8, "lost": 3, "answered_by": "client-1"}}],
+  "console_read": [{"case": "last lines", "result": {"lines": [{"seq": 1, "t": 0.5, "level": "log", "text": "x"}], "next_cursor": 2, "lost": 0, "oldest": 0, "capture": "spew", "answered_by": "client-1"}}],
+  "console_buffer": [{"case": "size", "result": {"capacity": 20000, "cursor": 311, "answered_by": "client-1"}}],
+  "errors_since": [{"case": "one error", "result": {"errors": [{"seq": 1, "realm": "server", "message": "x", "stack": [{"file": "a.lua", "line": 3, "function": "f"}], "addon": "a", "addon_id": "123", "time": 5.5, "map_load": 2, "map": "gm_construct"}], "next_cursor": 2, "lost": 0, "map_load": 2, "map": "gm_construct", "answered_by": "client-1"}}, {"case": "no map yet", "result": {"errors": [], "next_cursor": 0, "map_load": 0, "map": "", "answered_by": "client-1"}}],
+  "errors_clear": [{"case": "clear", "result": {"cleared": true, "next_cursor": 7, "answered_by": "client-1"}}],
+  "convar_get": [
+    {"case": "plain", "result": {"name": "sv_gravity", "flags": 8592, "flag_names": ["NOTIFY", "REPLICATED"], "help": "World gravity.", "default": "600", "value": "600", "number": 600, "min": 0, "answered_by": "client-1"}},
+    {"case": "protected", "result": {"name": "secret", "flags": 32, "flag_names": ["PROTECTED"], "help": "", "default": "", "value": null, "protected": true, "answered_by": "client-1"}}
+  ],
+  "convar_set": [{"case": "set", "result": {"name": "sv_gravity", "flags": 8592, "flag_names": ["NOTIFY", "REPLICATED"], "help": "", "default": "600", "value": "300", "number": 300, "previous": "600", "via": "engine", "note": "ignored when set from Lua: set through the engine console", "answered_by": "client-1"}}],
+  "concommand_list": [{"case": "with engine commands", "result": {"lua_commands": ["pba_menu"], "realm": "menu", "engine_commands": ["sv_x"], "engine_convars": ["sv_y"], "answered_by": "client-1"}}],
+  "ents_find": [
+    {"case": "near a point", "result": {"entities": [{"id": 57, "class": "func_door", "model": "*12", "name": "door1", "pos": [1, 2, 3], "ang": [0, 90, 0], "distance": 4.5}, {"id": 1, "class": "player", "pos": [0, 0, 0], "ang": [0, 0, 0], "nick": "Bob"}], "count": 2, "truncated": false, "answered_by": "client-1"}},
+    {"case": "none", "result": {"entities": [], "count": 0, "truncated": false, "answered_by": "client-1"}}
+  ],
+  "ent_info": [{"case": "door", "result": {"id": 57, "class": "func_door", "model": "*12", "name": "door1", "pos": [1, 2, 3], "ang": [0, 90, 0], "valid": true, "velocity": [0, 0, 0], "health": 0, "max_health": 0, "solid": 6, "movetype": 7, "collision_group": 0, "obb": {"mins": [0, 0, 0], "maxs": [1, 1, 1]}, "parent": null, "owner": 3, "nw_vars": {}, "table": {}, "keyvalues": {"speed": "100"}, "door": {"m_eDoorState": 0, "m_toggle_state": 1, "state": "closed"}, "answered_by": "client-1"}}],
+  "ent_spawn": [{"case": "spawned", "result": {"id": 120, "class": "prop_physics", "pos": [0, 0, 100], "ang": [0, 0, 0], "model": "models/props_c17/oildrum001.mdl", "answered_by": "client-1"}}],
+  "ent_remove": [{"case": "removed", "result": {"removed": 120, "answered_by": "client-1"}}],
+  "ent_fire": [{"case": "fired", "result": {"fired": "Open", "id": 57, "param": "", "delay": 0, "answered_by": "client-1"}}],
+  "players_list": [{"case": "one player", "result": {"players": [{"id": 1, "class": "player", "model": "models/player/kleiner.mdl", "nick": "Bob", "pos": [0, 0, 0], "ang": [0, 0, 0], "userid": 2, "steamid": "STEAM_0:0:1", "bot": false, "alive": true, "health": 100, "eye_pos": [0, 0, 64], "eye_ang": [0, 0, 0], "noclip": false, "god": false}], "count": 1, "maxplayers": 1, "answered_by": "client-1"}}],
+  "player_set": [{"case": "moved", "result": {"id": 1, "class": "player", "pos": [0, 0, 64], "ang": [0, 0, 0], "nick": "Bob", "eye_ang": [0, 90, 0], "noclip": true, "god": false, "answered_by": "client-1"}}],
+  "bots_add": [{"case": "added", "result": {"added": [{"id": 2, "class": "player", "pos": [0, 0, 0], "ang": [0, 0, 0], "nick": "mcpbot_1"}], "count": 1, "answered_by": "client-1"}}],
+  "trace": [
+    {"case": "hit the world", "result": {"mat_type": 68, "mat_name": "MAT_CONCRETE", "surfaceprop": "concrete", "surfaceprop_id": 1, "texture": "CONCRETE/CONCRETEFLOOR001A", "entity": {"id": 0, "class": "worldspawn"}, "hit": true, "hit_world": true, "hit_sky": false, "hit_nodraw": false, "pos": [0, 0, 0], "normal": [0, 0, 1], "fraction": 0.5, "start_solid": false, "all_solid": false, "fraction_left_solid": 0, "hitgroup": 0, "physics_bone": 0, "distance": 100.5, "answered_by": "client-1"}},
+    {"case": "no hit", "result": {"mat_type": 0, "mat_name": null, "surfaceprop": "default", "surfaceprop_id": 0, "texture": "**empty**", "entity": null, "hit": false, "hit_world": false, "hit_sky": false, "hit_nodraw": false, "pos": [0, 0, 100], "normal": [0, 0, 0], "fraction": 1, "start_solid": false, "all_solid": false, "fraction_left_solid": 0, "hitgroup": 0, "physics_bone": 0, "distance": 100, "answered_by": "client-1"}}
+  ],
+  "trace_through": [{"case": "one wall", "result": {"surfaces": [{"entry": [0, 0, 0], "entry_normal": [0, 0, 1], "entry_surface": {"mat_type": 68}, "distance_from_start": 10, "exit": [0, 0, 5], "exit_normal": [0, 0, -1], "exit_surface": null, "thickness": 5}], "count": 1, "total_thickness": 5, "distance": 100, "truncated": false, "answered_by": "client-1"}}],
+  "screenshot": [{"case": "jpeg", "result": {"format": "jpeg", "w": 640, "h": 360, "bytes": 31241, "answered_by": "client-1"}}],
+  "screenshot_from": [{"case": "calcview", "result": {"format": "jpeg", "w": 1280, "h": 720, "bytes": 80211, "method": "calcview", "camera_restored": true, "answered_by": "client-1"}}],
+  "debug_draw": [{"case": "added", "result": {"added": 3, "active": 3, "expire_in_s": 30, "answered_by": "client-1"}}],
+  "debug_clear": [{"case": "cleared", "result": {"cleared": 3, "answered_by": "client-1"}}],
+  "sound_emit": [{"case": "at a position", "result": {"emitted": "ambient/alarms/klaxon1.wav", "pos": [0, 0, 64], "level": 90, "pitch": 100, "volume": 1, "dsp": 0, "answered_by": "client-1"}}, {"case": "on an entity", "result": {"emitted": "a.wav", "ent": 57, "level": 75, "pitch": 100, "volume": 1, "dsp": 0, "answered_by": "client-1"}}],
+  "sound_trace": [{"case": "nothing played", "result": {"event": "sound", "calls": [], "recorded": 0, "total_calls": 0, "capped": false, "duration_s": 5, "tracer_removed": true, "answered_by": "client-1"}}],
+  "hook_trace": [{"case": "one call", "result": {"event": "PlayerSay", "calls": [{"t": 0.4, "args": [{"__type": "Player", "id": 1}, "hi"]}], "recorded": 1, "total_calls": 1, "capped": false, "duration_s": 10, "tracer_removed": true, "answered_by": "client-1"}}],
+  "perf_snapshot": [{"case": "menu and server", "result": {"frame": {"fps": 59.9, "frametime_avg_ms": 16.7, "frametime_max_ms": 20, "samples": 256}, "last_tick_age_s": 0.01, "realms": {"menu": {"lua_memory_kb": 1024}, "server": {"lua_memory_kb": 2048, "entity_count": 120}}, "answered_by": "client-1"}}, {"case": "no frames yet", "result": {"frame": {"fps": null, "frametime_avg_ms": null, "frametime_max_ms": null, "samples": 0}, "last_tick_age_s": 0, "realms": {}, "answered_by": "client-1"}}],
+  "api_search": [{"case": "match", "result": {"pattern": "Entity:Emit*", "results": [{"name": "Entity:EmitSound", "kind": "method", "realms": ["client", "server"], "wiki_page": "https://wiki.facepunch.com/gmod/Entity:EmitSound"}], "count": 1, "realms_searched": {"menu": "realm_unavailable", "server": "ok"}, "wiki_index": "cached", "answered_by": "client-1"}}],
+  "wiki_search": [{"case": "match", "result": {"query": "TraceLine", "results": [{"page": "util.TraceLine", "score": 100, "url": "https://wiki.facepunch.com/gmod/util.TraceLine"}], "total_matches": 1, "cache": "fresh", "answered_by": "client-1"}}],
+  "wiki_page": [{"case": "text", "result": {"name": "Entity:EmitSound", "format": "markdown", "url": "https://wiki.facepunch.com/gmod/Entity:EmitSound", "cache": "fresh", "content": "# EmitSound", "answered_by": "client-1"}}, {"case": "json", "result": {"name": "Entity:EmitSound", "format": "json", "url": "u", "cache": "stale", "page": {"title": "x"}, "answered_by": "client-1"}}],
+  "events_wait": [{"case": "timed out", "result": {"events": [], "next_cursor": 12, "lost": 0, "timed_out": true, "answered_by": "client-1"}}, {"case": "an event", "result": {"events": [{"seq": 12, "time": 3.4, "type": "map_loaded", "data": {"map": "gm_construct"}}], "next_cursor": 13, "lost": 0, "timed_out": false, "answered_by": "client-1"}}],
+  "reports_read": [{"case": "items", "result": {"channel": "scan", "items": [{"seq": 1, "time": 1.5, "realm": "server", "value": {"hits": 3}}], "next_cursor": 2, "lost": 0, "timed_out": false, "answered_by": "client-1"}}],
+  "reports_channels": [{"case": "channels", "result": {"channels": [{"channel": "scan", "count": 4}], "answered_by": "client-1"}}],
+  "reports_clear": [{"case": "all", "result": {"cleared": "*", "answered_by": "client-1"}}],
+  "hook_list": [
+    {"case": "every event", "result": {"hooks": {"Think": [{"id": "pba", "source": "lua/a.lua", "line": 3, "what": "Lua"}]}, "count": 1, "answered_by": "client-1"}},
+    {"case": "one event", "result": {"hooks": {}, "count": 0, "event": "Thinkk", "known": false, "gamemode_function": null, "answered_by": "client-1"}}
+  ],
+  "perf_hook_cost": [{"case": "one function", "result": {"event": "Think", "duration_s": 10, "functions": [{"id": "pba", "calls": 200, "total_ms": 12.5, "avg_ms": 0.06, "max_ms": 0.4, "src": {"source": "lua/a.lua", "line": 3}}], "restored": true, "answered_by": "client-1"}}],
+  "tests_run": [{"case": "one file", "result": {"files": [{"file": "tests/selftest_pass.lua", "group": "pass", "cases": [{"name": "a", "status": "pass", "duration_ms": 0.1}]}], "totals": {"pass": 1, "fail": 0, "error": 0, "skip": 0}, "ok": true, "answered_by": "client-1"}}],
+  "instances_list": [
+    {"case": "this game", "result": {"instances": [{"instance": "client-1", "mode": "client", "pid": 4120, "port": 27080, "self": true, "state": "running", "role": "coordinator", "heartbeat_age_s": 0}], "coordinator": true, "answered_by": "client-1"}},
+    {"case": "bridge, game closed", "result": {"instances": [], "note": "no game instance is running: nothing answers on 127.0.0.1:27080 (connection refused)."}}
+  ]
+}

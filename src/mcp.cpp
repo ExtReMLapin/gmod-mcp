@@ -1,4 +1,6 @@
 #include "mcp.h"
+#include "next_call.h"
+#include "output_schemas.h"
 
 #include <algorithm>
 #include <chrono>
@@ -56,7 +58,10 @@ void register_tool(Tool t) {
     if (t.annotations.is_null()) t.annotations = json::object();
     t.annotations["title"] = t.title;
     if (!t.annotations.contains("openWorldHint")) t.annotations["openWorldHint"] = false;
-    if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
+    if (t.output_schema.is_null()) {
+        t.output_schema = output_schema_for(t.name);  // the declared shape (output_schemas.cpp), else the permissive default
+        if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
+    }
     t.validator = std::make_shared<nlohmann::json_schema::json_validator>();
     t.validator->set_root_schema(s);
     g_index[t.name] = g_tools.size();
@@ -112,6 +117,21 @@ static bool is_subsequence(const std::string &needle, const std::string &hay) {
     return i == needle.size();
 }
 
+// The accepted argument closest to an unknown one ("" when none is close).
+static std::string closest_argument(const json &props, const std::string &u) {
+    std::string best;
+    size_t best_d = 4;
+    for (auto p = props.begin(); p != props.end(); ++p) {
+        const std::string &k = p.key();
+        size_t d = edit_distance(u, k);
+        if (k.find(u) != std::string::npos || u.find(k) != std::string::npos) d = std::min<size_t>(d, 1);
+        // Abbreviation: the accepted name's letters appear in order in the unknown one ("cmd" in "command").
+        if (k.size() >= 2 && is_subsequence(k, u)) d = std::min<size_t>(d, 2);
+        if (d < best_d) best_d = d, best = k;
+    }
+    return best;
+}
+
 // The validator's message alone ("unexpected instance additional property") rarely tells an agent what to send: name
 // the unknown and missing arguments, suggest the closest accepted name, and list what the tool accepts.
 static std::string argument_hint(const Tool &t, const json &value) {
@@ -120,16 +140,7 @@ static std::string argument_hint(const Tool &t, const json &value) {
     if (value.is_object()) {
         for (auto it = value.begin(); it != value.end(); ++it) {
             if (props.contains(it.key())) continue;
-            std::string best;
-            size_t best_d = 4;
-            for (auto p = props.begin(); p != props.end(); ++p) {
-                const std::string &k = p.key(), &u = it.key();
-                size_t d = edit_distance(u, k);
-                if (k.find(u) != std::string::npos || u.find(k) != std::string::npos) d = std::min<size_t>(d, 1);
-                // Abbreviation: the accepted name's letters appear in order in the unknown one ("cmd" in "command").
-                if (k.size() >= 2 && is_subsequence(k, u)) d = std::min<size_t>(d, 2);
-                if (d < best_d) best_d = d, best = k;
-            }
+            std::string best = closest_argument(props, it.key());
             out += " Unknown argument '" + it.key() + "'" + (best.empty() ? "." : " (did you mean '" + best + "'?).");
         }
     }
@@ -144,6 +155,31 @@ static std::string argument_hint(const Tool &t, const json &value) {
     }
     out += " Accepted arguments: " + list + ".";
     return out;
+}
+
+// The call with each unknown argument renamed to its closest accepted name, when that makes it valid (else null).
+static json corrected_call(const Tool &t, const json &value) {
+    if (!value.is_object()) return nullptr;
+    const json &props = t.input_schema["properties"];
+    json fixed = json::object();
+    bool renamed = false;
+    for (auto it = value.begin(); it != value.end(); ++it) {
+        if (props.contains(it.key())) {
+            fixed[it.key()] = it.value();
+            continue;
+        }
+        std::string best = closest_argument(props, it.key());
+        if (best.empty() || value.contains(best) || fixed.contains(best)) return nullptr;
+        fixed[best] = it.value();
+        renamed = true;
+    }
+    if (!renamed) return nullptr;
+    try {
+        t.validator->validate(fixed);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+    return next_call::make(t.name, fixed);
 }
 
 static std::string validate_tool(const Tool &t, const json &value) {
@@ -196,12 +232,25 @@ bool instance_independent(const std::string &tool) {
     return false;
 }
 
+static json call_tool_raw(const std::string &name, const json &args_in);
+
+// The result of a tool call, with `next_call` where its hint names a next step (see next_call.h).
 json call_tool(const std::string &name, const json &args_in) {
+    json r = call_tool_raw(name, args_in);
+    next_call::annotate(r, name, args_in.is_null() ? json::object() : args_in);
+    return r;
+}
+
+static json call_tool_raw(const std::string &name, const json &args_in) {
     const Tool *t = find_tool(name);
     if (!t) return to_call_result(agent::err("unknown_tool", "unknown tool: " + name));
     json args = args_in.is_null() ? json::object() : args_in;
     std::string verr = validate_tool(*t, args);
-    if (!verr.empty()) return to_call_result(agent::err("invalid_params", verr));
+    if (!verr.empty()) {
+        json bad = to_call_result(agent::err("invalid_params", verr));
+        next_call::attach(bad, corrected_call(*t, args));
+        return bad;
+    }
     if (args.contains("instance") && !t->local_only) {
         std::string inst = args["instance"].get<std::string>();
         args.erase("instance");
