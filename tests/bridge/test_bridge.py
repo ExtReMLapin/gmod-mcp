@@ -580,7 +580,7 @@ def case_portconflict():
     foreign.stop(); game.stop(); game = FakeServer(port, version=bridge_version())
     time.sleep(2.5)
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
-    check("PORT_CONFLICT the port is freed and taken by the game: calls work again", "port_conflict" not in json.dumps(r) and "echo" in json.dumps(r), r)
+    check("PORT_CONFLICT the port is freed and taken by the game: calls work again", "port_conflict" not in json.dumps(r) and "error" not in (r or {}).get("result", {}).get("structuredContent", {"error": 1}) and not (r or {}).get("result", {}).get("isError"), r)
     b.close(); game.stop()
 
 
