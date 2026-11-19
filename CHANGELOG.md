@@ -4,6 +4,10 @@
 
 ### Features
 
+- **`errors_since {group_by: "message"}`** (issue #11). One entry per distinct message (`message`, `count`, `first_seq`,
+  `first_time`, `last_seq`, `last_time`, `realms`, `map`, `stack`, `addon`), most frequent first, instead of up to 2000
+  mostly identical errors; `limit` caps the groups (`groups_total` counts them) and `next_cursor` covers every error read.
+  The default output is unchanged.
 - **The mounted Lua folder tells which copy ran, what is out of date, and reloads on demand** (issue #9).
   `lua_function_source` and `lua_inspect` (on a function) return `from_mount`, the real `disk` path, `mount_has_file`
   and `provenance` (`mount_in_place_at_load`, `reloaded_from_mount`, `installed`, `not_on_disk`, `no_file`): the engine names a

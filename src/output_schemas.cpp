@@ -133,7 +133,9 @@ json build(const std::string &tool) {
         s["console_read"] = obj({{"lines", arr(console_line())}, {"next_cursor", N}, {"lost", N}, {"oldest", N}, {"capture", S}},
                                 {"lines", "next_cursor"});
         s["console_buffer"] = obj({{"capacity", N}, {"cursor", N}}, {"capacity", "cursor"});
-        s["errors_since"] = obj({{"errors", ANYS}, {"next_cursor", N}, {"lost", N}, {"map_load", N}, {"map", ANY}}, {"errors", "next_cursor"});
+        // `errors` in the default output, `groups` + `groups_total` with group_by (issue #11): neither is required.
+        s["errors_since"] = obj({{"errors", ANYS}, {"groups", ANYS}, {"groups_total", N}, {"next_cursor", N}, {"lost", N}, {"map_load", N}, {"map", ANY}},
+                                {"next_cursor"});
         s["errors_clear"] = obj({{"cleared", B}, {"next_cursor", N}}, {"cleared", "next_cursor"});
         json convar = obj({{"name", S}, {"flags", N}, {"flag_names", STRS}, {"help", S}, {"default", S}, {"value", NS}, {"number", N},
                            {"protected", B}, {"min", N}, {"max", N}, {"previous", NS}, {"via", S}},

@@ -173,6 +173,43 @@ static void test_errors_filter_before_limit() {
     CHECK(rc["errors"].size() == 1 && rc["errors"][0].value("message", "") == "current 2");
 }
 
+// Issue #11: errors_since {group_by: "message"} returns one entry per distinct message (count, first and last occurrence,
+// most frequent first) instead of up to 2000 mostly identical errors; without group_by the output is unchanged.
+static void test_errors_group_by_message() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_g");
+    console::push_error(json{{"realm", "server"}, {"message", "rare"}, {"time", 1.0}});
+    for (int i = 0; i < 5; ++i) console::push_error(json{{"realm", i == 4 ? "client" : "server"}, {"message", "spam"}, {"time", 2.0 + i}});
+    console::push_error(json{{"realm", "server"}, {"message", "twice"}, {"time", 10.0}});
+    console::push_error(json{{"realm", "server"}, {"message", "twice"}, {"time", 11.0}});
+    json plain = mcp::call_tool("errors_since", json{{"cursor", 0}}).value("structuredContent", json::object());
+    CHECK(plain["errors"].size() == 8 && !plain.contains("groups"));  // default output unchanged
+    json r = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "message"}});
+    CHECK(!r.value("isError", true));
+    json sc = r.value("structuredContent", json::object());
+    CHECK(sc.contains("groups") && sc["groups"].is_array() && sc["groups"].size() == 3);
+    if (!(sc.contains("groups") && sc["groups"].size() == 3)) return;
+    const json &g0 = sc["groups"][0], &g1 = sc["groups"][1], &g2 = sc["groups"][2];
+    CHECK(g0.value("message", "") == "spam" && g0.value("count", 0) == 5);  // most frequent first
+    CHECK(g1.value("message", "") == "twice" && g1.value("count", 0) == 2);
+    CHECK(g2.value("message", "") == "rare" && g2.value("count", 0) == 1);
+    CHECK(g0.value("last_seq", 0) == g0.value("first_seq", 0) + 4);  // seq of first and last occurrence
+    CHECK(g0.value("first_time", 0.0) == 2.0 && g0.value("last_time", 0.0) == 6.0);
+    CHECK(g1.value("first_time", 0.0) == 10.0 && g1.value("last_time", 0.0) == 11.0);
+    CHECK(g2.value("first_seq", 1) == g2.value("last_seq", 2) && g2.value("count", 0) == 1);
+    CHECK(g0.contains("realms") && g0["realms"].size() == 2 && g1["realms"].size() == 1);
+    CHECK(g0.value("map", "") == "gm_g");
+    CHECK(sc.value("next_cursor", 0) == plain.value("next_cursor", -1) && sc.contains("map_load"));
+    // The filters still apply before grouping, and `limit` caps the groups (the cut is reported).
+    json rc = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "message"}, {"realm", "client"}}).value("structuredContent", json::object());
+    CHECK(rc["groups"].size() == 1 && rc["groups"][0].value("count", 0) == 1);
+    json rl = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "message"}, {"limit", 2}}).value("structuredContent", json::object());
+    CHECK(rl["groups"].size() == 2 && rl.value("groups_total", 0) == 3);
+    // Any other group_by value is refused by the schema.
+    json bad = mcp::call_tool("errors_since", json{{"cursor", 0}, {"group_by", "realm"}});
+    CHECK(bad.value("isError", false));
+}
+
 static json errs_current(const char *realm = nullptr) {
     json a{{"cursor", 0}, {"since_map_load", true}};
     if (realm) a["realm"] = realm;
@@ -1994,6 +2031,7 @@ int main(int argc, char **argv) {
     test_console_wait();
     test_errors_map_tags();
     test_errors_filter_before_limit();
+    test_errors_group_by_message();
     test_errors_load_stamp_order();
     test_small_b6();
     test_srcds_error_parsing();
