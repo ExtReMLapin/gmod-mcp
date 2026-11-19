@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **A foreign program on the base port is no longer reported as a stopped game or a token problem** (issue #5). When
+  another program held port 27080, the tools failed with `the game answered HTTP 403 without a JSON-RPC response`, the
+  server instructions said the game was not running, the game's log blamed the token and the skill took any HTTP answer
+  for a running game. Now the module signs every HTTP answer with an `X-Gmod-Mcp` header (modules before this version are
+  recognised by the JSON body of their 401). The bridge answers `port_conflict` (tool errors, server instructions,
+  `instances_list` note) when the base port answers without that signature: it names the port, how to find the program
+  (`Get-NetTCPConnection -LocalPort`, `ss -ltnp`) and `GMOD_MCP_PORT`, and looks in the background for a gmod-mcp on the
+  next 15 ports to name the value to set. A gmod-mcp 401 stays "rejected the token". In the module, a coordinator link
+  to a foreign program is `foreign` in `status` (`coordinator_link`) with a log line saying the port is held by another
+  program; `refused` (token) is only for a real gmod-mcp coordinator. The skill checks for `401` plus the header, and
+  explains how to find and handle the program.
+
 ## 0.3.6
 
 Guards against an engine crash when a game starts while another finishes a map load (Garry's Mod issue 7137),
