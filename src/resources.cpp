@@ -272,10 +272,17 @@ ended normally: quit, closed or killed on request) and `client_crashed` / `serve
 ## Reading results
 Every result is one JSON object, sent twice with the same content: `structuredContent` and one text block. Some clients show
 the model only `structuredContent` on success and only the text on an error (`isError: true`), so a hint is always a field
-of that JSON, never prose around it. Every successful result has `answered_by` (the instance that answered). The hint
+of that JSON, never prose around it. Every successful result of the game has `answered_by` (the instance that answered). The hint
 fields, all plain sentences for you, present only when they apply:
 - `note`: how to read this result (a caveat, what a value means). `warning`: something is wrong or risky now and what to do.
-- `next`: the call that goes on (`lua_job` start: poll with `lua_job_status`; `instances_list`: how to pick an instance).
+- `next`: the call that goes on, as a sentence (`lua_job` start: poll with `lua_job_status`; `instances_list`: how to pick an instance).
+- `next_call`: the same kind of hint as data, `{tool, arguments?, after_s?}`: the call to make next (wait `after_s` seconds first).
+  In an error it is `error.next_call`. It is a suggestion, always next to its prose: check it fits what you are doing. Given for
+  `realm_unavailable` (map_load), `main_thread_timeout` (status), `ambiguous_instance` (instances_list), `client_crashed` and
+  `instance_gone` (instances_launch), `instance_unreachable` (status, later), `budget_exceeded` (the code as a lua_job), a refused
+  launch/map load (`launch_in_progress`, `map_load_in_progress`: the same call later with a larger timeout_s), an argument typo
+  (`invalid_params`: the corrected call), a started `lua_job` (lua_job_status), cut values (the call without the limits) and a
+  wrong `lua_mount` on a launched client.
 - `truncated_note`: values were cut by `depth`/`limit`/`max_string`; they are marked `__type = "truncated"`; raise the limit.
 - `output_note`: the console lines in `output` are shared with the game; `fps_note`: a test client runs at most 20 fps.
 - `version_warning`: the module in the game and the Claude Code plugin have different versions; tell the user.

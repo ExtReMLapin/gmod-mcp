@@ -866,6 +866,10 @@ def case_lua_mount_verify():
     m = inst.get("lua_mount") or {}
     check("LUA_MOUNT_VERIFY the game has no mount: not active, isError, warning names the instance",
           res.get("isError") and m.get("active") is False and m.get("requested") == wt and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    # Issue #3: the fix named in the warning is also data.
+    check("LUA_MOUNT_VERIFY (issue 3) not active: next_call is lua_mount {path, instance} for the client that lacks it",
+          sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": wt, "instance": inst.get("instance")}}
+          and json_equal(res["content"][0]["text"], sc), sc.get("next_call"))
     # 3. another folder mounted: not active.
     answers["now"] = lambda a: {"lua_mount": "D:\\other", "base_lua_mounted": True}
     res, sc = launch(wt)
@@ -882,6 +886,8 @@ def case_lua_mount_verify():
     res, sc = launch(wt)
     m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
     check("LUA_MOUNT_VERIFY base Lua missing: isError and warning", res.get("isError") and m.get("base_lua_mounted") is False and "base" in sc.get("warning", "").lower(), sc)
+    check("LUA_MOUNT_VERIFY (issue 3) base Lua missing: next_call removes the mount (path null) from that client",
+          sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": None, "instance": ((sc.get("instances") or [{}])[0]).get("instance")}}, sc.get("next_call"))
     # 6. no mount requested: the game is not asked.
     n = len(srv.lua_mount_calls)
     answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}
@@ -1067,6 +1073,11 @@ def case_fp7137():
     check("FP7137 a wait longer than timeout_s fails with launch_in_progress and waited_s",
           res.get("isError") and sc.get("error", {}).get("code") == "launch_in_progress" and 4 <= sc.get("waited_s", 0) <= 9 and time.time() - t1 < 12, sc)
     check("FP7137 ... and the game was never asked", all(m[0] != "gm_never" for m in srv.map_log), srv.map_log)
+    # Issue #3: the retry is data too: the same call a little later, with more room to wait (and the text stays the JSON).
+    nc = sc.get("error", {}).get("next_call", {})
+    check("FP7137 (issue 3) launch_in_progress carries next_call: the same map_load, after_s, a larger timeout_s",
+          nc.get("tool") == "map_load" and nc.get("arguments", {}).get("map") == "gm_never" and nc.get("arguments", {}).get("timeout_s", 0) > 5
+          and nc.get("after_s", 0) > 0 and json_equal(res["content"][0]["text"], sc), nc)
     # 3. The bridge that held the lock is gone (pid does not exist), expiry far away: no deadlock, no wait.
     fp_seed(env, [("L", fp_dead_pid(), 3600, "launch"), ("M", fp_dead_pid(), 3600, "map:ghost")])
     res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_b", "timeout_s": 30}, 30), 10)
@@ -1161,6 +1172,10 @@ def case_fp7137():
     res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
     check("FP7137 a launch blocked past timeout_s fails with map_load_in_progress and waited_s", res_a.get("isError") and sc_a.get("error", {}).get("code") == "map_load_in_progress" and 8 <= sc_a.get("waited_s", 0) <= 14, sc_a)
     check("FP7137 ... and no game was started", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    nc = sc_a.get("error", {}).get("next_call", {})
+    check("FP7137 (issue 3) map_load_in_progress carries next_call: the same instances_launch, after_s, a larger timeout_s",
+          nc.get("tool") == "instances_launch" and nc.get("arguments", {}).get("count") == launch_args().get("count") and nc.get("arguments", {}).get("timeout_s", 0) > 10
+          and nc.get("after_s", 0) > 0 and json_equal(res_a["content"][0]["text"], sc_a), nc)
     a.close(); b.close(); srv.stop()
     # 11. Kill switch: the same two bridges, no wait either way.
     port, env, srv = fp_setup(workaround="0", hold={"*": 3.0})

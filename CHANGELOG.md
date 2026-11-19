@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Hints are data as well as prose** (issue #3). Where a hint names the next call, the result also carries it as
+  `next_call: {tool, arguments?, after_s?}` (inside `error` for an error), next to the unchanged prose: a missing realm
+  (`map_load`), a frozen main thread (`status`), a crashed or ended game (`instances_launch`), a launch or map load refused
+  while another game starts or loads (the same call, later, with a larger `timeout_s`), an argument typo (the corrected call),
+  a started `lua_job` (`lua_job_status`), cut values (the call without the limits), a `lua_mount` a launched client lacks. In
+  an offline eval (14 payloads, haiku and sonnet, 3 runs) the first call the model made was the right one 83-86 % of the time
+  without it and 93-100 % with it, at about 22 more tokens per payload (`tests/eval/hint_eval.py`).
+- The guide has a "Reading results" section: where hints live and what each hint field means.
+
+### Fixes
+
+- **A call with the game not running answers in the module's error shape.** `game_not_running` is now
+  `{"error": {code, message, details: {host, port, reason}}}` as the only text block and as `structuredContent` (it was prose
+  next to the JSON). The version-mismatch warning is a field of the result's JSON (first key of the text) instead of a prose
+  block in front of it, so the text stays the JSON of `structuredContent` (what code-mode hosts parse).
+
 ## 0.3.6
 
 Guards against an engine crash when a game starts while another finishes a map load (Garry's Mod issue 7137),

@@ -28,6 +28,7 @@
 #include "installer.h"
 #include "crashinfo.h"
 #include "mcp.h"
+#include "next_call.h"
 #include "lua_mount.h"
 #include "realms.h"
 #include "resources.h"
@@ -974,14 +975,81 @@ static void test_guide_result_conventions() {
     std::string text = g.is_object() && g.contains("text") ? g["text"].get<std::string>() : "";
     CHECK(text.find("## Reading results") != std::string::npos);
     for (const char *field : {"structuredContent", "isError", "note", "warning", "next", "truncated_note", "fps_note",
-                              "output_note", "version_warning", "waited_s", "game_not_running", "answered_by"})
+                              "output_note", "version_warning", "waited_s", "game_not_running", "answered_by", "next_call",
+                              "after_s"})
         CHECK(text.find(field) != std::string::npos);
+}
+
+// Issue #3: the hints that name a next call also give it as data (`next_call`), next to the prose. Each case is a result
+// as the module builds it; the expected next_call is what the eval in tests/eval/hint_eval.py showed the model.
+static json call_result(json sc, bool is_error) {
+    return json{{"content", json::array({json{{"type", "text"}, {"text", sc.dump()}}})}, {"structuredContent", std::move(sc)}, {"isError", is_error}};
+}
+static json err_result(const std::string &code, const std::string &message, json details = nullptr) {
+    json e{{"code", code}, {"message", message}};
+    if (!details.is_null()) e["details"] = std::move(details);
+    return call_result(json{{"error", e}, {"answered_by", "client-1"}}, true);
+}
+static json next_of(json r, const std::string &tool, const json &args) {
+    next_call::annotate(r, tool, args);
+    const json &sc = r["structuredContent"];
+    bool text_ok = json::parse(r["content"][0]["text"].get<std::string>()) == sc;  // text stays the JSON of structuredContent
+    CHECK(text_ok);
+    if (r.value("isError", false)) return sc["error"].value("next_call", json());
+    return sc.value("next_call", json());
+}
+static void test_next_call() {
+    // A realm that does not exist yet: load a map (the call's instance is kept).
+    CHECK(next_of(err_result("realm_unavailable", "realm server unavailable (not loaded)"), "players_list", json{{"realm", "server"}}) ==
+          (json{{"tool", "map_load"}}));
+    CHECK(next_of(err_result("realm_unavailable", "realm client unavailable"), "ents_find", json{{"instance", "client-2"}}) ==
+          (json{{"tool", "map_load"}, {"arguments", {{"instance", "client-2"}}}}));
+    // The main thread did not answer: look at the status.
+    CHECK(next_of(err_result("main_thread_timeout", "x", json{{"timeout_s", 60}}), "lua_exec", json{{"code", "x"}}) == (json{{"tool", "status"}}));
+    // Several instances share the endpoint.
+    CHECK(next_of(err_result("ambiguous_instance", "x", json{{"instances", json::array({"a (this one)", "b"})}}), "lua_exec", json::object()) ==
+          (json{{"tool", "instances_list"}}));
+    // A game crashed or ended: relaunch a client (not a dedicated server).
+    CHECK(next_of(err_result("client_crashed", "x", json{{"instance", "client-2"}}), "tests_run", json{{"instance", "client-2"}}) ==
+          (json{{"tool", "instances_launch"}, {"arguments", {{"count", 1}}}}));
+    CHECK(next_of(err_result("instance_gone", "x"), "status", json{{"instance", "client-2"}}) == (json{{"tool", "instances_launch"}, {"arguments", {{"count", 1}}}}));
+    CHECK(next_of(err_result("server_crashed", "x"), "status", json{{"instance", "srv"}}).is_null());
+    // A game that does not answer right after a launch: the same status, a little later.
+    CHECK(next_of(err_result("instance_unreachable", "x"), "status", json{{"instance", "client-2"}}) ==
+          (json{{"tool", "status"}, {"arguments", {{"instance", "client-2"}}}, {"after_s", 10}}));
+    // A loop that used its budget: the same code as a job.
+    CHECK(next_of(err_result("budget_exceeded", "x"), "lua_exec", json{{"code", "return 1"}, {"realm", "server"}, {"budget", 0.5}}) ==
+          (json{{"tool", "lua_job"}, {"arguments", {{"code", "return 1"}, {"realm", "server"}, {"async", true}}}}));
+    // Errors with no obvious next step get nothing, and a success without a hint is untouched.
+    CHECK(next_of(err_result("not_found", "x"), "lua_file_read", json::object()).is_null());
+    CHECK(next_of(call_result(json{{"values", json::array()}, {"n", 0}}, false), "lua_exec", json::object()).is_null());
+    // A started job: poll it.
+    CHECK(next_of(call_result(json{{"job_id", "server-g3-1"}, {"state", "running"}, {"realm", "server"}}, false), "lua_job", json{{"async", true}}) ==
+          (json{{"tool", "lua_job_status"}, {"arguments", {{"id", "server-g3-1"}, {"wait_s", 30}}}}));
+    CHECK(next_of(call_result(json{{"job_id", "server-g3-1"}, {"state", "running"}}, false), "lua_job", json{{"async", true}, {"instance", "c2"}}) ==
+          (json{{"tool", "lua_job_status"}, {"arguments", {{"id", "server-g3-1"}, {"wait_s", 30}, {"instance", "c2"}}}}));
+    // A finished synchronous job (no state running) gets nothing.
+    CHECK(next_of(call_result(json{{"job_id", "server-g3-1"}, {"values", json::array()}, {"n", 0}}, false), "lua_job", json::object()).is_null());
+    // Cut values: the same call without the limits that cut them.
+    CHECK(next_of(call_result(json{{"values", json::array({1})}, {"n", 1}, {"truncated", 2}, {"truncated_note", "x"}}, false), "lua_exec",
+                  json{{"code", "return t"}, {"realm", "server"}, {"limit", 50}, {"depth", 2}, {"max_string", 100}}) ==
+          (json{{"tool", "lua_exec"}, {"arguments", {{"code", "return t"}, {"realm", "server"}}}}));
+    // An unknown argument with a close accepted name: the corrected call, through the real validation (no game needed).
+    if (mcp::tools().empty()) tools::register_all();
+    json r = mcp::call_tool("console_exec", json{{"command", "echo hi"}});
+    CHECK(r.value("isError", false) && r["structuredContent"]["error"]["code"] == "invalid_params");
+    CHECK(r["structuredContent"]["error"].value("next_call", json()) == (json{{"tool", "console_exec"}, {"arguments", {{"cmd", "echo hi"}}}}));
+    CHECK(json::parse(r["content"][0]["text"].get<std::string>()) == r["structuredContent"]);
+    // Not offered when the corrected call would still be invalid (a missing required argument).
+    json r2 = mcp::call_tool("console_exec", json{{"comand", "echo hi"}, {"realm", "nowhere"}});
+    CHECK(r2["structuredContent"]["error"].value("next_call", json()).is_null());
 }
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
     test_installer_roundtrip();
     test_guide_result_conventions();
+    test_next_call();
     test_cmdline();
     test_crash_report();
     test_console_wait();

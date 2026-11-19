@@ -44,6 +44,7 @@
 #include "crashinfo.h"
 #include "fp7137.h"  // FP7137
 #include "mcp_protocol.h"
+#include "next_call.h"
 #include "platform/platform.h"
 #include "lua_mount.h"
 #include "util.h"
@@ -987,6 +988,16 @@ json tool_text(json structured, bool error) {
 json tool_error(const std::string &code, const std::string &message) {
     return tool_text(json{{"error", {{"code", code}, {"message", message}}}}, true);
 }
+// A call refused because another launch or map load is in progress (FP7137): the same call a little later, with room to wait
+// (the settle delay after a game starts is 15 s). `args` is the call's arguments, `fallback_timeout_s` its default timeout.
+json retry_later(json refused, const std::string &tool, const json &args, double fallback_timeout_s) {
+    json a = args.is_object() ? args : json::object();
+    double old = a.contains("timeout_s") && a["timeout_s"].is_number() ? a["timeout_s"].get<double>() : fallback_timeout_s;
+    a["timeout_s"] = std::min(900.0, std::max(60.0, 2 * old));
+    next_call::attach(refused, next_call::make(tool, a, 15));
+    return refused;
+}
+
 // The answer to a tool call while the game is unreachable: the module's error shape, as text and structuredContent.
 json not_running_error() {
     return tool_text(json{{"error", {{"code", "game_not_running"},
@@ -1175,7 +1186,7 @@ json launch_tool(const json &args, const json &token) {
     // FP7137: wait while a map loads in any game (shared lock), then hold the launch slot while the processes are created.
     fp7137::Gate fp_gate;  // FP7137
     fp_gate.enter(fp7137::Kind::Launch, "launch", timeout, 60, nullptr, [&](double w, const std::string &why) { progress(token, w, 0, why); });  // FP7137
-    if (!fp_gate.ok()) return fp_gate.error_result();  // FP7137
+    if (!fp_gate.ok()) return retry_later(fp_gate.error_result(), "instances_launch", args, 180.0);  // FP7137
     if (fp_gate.waited_s() > 0) g_fp7137_progress_offset = fp_gate.waited_s() + 1;  // FP7137
     std::vector<Launched> started;
     for (int i = 0; i < count; ++i) {
@@ -1275,6 +1286,7 @@ json launch_tool(const json &args, const json &token) {
     // it cannot apply), so a test never runs on the installed addon's code without the agent knowing.
     std::vector<json> mount_res(started.size());
     json mount_problems = json::array();
+    json mount_fix;  // next_call for the first client whose mount is wrong
     if (!mount_root.empty()) {
         progress(token, count, count, "checking the Lua mount of each client");
         std::vector<std::thread> th;
@@ -1283,9 +1295,13 @@ json launch_tool(const json &args, const json &token) {
         for (auto &t : th) t.join();
         for (size_t i = 0; i < started.size(); ++i) {
             const json &v = mount_res[i];
-            if (!v.value("active", false)) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active")));
-            else if (v.value("base_lua_mounted", json()) == json(false))
+            if (!v.value("active", false)) {
+                mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active")));
+                if (mount_fix.is_null()) mount_fix = next_call::make("lua_mount", json{{"path", mount_root}, {"instance", started[i].id}});
+            } else if (v.value("base_lua_mounted", json()) == json(false)) {
                 mount_problems.push_back(started[i].id + ": the game's own lua/ folder is missing from its server Lua paths (base Lua not mounted)");
+                if (mount_fix.is_null()) mount_fix = next_call::make("lua_mount", json{{"path", nullptr}, {"instance", started[i].id}});  // remove it
+            }
         }
     }
     bool all_ok = mount_problems.empty();
@@ -1317,6 +1333,7 @@ json launch_tool(const json &args, const json &token) {
         res["warning"] = w + ". Tests on these clients would run the installed addon's code (or no usable Lua): fix it with "
                              "lua_mount {path, instance} then map_load, or close them (instances_close).";
     }
+    if (!mount_fix.is_null()) res["next_call"] = mount_fix;
     json fp_res = tool_text(res, !all_ok);  // FP7137
     fp_gate.annotate(fp_res);  // FP7137
     return fp_res;  // FP7137
@@ -1545,7 +1562,7 @@ void handle_request(const json &msg) {
     if (tool == "map_load") fp7137_gate_map_load(fp_gate, fwd, cancel->cancelled);  // FP7137
     if (!fp_gate.ok()) {  // FP7137: cancelled while waiting, or the wait would outlast the call's timeout
         { std::lock_guard<std::mutex> lk(g_cancel_mu); g_cancel.erase(key); }  // FP7137
-        if (!fp_gate.aborted()) out(local_result(msg, fp_gate.error_result()));  // FP7137
+        if (!fp_gate.aborted()) out(local_result(msg, retry_later(fp_gate.error_result(), tool, params_of(fwd).value("arguments", json::object()), 180.0)));  // FP7137
         return;  // FP7137
     }
     bool is_list = method == "tools/list" || method == "prompts/list" || method == "resources/list" || method == "resources/templates/list";
