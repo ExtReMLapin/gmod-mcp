@@ -272,7 +272,8 @@ ended normally: quit, closed or killed on request) and `client_crashed` / `serve
 ## Reading results
 Every result is one JSON object, sent twice with the same content: `structuredContent` and one text block. Some clients show
 the model only `structuredContent` on success and only the text on an error (`isError: true`), so a hint is always a field
-of that JSON, never prose around it. Every successful result of the game has `answered_by` (the instance that answered). The hint
+of that JSON, never prose around it. Every tool declares an `outputSchema` for its success result (an error is not checked against
+it). Every successful result of the game has `answered_by` (the instance that answered). The hint
 fields, all plain sentences for you, present only when they apply:
 - `note`: how to read this result (a caveat, what a value means). `warning`: something is wrong or risky now and what to do.
 - `next`: the call that goes on, as a sentence (`lua_job` start: poll with `lua_job_status`; `instances_list`: how to pick an instance).

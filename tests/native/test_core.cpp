@@ -29,6 +29,7 @@
 #include "crashinfo.h"
 #include "mcp.h"
 #include "next_call.h"
+#include "output_schemas.h"
 #include "lua_mount.h"
 #include "realms.h"
 #include "resources.h"
@@ -976,8 +977,83 @@ static void test_guide_result_conventions() {
     CHECK(text.find("## Reading results") != std::string::npos);
     for (const char *field : {"structuredContent", "isError", "note", "warning", "next", "truncated_note", "fps_note",
                               "output_note", "version_warning", "waited_s", "game_not_running", "answered_by", "next_call",
-                              "after_s"})
+                              "after_s", "outputSchema"})
         CHECK(text.find(field) != std::string::npos);
+}
+
+// Issue #3: every tool declares a real outputSchema, and representative success results (tests/schema/results.json)
+// match it. A client that validates results (the MCP SDK in Claude Code) fails the call on a mismatch, so a schema that
+// drifts from what the code returns must fail here first. isError results are not validated by clients: not covered.
+static void test_output_schemas() {
+    if (mcp::tools().empty()) tools::register_all();
+    std::ifstream in(fs::u8path(std::string(GMOD_MCP_SOURCE_DIR) + "/tests/schema/results.json"), std::ios::binary);
+    CHECK(in.good());
+    json fx = json::parse(in, nullptr, false);
+    CHECK(fx.is_object());
+    if (!fx.is_object()) return;
+    std::set<std::string> names;
+    for (const auto &t : mcp::tools()) {
+        names.insert(t.name);
+        json declared = mcp::output_schema_for(t.name);
+        CHECK(!declared.is_null());                // every tool has its own schema, not the permissive default
+        CHECK(t.output_schema == declared);        // and registers with it (tools/list sends it)
+        bool has_cases = fx.contains(t.name) && fx[t.name].is_array() && !fx[t.name].empty();
+        if (!has_cases) std::printf("no result fixture for tool %s\n", t.name.c_str());
+        CHECK(has_cases);
+        if (!has_cases) continue;
+        nlohmann::json_schema::json_validator v;
+        v.set_root_schema(t.output_schema);
+        for (const auto &c : fx[t.name]) {
+            bool matches = true;
+            std::string why;
+            try {
+                v.validate(c["result"]);
+            } catch (const std::exception &e) {
+                matches = false;
+                why = e.what();
+            }
+            if (!matches) std::printf("%s (%s) does not match its outputSchema: %s\n", t.name.c_str(), c.value("case", "?").c_str(), why.c_str());
+            CHECK(matches);
+        }
+    }
+    for (auto it = fx.begin(); it != fx.end(); ++it)
+        if (it.key() != "_comment" && !names.count(it.key())) {
+            std::printf("fixture for unknown tool %s\n", it.key().c_str());
+            CHECK(false);
+        }
+    // The validator really enforces the schemas: wrong types, a missing required field and a wrong nested type fail.
+    auto fails = [&](const char *tool, const json &bad) {
+        const mcp::Tool *t = mcp::find_tool(tool);
+        if (!t) return false;
+        nlohmann::json_schema::json_validator v;
+        v.set_root_schema(t->output_schema);
+        try {
+            v.validate(bad);
+        } catch (const std::exception &) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(fails("ents_find", json{{"entities", "x"}, {"count", 0}, {"truncated", false}}));              // array expected
+    CHECK(fails("ents_find", json{{"entities", json::array()}, {"truncated", false}}));                  // count required
+    CHECK(fails("ents_find", json{{"entities", json::array({json{{"id", "7"}}})}, {"count", 1}, {"truncated", false}}));  // id is a number
+    CHECK(fails("map_list", json{{"maps", json::array({1})}, {"count", 1}, {"truncated", false}}));
+    CHECK(fails("wait_frames", json{{"frames", "20"}, {"elapsed_s", 1}}));
+    CHECK(fails("status", json{{"main_thread_stalled", "no"}}));
+    // Extra fields stay allowed (a newer module may add some), and the hint fields are strings.
+    const mcp::Tool *wf = mcp::find_tool("wait_frames");
+    CHECK(wf != nullptr);
+    if (wf) {
+        nlohmann::json_schema::json_validator v;
+        v.set_root_schema(wf->output_schema);
+        bool ok_extra = true;
+        try {
+            v.validate(json{{"frames", 1}, {"elapsed_s", 0.1}, {"future_field", {{"a", 1}}}, {"note", "n"}});
+        } catch (const std::exception &) {
+            ok_extra = false;
+        }
+        CHECK(ok_extra);
+    }
 }
 
 // Issue #3: the hints that name a next call also give it as data (`next_call`), next to the prose. Each case is a result
@@ -1049,6 +1125,7 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
     test_installer_roundtrip();
     test_guide_result_conventions();
+    test_output_schemas();
     test_next_call();
     test_cmdline();
     test_crash_report();

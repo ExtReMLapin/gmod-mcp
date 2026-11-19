@@ -11,6 +11,9 @@
   a started `lua_job` (`lua_job_status`), cut values (the call without the limits), a `lua_mount` a launched client lacks. In
   an offline eval (14 payloads, haiku and sonnet, 3 runs) the first call the model made was the right one 83-86 % of the time
   without it and 93-100 % with it, at about 22 more tokens per payload (`tests/eval/hint_eval.py`).
+- **Every tool declares its `outputSchema`** (the shape of a success result; types, `required` only where every path sets the
+  field, extra fields allowed). Clients that validate results (the MCP SDK in Claude Code) can now rely on it. Results are
+  checked against it in the unit tests (`tests/schema/results.json`).
 - The guide has a "Reading results" section: where hints live and what each hint field means.
 
 ### Fixes

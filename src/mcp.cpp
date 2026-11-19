@@ -1,5 +1,6 @@
 #include "mcp.h"
 #include "next_call.h"
+#include "output_schemas.h"
 
 #include <algorithm>
 #include <chrono>
@@ -57,7 +58,10 @@ void register_tool(Tool t) {
     if (t.annotations.is_null()) t.annotations = json::object();
     t.annotations["title"] = t.title;
     if (!t.annotations.contains("openWorldHint")) t.annotations["openWorldHint"] = false;
-    if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
+    if (t.output_schema.is_null()) {
+        t.output_schema = output_schema_for(t.name);  // the declared shape (output_schemas.cpp), else the permissive default
+        if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
+    }
     t.validator = std::make_shared<nlohmann::json_schema::json_validator>();
     t.validator->set_root_schema(s);
     g_index[t.name] = g_tools.size();
