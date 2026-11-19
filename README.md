@@ -408,6 +408,33 @@ that writes there changes your game too.
 > saves nothing. (A client that older versions started and then quit may have changed `fps_max` in your config: check it
 > in the options.)
 
+**Frame cap, extra options and startup commands for test clients.** `instances_launch` takes a few options for what the
+presets do not cover (they are checked before anything starts; a refused one is `invalid_params` naming it):
+
+```
+instances_launch {count: 1, fps_max: 300, fps_max_nofocus: 0,
+                  commands: ["snd_mute_losefocus 0", "cl_showfps 1"],
+                  launch_args: ["-noborder"], map: "gm_construct"}
+```
+
+- `fps_max` and `fps_max_nofocus` (integers, `0` = no cap, otherwise 10 to 1000) replace the preset's frame cap
+  (`fps_max_nofocus` follows `fps_max` when only that one is given). The result says what the clients run at (`fps_max`,
+  `fps_max_nofocus`, `fps_note`).
+- `commands` are console commands run on each client once it answers, before the map loads, in order; `instances[].commands`
+  says how each went. `quit`/`exit`, `connect`/`retry`/`redirect`/`connect_lobby` (gmod-mcp never connects to a server) and
+  map changes (`map`, `changelevel`, `load`: use `map`) are refused.
+- `launch_args` are extra engine command-line tokens, one per array element (`["+cl_showfps", "1"]`, a word without
+  spaces, quotes or `;`). Refused: what gmod-mcp sets itself (`-multirun`, `-mcp*`, `-w`, `-h`, `-width`, `-height`, the
+  window-mode options, `-dxlevel`, `-condebug`, `-game`), `+connect` and `+map`. The options are listed on the Valve
+  Developer Community, [Command line options](https://developer.valvesoftware.com/wiki/Command_line_options) (and the
+  Garry's Mod wiki for the GMod-specific ones); console commands and convars are listed by `api_search` and
+  `concommand_list`.
+
+The archived convars these options change (`fps_max`, a `+convar` token, a command such as `cl_showfps 1` or `toggle
+snd_mute_losefocus`) are given back to your value before a clean quit, exactly like the built-in ones above (the bridge
+lists their names to the module with `-mcp_restore_convars`; this needs the module of the same release, an older one
+restores only the four it knew). A convar changed by `exec` of a cfg file is not tracked.
+
 ## Configuration
 
 | Launch option | Effect |

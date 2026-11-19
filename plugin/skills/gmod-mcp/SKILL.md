@@ -103,7 +103,15 @@ frame cap, no `+map`), waits until each answers, loads the map with `map_load`, 
 pass `instance` to every tool, or `instance_select` to make one the session's default (with several games running,
 calls without `instance` are refused with `ambiguous_instance`). Close them with `instances_close`; they also close
 when the session ends. Its description lists the measured cost per client and the limits (memory is what runs out
-first).
+first). It also takes `fps_max` / `fps_max_nofocus` (0 = no cap, or 10 to 1000: timing-sensitive tests and perf
+measurements need more than the preset's 20/30 fps), `commands` (console commands run on each client once it answers,
+before the map loads, e.g. `["fps_max 300", "snd_mute_losefocus 0"]`) and `launch_args` (extra engine options, one token
+per element: `["-noborder", "+cl_showfps", "1"]`). Refused with `invalid_params` naming the option: `quit`/`exit`, anything
+that connects, map changes (use `map`) and what gmod-mcp sets itself (`-multirun`, `-mcp*`, `-w`/`-h`, window mode,
+`-dxlevel`, `-condebug`, `-game`). Archived convars these change are given back to the user's value before a clean quit
+(module of the same release). Launch options are listed on the Valve Developer Community,
+[Command line options](https://developer.valvesoftware.com/wiki/Command_line_options), and the Garry's Mod wiki
+(`wiki_search`); console commands and convars with `api_search` and `concommand_list`.
 
 <!-- FP7137: agent-facing text A1-A3, see docs/FP7137.md -->
 - **Launches and map loads.** Starting a game makes every other running GMod release its GPU resources for 2-10 s, and a
