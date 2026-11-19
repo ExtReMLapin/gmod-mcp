@@ -256,7 +256,7 @@ void register_jobs() {
                                           "the mounted Lua folder if any, then the game folder, then lua/, gamemodes/, addons/*/lua/). Errors then point to the file. "
                                           "Prefer it to pasting a file's content into code."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
-                            {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"])."}}},
+                            {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"]); fields_note says so when no returned value is a table."}}},
                 {"args", {{"type", "object"}, {"description", "Arbitrary data exposed to the script as job.args."}}},
                 {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600},
                                {"description", "Cancel the job after this many seconds (default 300). 15 s or more: runs as an MCP task when the client supports it."}}},

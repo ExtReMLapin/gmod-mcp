@@ -4,6 +4,9 @@
 
 ### Features
 
+- **`fields` says when it projected nothing** (issue #11). On `lua_exec`, `lua_exec_file`, `lua_job` and `lua_job_status`,
+  `fields` only keeps keys of returned tables; when the value was a JSON string (`util.TableToJSON`), a number or an
+  array, the whole result came back with no word. The result now carries `fields_note` saying so and what to return instead.
 - **`errors_since {group_by: "message"}`** (issue #11). One entry per distinct message (`message`, `count`, `first_seq`,
   `first_time`, `last_seq`, `last_time`, `realms`, `map`, `stack`, `addon`), most frequent first, instead of up to 2000
   mostly identical errors; `limit` caps the groups (`groups_total` counts them) and `next_cursor` covers every error read.

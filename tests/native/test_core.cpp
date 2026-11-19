@@ -210,6 +210,28 @@ static void test_errors_group_by_message() {
     CHECK(bad.value("isError", false));
 }
 
+// Issue #11: `fields` on a result that holds no table (a JSON string from util.TableToJSON, a number) projects nothing: the
+// result must say so (`fields_note`) instead of silently coming back whole.
+static void test_fields_note() {
+    json args{{"fields", {"pass", "fails"}}};
+    auto run = [&](json values) { return tools::project_values(tools::ok(json{{"values", std::move(values)}, {"n", 1}}), args); };
+    json str = run(json::array({"{\"pass\":true,\"fails\":0}"}));
+    CHECK(str["result"].contains("fields_note"));
+    CHECK(str["result"].value("fields_note", "").find("string") != std::string::npos);
+    CHECK(str["result"].value("fields_note", "").find("JSONToTable") != std::string::npos);
+    CHECK(str["result"]["values"][0].is_string());  // the value itself is untouched
+    CHECK(run(json::array({1, 2}))["result"].contains("fields_note"));
+    CHECK(run(json::array())["result"].contains("fields_note"));
+    CHECK(run(json::array({json::array({1})}))["result"].contains("fields_note"));  // an array is not a table of keys
+    // A table was projected: no note. A mix: projected, no note.
+    json tbl = run(json::array({json{{"pass", true}, {"fails", 0}, {"big", "x"}}}));
+    CHECK(!tbl["result"].contains("fields_note") && tbl["result"]["values"][0].size() == 2);
+    CHECK(!run(json::array({"s", json{{"pass", true}}}))["result"].contains("fields_note"));
+    // No `fields`: nothing added.
+    json plain = tools::project_values(tools::ok(json{{"values", json::array({"s"})}, {"n", 1}}), json::object());
+    CHECK(!plain["result"].contains("fields_note") && !plain["result"].contains("projected"));
+}
+
 static json errs_current(const char *realm = nullptr) {
     json a{{"cursor", 0}, {"since_map_load", true}};
     if (realm) a["realm"] = realm;
@@ -2032,6 +2054,7 @@ int main(int argc, char **argv) {
     test_errors_map_tags();
     test_errors_filter_before_limit();
     test_errors_group_by_message();
+    test_fields_note();
     test_errors_load_stamp_order();
     test_small_b6();
     test_srcds_error_parsing();
