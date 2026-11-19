@@ -8,6 +8,7 @@
 #include "events.h"
 #include "http_server.h"
 #include "installer.h"
+#include "launch_opts.h"
 #include "lua_mount.h"
 #include "jobs.h"
 #include "log.h"
@@ -97,6 +98,8 @@ static bool start(lua_State *L) {
     }
     auto &cfg = agent::config();
     cfg.test_client = util::has_flag(args, "-mcp_test_client");
+    // Issue #10: convars instances_launch {commands, launch_args, fps_max} may change; only names are kept (checked again here).
+    cfg.restore_convars = launchopts::join_list(launchopts::parse_restore_list(util::flag_value(args, "-mcp_restore_convars", "")));
     bool menu = global_true(L, "MENU_DLL");
     bool server = global_true(L, "SERVER");
     g_bootstrap = false;

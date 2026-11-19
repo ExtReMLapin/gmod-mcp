@@ -260,7 +260,7 @@ void register_session() {
                         "the MCP server of this instance goes away with it. For test clients started by instances_launch, prefer "
                         "instances_close (it kills the process: nothing is saved, and the exit is short); game_quit is safe on them "
                         "too: before quitting, the module gives the archived convars their command line changed (fps_max, "
-                        "fps_max_nofocus, snd_mute_losefocus) the user's values from cfg/config.cfg, or their defaults when the file "
+                        "fps_max_nofocus, snd_mute_losefocus, and those named by instances_launch commands or launch_args) the user's values from cfg/config.cfg, or their defaults when the file "
                         "has no line. "
                         "Result: {quitting: true}.",
                         json::object(), json{{"destructiveHint", true}}, quit_tool});

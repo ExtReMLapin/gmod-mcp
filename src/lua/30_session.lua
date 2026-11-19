@@ -108,6 +108,22 @@ end
 -- default when config.cfg has no line for it.
 A.test_client_convars = { "fps_max", "fps_max_nofocus", "engine_no_focus_sleep", "snd_mute_losefocus" }
 
+-- Issue #10: instances_launch {fps_max, commands, launch_args} can change other archived convars. The bridge lists their
+-- names on the command line (-mcp_restore_convars a,b: native.restore_convars, a comma-separated string) and they are
+-- given back like the built-in ones. Built-in names first, then the extra ones (lower case, once each, plain names only).
+function A.test_client_convar_names()
+	local out, seen = {}, {}
+	for _, n in ipairs(A.test_client_convars) do out[#out + 1] = n seen[n] = true end
+	local extra = native.restore_convars
+	if type(extra) == "string" then
+		for n in string.gmatch(extra, "[^,]+") do
+			n = string.lower(n)
+			if string.match(n, "^[%w_%.]+$") and #n <= 64 and not seen[n] then out[#out + 1] = n seen[n] = true end
+		end
+	end
+	return out
+end
+
 -- name -> value for the `name "value"` (or `name value`) lines of a config.cfg text; the last line of a name wins, as
 -- when the engine executes the file. Names are lower case. Binds and aliases are not convars.
 local NOT_CONVARS = { bind = true, unbind = true, alias = true, unbindall = true }
@@ -148,9 +164,17 @@ function A.restore_test_client_convars()
 	if not native.test_client then return 0 end
 	-- Read natively: the Lua file library answers nil for cfg/config.cfg (live test 2026-11-15).
 	local text = native.user_config and native.user_config() or ""
-	local plan = A.plan_convar_restore(A.test_client_convars, text, function(name)
+	local builtin = {}
+	for _, n in ipairs(A.test_client_convars) do builtin[n] = true end
+	local plan = A.plan_convar_restore(A.test_client_convar_names(), text, function(name)
 		local ok, cv = pcall(A.convar, name)
 		if not ok or not cv then return nil end
+		-- A convar the bridge listed (Issue #10) is restored only if archived: only those reach config.cfg. The built-in
+		-- ones always are (as before); GetFlags may be missing on some builds: then the convar is kept.
+		if not builtin[name] then
+			local fok, flags = pcall(function() return cv.GetFlags and cv:GetFlags() end)
+			if fok and type(flags) == "number" and bit.band(flags, 128) == 0 then return nil end
+		end
 		return { current = cv:GetString(), default = cv:GetDefault() }
 	end)
 	for _, c in ipairs(plan) do

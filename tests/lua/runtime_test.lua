@@ -470,6 +470,46 @@ do
 	RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand = old_rcc, old_gci, old_cmd
 end
 
+-- Issue #10: instances_launch {commands, launch_args, fps_max} can change any archived convar, not only the four the launch
+-- itself sets. The bridge lists the names on the command line (-mcp_restore_convars a,b); the module hands the list to the
+-- runtime as native.restore_convars and the restore covers them too.
+do
+	local base = A.test_client_convars
+	__mcpagent_native.restore_convars = nil
+	check(#A.test_client_convar_names() == #base, "Issue #10: no extra list: only the built-in convars")
+	__mcpagent_native.restore_convars = "cl_showfps,FPS_MAX,bad name,cl_drawhud;x,mat_vsync,,CL_SHOWFPS"
+	local names = A.test_client_convar_names()
+	local seen = {}
+	for _, n in ipairs(names) do seen[n] = (seen[n] or 0) + 1 end
+	check(#names == #base + 2 and seen.cl_showfps == 1 and seen.mat_vsync == 1 and seen.fps_max == 1,
+		"Issue #10: extra names are added once, lower case, the built-in ones stay: " .. table.concat(names, ","))
+	check(not seen["bad name"] and not seen["cl_drawhud;x"], "Issue #10: a name that is not a plain convar name is dropped")
+	check(#A.test_client_convars == #base, "Issue #10: the built-in list is not modified by the extras")
+
+	-- Wiring: a convar listed by the bridge goes back to the user's value; one that is not archived is left alone.
+	local log, files = {}, { ["cfg/config.cfg"] = 'cl_showfps "0"\nmat_vsync "1"\n' }
+	local old_rcc, old_gci, old_cmd = RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand
+	local state = { cl_showfps = { "3", "0", 128 }, mat_vsync = { "1", "0", 128 }, sv_cheats = { "1", "0", 0 }, cl_drawhud = { "0", "1", 0 } }
+	RunConsoleCommand = function(...) log[#log + 1] = table.concat({ ... }, " ") end
+	game.ConsoleCommand = function(c) log[#log + 1] = "GAME:" .. c end
+	__mcpagent_native.user_config = function() return files["cfg/config.cfg"] end
+	GetConVar_Internal = function(n)
+		local st = state[n]
+		if not st then return nil end
+		return { GetString = function() return st[1] end, GetDefault = function() return st[2] end, GetName = function() return n end,
+			GetFlags = function() return st[3] end }
+	end
+	__mcpagent_native.test_client = true
+	__mcpagent_native.restore_convars = "cl_showfps,mat_vsync,sv_cheats"
+	local rc = call("restore_convars", {})
+	local joined = table.concat(log, "|")
+	check(rc.ok and rc.result.restored == 1 and log[1] == "cl_showfps 0", "Issue #10: the listed archived convar gets the user's value back: " .. joined)
+	check(not joined:find("sv_cheats", 1, true) and not joined:find("mat_vsync", 1, true),
+		"Issue #10: a convar that is not archived, or already at the user's value, is not touched: " .. joined)
+	__mcpagent_native.test_client, __mcpagent_native.restore_convars, __mcpagent_native.user_config = nil, nil, nil
+	RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand = old_rcc, old_gci, old_cmd
+end
+
 -- A second Lua state (new map): reload the runtime with another generation. Its ids differ from the first state's.
 local function new_state(generation)
 	__mcpagent = {}
