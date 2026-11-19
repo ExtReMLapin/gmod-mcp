@@ -379,8 +379,11 @@ Starting a game makes every other running Garry's Mod release its GPU resources 
 that window crashes that game (engine bug, [Facepunch garrysmod-issues#7137](https://github.com/Facepunch/garrysmod-issues/issues/7137)).
 The bridge therefore makes `instances_launch` and `map_load` wait for each other (every session of the user shares the
 lock; `waited_s` / `waited_reason` in the result, errors `map_load_in_progress` / `launch_in_progress` when the wait would
-exceed `timeout_s`), and `instances_launch {map}` loads 2 maps at a time after a 15 s settle delay. It does not see a game
-you start by hand, nor a map change triggered by Lua or the console: do not do those while other games load or launch.
+exceed `timeout_s`), and `instances_launch {map}` loads 2 maps at a time after a 15 s settle delay. It also sees map
+loads it did not start (console `map`, Lua, a script talking to the game: every game reports `loading` in `instances_list`),
+`instances_launch` waits for them too and `map_load` lists them (`other_games_loading`). It cannot hold back a game you
+start by hand, nor a console or Lua map load started while a launch is creating its processes: do not do those while
+other games load or launch.
 Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`): wait and retry. Best
 order: launch all clients in one `instances_launch`, then work. `GMOD_MCP_FP7137_WORKAROUND=0` turns the wait off.
 

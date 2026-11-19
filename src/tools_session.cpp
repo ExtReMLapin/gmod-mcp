@@ -236,9 +236,11 @@ void register_session() {
                         "through the bridge (any session, any target instance) first waits while a game is being started "
                         "(instances_launch) and for 15 s after the last start. A call that waited carries waited_s and waited_reason "
                         "(and progress; as a task, in statusMessage). If the wait would exceed timeout_s it fails with error "
-                        "launch_in_progress and sends nothing to the game: retry later, or with a larger timeout_s. Not seen by the "
-                        "bridge: a game started by hand, a map change triggered from Lua or the console (changelevel, `map` through "
-                        "console_exec): do not do those while other games load or launch. Right after a game starts, the other games "
+                        "launch_in_progress and sends nothing to the game: retry later, or with a larger timeout_s. When another game "
+                        "was loading a map at that moment (started by anything: console, Lua, a script, another session), the result "
+                        "lists it as other_games_loading; it does not delay the load. A launch, however, waits for loads like that. "
+                        "Not held back by the bridge: a game started by hand, and a map change triggered from Lua or the console "
+                        "while a game is being started (changelevel, `map` through console_exec): do not do those. Right after a game starts, the other games "
                         "can be unreachable for 15-18 s (instance_unreachable, timeouts): expected, wait and retry. "
                         "Example: {\"map\": \"gm_construct\"}.",
                         json{{"properties",

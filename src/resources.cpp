@@ -49,8 +49,10 @@ std::string instructions() {
     s += "Launches and map loads: starting a game makes the other running games release their GPU resources for 2-10 s, and a "
          "map load ending then crashes that game (engine bug, Facepunch #7137). The bridge makes instances_launch and map_load "
          "wait for each other (a call that waited reports waited_s / waited_reason; errors map_load_in_progress / "
-         "launch_in_progress: retry later or with a larger timeout_s). It does not see a game started by hand or a map change "
-         "triggered by Lua or the console: avoid those while other games load or launch. Other games can be unreachable for "
+         "launch_in_progress: retry later or with a larger timeout_s). instances_launch also waits for a map load the bridge did "
+         "not start (console, Lua, a script talking to the game: every game reports `loading` in instances_list), reason "
+         "map_load_outside_bridge; map_load lists such games as other_games_loading. It cannot hold back a game started by "
+         "hand or a load started by other means during a launch: avoid those. Other games can be unreachable for "
          "15-18 s after a game starts: wait and retry. Launch all clients in one instances_launch, then work. Guide section "
          "\"Launches and map loads\".\n";
     s += "Testing a branch of an addon: lua_mount {path: <your worktree>} (or instances_launch {lua_mount}) makes ONE game load "
@@ -298,8 +300,14 @@ Facepunch garrysmod-issues #7137).
   If the wait would go beyond the call's `timeout_s`, the call fails and nothing was started or sent: `map_load_in_progress`
   (a launch blocked by a map load) or `launch_in_progress` (a map load blocked by a launch or by the 15 s delay). Retry
   later, or with a larger `timeout_s`.
-- **What it does not see.** A game started by hand, and a map change triggered by Lua or the console (`changelevel`, `map`
-  sent through `console_exec`): do not do those while other games load or launch.
+- **Loads the bridge did not start.** Every game tells the coordinator when it is loading a map (`loading: true` in
+  `instances_list`, within a fraction of a second of the start), whatever started the load: `map` or `changelevel` in the
+  console, Lua `RunConsoleCommand`, a script talking HTTP to the game, `map_load`. `instances_launch` waits for all of them
+  (`waited_reason` starts with `map_load_outside_bridge`; same `map_load_in_progress` error at the timeout), and `map_load`
+  lists the other games that were loading when it started (`other_games_loading`, it does not wait for them).
+- **What it cannot do.** Hold back a game started by hand (not through `instances_launch`), a game without gmod-mcp (no
+  `-mcp`), or a load started by the console or a script while a launch is already creating its processes or within 15 s
+  after one: the bridge only delays its own calls. Do not do those while other games load or launch.
 - **Unreachable after a launch.** Right after a game starts, the other games can be unreachable for 15-18 s
   (`instance_unreachable`, timeouts). That is expected: wait and retry. A dead game is `client_crashed`, not a timeout.
 - **Order.** Launch every client you need in ONE `instances_launch` call (with `map` it loads 2 at a time after the
