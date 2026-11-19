@@ -103,6 +103,9 @@ first).
   load or launch. Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`,
   timeouts): expected, wait and retry (`client_crashed` is the signal for a dead one). Order: launch all the clients you
   need in ONE `instances_launch`, then work; do not interleave launches with map loads across sessions.
+  The game on the base port is the coordinator (`instances_list`: `role`, `coordinator_id`): closing it (`instances_close`, `game_quit`) moves
+  the role to another game within about 3 s; calls then answer the retryable `coordinator_changing` (the bridge already retries for 10 s).
+  Do not close a game you did not start, and close the coordinator last.
 - **With sub-agents**: they all share one bridge, so one session. Never use `instance_select` (its default would apply
   to every sub-agent's calls) and never `instances_close {all: true}` (it would close the others' clients). Tell each
   sub-agent in its brief to launch with an `owner` label of its own, pass `instance` on every call, and close with
