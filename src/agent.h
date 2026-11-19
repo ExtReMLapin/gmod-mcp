@@ -68,6 +68,9 @@ void on_server_state_close();
 void server_realm_appeared();
 // Map of a given map load ("" if not known yet).
 std::string map_of_load(uint64_t seq);
+// FP7137 (issue #7): is a map load in progress, whatever started it (console, Lua, map_load)? Readable from any thread.
+// since_s (optional) gets the seconds since the oldest load that still counts. Stops counting a load after 300 s.
+bool map_loading(double *since_s = nullptr);
 // Queues a one-time notice shown in game to the local player once the client realm is ready (client mode only).
 void notify_player(const std::string &text);
 

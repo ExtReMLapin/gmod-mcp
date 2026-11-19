@@ -78,6 +78,9 @@ static std::set<std::string> g_claimed_dumps;  // dumps already given to a dead 
 static std::atomic<bool> g_run{false};
 static std::thread g_thread;
 static std::atomic<int> g_failures{0};
+static std::atomic<bool> g_wake{false};  // FP7137 (issue #7): heartbeat now
+
+void wake() { g_wake = true; }  // FP7137
 
 bool is_coordinator() {
     int base = agent::config().base_port;
@@ -95,6 +98,7 @@ static json self_info() {
                 {"map", agent::current_map()}, {"realms", realms_j}, {"agent_version", c.version},
                 {"uptime_s", (int64_t)console::uptime()}, {"fps", fps.is_number() ? json((int)(fps.get<double>() + 0.5)) : json(nullptr)},
                 {"main_thread_stalled", since > 5.0}, {"lua_errors", console::errors_cursor()},
+                {"loading", agent::map_loading()},  // FP7137 (issue #7): a map load is in progress, whatever started it
                 {"game_dir", c.game_dir}};  // read by the coordinator (where the crash dumps are), not shown by instances_list
 }
 
@@ -380,7 +384,8 @@ void say_goodbye() {
 
 static void loop() {
     while (g_run) {
-        for (int i = 0; i < (int)(kHeartbeatS * 10) && g_run; ++i) plat::sleep_ms(100);
+        for (int i = 0; i < (int)(kHeartbeatS * 10) && g_run && !g_wake; ++i) plat::sleep_ms(100);  // FP7137: ... && !g_wake
+        g_wake = false;  // FP7137
         if (!g_run) break;
         if (is_coordinator()) {
             std::lock_guard<std::mutex> lk(g_mu);

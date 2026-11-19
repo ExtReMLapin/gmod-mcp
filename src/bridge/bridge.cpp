@@ -784,11 +784,14 @@ json bridge_tools() {
          "Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load that "
          "ends in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). So the bridge serialises "
          "the launches and map loads that go through it, from any session: this call first waits while any game loads a "
-         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time. A call that waited reports waited_s and "
+         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time. \"Any game\" includes loads the bridge did "
+         "not start (console `map`, changelevel, Lua RunConsoleCommand, a script talking to the game): every game reports "
+         "when it is loading a map (instances_list `loading`), and waited_reason then starts with map_load_outside_bridge. "
+         "A call that waited reports waited_s and "
          "waited_reason (and progress when your client sent a progress token). If the wait would exceed timeout_s it fails "
-         "with error map_load_in_progress and starts nothing: retry later, or with a larger timeout_s. The bridge does NOT "
-         "see a game started by hand or a map change triggered from Lua or the console (changelevel, `map` through "
-         "console_exec): do not do those while other games load or launch.\n"
+         "with error map_load_in_progress and starts nothing: retry later, or with a larger timeout_s. Not covered: a game "
+         "started by hand (not by this call) and a load that begins while a launch is already creating its processes "
+         "(only launches and map_load calls of the bridge wait, a load started by other means is never held back).\n"
          "Right after a game starts, the other games can be unreachable for 15-18 s (instance_unreachable or timeouts): "
          "expected, wait and retry; it is not a dead game (client_crashed is the signal for a dead one).\n"
          "Order: launch all the clients you need in ONE call (with `map`, they load 2 at a time after the settle delay), "
@@ -1101,6 +1104,18 @@ std::wstring utf8_to_wide(const std::string &s) {
     return v;
 }
 
+// FP7137 (issue #7): ids of the games that report a map load in progress (the `loading` flag each module sends with its
+// heartbeat), whatever started the load: the console, Lua, a script talking to the game, a bridge. `except` is skipped.
+std::vector<std::string> fp7137_loading_games(const std::string &except = "") {  // FP7137
+    std::vector<std::string> ids;  // FP7137
+    json lst = game_call("instances_list", json::object(), 3);  // FP7137: an unreachable game is an error object: no ids
+    if (!lst.is_object() || !lst.contains("instances") || !lst["instances"].is_array()) return ids;  // FP7137
+    for (const auto &in : lst["instances"])  // FP7137
+        if (in.is_object() && in.value("loading", false) && in.value("state", "running") == "running" && in.value("id", "") != except)  // FP7137
+            ids.push_back(in.value("id", "?"));  // FP7137
+    return ids;  // FP7137
+}  // FP7137
+
 json launch_tool(const json &args, const json &token) {
 #ifndef _WIN32
     (void)args;
@@ -1150,7 +1165,7 @@ json launch_tool(const json &args, const json &token) {
         if (c == '/') c = '\\';
     // FP7137: wait while a map loads in any game (shared lock), then hold the launch slot while the processes are created.
     fp7137::Gate fp_gate;  // FP7137
-    fp_gate.enter(fp7137::Kind::Launch, "launch", timeout, 60, nullptr, [&](double w, const std::string &why) { progress(token, w, 0, why); });  // FP7137
+    fp_gate.enter(fp7137::Kind::Launch, "launch", timeout, 60, nullptr, [&](double w, const std::string &why) { progress(token, w, 0, why); }, [] { return fp7137_loading_games(); });  // FP7137 (issue #7: also waits for loads no bridge saw)
     if (!fp_gate.ok()) return fp_gate.error_result();  // FP7137
     if (fp_gate.waited_s() > 0) g_fp7137_progress_offset = fp_gate.waited_s() + 1;  // FP7137
     std::vector<Launched> started;
@@ -1388,7 +1403,9 @@ void fp7137_gate_map_load(fp7137::Gate &gate, const json &msg, const std::atomic
     double t = a.is_object() && a.contains("timeout_s") && a["timeout_s"].is_number() ? a["timeout_s"].get<double>() : 180.0;
     std::string map = a.is_object() && a.contains("map") && a["map"].is_string() ? a["map"].get<std::string>().substr(0, 64) : "";
     json token = params_of(msg).value("_meta", json::object()).value("progressToken", json());
-    gate.enter(fp7137::Kind::MapLoad, "map:" + map, t, t + 10, &cancelled, [&](double w, const std::string &why) { progress(token, w, 0, why); });
+    std::string target = a.is_object() && a.contains("instance") && a["instance"].is_string() ? a["instance"].get<std::string>() : "";  // FP7137 (issue #7)
+    gate.enter(fp7137::Kind::MapLoad, "map:" + map, t, t + 10, &cancelled, [&](double w, const std::string &why) { progress(token, w, 0, why); },
+               [target] { return fp7137_loading_games(target); });  // FP7137 (issue #7): other games loading are reported, not waited for
 }
 
 // FP7137: after the game answered: say how long the call waited, and keep the slot until a background task ends.

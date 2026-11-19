@@ -18,6 +18,8 @@ Cases (default: a f):
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
          in flight when the client dies reports the crash, an old dump is not taken for its own (Windows)
   fp7137 launch / map_load lock shared by the bridges (FP7137, docs/FP7137.md): waits, expiry, dead bridge, kill switch
+  unseen map loads the bridge does not see (issue #7, FP7137): a launch waits for a game that reports loading, fails at its
+         timeout, obeys the kill switch; map_load lists the other games that were loading
   lua_mount instances_launch {lua_mount}: -mcp_lua_mount passed to the client (stand-in game), bad folders refused
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
@@ -29,7 +31,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify crash fp7137 orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify crash fp7137 unseen orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -257,7 +259,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
             for f in os.listdir(srv.pid_dir):
                 try: pids.append(int(open(os.path.join(srv.pid_dir, f)).read().strip()))
                 except (OSError, ValueError): pass
-            sc = {"instances": [{"id": "fake-%d" % p, "pid": p, "port": 1, "mode": "client"} for p in pids]}
+            sc = {"instances": [{"id": "fake-%d" % p, "pid": p, "port": 1, "mode": "client"} for p in pids] + [dict(e) for e in srv.extra_instances]}
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
         if name == "map_load" and srv.map_hold is not None:  # FP7137 tests: a map load that takes srv.map_hold[map] s
             t0 = time.time()
@@ -298,6 +300,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
         self.map_load_hook = None
         self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
+        self.extra_instances = []  # FP7137 tests (issue #7): games the bridge never started, as instances_list shows them (with "loading")
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     def handle_error(self, request, client_address):
@@ -1184,6 +1187,101 @@ def case_fp7137():
 
 
 
+def case_unseen_loads():
+    """Issue #7 (FP7137): a map load the bridge does not see (console `map`, Lua, a script talking HTTP to the game) is
+    known from the games' heartbeat (`loading` in instances_list). instances_launch waits for it (reason
+    map_load_outside_bridge, waited_s), fails cleanly at its timeout, obeys the kill switch; map_load lists the other
+    games that were loading. The fake game server plays the games; the launches use the stand-in game (Windows)."""
+    print("== UNSEEN: map loads the bridge does not see (issue #7)", flush=True)
+    import shutil
+    hand = lambda loading: {"id": "by-hand", "pid": 1, "port": 1, "mode": "client", "state": "running", "loading": loading}
+    # Issue #7: map_load says which other games were loading (it does not wait for them: only launches matter).
+    port, env, srv = fp_setup()
+    b = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_a", "timeout_s": 30}, 30), 15)
+    check("UNSEEN map_load lists the other game that was loading, and does not wait for it",
+          not res.get("isError") and sc.get("other_games_loading") == ["by-hand"] and "waited_s" not in sc
+          and json.loads(res["content"][0]["text"]).get("other_games_loading") == ["by-hand"], res)
+    srv.extra_instances = [hand(False)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_b", "timeout_s": 30}, 30), 15)
+    check("UNSEEN map_load: no other game loading, nothing reported", not res.get("isError") and "other_games_loading" not in sc, sc)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_c", "instance": "by-hand", "timeout_s": 30}, 30), 15)
+    check("UNSEEN map_load targeting the game that loads does not list it as another game", not res.get("isError") and "other_games_loading" not in sc, sc)
+    b.close(); srv.stop()
+    port, env, srv = fp_setup(workaround="0")
+    b = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_d", "timeout_s": 30}, 30), 15)
+    check("UNSEEN kill switch off: map_load reports nothing", not res.get("isError") and "other_games_loading" not in sc, sc)
+    b.close(); srv.stop()
+
+    if os.name != "nt":
+        print("   (the launch scenarios are Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("UNSEEN stand-in game built next to the bridge", False, fake)
+        return
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    launch_args = lambda **kw: dict({"count": 1, "owner": "unseen", "timeout_s": 40, "game_dir": game}, **kw)
+    pid_times = lambda srv: sorted(os.path.getmtime(os.path.join(srv.pid_dir, f)) for f in os.listdir(srv.pid_dir))
+
+    # Issue #7: a game loads a map the bridge never saw: the launch waits until it is over, then starts.
+    port, env, srv = fp_setup()
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    t0 = time.time()
+    rid = fp_call(a, "instances_launch", launch_args(), 60, token="U1")
+    time.sleep(2.0)
+    check("UNSEEN the launch waits while a game loads outside the bridge (no game started yet)", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    check("UNSEEN the wait is reported as progress", any("map_load_outside_bridge" in m for m in fp_progress(a, "U1")), fp_progress(a, "U1"))
+    srv.extra_instances = [hand(False)]
+    flipped = time.time()
+    res, sc = fp_result(a, rid, 60)
+    first_pid = (pid_times(srv) or [0])[0]
+    check("UNSEEN once the load is over the launch goes ahead, with waited_s and waited_reason",
+          not res.get("isError") and first_pid >= flipped - 0.1 and sc.get("waited_s", 0) >= 1.5 and "map_load_outside_bridge" in sc.get("waited_reason", "") and "by-hand" in sc.get("waited_reason", ""),
+          {"first_pid": first_pid, "flipped": flipped, "sc": sc})
+    # No game loading: no wait.
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(), 60), 60)
+    check("UNSEEN no game loading: no wait", not res.get("isError") and "waited_s" not in sc, sc)
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); srv.stop()
+    # Issue #7: a load that never ends: the launch fails at its timeout, nothing is started.
+    port, env, srv = fp_setup()
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    t1 = time.time()
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
+    check("UNSEEN a launch blocked past timeout_s fails with map_load_in_progress and waited_s",
+          res.get("isError") and sc.get("error", {}).get("code") == "map_load_in_progress" and 8 <= sc.get("waited_s", 0) <= 14
+          and "map_load_outside_bridge" in sc.get("waited_reason", "") and time.time() - t1 < 18, sc)
+    check("UNSEEN ... and no game was started", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    a.close(); srv.stop()
+    # Issue #7: the game that answers instances_list is the bridge's own client loading through the bridge: that load
+    # is the bridge's (a seeded entry), the reason is the registered one, not "outside".
+    port, env, srv = fp_setup()
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    fp_seed(env, [("M", os.getpid(), 60, "map:gm_mine")])
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
+    check("UNSEEN a load registered by a bridge keeps the registered reason", res.get("isError") and "map:gm_mine" in sc.get("waited_reason", "") and "map_load_outside_bridge" not in sc.get("waited_reason", ""), sc)
+    a.close(); srv.stop()
+    # Issue #7: kill switch.
+    port, env, srv = fp_setup(workaround="0")
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(), 60), 60)
+    check("UNSEEN kill switch off: the launch does not wait", not res.get("isError") and "waited_s" not in sc, sc)
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+
+
 def case_launch():
     """Live (Windows, Steam running, no other game): starts 2 light clients with a map, uses the default instance,
     closes them. Note: the game saves their window size as its video setting (documented)."""
@@ -1913,8 +2011,8 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "crash", "fp7137", "orphan", "edge", "version", "feedback", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "fp7137": case_fp7137, "unseen": case_unseen_loads, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "crash", "fp7137", "unseen", "orphan", "edge", "version", "feedback", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

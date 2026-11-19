@@ -9,7 +9,9 @@
 #include "console.h"
 #include "events.h"
 #include "installer.h"
+#include "coordinator.h"
 #include "jobs.h"
+#include "loadflag.h"
 #include "log.h"
 #include "luaapi.h"
 #include "netaddr.h"
@@ -36,9 +38,30 @@ static bool g_menu_ready_sent = false;
 static std::mutex g_map_mu;
 static std::string g_map;
 
+// FP7137 (issue #7): "a map is loading", sent with every heartbeat so the bridge can hold a launch back while any game
+// loads a map, whatever started it. See loadflag.h and docs/FP7137.md.
+static std::mutex g_loading_mu;  // FP7137
+static loadflag::Tracker g_loading;  // FP7137
+static double mono_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }  // FP7137
+static void loading_set(loadflag::Tracker::Source src, bool on, bool restart = false) {  // FP7137
+    bool changed;  // FP7137
+    {  // FP7137
+        std::lock_guard<std::mutex> lk(g_loading_mu);  // FP7137
+        changed = g_loading.set(src, on, mono_s(), restart);  // FP7137
+    }  // FP7137
+    if (changed) coordinator::wake();  // FP7137: tell the coordinator now, not at the next heartbeat (2 s)
+}  // FP7137
+bool map_loading(double *since_s) {  // FP7137
+    std::lock_guard<std::mutex> lk(g_loading_mu);  // FP7137
+    double now = mono_s();  // FP7137
+    if (since_s) *since_s = g_loading.since_s(now);  // FP7137
+    return g_loading.active(now);  // FP7137
+}  // FP7137
+
 static std::atomic<uint64_t> g_map_load_seq{0};
 static std::map<uint64_t, std::string> g_load_maps;  // map load -> map name (filled once map_loaded knows it)
 void note_map_load_start(const std::string &map) {
+    loading_set(loadflag::Tracker::Server, true, true);  // FP7137: a new server state = a map load begins (console, Lua, map_load...)
     std::lock_guard<std::mutex> lk(g_map_mu);
     g_load_maps[++g_map_load_seq] = map;
     while (g_load_maps.size() > 1000) g_load_maps.erase(g_load_maps.begin());
@@ -442,6 +465,7 @@ static void check_map_loaded() {
     }
     if (fc - settle_since < 15) return;
     g_map_loaded_key = key;
+    loading_set(loadflag::Tracker::Server, false);  // FP7137: the load is over (the loading screen is gone, the realms are ready)
     json r = call_runtime(realms::SERVER, "status", json::object());
     json st = r.value("ok", false) ? r["result"] : json::object();
     {
@@ -539,6 +563,7 @@ void pump(lua_State *host) {
                     std::lock_guard<std::mutex> lk(g_map_mu);
                     g_map.clear();
                 }
+                loading_set(loadflag::Tracker::Server, false);  // FP7137: nothing left to load
                 events::publish("disconnected", json::object());
             }
         }
@@ -551,6 +576,12 @@ void pump(lua_State *host) {
         if (r != realms::MENU && fc % 10 == 0) poll_ready(r);
     }
     if (fc % 10 == 0) check_map_loaded();
+    // FP7137 (issue #7): the engine's own idea of "loading" (the loading screen), so a load is seen from its first frame
+    // even when it was started from the console.
+    if (g_cfg.mode == Mode::Client && fc % 5 == 0 && realms::state(realms::MENU)) {  // FP7137
+        json idle = call_runtime(realms::MENU, "menu_idle", json::object());  // FP7137
+        if (idle.value("ok", false)) loading_set(loadflag::Tracker::Menu, idle["result"].value("loading", false));  // FP7137
+    }  // FP7137
     if (fc % 30 == 0) deliver_notice();
     tick_lua_jobs();
     // Refreshes the lock state (for status) even without a client call.

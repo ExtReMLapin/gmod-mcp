@@ -12,6 +12,7 @@
 
 #include "check.h"
 #include "bridge/fp7137.h"
+#include "loadflag.h"
 #include "platform/platform.h"
 
 using namespace fp7137;
@@ -367,11 +368,129 @@ static void test_stagger() {
     put_env("GMOD_MCP_FP7137_WORKAROUND", nullptr);
 }
 
+// Issue #7: a map load the bridge does not see (console `map`, Lua, a script talking HTTP to the game) is known from the
+// games' heartbeat (`loading`). The launch gate waits for it; `map_load` reports it.
+static void test_unseen_loads() {
+    // Issue #7: the pure verdict. Loads of other games the bridge did not register make a launch wait, with their ids.
+    State none, maps;
+    maps.entries = {entry('M', 1, 99999, "map:a")};
+    CHECK(!launch_verdict(none, 1000, {}).wait);
+    Verdict v = launch_verdict(none, 1000, {"inst-a", "inst-b"});
+    CHECK(v.wait && v.code == "map_load_in_progress" && v.reason.find("map_load_outside_bridge") != std::string::npos &&
+          v.reason.find("inst-a") != std::string::npos && v.reason.find("inst-b") != std::string::npos && v.ready_at_ms == 0);
+    // A load the bridge registered keeps its own reason (the game reports it too, that is the same load).
+    Verdict both = launch_verdict(maps, 1000, {"inst-a"});
+    CHECK(both.wait && both.reason.find("map:a") != std::string::npos && both.reason.find("map_load_outside_bridge") == std::string::npos);
+    // A map load never waits for another game's load (only launches matter), registered or not.
+    CHECK(!map_load_verdict(none, 1000, 15000).wait);
+
+    put_env("GMOD_MCP_FP7137_WORKAROUND", nullptr);
+    put_env("GMOD_MCP_FP7137_SETTLE_MS", "700");
+    fresh_dir();
+    std::atomic<bool> no{false};
+    // Issue #7: a launch waits while a game loads outside the bridge, polls the probe at a modest rate, goes ahead
+    // when it is over, and reports waited_s / waited_reason.
+    {
+        std::atomic<int> calls{0};
+        auto t0 = Clock::now();
+        Gate l;
+        l.enter(Kind::Launch, "launch", 10, 30, &no, nullptr, [&]() -> std::vector<std::string> {
+            ++calls;
+            return since(t0) < 1.2 ? std::vector<std::string>{"inst-a"} : std::vector<std::string>{};
+        });
+        CHECK(l.ok() && l.waited_s() >= 1.1 && l.waited_s() < 4);
+        CHECK(l.reason().find("map_load_outside_bridge") != std::string::npos);
+        CHECK(calls >= 2 && calls <= 8);  // not once per 100 ms poll of the file
+        json res{{"content", json::array({json{{"type", "text"}, {"text", "{}"}}})}, {"structuredContent", json::object()}};
+        l.annotate(res);
+        CHECK(res["structuredContent"]["waited_s"].get<double>() >= 1.1 &&
+              res["structuredContent"]["waited_reason"].get<std::string>().find("map_load_outside_bridge") != std::string::npos);
+    }
+    // Issue #7: a load that outlasts the call's timeout fails cleanly with map_load_in_progress; nothing is registered.
+    {
+        Gate l;
+        auto t0 = Clock::now();
+        l.enter(Kind::Launch, "launch", 0.8, 30, &no, nullptr, []() -> std::vector<std::string> { return {"inst-a"}; });
+        double took = since(t0);
+        CHECK(!l.ok() && !l.aborted() && l.code() == "map_load_in_progress" && took >= 0.7 && took < 3);
+        json r = l.error_result();
+        CHECK(r["structuredContent"]["error"]["code"] == "map_load_in_progress" &&
+              r["structuredContent"]["waited_reason"].get<std::string>().find("map_load_outside_bridge") != std::string::npos);
+    }
+    // Issue #7: cancelled while waiting for an unseen load.
+    {
+        std::atomic<bool> cancel{false};
+        std::thread c([&] { sleep_ms(300); cancel = true; });
+        Gate l;
+        l.enter(Kind::Launch, "launch", 5, 30, &cancel, nullptr, []() -> std::vector<std::string> { return {"inst-a"}; });
+        c.join();
+        CHECK(!l.ok() && l.aborted());
+    }
+    // Issue #7: a map_load goes ahead at once, and lists the other games that were loading.
+    {
+        auto t0 = Clock::now();
+        Gate m;
+        m.enter(Kind::MapLoad, "map:a", 5, 30, &no, nullptr, []() -> std::vector<std::string> { return {"inst-a"}; });
+        CHECK(m.ok() && since(t0) < 0.5 && m.waited_s() == 0 && m.other_loads().size() == 1 && m.other_loads()[0] == "inst-a");
+        json res{{"content", json::array({json{{"type", "text"}, {"text", "{}"}}})}, {"structuredContent", json::object()}};
+        m.annotate(res);
+        CHECK(res["structuredContent"]["other_games_loading"].size() == 1 && res["structuredContent"]["other_games_loading"][0] == "inst-a");
+        CHECK(json::parse(res["content"][0]["text"].get<std::string>()).contains("other_games_loading"));
+        json clean{{"structuredContent", json::object()}};
+        Gate m2;
+        m2.enter(Kind::MapLoad, "map:b", 5, 30, &no, nullptr, []() -> std::vector<std::string> { return {}; });
+        m2.annotate(clean);
+        CHECK(!clean["structuredContent"].contains("other_games_loading"));
+    }
+    // Issue #7: kill switch: the probe is never called, no wait, nothing reported.
+    {
+        put_env("GMOD_MCP_FP7137_WORKAROUND", "0");
+        std::atomic<int> calls{0};
+        Gate l;
+        l.enter(Kind::Launch, "launch", 5, 30, &no, nullptr, [&]() -> std::vector<std::string> { ++calls; return {"inst-a"}; });
+        CHECK(l.ok() && l.waited_s() == 0 && calls == 0);
+        put_env("GMOD_MCP_FP7137_WORKAROUND", nullptr);
+    }
+}
+
+// Issue #7: the module's `loading` flag (sent with every heartbeat): on from the start of a load, whatever started it,
+// until it ends; never stuck for ever.
+static void test_loadflag() {
+    using loadflag::Tracker;
+    Tracker t;
+    CHECK(!t.active(0) && t.since_s(0) == 0);
+    CHECK(t.set(Tracker::Server, true, 10));           // the flag changed
+    CHECK(t.active(11) && t.since_s(15) == 5);
+    CHECK(!t.set(Tracker::Menu, true, 12));            // already on: no change
+    CHECK(!t.set(Tracker::Server, false, 13));         // the menu still says loading
+    CHECK(t.active(14));
+    CHECK(t.set(Tracker::Menu, false, 15) && !t.active(15));
+    // A new load starting while the flag is on restarts its clock; a plain poll does not.
+    CHECK(t.set(Tracker::Server, true, 100));
+    CHECK(!t.set(Tracker::Server, true, 200));         // a poll saying "still on" does not restart it
+    CHECK(!t.active(100 + loadflag::kMaxLoadS + 1));   // ... so a stuck source expires
+    CHECK(t.set(Tracker::Server, true, 500, true));
+    CHECK(t.active(501));                              // restart (a new state opened) re-arms it
+    CHECK(!t.active(500 + loadflag::kMaxLoadS + 1));
+    // Expiry of one source does not hide another that is still fresh.
+    Tracker u;
+    u.set(Tracker::Server, true, 0);
+    u.set(Tracker::Menu, true, 200);
+    CHECK(u.active(350) && u.since_s(350) == 150 && !u.set(Tracker::Server, false, 350));
+    CHECK(u.since_s(350) == 150);
+    // Ending an expired source is not a change.
+    Tracker w;
+    w.set(Tracker::Menu, true, 0);
+    CHECK(!w.active(1000) && !w.set(Tracker::Menu, false, 1000));
+}
+
 void test_fp7137() {
     test_pure();
     test_gate();
     test_stale_and_switch();
     test_stagger();
+    test_unseen_loads();
+    test_loadflag();
     put_env("GMOD_MCP_FP7137_SETTLE_MS", nullptr);
     for (const auto &d : g_dirs) {
         std::error_code ec;

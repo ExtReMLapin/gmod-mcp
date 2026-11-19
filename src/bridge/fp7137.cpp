@@ -197,7 +197,7 @@ bool prune(State &s, int64_t now_ms, const std::function<bool(const Entry &)> &a
     return any;
 }
 
-Verdict launch_verdict(const State &s, int64_t now_ms) {
+Verdict launch_verdict(const State &s, int64_t now_ms, const std::vector<std::string> &loading_elsewhere) {
     (void)now_ms;
     Verdict v;
     std::string what;
@@ -206,6 +206,16 @@ Verdict launch_verdict(const State &s, int64_t now_ms) {
         if (e.kind == 'M') {
             what += (n++ ? ", " : "") + e.tag;
         }
+    if (n == 0 && !loading_elsewhere.empty()) {  // issue #7: a load no bridge registered
+        std::string ids;
+        for (const auto &id : loading_elsewhere) ids += (ids.empty() ? "" : ", ") + id;
+        v.wait = true;
+        v.code = "map_load_in_progress";
+        v.reason = "map_load_outside_bridge: a map is loading in " + ids +
+                   ", started by something other than this bridge (console, Lua, a script talking to the game): starting a "
+                   "game now would make it release its graphics resources and could crash it (Garry's Mod issue 7137)";
+        return v;
+    }
     if (n == 0) return v;
     v.wait = true;
     v.code = "map_load_in_progress";
@@ -261,7 +271,7 @@ void for_each_limited(size_t n, const std::function<void(size_t)> &fn) {
 // --- Gate ---
 
 void Gate::enter(Kind kind, const std::string &tag, double budget_s, double hold_s, const std::atomic<bool> *cancelled,
-                 const Notify &notify) {
+                 const Notify &notify, const LoadingProbe &loading) {
     if (!enabled()) return;
     auto t0 = std::chrono::steady_clock::now();
     auto waited = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
@@ -270,12 +280,18 @@ void Gate::enter(Kind kind, const std::string &tag, double budget_s, double hold
     std::string my_tag = clean_tag(tag) + "#" + std::to_string(g_seq.fetch_add(1));
     double next_note = 0;
     bool noted = false;
+    std::vector<std::string> elsewhere;  // issue #7: games loading a map, from the probe (launch only)
+    double next_probe = 0;
     for (;;) {
+        if (kind == Kind::Launch && loading && waited() >= next_probe) {
+            elsewhere = loading();  // outside the file lock: it is a call to a game
+            next_probe = waited() + 0.5;
+        }
         Verdict v;
         bool registered = false;
         bool locked = with_state([&](State &st) {
             int64_t now = wall_ms();
-            v = kind == Kind::Launch ? launch_verdict(st, now) : map_load_verdict(st, now, settle);
+            v = kind == Kind::Launch ? launch_verdict(st, now, elsewhere) : map_load_verdict(st, now, settle);
             if (v.wait) return false;
             st.entries.push_back(Entry{kind == Kind::Launch ? 'L' : 'M', plat::process_id(), plat::process_start_stamp(plat::process_id()),
                                        now + (int64_t)(hold_s * 1000), my_tag});
@@ -285,6 +301,7 @@ void Gate::enter(Kind kind, const std::string &tag, double budget_s, double hold
         if (!locked || registered) {  // free to go (or no shared state available: carry on without the workaround)
             waited_s_ = noted ? waited() : 0;
             if (registered) {
+                if (kind == Kind::MapLoad && loading) other_loads_ = loading();  // issue #7: told, not waited for
                 entered_ = true;
                 tag_ = my_tag;
                 until_ms_ = wall_ms() + (int64_t)(hold_s * 1000);
@@ -340,10 +357,14 @@ void Gate::release_when_done(std::function<bool()> running) {
 }
 
 void Gate::annotate(json &res) const {
-    if (waited_s_ < 0.05 || !res.is_object() || !res.contains("structuredContent") || !res["structuredContent"].is_object()) return;
+    bool waited = waited_s_ >= 0.05;
+    if ((!waited && other_loads_.empty()) || !res.is_object() || !res.contains("structuredContent") || !res["structuredContent"].is_object()) return;
     json &sc = res["structuredContent"];
-    sc["waited_s"] = std::round(waited_s_ * 10) / 10;
-    sc["waited_reason"] = reason_;
+    if (waited) {
+        sc["waited_s"] = std::round(waited_s_ * 10) / 10;
+        sc["waited_reason"] = reason_;
+    }
+    if (!other_loads_.empty()) sc["other_games_loading"] = other_loads_;
     // The text content is the JSON of the structured one in the bridge's and the game's answers: keep them equal.
     if (res.contains("content") && res["content"].is_array() && !res["content"].empty() && res["content"][0].is_object())
         res["content"][0]["text"] = sc.dump(-1, ' ', false, json::error_handler_t::replace);
