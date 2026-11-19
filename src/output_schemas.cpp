@@ -87,8 +87,10 @@ json build(const std::string &tool) {
                         {"values", "n"});
         s["lua_exec"] = exec;
         s["lua_exec_file"] = exec;
-        s["lua_reload"] = obj({{"ok", B}, {"file", S}, {"chunkname", S}, {"realms", Obj}, {"other_matches", STRS}},
-                              {"ok", "file", "chunkname", "realms"});
+        // Two shapes: {path} runs one file; {mounted_changed} (issue #9) runs the changed files of the mounted folder.
+        s["lua_reload"] = obj({{"ok", B}, {"file", S}, {"chunkname", S}, {"realms", Obj}, {"other_matches", STRS},
+                               {"mode", S}, {"path", S}, {"reloaded", ANYS}, {"skipped", ANYS}, {"realms_without_mount", ANYS}},
+                              {"ok"});
         s["lua_check"] = obj({{"ok", B}, {"realm", S}, {"checked", N}, {"errors", ANYS}, {"unknown_globals", ANYS},
                               {"globals_written", ANYS}, {"truncated", B}, {"notes", STRS}, {"path", S}},
                              {"ok", "realm", "checked", "errors"});
