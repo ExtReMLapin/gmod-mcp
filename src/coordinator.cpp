@@ -4,6 +4,12 @@
 // the base port every 2 s (registration is an upsert, authenticated with the shared bearer token). When the
 // coordinator stops answering, members try to bind the base port: the exclusive bind guarantees a single winner,
 // and the others simply re-register with it on their next heartbeat.
+//
+// Hand-over (issue #6): a member tries to bind the base port at its FIRST failed heartbeat (the bind only succeeds when
+// nobody holds the port, so it never takes a slow coordinator over; it used to wait for 3 failures, 9 s on Windows where
+// a closed loopback port takes 2 s to refuse). The new coordinator then asks every other port of the range to
+// re-register at once, and for a few seconds it answers `coordinator_changing` (retryable) rather than
+// `unknown_instance` for an instance that did not register yet.
 #include "coordinator.h"
 
 #ifdef _WIN32
@@ -38,7 +44,9 @@ namespace coordinator {
 
 static const double kHeartbeatS = 2.0;
 static const double kDeadAfterS = 10.0;
-static const int kFailuresBeforeElection = 3;
+static const double kFastRetryS = 0.3;          // heartbeat period after a failed one (the coordinator may be gone)
+static const double kHandoverGraceS = 8.0;      // after a take-over: an unknown instance may just not have re-registered yet
+static const double kHandoverRetryS = 1.0;      // retry_after_s advised during the grace period
 
 static double unix_now() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
 
@@ -77,11 +85,35 @@ static std::map<std::string, Member> g_members;
 static std::set<std::string> g_claimed_dumps;  // dumps already given to a dead instance (two crashes do not share one)
 static std::atomic<bool> g_run{false};
 static std::thread g_thread;
-static std::atomic<int> g_failures{0};
+static std::atomic<int64_t> g_takeover_ms{0};  // steady-clock ms of the last take-over of the base port (0 = never)
+static std::mutex g_cid_mu;
+static std::string g_coordinator_id;  // member side: the coordinator named by the last heartbeat answer
+
+static int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count() + 1; }
 
 bool is_coordinator() {
     int base = agent::config().base_port;
     return httpsrv::port() == base || (httpsrv::has_extra() && httpsrv::extra_port() == base);
+}
+
+bool in_handover() {
+    int64_t t = g_takeover_ms.load();
+    return t != 0 && (double)(steady_ms() - t) / 1000.0 < kHandoverGraceS;
+}
+
+void note_takeover_for_tests(bool on) { g_takeover_ms = on ? steady_ms() : 0; }
+
+json handover_info() {
+    if (!in_handover()) return json();
+    return json{{"state", "changing"}, {"retry_after_s", kHandoverRetryS},
+                {"note", "this instance just took over the coordinator role: the other instances are re-registering, the list is "
+                         "incomplete for a few seconds (calls with `instance` answer coordinator_changing meanwhile)"}};
+}
+
+std::string coordinator_id() {
+    if (is_coordinator()) return agent::config().instance_id;
+    std::lock_guard<std::mutex> lk(g_cid_mu);
+    return g_coordinator_id;
 }
 
 static json self_info() {
@@ -195,6 +227,21 @@ json instances() {
     return arr;
 }
 
+json leaving_note() {
+    if (!is_coordinator()) return json();
+    json ids = json::array();
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        purge_locked();
+        for (auto &kv : g_members) ids.push_back(kv.first);
+    }
+    if (ids.empty()) return json();
+    return json{{"coordinator_moved", true}, {"remaining_instances", ids},
+                {"warning", "this instance is the coordinator (it holds the base port and the directory of instances): when it ends, "
+                            "the other instances elect a new one within about a second; calls with `instance` answer "
+                            "coordinator_changing (retryable) until they re-registered"}};
+}
+
 static std::unique_ptr<httplib::Client> client(int port, double read_timeout_s) {
     auto cli = std::make_unique<httplib::Client>("127.0.0.1", port);
     cli->set_connection_timeout(1, 0);
@@ -298,6 +345,12 @@ static json relay(const std::string &instance, const std::string &tool, const js
                 double ago = std::chrono::duration<double>(Clock::now() - g->second.when).count();
                 return wrap_err("instance_gone", gone_message(instance, gt.pid, ago, true));
             }
+            if (in_handover())
+                return wrap_err("coordinator_changing",
+                                "the coordinator role just moved to this instance (" + agent::config().instance_id + ") and " + instance +
+                                    " has not registered with it yet: retry in " + std::to_string((int)kHandoverRetryS) +
+                                    " s (nothing was sent to it)",
+                                json{{"retry_after_s", kHandoverRetryS}, {"instance", instance}});
             return wrap_err("unknown_instance", "unknown instance: " + instance + " (see instances_list)");
         }
         port = it->second.info.value("port", 0);
@@ -367,7 +420,40 @@ static bool heartbeat() {
     auto res = cli->Post("/internal/heartbeat", self_info().dump(), "application/json");
     if (res && (res->status == 401 || res->status == 403)) set_link("refused");
     else set_link(res && res->status == 200 ? "registered" : "unreachable");
-    return res && res->status == 200;
+    if (res && res->status == 200) {
+        try {
+            json r = json::parse(res->body);
+            if (r.contains("coordinator") && r["coordinator"].is_string()) {
+                std::lock_guard<std::mutex> lk(g_cid_mu);
+                g_coordinator_id = r["coordinator"].get<std::string>();
+            }
+        } catch (...) {
+        }
+        return true;
+    }
+    return false;
+}
+
+// Member side: the new coordinator asks to be heard now instead of at the next heartbeat.
+static json on_reregister(const json &) {
+    if (is_coordinator()) return json{{"ok", false}, {"error", "is_coordinator"}};
+    return json{{"ok", heartbeat()}};
+}
+
+// Coordinator side, right after the take-over: the other instances listen on the next ports of the range (the main
+// listener takes the first free port from the base one). Each is asked to register now; all in parallel.
+static void solicit_members() {
+    const int base = agent::config().base_port, own = agent::config().port;
+    std::vector<std::thread> th;
+    for (int p = base + 1; p < base + 16; ++p) {
+        if (p == own) continue;
+        th.emplace_back([p] {
+            auto cli = client(p, 3);
+            cli->set_connection_timeout(0, 300000);
+            cli->Post("/internal/reregister", "{}", "application/json");
+        });
+    }
+    for (auto &t : th) t.join();
 }
 
 void say_goodbye() {
@@ -379,29 +465,34 @@ void say_goodbye() {
 }
 
 static void loop() {
+    double wait_s = kHeartbeatS;
     while (g_run) {
-        for (int i = 0; i < (int)(kHeartbeatS * 10) && g_run; ++i) plat::sleep_ms(100);
+        for (int i = 0; i < (int)(wait_s * 10 + 0.5) && g_run; ++i) plat::sleep_ms(100);
         if (!g_run) break;
         if (is_coordinator()) {
+            wait_s = kHeartbeatS;
             std::lock_guard<std::mutex> lk(g_mu);
             purge_locked();
             continue;
         }
         if (heartbeat()) {
-            g_failures = 0;
+            wait_s = kHeartbeatS;
             continue;
         }
-        if (++g_failures < kFailuresBeforeElection) continue;
-        // Coordinator gone: try to take over the base port.
+        wait_s = kFastRetryS;  // the coordinator may be gone: look again soon, do not wait 2 s
+        // Try to take over the base port: it only succeeds when nobody holds it (exclusive bind), whatever the failure was.
         if (httpsrv::try_bind_extra(agent::config().base_port)) {
+            g_takeover_ms = steady_ms();
             logx::info("coordinator unreachable: this instance is now the coordinator (port %d)", agent::config().base_port);
-            g_failures = 0;
+            wait_s = kHeartbeatS;
+            solicit_members();
         }
     }
 }
 
 void start() {
     httpsrv::add_internal_route("heartbeat", on_heartbeat);
+    httpsrv::add_internal_route("reregister", on_reregister);
     mcp::set_relay(relay);
     mcp::set_peers([] {
         std::vector<std::string> ids;
