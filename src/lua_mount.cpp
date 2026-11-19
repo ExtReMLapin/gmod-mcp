@@ -10,6 +10,7 @@
 #include "agent.h"
 #include "log.h"
 #include "platform/platform.h"
+#include "realms.h"
 #include "util.h"
 
 namespace lua_mount {
@@ -120,7 +121,15 @@ static void hooked_mount(void *self, const char *id) {
     ++g_hook_calls;
     g_hook_ids[id] = g_hook_ids.value(id, 0) + 1;
     std::string root = current();
-    if (!root.empty() && (std::strcmp(id, "lsv") == 0 || std::strcmp(id, "lcl") == 0)) add_lua(root, id);
+    bool sv = std::strcmp(id, "lsv") == 0, cl = std::strcmp(id, "lcl") == 0;
+    if (!root.empty() && (sv || cl)) {
+        add_lua(root, id);
+        // Issue #9: the folder is in front for the Lua this realm loads next: remember what it holds right now.
+        try {
+            note_load_start(sv ? realms::SERVER : realms::CLIENT, root, scan_files(root));
+        } catch (...) {
+        }
+    }
     --g_in_hook;
 }
 
@@ -151,6 +160,13 @@ static bool hook(bool on, std::string &err) {
 }
 
 bool supported(std::string *) { return true; }
+
+bool empty_cache() {
+    std::string err;
+    if (!ensure(err)) return false;
+    g_ls->EmptyCache();
+    return true;
+}
 
 json info() {
     std::string err;
@@ -246,6 +262,8 @@ json info() {
 }
 
 json set(const std::string &, bool) { return info(); }
+
+bool empty_cache() { return false; }
 
 #endif
 

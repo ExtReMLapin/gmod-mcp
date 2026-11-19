@@ -307,8 +307,14 @@ Example: the worktree `D:/dev/my-addon-wt` of the addon installed as `garrysmod/
   loaded, including a file your branch deleted.
 - The engine names the folder's files from the folder's root: `debug.getinfo(f).source` is `@lua/my_addon/x.lua`, not
   `@addons/my_addon/lua/my_addon/x.lua`.
-- No autorefresh: after an edit, `lua_reload {path}` (or `map_load`), then `lua_function_source` to check that the
-  running function is the file's.
+- No autorefresh: `status.lua_mount.stale_files` lists the folder's files that changed since each realm loaded them;
+  `lua_reload {mounted_changed: true}` runs them again (or `lua_reload {path}` for one file, or `map_load`), then
+  `lua_function_source` to check that the running function is the file's. A reload re-runs the file: it does not undo
+  hooks or entities the old copy created. `map_load` warns when the folder changed during the load, and empties the
+  engine's Lua file cache first.
+- Which copy ran: `lua_function_source` and `lua_inspect` on a function return `from_mount` and the real `disk` path
+  (`@lua/x.lua` is the same name for the folder's copy and an installed one). It is recorded when the folder was put
+  in front of the realm's Lua path, not guessed from the name.
 - Windows game clients only for now: not on Linux (the engine's filesystem interface is not verified there) nor on a
   dedicated server (its filesystem interface is not reachable the same way).
 - How it works: the engine's own search paths (`IFileSystem::AddSearchPath` at the head of the Lua path IDs), put back

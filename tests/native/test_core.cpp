@@ -1174,6 +1174,176 @@ static void test_port_conflict_link() {
     cfg.port = saved_port;
 }
 
+
+// Issue #9: the mounted folder's provenance (which copy of a file a realm really loaded), what changed on disk since
+// each realm loaded it, and reloading it on demand. No game: the load records are fed through the same functions the
+// MountLua hook and the runtime injection call.
+static void set_mtime(const fs::path &p, int seconds_from_now) {
+    fs::last_write_time(p, fs::file_time_type::clock::now() + std::chrono::seconds(seconds_from_now));
+}
+static bool has_str(const json &arr, const std::string &s) {
+    for (const auto &e : arr)
+        if (e.is_string() && e.get<std::string>() == s) return true;
+    return false;
+}
+static const json *find_file(const json &state, const std::string &rel) {
+    for (const auto &f : state["stale_files"])
+        if (f.value("file", "") == rel) return &f;
+    return nullptr;
+}
+
+static void test_issue9_mount_reload() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests" / "i9";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    fs::path game = base / "garrysmod", ov = base / "wt";
+    touch(game / "lua/pba/x.lua");          // the installed copy of a file that the mounted folder shadows
+    touch(game / "addons/pba/lua/pba/core.lua");
+    touch(ov / "lua/pba/x.lua");
+    touch(ov / "lua/pba/sv_relay.lua");
+    touch(ov / "lua/pba/cl_hud.lua");
+    touch(ov / "lua/pba/sh_shared.lua");
+    touch(ov / "lua/entities/pba_ent/init.lua");
+    touch(ov / "gamemodes/ovgm/gamemode/init.lua");
+    std::ofstream(ov / "lua/readme.txt") << "not lua";
+    auto &cfg = agent::config();
+    cfg.game_dir = game.u8string();
+    cfg.tmp_dir = (game / "lua/mcpagent_tmp").u8string();
+    const int SV = realms::SERVER, CL = realms::CLIENT;
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+
+    // scan: every .lua under lua/ and gamemodes/, named from the mount root (the engine's names), nothing else.
+    auto files = lua_mount::scan_files(ov.u8string());
+    CHECK(files.size() == 6);  // Issue #9
+    CHECK(files.count("lua/pba/x.lua") == 1 && files.count("gamemodes/ovgm/gamemode/init.lua") == 1);  // Issue #9
+    CHECK(files.count("lua/readme.txt") == 0);  // Issue #9: not Lua
+    CHECK(files["lua/pba/x.lua"].mtime == lua_mount::mtime_of((ov / "lua/pba/x.lua").u8string()));  // Issue #9
+
+    // No record yet: nothing is known to come from the mount, and nothing is reported as changed.
+    CHECK(!lua_mount::realm_loaded_with_mount(SV));  // Issue #9
+    CHECK(lua_mount::changed_files(SV).empty());  // Issue #9
+    CHECK(tools::mount_state({SV, CL})["realms_without_mount"].size() == 2);  // Issue #9: both realms predate the mount
+
+    // The server loaded with the mounted folder in front (hook, then injection); the client did not (no hook before it).
+    lua_mount::note_load_start(SV, ov.u8string(), files);
+    CHECK(!lua_mount::realm_loaded_with_mount(SV));  // Issue #9: only once the realm's runtime was injected: a pending load
+    lua_mount::note_realm_loaded(SV);
+    lua_mount::note_realm_loaded(CL);  // no load start recorded for the client: it loaded without the mount
+    CHECK(lua_mount::realm_loaded_with_mount(SV) && !lua_mount::realm_loaded_with_mount(CL));  // Issue #9
+
+    // Provenance: server copy comes from the mount, the client's (same chunk name) from the installed game.
+    json p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["mount_has_file"] == true && same(p["disk"], ov / "lua/pba/x.lua"));  // Issue #9
+    CHECK(p["provenance"] == "mount_in_place_at_load");  // Issue #9: says how it knows
+    p = tools::source_provenance(CL, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == false && p["mount_has_file"] == true && same(p["disk"], game / "lua/pba/x.lua"));  // Issue #9: the installed copy
+    CHECK(p["provenance"] == "installed");  // Issue #9
+    p = tools::source_provenance(CL, "@lua/pba/sv_relay.lua");  // only in the mount, which this realm never saw: no copy on disk it ran
+    CHECK(p["from_mount"] == false && p["mount_has_file"] == true && !p.contains("disk"));  // Issue #9
+    p = tools::source_provenance(SV, "@addons/pba/lua/pba/core.lua");
+    CHECK(p["from_mount"] == false && p["mount_has_file"] == false && same(p["disk"], game / "addons/pba/lua/pba/core.lua"));  // Issue #9
+    p = tools::source_provenance(SV, "=mcpagent:inspect");
+    CHECK(p["from_mount"] == false && p["provenance"] == "no_file" && !p.contains("disk"));  // Issue #9: code without a file
+    p = tools::source_provenance(SV, "@gamemodes/ovgm/gamemode/init.lua");
+    CHECK(p["from_mount"] == true && same(p["disk"], ov / "gamemodes/ovgm/gamemode/init.lua"));  // Issue #9: gamemode files too
+    // A file added to the mounted folder after the load was not loaded from it.
+    touch(ov / "lua/pba/late.lua");
+    p = tools::source_provenance(SV, "@lua/pba/late.lua");
+    CHECK(p["from_mount"] == false && p["mount_has_file"] == true);  // Issue #9: not in the load-time snapshot
+
+    CHECK(lua_mount::changed_files(CL).empty());  // Issue #9: no record for the client: nothing to compare with
+    json st0 = tools::mount_state({SV, CL});
+    CHECK(has_str(st0["realms_without_mount"], "client") && !has_str(st0["realms_without_mount"], "server"));  // Issue #9
+    CHECK(st0["loaded_with_mount"]["server"] == true && st0["loaded_with_mount"]["client"] == false);  // Issue #9
+    CHECK(tools::mount_warning(st0).find("map_load") != std::string::npos);  // Issue #9: the way out for a realm that predates the mount
+    // Running a file of the folder again in a realm that loaded without it: from then on that file comes from the folder.
+    lua_mount::note_reloaded(CL, ov.u8string(), "lua/pba/x.lua", lua_mount::mtime_of((ov / "lua/pba/x.lua").u8string()));
+    p = tools::source_provenance(CL, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["provenance"] == "reloaded_from_mount" && same(p["disk"], ov / "lua/pba/x.lua"));  // Issue #9
+    CHECK(!lua_mount::realm_loaded_with_mount(CL));  // Issue #9: one reloaded file does not make the realm "loaded with the mount"
+    // A new map: the client now loads with the folder in front (a load start after its injection counts for it).
+    lua_mount::note_load_start(CL, ov.u8string(), files);
+    CHECK(lua_mount::realm_loaded_with_mount(CL));  // Issue #9
+    CHECK(tools::mount_state({SV, CL})["realms_without_mount"].empty());  // Issue #9
+
+    // Changes since each realm loaded: modified (older or newer), added, deleted. The unchanged file is not listed.
+    set_mtime(ov / "lua/pba/sv_relay.lua", 30);
+    set_mtime(ov / "lua/pba/cl_hud.lua", -3600);  // a git checkout can bring an OLDER time: still a change
+    fs::remove(ov / "lua/pba/sh_shared.lua");
+    auto ch = lua_mount::changed_files(SV);
+    auto reason = [&](const std::string &rel) {
+        for (const auto &c : ch)
+            if (c.rel == rel) return c.reason;
+        return std::string();
+    };
+    CHECK(reason("lua/pba/sv_relay.lua") == "modified" && reason("lua/pba/cl_hud.lua") == "modified");  // Issue #9
+    CHECK(reason("lua/pba/sh_shared.lua") == "deleted" && reason("lua/pba/late.lua") == "added");  // Issue #9
+    CHECK(reason("lua/pba/x.lua").empty() && reason("lua/readme.txt").empty());  // Issue #9
+
+    // Reload: running the file again records the time it had, so it is no longer reported.
+    lua_mount::note_reloaded(SV, ov.u8string(), "lua/pba/sv_relay.lua", lua_mount::mtime_of((ov / "lua/pba/sv_relay.lua").u8string()));
+    ch = lua_mount::changed_files(SV);
+    CHECK(reason("lua/pba/sv_relay.lua").empty() && reason("lua/pba/cl_hud.lua") == "modified");  // Issue #9
+
+    // status.lua_mount: stale files with the realms each runs in (sv_ -> server, cl_ -> client, shared -> both).
+    json st = tools::mount_state({SV, CL});
+    CHECK(st["path"] == ov.u8string());  // Issue #9
+    CHECK(st["stale_files"].is_array() && find_file(st, "lua/pba/cl_hud.lua") && find_file(st, "lua/pba/sh_shared.lua") &&
+          find_file(st, "lua/pba/late.lua") && !find_file(st, "lua/pba/sv_relay.lua"));  // Issue #9
+    if (find_file(st, "lua/pba/cl_hud.lua")) {
+        const json &f = *find_file(st, "lua/pba/cl_hud.lua");
+        CHECK(f["reason"] == "modified" && same(f["disk"], ov / "lua/pba/cl_hud.lua") && f["realms"].size() == 1 && has_str(f["realms"], "client"));  // Issue #9: a cl_ file runs on the client only
+    }
+    CHECK(!find_file(st, "lua/pba/sv_relay.lua") && find_file(st, "lua/pba/sh_shared.lua") && (*find_file(st, "lua/pba/sh_shared.lua"))["realms"].size() == 2);  // Issue #9: shared: both realms
+    std::string w = tools::mount_warning(st);
+    CHECK(w.find("lua_reload") != std::string::npos && w.find("cl_hud.lua") != std::string::npos);  // Issue #9
+    CHECK(st.contains("warning") && st["warning"] == w);  // Issue #9
+    CHECK(tools::mount_warning(json{{"stale_files", json::array()}, {"realms_without_mount", json::array()}}).empty());  // Issue #9: nothing stale, no warning
+
+    // Reload plan: what lua_reload {mounted_changed} would run, per realm. Deleted files and scripted classes are left out.
+    json plan = tools::plan_mount_reload(st);
+    bool has_cl = false, has_deleted = false;
+    for (const auto &it : plan["reload"]) {
+        if (it["file"] == "lua/pba/cl_hud.lua") has_cl = true;
+        if (it["file"] == "lua/pba/sh_shared.lua") has_deleted = true;
+    }
+    CHECK(has_cl && !has_deleted);  // Issue #9
+    CHECK(plan["skipped"].is_array());  // Issue #9
+    touch(ov / "lua/entities/pba_ent/shared.lua");  // a scripted class file: its table (ENT) is built by the engine
+    set_mtime(ov / "lua/entities/pba_ent/init.lua", 40);
+    plan = tools::plan_mount_reload(tools::mount_state({SV, CL}));
+    bool ent_reloaded = false, ent_skipped = false;
+    for (const auto &it : plan["reload"]) ent_reloaded |= it["file"] == "lua/entities/pba_ent/init.lua";
+    for (const auto &it : plan["skipped"]) ent_skipped |= it["file"] == "lua/entities/pba_ent/init.lua" && !it.value("why", "").empty();
+    CHECK(!ent_reloaded && ent_skipped);  // Issue #9
+    // Alphabetical order, one entry per file.
+    std::vector<std::string> order;
+    for (const auto &it : plan["reload"]) order.push_back(it["file"]);
+    CHECK(std::is_sorted(order.begin(), order.end()));  // Issue #9
+
+    // No mount: no state, no warning.
+    lua_mount::set_current_for_tests("");
+    CHECK(tools::mount_state({SV, CL}).is_null() && tools::mount_warning(json()).empty());  // Issue #9
+    // A mount that changed since the realm loaded (another folder): the realm ran the old folder's code.
+    lua_mount::set_current_for_tests((base / "wt2").u8string());
+    CHECK(!lua_mount::realm_loaded_with_mount(SV));  // Issue #9
+    lua_mount::set_current_for_tests("");
+
+    // lua_reload {mounted_changed}: exactly one of path / mounted_changed; with nothing changed it runs nothing.
+    tools::register_core();
+    json r = mcp::call_tool("lua_reload", json::object());
+    CHECK(r.value("isError", false) && r.dump().find("invalid_params") != std::string::npos);  // Issue #9: neither path nor mounted_changed
+    r = mcp::call_tool("lua_reload", json{{"path", "pba/x.lua"}, {"mounted_changed", true}});
+    CHECK(r.value("isError", false) && r.dump().find("invalid_params") != std::string::npos);  // Issue #9: both
+    lua_mount::set_current_for_tests(ov.u8string());
+    r = mcp::call_tool("lua_reload", json{{"mounted_changed", true}});
+    CHECK(!r.value("isError", false) && r.dump().find("\"reloaded\"") != std::string::npos);  // Issue #9: nothing stale in a realm that is not there
+    lua_mount::set_current_for_tests("");
+    lua_mount::forget_loads_for_tests();
+    fs::remove_all(base, ec);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
     test_installer_roundtrip();
@@ -1191,6 +1361,7 @@ int main() {
     test_argcheck();
     test_job_ids();
     test_lua_mount_paths();
+    test_issue9_mount_reload();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();
