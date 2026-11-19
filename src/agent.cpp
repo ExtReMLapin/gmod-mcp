@@ -362,6 +362,10 @@ static bool inject(int realm, lua_State *L, std::string &e) {
         A.setfield(L, -2, "test_client");
         A.pushcclosure(L, native_user_config, 0);
         A.setfield(L, -2, "user_config");
+        if (!g_cfg.restore_convars.empty()) {  // Issue #10
+            A.pushstring(L, g_cfg.restore_convars.c_str());
+            A.setfield(L, -2, "restore_convars");
+        }
     }
     A.pushnumber(L, (double)(g_gen[realm].load() + 1));
     A.setfield(L, -2, "generation");

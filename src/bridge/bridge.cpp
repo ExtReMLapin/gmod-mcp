@@ -43,6 +43,7 @@
 #include "bridge_snapshot.h"
 #include "crashinfo.h"
 #include "gamedir.h"
+#include "launch_opts.h"  // Issue #10
 #include "fp7137.h"  // FP7137
 #include "gmod_mcp_reply.h"
 #include "mcp_protocol.h"
@@ -833,6 +834,27 @@ json bridge_tools() {
          "hides per-frame cost) and 'normal' (640x360, 30 fps; for rendering checks, screenshots and frame-time sensitive "
          "tests). sound: false (-nosound) changes what the engine reports about sounds: SoundDuration of compressed "
          "(ADPCM) WAV files differs (0.49 s instead of 1.24 s seen); keep sound on for sound tests.\n"
+         // Issue #10
+         "Pass-through options (checked before anything starts; a refused one is invalid_params naming it): fps_max and "
+         "fps_max_nofocus (integers: 0 = no cap, or 10 to 1000) replace the preset's frame cap (fps_max_nofocus follows "
+         "fps_max when only that one is given): timing-sensitive tests give different verdicts at 20, 45 and 300 fps, and "
+         "perf measurements need more than 30. commands: console commands run on each client once it answers, before `map` "
+         "loads, one at a time in order, e.g. [\"fps_max 300\", \"snd_mute_losefocus 0\"] (a `;` splits a line as in the console); "
+         "refused: quit and exit (close with instances_close), connect, retry, redirect and connect_lobby (gmod-mcp never "
+         "connects to a server) and map changes (map, changelevel, load: use `map`). Each result is in "
+         "instances[i].commands [{cmd, ok, error?}]; a command that fails makes the call isError, the others still run. "
+         "launch_args: extra engine command-line tokens, one per array element (a printable ASCII word without spaces, quotes "
+         "or `;`), e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]; a `+name value` token runs a console command at startup. "
+         "Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, -width, -height and the window-mode options, "
+         "-dxlevel, -condebug, -game), +connect and the other connecting or map-loading commands. -nosound is the same as "
+         "sound: false. Archived convars changed this way (fps_max, a `+convar` token, a command such as `cl_showfps 1` or "
+         "`toggle snd_mute_losefocus`) are given back to the user's value before a clean quit like the frame cap (needs the "
+         "module of this release in the game folder: an older module restores only fps_max, fps_max_nofocus, "
+         "engine_no_focus_sleep and snd_mute_losefocus; a convar changed by `exec` of a cfg file is not tracked). "
+         "Where the options are listed: command-line options, Valve Developer Community \"Command line options\" "
+         "(https://developer.valvesoftware.com/wiki/Command_line_options) and, for the GMod-specific ones, the Garry's Mod "
+         "wiki (wiki_search \"command line\"); console commands and convars: api_search and concommand_list on a running "
+         "client.\n"
          "All clients share the game folder with the user's own game: same addons, cfg, data/ and cookies (sv.db/cl.db). "
          "A test that writes cookies, data files or archived convars changes the user's game too: clean up after it. "
          "The frame cap and the focus options these clients start with (fps_max, fps_max_nofocus, snd_mute_losefocus) are "
@@ -849,8 +871,8 @@ json bridge_tools() {
          "in client.dll at client Lua startup: seen at 480x270 and 320x240; it only survived with the HUD turned off). "
          "-textmode and lower graphics settings were measured: no real gain (and graphics settings would be saved into the "
          "user's own), so neither is offered.\n"
-         "Result: {instances: [{instance, pid, port, owner?, map? (or map: null + map_error)}], game_dir, found_by, preset, "
-         "keep, fps_max, fps_note, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
+         "Result: {instances: [{instance, pid, port, owner?, commands? [{cmd, ok, error?}], map? (or map: null + map_error)}], game_dir, found_by, preset, "
+         "keep, fps_max, fps_max_nofocus, fps_note, launch_args?, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
          "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. A client that "
          "crashed during startup or its map load is reported as client_crashed (startup: the whole call's error; map load: that "
          "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. Example: "
@@ -880,6 +902,14 @@ json bridge_tools() {
             {"maxplayers", {{"type", "integer"}, {"minimum", 1}, {"maximum", 128}, {"description", "For map_load (default 1: singleplayer)."}}},
             {"preset", {{"type", "string"}, {"enum", json::array({"light", "normal"})}, {"description", "Default light."}}},
             {"sound", {{"type", "boolean"}, {"description", "Keep sound on (default true). false saves CPU when sound does not matter."}}},
+            {"fps_max", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000},  // Issue #10
+                         {"description", "Frame cap of these clients (fps_max): 0 = no cap, or 10 to 1000. Default: the preset's (light 20, normal 30). Given back to the user's value on a clean quit."}}},
+            {"fps_max_nofocus", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000},  // Issue #10
+                                 {"description", "Frame cap when the window has no focus (fps_max_nofocus): 0 = no cap, or 10 to 1000. Default: the same as fps_max."}}},
+            {"commands", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 256}}},  // Issue #10
+                          {"description", "Console commands run on each client once it answers, before `map` loads, e.g. [\"fps_max 300\", \"snd_mute_losefocus 0\"]. quit, exit, connect and map changes are refused. Archived convars they change are given back on a clean quit."}}},
+            {"launch_args", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 160}}},  // Issue #10
+                             {"description", "Extra engine command-line tokens, one per element, e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]. Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, window mode, -dxlevel, -condebug, -game), +connect, +map. Options: https://developer.valvesoftware.com/wiki/Command_line_options"}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
             {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
@@ -1199,6 +1229,25 @@ json launch_tool(const json &args, const json &token) {
     double timeout = args.value("timeout_s", 180.0);
     std::string map = args.value("map", "");
     std::string owner = args.value("owner", "");
+    // Issue #10: pass-through options, checked before anything starts (the schema already checked the types and bounds).
+    int fps_cap = preset == "normal" ? 30 : 20, fps_cap_nofocus = fps_cap;
+    bool fps_custom = args.contains("fps_max") || args.contains("fps_max_nofocus");
+    for (const char *key : {"fps_max", "fps_max_nofocus"}) {
+        if (!args.contains(key)) continue;
+        std::string fe = launchopts::fps_error(args[key], key);
+        if (!fe.empty()) return tool_error("invalid_params", fe);
+    }
+    if (args.contains("fps_max")) fps_cap = fps_cap_nofocus = (int)std::lround(args["fps_max"].get<double>());  // the unfocused cap follows...
+    if (args.contains("fps_max_nofocus")) fps_cap_nofocus = (int)std::lround(args["fps_max_nofocus"].get<double>());  // ...unless given
+    std::vector<std::string> startup_cmds, extra_args;
+    if (args.contains("commands")) {
+        std::string ce = launchopts::check_commands(args["commands"], startup_cmds);
+        if (!ce.empty()) return tool_error("invalid_params", ce);
+    }
+    if (args.contains("launch_args")) {
+        std::string ae = launchopts::check_launch_args(args["launch_args"], extra_args);
+        if (!ae.empty()) return tool_error("invalid_params", ae);
+    }
     // Checked before anything starts: a bad folder must not leave clients behind.
     std::string mount_root;
     if (args.contains("lua_mount") && args["lua_mount"].is_string() && !args["lua_mount"].get<std::string>().empty()) {
@@ -1221,8 +1270,8 @@ json launch_tool(const json &args, const json &token) {
     // -mcp_test_client marks the game as one of ours: the module gives the archived convars below back to the user's
     // values before a clean quit (they would otherwise be saved into the config.cfg the user's own game shares).
     std::string opts = "-multirun -mcp -mcp_test_client -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
-    if (preset == "normal") opts += " -w 640 -h 360 +fps_max 30 +fps_max_nofocus 30";
-    else opts += " -w 640 -h 360 +fps_max 20 +fps_max_nofocus 20";  // narrower than 640 crashes the client
+    // Issue #10: the preset's frame cap, or the one requested. Narrower than 640 crashes the client.
+    opts += " -w 640 -h 360 +fps_max " + std::to_string(fps_cap) + " +fps_max_nofocus " + std::to_string(fps_cap_nofocus);
     // The engine writes the video mode (HKCU\Software\Valve\Source\garrysmod\Settings: ScreenWidth, ScreenHeight,
     // ScreenMSAA, ...) at startup and at exit, which would overwrite the user's own resolution with 640x360. Both
     // writes are skipped when -dxlevel is on the command line (engine.dll, read-only disassembly 2026-11-15), and with
@@ -1233,6 +1282,12 @@ json launch_tool(const json &args, const json &token) {
     if (!sound) opts += " -nosound";
     // The folder was checked: no quote or line break can end the argument.
     if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"";
+    // Issue #10: the extra tokens (validated: no space, quote or ';'), after ours so that a `+convar` of theirs wins; then the
+    // names of the convars they and the commands may change, which the module gives back to the user's values before a
+    // clean quit (an older module ignores this option).
+    for (const auto &t : extra_args) opts += " " + t;
+    std::vector<std::string> restore = launchopts::restore_names(startup_cmds, extra_args);
+    if (!restore.empty()) opts += " -mcp_restore_convars " + launchopts::join_list(restore);
     SetEnvironmentVariableA("SteamAppId", "4000");
     SetEnvironmentVariableA("SteamGameId", "4000");
     std::string exe = gamedir::find_game_exe(root);  // Issue #4: gmod_win64.exe or bin/win64/gmod.exe
@@ -1313,6 +1368,26 @@ json launch_tool(const json &args, const json &token) {
                               {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)}},
                          true);
     }
+    // Issue #10: the startup commands, on every client, before any map loads. One thread per client, the commands of a
+    // client in order; a failing command is reported and the next ones still run.
+    std::vector<json> cmd_res(started.size(), json::array());
+    bool commands_ok = true;
+    if (!startup_cmds.empty()) {
+        progress(token, count, count, "running " + std::to_string(startup_cmds.size()) + " startup command(s) on each client");
+        std::vector<std::thread> th;
+        for (size_t i = 0; i < started.size(); ++i)
+            th.emplace_back([&, i] {
+                for (const auto &c : startup_cmds) {
+                    json r = game_call("console_exec", json{{"cmd", c}, {"instance", started[i].id}, {"wait_frames", 2}}, 30);
+                    json e{{"cmd", c}, {"ok", !r.contains("error")}};
+                    if (r.contains("error")) e["error"] = r["error"];
+                    cmd_res[i].push_back(e);
+                }
+            });
+        for (auto &t : th) t.join();
+        for (const auto &arr : cmd_res)
+            for (const auto &e : arr) commands_ok = commands_ok && e.value("ok", false);
+    }
     // Maps: at most 2 at a time, after the settle delay (FP7137: was all at once).
     json results = json::array();
     std::vector<json> map_res(started.size());
@@ -1354,12 +1429,13 @@ json launch_tool(const json &args, const json &token) {
                 mount_problems.push_back(started[i].id + ": the game's own lua/ folder is missing from its server Lua paths (base Lua not mounted)");
         }
     }
-    bool all_ok = mount_problems.empty();
+    bool all_ok = mount_problems.empty() && commands_ok;
     for (size_t i = 0; i < started.size(); ++i) {
         const json &in = found[std::to_string(started[i].pid)];
         json e{{"instance", started[i].id}, {"pid", started[i].pid}, {"port", in.value("port", 0)}};
         if (!owner.empty()) e["owner"] = owner;
         if (!mount_root.empty()) e["lua_mount"] = mount_res[i];
+        if (!startup_cmds.empty()) e["commands"] = cmd_res[i];  // Issue #10
         if (!map.empty()) {
             bool ok = !map_res[i].contains("error");
             all_ok = all_ok && ok;
@@ -1369,19 +1445,30 @@ json launch_tool(const json &args, const json &token) {
         }
         results.push_back(e);
     }
-    int fps_cap = preset == "normal" ? 30 : 20;
+    // Issue #10: what the clients really run at (the preset's, or the requested frame cap).
+    auto cap_text = [](int v) { return v == 0 ? std::string("no cap") : std::to_string(v) + " fps"; };
+    std::string fps_note =
+        !fps_custom ? "these clients run at most " + std::to_string(fps_cap) + " fps (fps_max, also when unfocused): "
+                      "per-frame costs and frame-to-frame behaviour differ from a normal game; pass fps_max to instances_launch "
+                      "(or convar_set fps_max) for timing work"
+                    : "frame cap set by the fps_max / fps_max_nofocus options: " + cap_text(fps_cap) + " (fps_max), " +
+                      cap_text(fps_cap_nofocus) + " when unfocused (fps_max_nofocus); the preset's cap (light 20, normal 30) is "
+                      "replaced. A command or launch_args can change it again";
     json res{{"instances", results}, {"game_dir", root}, {"found_by", how}, {"preset", preset}, {"keep", keep},
-             {"fps_max", fps_cap},
+             {"fps_max", fps_cap}, {"fps_max_nofocus", fps_cap_nofocus},
              {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)},
-             {"fps_note", "these clients run at most " + std::to_string(fps_cap) + " fps (fps_max, also when unfocused): "
-                          "per-frame costs and frame-to-frame behaviour differ from a normal game; raise it with "
-                          "convar_set fps_max for timing work"},
+             {"fps_note", fps_note},
              {"next", "Pass `instance` to target one, or instance_select to make one the default; instances_close when done."}};
+    if (!extra_args.empty()) res["launch_args"] = extra_args;  // Issue #10
     if (!mount_problems.empty()) {
         std::string w = "lua_mount " + mount_root + " is NOT active on every client: ";
         for (size_t i = 0; i < mount_problems.size(); ++i) w += (i ? "; " : "") + mount_problems[i].get<std::string>();
         res["warning"] = w + ". Tests on these clients would run the installed addon's code (or no usable Lua): fix it with "
                              "lua_mount {path, instance} then map_load, or close them (instances_close).";
+    }
+    if (!commands_ok) {  // Issue #10
+        std::string w = "a startup command failed on at least one client (see instances[].commands): the clients are not in the state `commands` asked for";
+        res["warning"] = res.contains("warning") ? json(res["warning"].get<std::string>() + " " + w) : json(w);
     }
     json fp_res = tool_text(res, !all_ok);  // FP7137
     fp_gate.annotate(fp_res);  // FP7137

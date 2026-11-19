@@ -28,6 +28,7 @@
 #include "gmod_mcp_reply.h"
 #include "http_server.h"
 #include "installer.h"
+#include "launch_opts.h"
 #include "crashinfo.h"
 #include "mcp.h"
 #include "lua_mount.h"
@@ -277,6 +278,83 @@ static void write_pe(const fs::path &p, uint16_t machine) {
     b[0x84] = (char)(machine & 0xFF);
     b[0x85] = (char)(machine >> 8);
     std::ofstream(p, std::ios::binary) << b;
+}
+
+// Issue #10: instances_launch {fps_max, fps_max_nofocus, commands, launch_args}: what is accepted and what is refused, before
+// anything starts.
+static void test_launch_options() {
+    using launchopts::check_commands;
+    using launchopts::check_launch_args;
+    using launchopts::fps_error;
+    // fps_max / fps_max_nofocus: an integer, 0 (no cap) or 10..1000.
+    CHECK(fps_error(json(0), "fps_max").empty());
+    CHECK(fps_error(json(10), "fps_max").empty());
+    CHECK(fps_error(json(300), "fps_max").empty());
+    CHECK(fps_error(json(1000), "fps_max_nofocus").empty());
+    CHECK(fps_error(json(5), "fps_max").find("fps_max") != std::string::npos);
+    CHECK(!fps_error(json(9), "fps_max").empty());
+    CHECK(!fps_error(json(1001), "fps_max_nofocus").empty() && fps_error(json(1001), "fps_max_nofocus").find("fps_max_nofocus") != std::string::npos);
+    CHECK(!fps_error(json(-1), "fps_max").empty());
+    CHECK(!fps_error(json(30.5), "fps_max").empty());
+    CHECK(!fps_error(json("60"), "fps_max").empty());
+    CHECK(fps_error(json(60.0), "fps_max").empty());  // 60.0 is an integer in JSON
+
+    // commands: console statements run once the client answers.
+    std::vector<std::string> st;
+    CHECK(check_commands(json::array({"fps_max 300", "snd_mute_losefocus 0"}), st).empty() && st.size() == 2 && st[0] == "fps_max 300");
+    CHECK(check_commands(json::array(), st).empty() && st.empty());
+    CHECK(check_commands(json::array({"cl_showfps 1; mat_vsync 0", "echo \"a;b\""}), st).empty() && st.size() == 3 && st[1] == "mat_vsync 0" && st[2] == "echo \"a;b\"");  // split like the engine does
+    for (const char *bad : {"quit", "QUIT", "  exit ", "echo hi; quit", "connect 192.168.1.5", "connect 127.0.0.1", "retry", "redirect x",
+                            "connect_lobby 1", "map gm_construct", "changelevel gm_flatgrass", "load save1", "host_workshop_map 1", "map_background x"}) {
+        std::string e = check_commands(json::array({bad}), st);
+        CHECK(!e.empty() && e.find("commands") != std::string::npos);
+    }
+    CHECK(check_commands(json::array({"map gm_construct"}), st).find("map option") != std::string::npos);  // says what to use instead
+    CHECK(check_commands(json::array({"quit"}), st).find("game_quit") != std::string::npos || check_commands(json::array({"quit"}), st).find("instances_close") != std::string::npos);
+    CHECK(check_commands(json::array({"fps_max 300", "quit"}), st).find("\"quit\"") != std::string::npos);  // names the refused command
+    CHECK(!check_commands(json::array({""}), st).empty() && !check_commands(json::array({"   "}), st).empty());
+    CHECK(!check_commands(json::array({42}), st).empty() && !check_commands(json("fps_max 300"), st).empty());
+    CHECK(!check_commands(json::array({std::string(300, 'a')}), st).empty());
+    CHECK(!check_commands(json::array({"echo \x01"}), st).empty());
+    json many = json::array();
+    for (int i = 0; i < 33; ++i) many.push_back("echo x");
+    CHECK(!check_commands(many, st).empty());
+
+    // launch_args: one token per element; what gmod-mcp controls and anything that connects is refused.
+    std::vector<std::string> tk;
+    CHECK(check_launch_args(json::array({"-noborder", "-nosound", "+cl_showfps", "1"}), tk).empty() && tk.size() == 4 && tk[2] == "+cl_showfps");
+    CHECK(check_launch_args(json::array(), tk).empty() && tk.empty());
+    for (const char *bad : {"-multirun", "-MULTIRUN", "-mcp", "-mcpport", "-mcp_test_client", "-mcp_lua_mount", "-mcp_restore_convars", "+mcp_x", "-w", "-h", "-width", "-height",
+                            "-windowed", "-window", "-sw", "-fullscreen", "-full", "-dxlevel", "-condebug", "-game", "+map", "+changelevel",
+                            "+connect", "-connect", "+connect_lobby", "+retry", "+redirect", "+quit", "+exit", "+load", "+host_workshop_map"}) {
+        std::string e = check_launch_args(json::array({"-noborder", bad}), tk);
+        CHECK(!e.empty() && e.find("launch_args") != std::string::npos && e.find(bad) != std::string::npos);  // names the refused option
+    }
+    CHECK(check_launch_args(json::array({"+map"}), tk).find("map option") != std::string::npos);
+    CHECK(check_launch_args(json::array({"-w"}), tk).find("640x360") != std::string::npos || check_launch_args(json::array({"-w"}), tk).find("window") != std::string::npos);
+    CHECK(check_launch_args(json::array({"-nosound"}), tk).empty());  // same as sound: false
+    // Tokens that could end the argument or start another command are refused.
+    for (const char *bad : {"", " ", "-a b", "-a\"b", "-a;b", "-a\nb", "-a\tb", "+echo \"x\"", "caf\xC3\xA9"})
+        CHECK(!check_launch_args(json::array({bad}), tk).empty());
+    CHECK(!check_launch_args(json::array({std::string(200, 'a')}), tk).empty());
+    CHECK(!check_launch_args(json("-nosound"), tk).empty() && !check_launch_args(json::array({1}), tk).empty());
+    json many_args = json::array();
+    for (int i = 0; i < 33; ++i) many_args.push_back("-x");
+    CHECK(!check_launch_args(many_args, tk).empty());
+
+    // Convars the command line and the commands can change (the module gives them back before a clean quit).
+    auto names = launchopts::restore_names({"fps_max 300", "toggle snd_mute_losefocus", "echo hi", "FPS_MAX 100", "bad;name 1", "incrementvar cl_showfps 0 3 1", "mat_vsync"},
+                                           {"-noborder", "+cl_drawhud", "0", "+Mat_Antialias", "4", "+cl_showfps", "1"});
+    auto has = [&](const char *n) { return std::find(names.begin(), names.end(), n) != names.end(); };
+    CHECK(has("fps_max") && has("snd_mute_losefocus") && has("cl_showfps") && has("cl_drawhud") && has("mat_antialias") && has("mat_vsync") && has("echo"));
+    CHECK(std::count(names.begin(), names.end(), "fps_max") == 1 && !has("toggle") && !has("incrementvar") && !has("noborder") && !has("0"));
+    CHECK(!has("bad;name") && names.size() == 7);
+    CHECK(launchopts::restore_names({}, {}).empty());
+    // The module reads the list from -mcp_restore_convars.
+    auto parsed = launchopts::parse_restore_list("cl_showfps,FPS_MAX,bad name,mat_vsync,,cl_showfps,a;b");
+    CHECK(parsed == std::vector<std::string>({"cl_showfps", "fps_max", "mat_vsync"}));
+    CHECK(launchopts::parse_restore_list("").empty());
+    CHECK(launchopts::join_list({"a", "b"}) == "a,b" && launchopts::join_list({}).empty());
 }
 
 // Issue #4: the current x86-64 install has bin/win64/gmod.exe and no gmod_win64.exe (its root gmod.exe is 32-bit).
@@ -1114,6 +1192,7 @@ int main() {
     test_job_ids();
     test_lua_mount_paths();
     test_game_exe_layouts();
+    test_launch_options();
     test_port_conflict_link();
 #ifdef _WIN32
     test_crash_report_coordinator();

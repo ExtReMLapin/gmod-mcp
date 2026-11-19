@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Features
+
+- **`instances_launch` passes frame caps, startup commands and extra engine options to the clients it starts** (issue #10).
+  `fps_max` and `fps_max_nofocus` (0 = no cap, or 10 to 1000) replace the preset's frame cap, so a test that needs 45 or
+  300 fps no longer has to change the archived `fps_max` with `console_exec` after the launch; the result reports
+  `fps_max`, `fps_max_nofocus` and `fps_note`. `commands` runs console commands on each client once it answers, before
+  its map loads (`instances[].commands` reports each one; a failure makes the call `isError`). `launch_args` adds engine
+  command-line tokens (`["-noborder", "+cl_showfps", "1"]`). Everything is checked before a client starts: `quit`/`exit`,
+  `connect`/`retry`/`redirect`/`connect_lobby`, map changes (use `map`), and the options gmod-mcp sets itself
+  (`-multirun`, `-mcp*`, `-w`, `-h`, `-width`, `-height`, window-mode options, `-dxlevel`, `-condebug`, `-game`) are refused
+  with `invalid_params` naming the offender, and a token with a space, quote, `;` or non-ASCII character is refused too
+  (the bridge builds a command line). The archived convars these options change are given back to the user's value
+  before a clean quit like the frame cap already was: the bridge lists their names to the module on the command line
+  (`-mcp_restore_convars`) and the module restores those that are archived (a convar changed by `exec` of a cfg file is not
+  tracked; a module older than this release restores only its four built-in convars). The tool description, the guide, the
+  skill and the README say where the options are listed (Valve Developer Community "Command line options", the Garry's Mod
+  wiki, `api_search`, `concommand_list`).
+
 ### Fixes
 
 - **The current x86-64 install of Garry's Mod is found** (issue #4). It has no `gmod_win64.exe`: the 64-bit game is
