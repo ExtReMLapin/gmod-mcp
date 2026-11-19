@@ -64,8 +64,9 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
 
 ## Install
 
-You need Garry's Mod with the **64-bit** binaries (`gmod_win64.exe`, the default on current Steam builds). Two ways:
-the Claude Code plugin (the Quick start at the top of this page), or by hand for any other MCP client.
+You need Garry's Mod with the **64-bit** binaries (the default on current Steam builds: `bin\win64\gmod.exe`, or
+`gmod_win64.exe` at the root of the game folder on older installs). Two ways: the Claude Code plugin (the Quick start at
+the top of this page), or by hand for any other MCP client.
 
 ### Claude Code plugin
 
@@ -324,7 +325,7 @@ two, re-injecting its small Lua runtime each time a map loads.
 flowchart LR
     agent["AI agent<br/>(Claude Code)"] -- "MCP over HTTP<br/>127.0.0.1:27080" --> http
 
-    subgraph game["gmod_win64.exe (one process)"]
+    subgraph game["the 64-bit game (one process)"]
         direction TB
         subgraph dll["gmsv_mcpagent (native module, loaded once)"]
             http["HTTP / MCP server<br/>(network thread)"] -- "job queue" --> pump["pump<br/>(main thread, every frame)"]

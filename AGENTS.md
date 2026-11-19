@@ -64,8 +64,9 @@ cmake --build build --config Release
 1. Quit the game (the DLL is locked while it runs).
 2. Copy `build/gmsv_mcpagent_win64.dll` to `garrysmod/lua/bin/` and `loader/mcpagent_boot.lua` to
    `garrysmod/lua/autorun/server/`.
-3. Start the game with `-mcp -windowed -condebug` (launching `gmod_win64.exe` directly needs the environment variables
-   `SteamAppId=4000` and `SteamGameId=4000`).
+3. Start the game with `-mcp -windowed -condebug`. Launched directly, the 64-bit game (`bin\win64\gmod.exe`;
+   `gmod_win64.exe` at the root on older installs; the root `gmod.exe` is 32-bit) needs the game folder as working
+   directory and the environment variables `SteamAppId=4000` and `SteamGameId=4000`.
 4. Drive it through the MCP endpoint (`http://127.0.0.1:27080/mcp`, token in `%APPDATA%\gmod-mcp\token`), e.g. with curl.
    `events_wait {types:["menu_ready"], cursor:0}` returns as soon as the module is up.
 5. Update `docs/TESTS.md` (scenario, expected result, last result and date) for any behavior you change.

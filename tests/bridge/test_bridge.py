@@ -19,6 +19,8 @@ Cases (default: a f):
          in flight when the client dies reports the crash, an old dump is not taken for its own (Windows)
   fp7137 launch / map_load lock shared by the bridges (FP7137, docs/FP7137.md): waits, expiry, dead bridge, kill switch
   lua_mount instances_launch {lua_mount}: -mcp_lua_mount passed to the client (stand-in game), bad folders refused
+  win64_layout instances_launch finds bin/win64/gmod.exe (no gmod_win64.exe at the root), starts it in the game folder
+         (Issue #4)
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
   fuzz   400 random messages (random JSON shapes, ids, params, invalid UTF-8): the bridge survives and still answers
@@ -29,7 +31,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify crash fp7137 orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash fp7137 orphan fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -741,6 +743,76 @@ def case_orphans():
     check("ORPHANS closed clients no longer listed", r and not sc.get("launched_not_answering"), sc)
     b.close()
     shutil.rmtree(game, ignore_errors=True)
+
+
+def case_win64_layout():
+    """Issue #4: the current x86-64 install has bin/win64/gmod.exe and no gmod_win64.exe (its root gmod.exe is 32-bit).
+    instances_launch must find the game there, start it with the game folder as working directory, and say which two
+    paths it looked for when there is none."""
+    print("== WIN64_LAYOUT: instances_launch finds bin/win64/gmod.exe (Issue #4)", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("WIN64_LAYOUT stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    work = tempfile.mkdtemp(prefix="gmcp-layout-")
+
+    def pe32(path):  # just a PE header saying "32-bit x86": the game's root gmod.exe
+        b = bytearray(0x100)
+        b[0:2] = b"MZ"
+        b[0x3C] = 0x80
+        b[0x80:0x84] = b"PE\0\0"
+        b[0x84], b[0x85] = 0x4C, 0x01
+        with open(path, "wb") as f: f.write(bytes(b))
+
+    game = os.path.join(work, "cur game")
+    os.makedirs(os.path.join(game, "bin", "win64"))
+    os.makedirs(os.path.join(game, "garrysmod"))
+    pe32(os.path.join(game, "gmod.exe"))
+    shutil.copy(fake, os.path.join(game, "bin", "win64", "gmod.exe"))
+    only32 = os.path.join(work, "only32")
+    os.makedirs(os.path.join(only32, "garrysmod"))
+    pe32(os.path.join(only32, "gmod.exe"))
+    argv_file, cwd_file = os.path.join(work, "argv.txt"), os.path.join(work, "cwd.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_ARGV"] = argv_file
+    env["GMCP_FAKE_CWD"] = cwd_file
+    b = Bridge(port, env)
+
+    def launch(game_dir, timeout=40):
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "lay", "timeout_s": 10, "game_dir": game_dir}}, timeout)
+        return (r or {}).get("result", {})
+
+    res = launch(only32)
+    sc = res.get("structuredContent", {})
+    msg = json.dumps(sc)
+    check("WIN64_LAYOUT a folder with only the 32-bit gmod.exe is refused, naming both paths",
+          res.get("isError") and "game_not_found" in msg and "gmod_win64.exe" in msg and "win64" in msg and "gmod.exe" in msg and not os.path.exists(argv_file), sc)
+    res = launch(game)
+    sc = res.get("structuredContent", {})
+    pids = sc.get("silent_pids", [])
+    check("WIN64_LAYOUT bin/win64/gmod.exe is found and started (no gmod_win64.exe at the root)", len(pids) == 1 and all(alive(p) for p in pids) and os.path.exists(argv_file), sc)
+    line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+    exe_in_line = line.lower().replace("/", "\\").lstrip().startswith('"' + os.path.join(game, "bin", "win64", "gmod.exe").lower().replace("/", "\\") + '"')
+    check("WIN64_LAYOUT the started file is bin/win64/gmod.exe of the game folder", exe_in_line, line)
+    cwd = open(cwd_file, encoding="utf-8", errors="replace").read().strip() if os.path.exists(cwd_file) else ""
+    check("WIN64_LAYOUT the game starts with the game folder as working directory", cwd != "" and os.path.normcase(os.path.realpath(cwd)) == os.path.normcase(os.path.realpath(game)), cwd)
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "lay"}}, 20)
+    time.sleep(1)
+    check("WIN64_LAYOUT stand-in closed", not any(alive(p) for p in pids), pids)
+    # game_dir may also be the garrysmod folder inside the game folder (what the module reports).
+    for f in (argv_file, cwd_file):
+        if os.path.exists(f): os.remove(f)
+    res = launch(os.path.join(game, "garrysmod"))
+    sc = res.get("structuredContent", {})
+    pids = sc.get("silent_pids", [])
+    check("WIN64_LAYOUT game_dir = <game>/garrysmod works with the new layout too", len(pids) == 1 and os.path.exists(argv_file), sc)
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "lay"}}, 20)
+    b.close()
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def case_lua_mount():
@@ -1913,8 +1985,8 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "crash", "fp7137", "orphan", "edge", "version", "feedback", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "crash", "fp7137", "orphan", "edge", "version", "feedback", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
