@@ -247,7 +247,18 @@ call `instances_list`, then pass `instance` (`srcds-<pid>`) to any tool. Calls w
 `details.dump` (the minidump file name under `crashes/` in the game folder, or null) and `details.exit_code`; `instances_list`
 shows it as `state: "crashed"` for an hour. Relaunch a client with `instances_launch` and rerun what it was doing; the dump
 is for a human, not for you. `instance_gone` means a normal exit (quit, `game_terminate`), `instance_unreachable` a game that
-runs but does not answer.
+runs but does not answer. A call in flight to a client that dies is answered at once (not at its own timeout), and the answer
+carries `details.memory` (free commit and RAM) with a warning when memory is low: out of memory is a likely cause.
+
+**A game is hung, or the machine is out of memory.** `instances_list` gives every instance `stalled_s` (main thread blocked for
+that many seconds) and `fps_low_s` (frame rate under 10 fps for that long: what you measured meanwhile is suspect). A game
+whose main thread is blocked for 60 s (180 s during a map load), or that stopped sending heartbeats while its process runs,
+is `state: "hung"`: close it (`instances_close {pids}` / `game_terminate`) and relaunch, do not wait for it. A call in flight
+to a frozen process fails with `instance_hung` after 30 s of silence. `instances_launch` refuses with `low_memory` when the
+free commit (virtual memory) or RAM cannot hold the clients (about 1.6 GB of commit and 1.2 GB of RAM each, plus 1 GB of
+commit for the machine): close clients you do not use or start fewer; `ignore_low_memory: true` starts anyway. A harness
+must treat `low_memory`, `instance_hung`, `client_crashed`, `instance_gone`, `instance_unreachable` and `game_not_running`
+as infrastructure problems, not as failed tests.
 
 **Joining it from the local game**: `connect <this machine's LAN address>:27015` (in `console_exec`, or the game
 console). A GMod dedicated server ignores connections from `127.0.0.1`, so use the LAN address (`ipconfig` /

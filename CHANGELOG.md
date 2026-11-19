@@ -19,9 +19,22 @@
   tracked; a module older than this release restores only its four built-in convars). The tool description, the guide, the
   skill and the README say where the options are listed (Valve Developer Community "Command line options", the Garry's Mod
   wiki, `api_search`, `concommand_list`).
+- **Hung, crashed and memory-starved clients are reported** (issue #8). `instances_list` gives every instance `stalled_s` (seconds
+  its main thread has been blocked) and `fps_low_s` (seconds under 10 fps, not counted while loading), and `state: "hung"`
+  after 60 s of blocked main thread (180 s during a map load) with the advice to close and relaunch; an instance whose
+  heartbeats stopped while its process lives stays listed (`unresponsive`, then `hung`) instead of vanishing after 10 s.
+  A call in flight to an instance that dies answers `client_crashed` at once (the coordinator and, for the clients it
+  launched, the bridge watch the process), and a call to a frozen process fails with `instance_hung` after 30 s without
+  heartbeat. A client that died during its map load is `client_crashed` in `map_error`, not `game_not_running`. `instances_launch`
+  checks the free commit and RAM before starting anything and refuses with `low_memory` (`free_commit_mb`, `free_ram_mb`,
+  `running_clients`, `per_client_mb`) under 1.6 GB of commit and 1.2 GB of RAM per client (measured: a light client holds
+  1.55 GB of commit); `ignore_low_memory: true` overrides it. A crash report carries `details.memory` and a hint when memory is low.
 
 ### Fixes
 
+- **`fps` in `instances_list` and `status` is counted over the last 3 s** (issue #8, found with issue #11 item 2): it was the
+  mean of the last 256 frames, so a client that ran at 2 fps through a map load kept reporting about 2 fps for minutes
+  after it ran at 20 again, and read the rate from before while its main thread was blocked. It reads 0 when blocked.
 - **The current x86-64 install of Garry's Mod is found** (issue #4). It has no `gmod_win64.exe`: the 64-bit game is
   `bin\win64\gmod.exe`, and the `gmod.exe` at the root of the game folder is the 32-bit one. `instances_launch` now looks
   for `gmod_win64.exe` at the root, then for `bin\win64\gmod.exe`, prefers the file whose PE header says x86-64, never
