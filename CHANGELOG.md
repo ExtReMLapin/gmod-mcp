@@ -54,6 +54,13 @@
 
 ### Fixes
 
+- **`lua_mount` works again on the x86-64 build of Garry's Mod of 2026-11-19** (issue #9). That build added four slots to
+  the engine's `IAppSystem` interface, so every `IFileSystem` slot moved by four: the module's `AddSearchPath` and
+  `RemoveSearchPath` calls landed on two functions that do nothing, and the mounted folder was silently never searched
+  (the hook ran, the folder's autorun did not). The old `GetSearchPath` slot became `RemoveAllSearchPaths`: the one call
+  the module made wiped every search path, and the next load of a new model blocked the game for good (that call was
+  already removed). The module now reads the layout from the engine's code and refuses the mount, with a message, when it
+  matches no known build; `lua_mount` reports `fs_first_slot` (5 on older builds, 9 now).
 - **`fps` in `instances_list` and `status` is counted over the last 3 s** (issue #8, found with issue #11 item 2): it was the
   mean of the last 256 frames, so a client that ran at 2 fps through a map load kept reporting about 2 fps for minutes
   after it ran at 20 again, and read the rate from before while its main thread was blocked. It reads 0 when blocked.

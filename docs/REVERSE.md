@@ -23,11 +23,45 @@ No decompiled code is copied into the repository; only signatures, offsets and b
 
 ### Lua mount: search paths
 
-`bin/win64/filesystem_stdio.dll`, `CreateInterface("VFileSystem022")`, primary vtable (IAppSystem takes 5 slots, then
-the SDK 2013 order, checked by body): **7 `AddSearchPath(path, pathID, addType)`** (re-adding a path+ID moves it, no
-duplicate), **8 `RemoveSearchPath(path, pathID)`**, **13 `GetSearchPath(pathID, bGetPackFiles, dest, maxLen)`**
-(`;`-separated), 63 `PrintSearchPaths` (the `path` console command). **GetSearchPath is no longer called** (2026-11-19, x86-64 build of that day): one call from the module returned nothing for `lsv`/`lcl` and made the next load of a new model (`SetModel` of a prop not loaded yet) block the main thread for good; the engine's `path` command does not. The base Lua check runs `file.Exists("includes/init.lua", "LUA")` in the server realm instead. GMod turned `addType` into priority groups:
-`(group << 1) | tail`; `0` puts the path before every other one.
+`bin/win64/filesystem_stdio.dll`, `CreateInterface("VFileSystem022")`: one singleton (the factory returns a static
+object; `VBaseFileSystem011` is the same class), and it is the object the engine uses: `lua_shared` gets its
+`g_pFullFileSystem` from the same factory name. The primary vtable is `IAppSystem` then the SDK 2013 `IFileSystem` order
+(checked by body). **`IAppSystem` has 5 or 9 slots depending on the build**, so the module reads the layout from the code
+(`lua_mount::fs_slot_base`, coretests `test_fs_vtable_layout`) and refuses the mount when it matches neither:
+
+| `IFileSystem` function | 5-slot `IAppSystem` (older x64 builds) | 9-slot `IAppSystem` (x86-64 build of 2026-11-19) |
+|---|---|---|
+| `IAppSystem` extras | — | 5 `GetDependencies` (`xor eax,eax; ret`), 6 `GetTier` (`mov eax,4; ret`), 7 `Reconnect` (`ret 0`), 8 `IsSingleton` (`mov al,1; ret`) |
+| `IsSteam`, `MountSteamContent` | 5, 6 (`xor al,al; ret`, `xor eax,eax; ret`) | 9, 10 |
+| **`AddSearchPath(path, pathID, addType)`** (re-adding a path+ID moves it, no duplicate) | **7** | **11** |
+| **`RemoveSearchPath(path, pathID)`** | **8** | **12** |
+| `RemoveAllSearchPaths()` | 9 | **13** |
+| `RemoveSearchPaths(pathID)` / `MarkPathIDByRequestOnly(pathID, bool)` | 10 / 11 | 14 / 15 |
+| `RelativePathToFullPath` / `GetSearchPath(pathID, bGetPackFiles, dest, maxLen)` | 12 / 13 | 16 / 17 |
+
+The detection rule: slots 7 and 8 both have a body → 5; both only return a constant and 11/12 have a body → 9;
+anything else → refused (`interface_missing` with a message). `lua_mount` reports it as `fs_first_slot`.
+
+How the 9-slot layout was found (2026-11-19, `filesystem_stdio.dll` sha256 `ed28870d…`, `lua_shared.dll` `56fa0a52…`):
+the module's diagnosis printed the live vptr at RVA `0xaf6e0`, not the `0xb2688` of the Ghidra project then open, which
+turned out to be an analysis of the PREVIOUS file (sha256 `bd03c74f…`, same path: the per-path Ghidra project was
+reused after the update). In the current file: slot 11 → `0x180012dc0` → the body that adds to the search path list
+(`.bsp`/`.vpk` special cases, priority groups); slot 12 the remover; slot 13 `0x180021e30` empties the whole list.
+`lua_shared`'s `MountLuaAdd` calls `[vtbl+0x58]` (11) with `(full, id, 5 | 0x100 for workshop)`, `[+0x80]` (16)
+`RelativePathToFullPath`, `[+0xb0]` (22) `IsDirectory`, then `[+0x78]` (15) `(id, 1)`; `UnMountLua` calls `[+0x70]`
+(14). Live (O-19 in TESTS.md): with slots 7/8 the engine's `path` output was identical before and after `lua_mount`
+(they are `Reconnect` and `IsSingleton`), with 11/12 the folder appears and its autorun runs in both realms.
+
+**GetSearchPath is not called**: on the 2026-11-19 build the old fixed slot 13 was `RemoveAllSearchPaths`. The one
+call the module made (removed in 4e42f6a) wiped every search path; the next load of a new model (`SetModel` of a prop
+not loaded yet) then blocked the main thread for good. The base Lua check runs `file.Exists("includes/init.lua",
+"LUA")` in the server realm instead. `PrintSearchPaths` (the `path` console command) was slot 63 on the 5-slot
+layout (not re-checked on the 9-slot one; the module does not call it).
+
+GMod turned `addType` into priority groups: `(group << 1) | tail`, group 0 counted as 1; `0` puts the path before every
+other one. The `path` command prints the groups by name: ENGINECORE (where addType 0 lands), LUA, MAP, ADDONCONTENT,
+GMCONTENT, GMODCORE (garrysmod's own `MOD`), SOURCESDK, GAMECONTENT, MOUNTCFG (where addType 23 lands), DOWNLOADS,
+FALLBACKS (`fallbacks.vpk`, also `MOD`).
 
 - Lua path IDs: `lsv` (server realm), `lcl` (client), `LuaMenu` (menu).
 - At every map start, `server.dll` calls `UnMountLua("lsv")`, then `MountLuaAdd` for each addon's `lua`/`gamemodes`,
@@ -35,7 +69,7 @@ duplicate), **8 `RemoveSearchPath(path, pathID)`**, **13 `GetSearchPath(pathID, 
 - `lua_shared` loads a file only if its full path maps back to a `MOD`-relative name (`FullPathToRelativePathEx(full,
   "MOD")`), and caches it under that name with its file time.
 
-So the mounted folder adds its root to the END of `MOD` (addType 23: tail of the last group), its `lua`/`gamemodes` to
+So the mounted folder adds its root near the end of `MOD` (addType 23: MOUNTCFG, after garrysmod's own paths), its `lua`/`gamemodes` to
 `lsv` and `lcl` (head), and hooks
 `ILuaShared` slot 9 (vtable entry patched in this process only) to put them back in front right after every
 `MountLua`. The root must NOT be at the head of `MOD`: `MountLuaAdd("lua")` resolves the `lua` folder through `MOD`,

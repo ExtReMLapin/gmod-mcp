@@ -32,11 +32,39 @@ void set_current_for_tests(const std::string &root) {
     g_root = root;
 }
 
+bool is_constant_return(const std::vector<uint8_t> &c) {
+    auto at = [&](size_t i) { return i < c.size() ? c[i] : -1; };
+    size_t i = 0;
+    if (at(0) == 0x48) i = 1;  // REX.W: xor rax,rax
+    int op = at(i);
+    if (op == 0xc3) return i == 0;                                        // ret
+    if (op == 0xc2) return i == 0 && c.size() >= 3;                       // ret imm16
+    if ((op == 0x30 || op == 0x32) && i == 0 && at(1) == 0xc0) return at(2) == 0xc3;  // xor al,al; ret
+    if ((op == 0x31 || op == 0x33) && at(i + 1) == 0xc0) return at(i + 2) == 0xc3;    // xor eax,eax (rax); ret
+    if (op == 0xb0 && i == 0) return at(2) == 0xc3;                       // mov al,imm8; ret
+    if (op == 0xb8 && i == 0) return at(5) == 0xc3;                       // mov eax,imm32; ret
+    return false;
+}
+
+int fs_slot_base(const std::vector<uint8_t> &s7, const std::vector<uint8_t> &s8, const std::vector<uint8_t> &s11,
+                 const std::vector<uint8_t> &s12) {
+    if (s7.empty() || s8.empty()) return -1;
+    bool c7 = is_constant_return(s7), c8 = is_constant_return(s8);
+    // 5-slot IAppSystem: 7 AddSearchPath and 8 RemoveSearchPath have a body.
+    if (!c7 && !c8) return 5;
+    // 9-slot IAppSystem (GetDependencies, GetTier, Reconnect, IsSingleton after Shutdown): 7 and 8 return a constant,
+    // and the search path functions at 11 and 12 have a body.
+    if (c7 && c8 && !s11.empty() && !s12.empty() && !is_constant_return(s11) && !is_constant_return(s12)) return 9;
+    return -1;
+}
+
 #ifdef _WIN32
 
-// IFileSystem ("VFileSystem022", filesystem_stdio) primary vtable slots, verified in the x64 Windows binary
-// (docs/REVERSE.md): AddSearchPath 7, RemoveSearchPath 8, GetSearchPath 13. GMod's addType: 0 = before every path.
-constexpr int kAddSearchPath = 7, kRemoveSearchPath = 8;  // GetSearchPath (13): not called, see base_lua_found
+// IFileSystem ("VFileSystem022", filesystem_stdio) primary vtable: AddSearchPath and RemoveSearchPath are the 3rd and
+// 4th IFileSystem slots, after IAppSystem's. IAppSystem has 5 slots on older builds and 9 on the x86-64 build of
+// 2026-11-19, so the first IFileSystem slot is read from the code (fs_slot_base, docs/REVERSE.md): 7/8 or 11/12.
+// GMod's addType: 0 = before every path.
+constexpr int kAddSearchPathOfs = 2, kRemoveSearchPathOfs = 3;
 // ILuaShared (LUASHARED003) slot of MountLua in garrysmod_common's LuaShared.h, MSVC layout (one destructor slot).
 constexpr int kMountLua = 9;
 
@@ -46,6 +74,7 @@ using RemoveFn = bool (*)(void *, const char *, const char *);
 using MountLuaFn = void (*)(void *, const char *);
 
 static void *g_fs = nullptr;
+static int g_fs_base = 0;  // first IFileSystem slot (5 or 9), 0 until read, -1 unknown layout
 static GarrysMod::Lua::ILuaShared *g_ls = nullptr;
 static void **g_mount_slot = nullptr;
 static MountLuaFn g_orig_mount = nullptr;
@@ -62,7 +91,25 @@ static void *get_iface(const std::vector<std::string> &names, const char *versio
     return ci(version, &rc);
 }
 
-static bool ensure(std::string &err) {
+static void **vtable(void *obj) { return *static_cast<void ***>(obj); }
+
+// The first bytes of the function at vtable slot `i` of `obj` (empty if unreadable).
+static std::vector<uint8_t> slot_code(void *obj, int i) {
+    void **vt = nullptr, *fn = nullptr;
+    if (!plat::safe_read(obj, &vt, sizeof vt) || !vt || !plat::safe_read(&vt[i], &fn, sizeof fn) || !fn) return {};
+    std::vector<uint8_t> code(16);
+    if (!plat::safe_read(fn, code.data(), code.size())) return {};
+    return code;
+}
+
+static int read_fs_slot_base() {
+    int base = fs_slot_base(slot_code(g_fs, 7), slot_code(g_fs, 8), slot_code(g_fs, 11), slot_code(g_fs, 12));
+    logx::info("Lua mount: IFileSystem slots start at %d%s", base, base < 0 ? " (layout not recognized)" : "");
+    return base;
+}
+
+// need_layout: the caller will call AddSearchPath/RemoveSearchPath (EmptyCache alone does not need the layout).
+static bool ensure(std::string &err, bool need_layout = true) {
     if (!g_fs) g_fs = get_iface(plat::filesystem_names(), "VFileSystem022");
     if (!g_ls) g_ls = static_cast<GarrysMod::Lua::ILuaShared *>(get_iface(plat::lua_shared_names(), GMOD_LUASHARED_INTERFACE));
     if (!g_fs)
@@ -71,23 +118,27 @@ static bool ensure(std::string &err) {
                     "it on a game client (instances_launch {lua_mount})"
                   : "IFileSystem (VFileSystem022) not found in filesystem_stdio";
     else if (!g_ls) err = "ILuaShared (" GMOD_LUASHARED_INTERFACE ") not found in lua_shared";
-    return g_fs && g_ls;
+    if (!g_fs || !g_ls) return false;
+    if (g_fs_base == 0) g_fs_base = read_fs_slot_base();
+    if (g_fs_base < 0 && need_layout) {
+        err = "this game build's IFileSystem (VFileSystem022) layout is not recognized: the Lua mount is refused rather "
+              "than calling an unknown slot (docs/REVERSE.md, \"Lua mount: search paths\")";
+        return false;
+    }
+    return true;
 }
-
-static void **vtable(void *obj) { return *static_cast<void ***>(obj); }
 
 // GMod's addType = (group << 1) | tail bit, groups 0..11 (docs/REVERSE.md). 0 = before every path; 23 = after every path.
 constexpr int kHead = 0, kTail = (11 << 1) | 1;
 static void fs_add(const std::string &path, const char *id, int add_type = kHead) {
-    reinterpret_cast<AddFn>(vtable(g_fs)[kAddSearchPath])(g_fs, path.c_str(), id, add_type);
+    reinterpret_cast<AddFn>(vtable(g_fs)[g_fs_base + kAddSearchPathOfs])(g_fs, path.c_str(), id, add_type);
 }
 static bool fs_remove(const std::string &path, const char *id) {
-    return reinterpret_cast<RemoveFn>(vtable(g_fs)[kRemoveSearchPath])(g_fs, path.c_str(), id);
+    return reinterpret_cast<RemoveFn>(vtable(g_fs)[g_fs_base + kRemoveSearchPathOfs])(g_fs, path.c_str(), id);
 }
-// IFileSystem::GetSearchPath (slot 13) is NOT called any more: on the x86-64 build of 2026-11-19 one call
-// from the module (lua_mount {} or the end of a lua_mount {path}) made the next load of a new model (SetModel of a prop
-// not loaded yet) block the main thread for good, and it returned no path for "lsv"/"lcl" anyway. The engine's own
-// `path` command does not do that. See docs/REVERSE.md. The base Lua is checked through the server realm instead.
+// IFileSystem::GetSearchPath is not called: the base Lua is checked through the server realm instead. (On the x86-64
+// build of 2026-11-19 the old fixed slot 13 was RemoveAllSearchPaths: calling it wiped every search path and the next
+// load of a new model blocked the main thread for good. docs/REVERSE.md.)
 
 // Whether the server realm finds the base Lua (includes/init.lua through its LUA paths): true/false, or null when there
 // is no server realm (main menu) or the check could not run. Main thread only.
@@ -164,7 +215,7 @@ bool supported(std::string *) { return true; }
 
 bool empty_cache() {
     std::string err;
-    if (!ensure(err)) return false;
+    if (!ensure(err, false)) return false;
     g_ls->EmptyCache();
     return true;
 }
@@ -181,7 +232,8 @@ json info() {
            {"base_lua_mounted", base_ok},
            {"mount_hook", cur == reinterpret_cast<void *>(&hooked_mount)},
            {"hook_calls", g_hook_calls},
-           {"hook_path_ids", g_hook_ids}};
+           {"hook_path_ids", g_hook_ids},
+           {"fs_first_slot", g_fs_base}};
     if (base_ok == json(false))
         r["warning"] = "the game's own lua/ folder is missing from the server Lua paths: the game cannot run its base Lua. "
                        "Remove the mounted folder (lua_mount {path: null}) and close this client.";
