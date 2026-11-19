@@ -1169,7 +1169,7 @@ def case_crash():
         return
     import shutil
 
-    def run(tag, exit_code, dump, old_dump=False, map_name=None):
+    def run(tag, exit_code, dump, old_dump=False, map_name=None, cut_first=False, inflight=False):
         game = tempfile.mkdtemp(prefix="gmcp-crash-game-")
         shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
         os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
@@ -1180,6 +1180,7 @@ def case_crash():
         port, env = free_port(), isolated_config(with_token=True)
         env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes,
                    GMCP_FAKE_EXIT=str(exit_code), GMCP_FAKE_DUMP="1" if dump else "0")
+        if cut_first: env["GMCP_FAKE_EXIT_DELAY_MS"] = "800"  # Issue #8: the connection breaks, the process object is signalled later
         srv = FakeServer(port, version=bridge_version()); srv.pid_file = pid_file
         b = Bridge(port, env)
         out = {"game": game}
@@ -1192,6 +1193,7 @@ def case_crash():
             started = threading.Event()
             def hook(a):
                 started.set(); go()
+                if cut_first: return  # Issue #8: the answer is cut at once, the process is still there for a moment
                 for _ in range(100):
                     if not alive(pid_now()): break
                     time.sleep(0.1)
@@ -1205,7 +1207,19 @@ def case_crash():
             sc = (r or {}).get("result", {}).get("structuredContent", {})
             inst = (sc.get("instances") or [{}])[0]
             out["launch"], out["pid"], out["id"] = sc, pid_now(), inst.get("instance")
-            go()
+            if inflight:
+                # Issue #8: a call waits on the client (the fake game server holds it open, like a game that does not answer) when
+                # the client dies: the answer must come at once, not when the call times out.
+                box = {}
+                def call(): box["r"] = b.req("tools/call", {"name": "silent_hang", "arguments": {"instance": out["id"]}}, 60)
+                th = threading.Thread(target=call); th.start()
+                time.sleep(1.0)
+                t0 = time.time(); go()
+                th.join(45)
+                out["inflight"] = (box.get("r") or {}).get("result", {}).get("structuredContent", {})
+                out["inflight_s"] = time.time() - t0
+            else:
+                go()
             for _ in range(100):
                 if not alive(out["pid"]): break
                 time.sleep(0.1)
@@ -1255,6 +1269,24 @@ def case_crash():
     me = inst.get("map_error", {})
     check("CRASH map_load in flight when the client crashed: map_error is client_crashed with the dump",
           me.get("code") == "client_crashed" and DUMP in me.get("message", "") and me.get("details", {}).get("dump") == DUMP, o["launch"])
+    # 6. Issue #8: the map_load connection breaks first and the process object is signalled 0.8 s later (a real crash closes the
+    # sockets before the process is signalled): map_error was game_not_running, with no crash entry.
+    o = run("c6", 0xC0000005, True, map_name="gm_construct", cut_first=True)
+    inst = (o["launch"].get("instances") or [{}])[0]
+    me = inst.get("map_error", {})
+    check("CRASH Issue #8: a client that dies during its map load (connection cut before the process ends): map_error is client_crashed with the dump, not game_not_running",
+          me.get("code") == "client_crashed" and DUMP in me.get("message", "") and me.get("details", {}).get("dump") == DUMP, o["launch"])
+    # 7. Issue #8: a call in flight on a client that dies is answered at once.
+    o = run("c7", 0xC0000005, True, inflight=True)
+    fl = o.get("inflight", {}).get("error", {})
+    check("CRASH Issue #8: a call in flight when the client crashes answers client_crashed with the dump",
+          fl.get("code") == "client_crashed" and DUMP in fl.get("message", "") and fl.get("details", {}).get("dump") == DUMP, o.get("inflight"))
+    check("CRASH Issue #8: ... within a few seconds (the call itself would have waited 30 s)", o.get("inflight_s", 99) < 6, o.get("inflight_s"))
+    # 8. the same with a clean exit: not a crash, still answered at once.
+    o = run("c8", 0, False, inflight=True)
+    fl = o.get("inflight", {}).get("error", {})
+    check("CRASH Issue #8: a call in flight when the client quits cleanly answers instance_gone, not client_crashed",
+          fl.get("code") == "instance_gone" and o.get("inflight_s", 99) < 6, o.get("inflight"))
 # --- FP7137: the launch / map_load lock shared by every bridge (docs/FP7137.md). Removed with the workaround. ---
 def fp_setup(settle_ms=2500, workaround=None, hold=None):
     """A fake game server, a config folder shared by the bridges of the scenario, a folder where each stand-in game
