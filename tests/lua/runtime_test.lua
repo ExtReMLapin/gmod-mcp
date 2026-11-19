@@ -510,6 +510,22 @@ do
 	RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand = old_rcc, old_gci, old_cmd
 end
 
+-- Issue #9: lua_inspect of a function gives where it was defined (source, linedefined, lastlinedefined), so the C side
+-- can add the real disk path and whether the file came from the mounted folder. A table or a C function gets no source.
+do
+	local chunk = assert(loadstring("local function f()\n  return 1\nend\nreturn f", "@lua/pba/sv_relay.lua"))
+	__issue9_fn = chunk()
+	local ri = call("lua_inspect", { expr = "__issue9_fn" })
+	check(ri.ok and ri.result.type == "function", "Issue #9: inspect of a function: type")
+	check(ri.ok and ri.result.source == "@lua/pba/sv_relay.lua" and ri.result.linedefined == 1 and ri.result.lastlinedefined == 3,
+		"Issue #9: inspect of a function: source and lines")
+	ri = call("lua_inspect", { expr = "print" })
+	check(ri.ok and ri.result.source == nil, "Issue #9: a C function has no source")
+	ri = call("lua_inspect", { expr = "{}" })
+	check(ri.ok and ri.result.source == nil, "Issue #9: a table has no source")
+	__issue9_fn = nil
+end
+
 -- A second Lua state (new map): reload the runtime with another generation. Its ids differ from the first state's.
 local function new_state(generation)
 	__mcpagent = {}

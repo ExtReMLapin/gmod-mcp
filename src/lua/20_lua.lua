@@ -47,6 +47,13 @@ function H.lua_inspect(args)
 		out.keys = keys
 		out.truncated = count > limit
 	end
+	if type(v) == "function" then
+		-- Where it was defined: the C side adds the real disk path and whether the file came from the mounted folder (Issue #9).
+		local info = debug.getinfo(v, "S")
+		if info and info.what ~= "C" then
+			out.source, out.linedefined, out.lastlinedefined = info.source, info.linedefined, info.lastlinedefined
+		end
+	end
 	local mt = getmetatable(v)
 	if mt ~= nil then
 		local mto = { type = type(mt) }
