@@ -26,7 +26,7 @@ No decompiled code is copied into the repository; only signatures, offsets and b
 `bin/win64/filesystem_stdio.dll`, `CreateInterface("VFileSystem022")`, primary vtable (IAppSystem takes 5 slots, then
 the SDK 2013 order, checked by body): **7 `AddSearchPath(path, pathID, addType)`** (re-adding a path+ID moves it, no
 duplicate), **8 `RemoveSearchPath(path, pathID)`**, **13 `GetSearchPath(pathID, bGetPackFiles, dest, maxLen)`**
-(`;`-separated), 63 `PrintSearchPaths` (the `path` console command). GMod turned `addType` into priority groups:
+(`;`-separated), 63 `PrintSearchPaths` (the `path` console command). **GetSearchPath is no longer called** (2026-11-19, x86-64 build of that day): one call from the module returned nothing for `lsv`/`lcl` and made the next load of a new model (`SetModel` of a prop not loaded yet) block the main thread for good; the engine's `path` command does not. The base Lua check runs `file.Exists("includes/init.lua", "LUA")` in the server realm instead. GMod turned `addType` into priority groups:
 `(group << 1) | tail`; `0` puts the path before every other one.
 
 - Lua path IDs: `lsv` (server realm), `lcl` (client), `LuaMenu` (menu).

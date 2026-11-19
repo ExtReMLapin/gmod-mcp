@@ -9,6 +9,7 @@
 
 #include "agent.h"
 #include "log.h"
+#include "luaapi.h"
 #include "platform/platform.h"
 #include "realms.h"
 #include "util.h"
@@ -35,14 +36,13 @@ void set_current_for_tests(const std::string &root) {
 
 // IFileSystem ("VFileSystem022", filesystem_stdio) primary vtable slots, verified in the x64 Windows binary
 // (docs/REVERSE.md): AddSearchPath 7, RemoveSearchPath 8, GetSearchPath 13. GMod's addType: 0 = before every path.
-constexpr int kAddSearchPath = 7, kRemoveSearchPath = 8, kGetSearchPath = 13;
+constexpr int kAddSearchPath = 7, kRemoveSearchPath = 8;  // GetSearchPath (13): not called, see base_lua_found
 // ILuaShared (LUASHARED003) slot of MountLua in garrysmod_common's LuaShared.h, MSVC layout (one destructor slot).
 constexpr int kMountLua = 9;
 
 using CreateInterfaceFn = void *(*)(const char *, int *);
 using AddFn = void (*)(void *, const char *, const char *, int);
 using RemoveFn = bool (*)(void *, const char *, const char *);
-using GetFn = int (*)(void *, const char *, bool, char *, int);
 using MountLuaFn = void (*)(void *, const char *);
 
 static void *g_fs = nullptr;
@@ -84,21 +84,22 @@ static void fs_add(const std::string &path, const char *id, int add_type = kHead
 static bool fs_remove(const std::string &path, const char *id) {
     return reinterpret_cast<RemoveFn>(vtable(g_fs)[kRemoveSearchPath])(g_fs, path.c_str(), id);
 }
-static json fs_paths(const char *id) {
-    static char buf[32768];
-    int n = reinterpret_cast<GetFn>(vtable(g_fs)[kGetSearchPath])(g_fs, id, false, buf, (int)sizeof buf);
-    json out = json::array();
-    if (n <= 0) return out;
-    buf[sizeof buf - 1] = 0;
-    std::string all(buf);
-    size_t start = 0;
-    while (start <= all.size()) {
-        size_t end = all.find(';', start);
-        if (end == std::string::npos) end = all.size();
-        if (end > start) out.push_back(all.substr(start, end - start));
-        start = end + 1;
-    }
-    return out;
+// IFileSystem::GetSearchPath (slot 13) is NOT called any more: on the x86-64 build of 2026-11-19 one call
+// from the module (lua_mount {} or the end of a lua_mount {path}) made the next load of a new model (SetModel of a prop
+// not loaded yet) block the main thread for good, and it returned no path for "lsv"/"lcl" anyway. The engine's own
+// `path` command does not do that. See docs/REVERSE.md. The base Lua is checked through the server realm instead.
+
+// Whether the server realm finds the base Lua (includes/init.lua through its LUA paths): true/false, or null when there
+// is no server realm (main menu) or the check could not run. Main thread only.
+static json base_lua_found() {
+    lua_State *L = realms::state(realms::SERVER);
+    if (!L) return nullptr;
+    std::string out, err;
+    if (!lua::run(L, "return file.Exists('includes/init.lua', 'LUA') and 'yes' or 'no'", "=mcpagent:base_lua", &out, err))
+        return nullptr;
+    if (out == "yes") return true;
+    if (out == "no") return false;
+    return nullptr;
 }
 
 static bool is_dir(const std::string &p) {
@@ -174,27 +175,14 @@ json info() {
     std::string root = current();
     void *cur = nullptr;
     plat::safe_read(&vtable(g_ls)[kMountLua], &cur, sizeof cur);
-    json lsv = fs_paths("lsv");
-    std::string base = util::to_lower(agent::config().game_dir + "/lua/");
-    std::replace(base.begin(), base.end(), '/', '\\');
-    // Only meaningful once the engine has mounted the server Lua paths (a map is loaded or loading): at the main menu
-    // lsv holds at most the mounted folder's own folders.
-    std::string ov = util::to_lower(root);
-    std::replace(ov.begin(), ov.end(), '/', '\\');
-    bool engine_mounted = false, base_ok = false;
-    for (const auto &p : lsv) {
-        std::string l = util::to_lower(p.get<std::string>());
-        if (ov.empty() || l.rfind(ov, 0) != 0) engine_mounted = true;
-        if (l == base) base_ok = true;
-    }
-    if (!engine_mounted) base_ok = true;
+    // null at the main menu (no server realm yet): only meaningful once a map is loaded.
+    json base_ok = base_lua_found();
     json r{{"lua_mount", root.empty() ? json(nullptr) : json(root)},
            {"base_lua_mounted", base_ok},
            {"mount_hook", cur == reinterpret_cast<void *>(&hooked_mount)},
            {"hook_calls", g_hook_calls},
-           {"hook_path_ids", g_hook_ids},
-           {"search_paths", {{"lsv", lsv}, {"lcl", fs_paths("lcl")}}}};
-    if (!base_ok)
+           {"hook_path_ids", g_hook_ids}};
+    if (base_ok == json(false))
         r["warning"] = "the game's own lua/ folder is missing from the server Lua paths: the game cannot run its base Lua. "
                        "Remove the mounted folder (lua_mount {path: null}) and close this client.";
     return json{{"ok", true}, {"result", r}};

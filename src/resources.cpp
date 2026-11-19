@@ -212,7 +212,7 @@ reads each file, so `from_mount` comes from the folder's content when the realm 
 Typical flow:
 1. `instances_launch {count: 1, owner: "<you>", lua_mount: "D:/dev/my-addon-wt", map: "gm_construct"}` (or, on a client
    you already have: `lua_mount {path}` then `map_load`).
-2. `lua_mount {}`: `lua_mount` is your folder, `base_lua_mounted: true`, the folder heads `search_paths.lsv` and `.lcl`.
+2. `lua_mount {}`: `lua_mount` is your folder and `base_lua_mounted: true` (the server realm finds the base Lua; null before a map is loaded).
 3. `lua_function_source {realm: "server", expr: "MyAddon.Update"}`: `file` is in your folder, `matches_disk: true`.
 4. Edit, then `lua_reload` or `map_load`, then test.
 5. Done: `instances_close {owner}` (or `lua_mount {path: null}` then `map_load`).
