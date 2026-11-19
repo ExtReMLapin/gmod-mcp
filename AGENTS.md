@@ -61,6 +61,20 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   # dependencies are fetched and 
 cmake --build build --config Release
 ```
 
+In a fresh git worktree, skip the dependency download by pointing CMake at the sources another build already fetched.
+On Windows, run it from a shell where `vcvars64.bat` was called (MSVC on the PATH):
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DFETCHCONTENT_SOURCE_DIR_HTTPLIB=<other>/build/_deps/httplib-src \
+  -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=<other>/build/_deps/nlohmann_json-src \
+  -DFETCHCONTENT_SOURCE_DIR_JSON_SCHEMA_VALIDATOR=<other>/build/_deps/json_schema_validator-src \
+  -DFETCHCONTENT_SOURCE_DIR_GARRYSMOD_COMMON=<other>/build/_deps/garrysmod_common-src
+```
+
+Tests: `build/gmod-mcp-coretests`, `build/gmod-mcp-unittests`, then
+`python tests/bridge/test_bridge.py build/gmod-mcp-bridge[.exe]` (about 80 s, cases run in parallel).
+
 1. Quit the game (the DLL is locked while it runs).
 2. Copy `build/gmsv_mcpagent_win64.dll` to `garrysmod/lua/bin/` and `loader/mcpagent_boot.lua` to
    `garrysmod/lua/autorun/server/`.
