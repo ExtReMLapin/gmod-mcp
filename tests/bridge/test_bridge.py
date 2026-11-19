@@ -47,6 +47,12 @@ def check(name, cond, info=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else "  -> " + str(info)[:400]), flush=True)
 
 
+def json_equal(text, value):
+    """True when `text` is JSON that equals `value` (the text block of a result is the JSON of its structuredContent)."""
+    try: return json.loads(text) == value
+    except (ValueError, TypeError): return False
+
+
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
@@ -230,8 +236,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
                           "params": {"progressToken": token, "progress": i}}
         if name == "echo":
             h = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("mcp")}
-            return self.reply_json(res({"content": [{"type": "text", "text": "echo"}],
-                                        "structuredContent": {"args": args, "headers": h}}))
+            sc = {"args": args, "headers": h}  # like the module: the text is the JSON of structuredContent
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc, separators=(",", ":"))}],
+                                        "structuredContent": sc}))
         if name == "progress":
             self.sse_start()
             for i in range(1, 4): self.sse(prog(i)); time.sleep(0.05)
@@ -337,6 +344,13 @@ def case_a():
     r = b.req("tools/call", {"name": "status", "arguments": {}})
     res = (r or {}).get("result", {})
     check("A tools/call says not running", res.get("isError") and "game_not_running" in json.dumps(res), r)
+    # Issue #3: the same JSON error shape as the module (what Claude Code shows the model on isError is the text only).
+    texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    err = (res.get("structuredContent") or {}).get("error", {})
+    check("A (issue 3) game_not_running: the only text block is the JSON of structuredContent", len(texts) == 1 and json_equal(texts[0], res.get("structuredContent")), texts)
+    check("A (issue 3) game_not_running error carries code, message with what to do, and details naming the port and why",
+          err.get("code") == "game_not_running" and "-mcp" in err.get("message", "") and
+          err.get("details", {}).get("port") and err.get("details", {}).get("reason"), err)
     check("A ping ok", (b.req("ping") or {}).get("result") == {}, r)
     b.close()
 
@@ -1643,21 +1657,24 @@ def case_version():
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     res = (r or {}).get("result", {})
     sc = res.get("structuredContent", {})
-    first = (res.get("content") or [{}])[0].get("text", "")
+    texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    first = texts[0] if texts else ""
     bv = bridge_version()
     check("VERSION every tool result carries version_warning naming both versions",
           "0.0.1" in sc.get("version_warning", "") and bv in sc.get("version_warning", ""), sc)
-    check("VERSION the first text the agent reads is the warning, with what to do",
-          first.startswith("WARNING") and "0.0.1" in first and "skill" in first, first[:300])
-    check("VERSION the tool's own answer is still there", sc.get("args") == {} and any(c.get("text") == "echo" for c in res.get("content", [])), res)
+    # Issue #3: no prose block next to the JSON; the warning is a field of the JSON and the text stays the JSON of
+    # structuredContent (code-mode hosts parse it), with the warning as its first key so it is read first.
+    check("VERSION (issue 3) one text block, the JSON of structuredContent, version_warning first, with what to do",
+          len(texts) == 1 and first.startswith('{"version_warning":"') and json_equal(first, sc) and "0.0.1" in first and "skill" in first, texts)
+    check("VERSION the tool's own answer is still there", sc.get("args") == {} and "args" in first, res)
     # The bridge's own tools too (seen in a real update, 2026-11-14: "launch an instance" went through instances_launch
     # and the agent never saw the warning).
     for name, args in (("instance_select", {"instance": None}), ("instances_close", {"owner": "nobody"})):
         r = b.req("tools/call", {"name": name, "arguments": args})
         res = (r or {}).get("result", {})
-        first = (res.get("content") or [{}])[0].get("text", "")
+        t0 = (res.get("content") or [{}])[0].get("text", "")
         check("VERSION the bridge's own %s carries the warning too" % name,
-              first.startswith("WARNING") and "0.0.1" in res.get("structuredContent", {}).get("version_warning", ""), res)
+              t0.startswith('{"version_warning":"') and json_equal(t0, res.get("structuredContent")) and "0.0.1" in res.get("structuredContent", {}).get("version_warning", ""), res)
     check("VERSION the warning explains tools missing from the list", "listed" in first or "list" in first, first[:400])
     fake.stop(); b.close()
     # Same version: no warning.
@@ -1669,7 +1686,7 @@ def case_version():
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     res = (r or {}).get("result", {})
     check("VERSION same version: no warning", "version_warning" not in res.get("structuredContent", {}) and
-          not (res.get("content") or [{}])[0].get("text", "").startswith("WARNING"), res)
+          "version_warning" not in (res.get("content") or [{}])[0].get("text", ""), res)
     fake.stop(); b.close()
 
 
@@ -1684,7 +1701,7 @@ def case_version_live():
     check("VERSION LIVE client launched", inst, r)
     lres = (r or {}).get("result", {})
     check("VERSION LIVE the instances_launch answer itself starts with the warning",
-          (lres.get("content") or [{}])[0].get("text", "").startswith("WARNING"), str(lres)[:300])
+          (lres.get("content") or [{}])[0].get("text", "").startswith('{"version_warning":"'), str(lres)[:300])
     time.sleep(4)
     r = b.req("tools/call", {"name": "status", "arguments": {"instance": inst} if inst else {}}, 30)
     res = (r or {}).get("result", {})
@@ -1692,7 +1709,7 @@ def case_version_live():
     sc = res.get("structuredContent", {})
     print("   module", sc.get("agent_version"), "| bridge", bridge_version(), flush=True)
     check("VERSION LIVE the result starts with the warning naming both versions",
-          first.startswith("WARNING") and str(sc.get("agent_version")) in first and bridge_version() in first, first[:300])
+          first.startswith('{"version_warning":"') and str(sc.get("agent_version")) in first and bridge_version() in first, first[:300])
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "version-live"}}, 60)
     b.close()
 

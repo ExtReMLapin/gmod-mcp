@@ -967,9 +967,21 @@ static void test_installer_roundtrip() {
     fs::remove_all(base, ec);
 }
 
+// Issue #3: the guide documents where the hints of a result live (the model of some clients reads structuredContent on
+// success and only the text on an error), so the conventions are written down and cannot silently drift.
+static void test_guide_result_conventions() {
+    json g = resources::read("mcpagent://guide");
+    std::string text = g.is_object() && g.contains("text") ? g["text"].get<std::string>() : "";
+    CHECK(text.find("## Reading results") != std::string::npos);
+    for (const char *field : {"structuredContent", "isError", "note", "warning", "next", "truncated_note", "fps_note",
+                              "output_note", "version_warning", "waited_s", "game_not_running", "answered_by"})
+        CHECK(text.find(field) != std::string::npos);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
     test_installer_roundtrip();
+    test_guide_result_conventions();
     test_cmdline();
     test_crash_report();
     test_console_wait();

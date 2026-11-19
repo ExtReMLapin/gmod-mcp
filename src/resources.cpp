@@ -269,6 +269,21 @@ Calls to another instance (`instance` argument) can also fail with: `unknown_ins
 runs but does not answer: frozen or busy; `status {instance}`, `game_terminate {instance}`), `instance_gone` (its process
 ended normally: quit, closed or killed on request) and `client_crashed` / `server_crashed` (see below).
 
+## Reading results
+Every result is one JSON object, sent twice with the same content: `structuredContent` and one text block. Some clients show
+the model only `structuredContent` on success and only the text on an error (`isError: true`), so a hint is always a field
+of that JSON, never prose around it. Every successful result has `answered_by` (the instance that answered). The hint
+fields, all plain sentences for you, present only when they apply:
+- `note`: how to read this result (a caveat, what a value means). `warning`: something is wrong or risky now and what to do.
+- `next`: the call that goes on (`lua_job` start: poll with `lua_job_status`; `instances_list`: how to pick an instance).
+- `truncated_note`: values were cut by `depth`/`limit`/`max_string`; they are marked `__type = "truncated"`; raise the limit.
+- `output_note`: the console lines in `output` are shared with the game; `fps_note`: a test client runs at most 20 fps.
+- `version_warning`: the module in the game and the Claude Code plugin have different versions; tell the user.
+- `waited_s` / `waited_reason`: the call waited for another launch or map load (see "Launches and map loads").
+An error is `{"error": {"code", "message", "details"}}`: branch on `code`, read `message` for what to do, `details` holds
+the numbers. When the game is not running the plugin itself answers `game_not_running` in that same shape (`details`: `host`,
+`port`, `reason`); start the game with `-mcp` and call again.
+
 ## A game crashed
 `client_crashed` (a client) or `server_crashed` (a dedicated server) means the instance's process ended without a clean
 shutdown. The answer's `details` hold `instance`, `pid`, `dump` (the minidump file name in `crashes/` of the game folder,

@@ -487,13 +487,30 @@ std::string version_warning() {
            "into the game).";
 }
 
-// Adds the warning to a tools/call result: first text item and structuredContent.version_warning.
+// Adds the warning to a tools/call result as the field structuredContent.version_warning. The text block that is the
+// JSON of structuredContent (what the module sends) is rewritten with the same field, put first so that it is read
+// first; a result whose text is something else keeps it and gets the warning as a prose block before it.
 void add_version_warning(json &result) {
     std::string w = version_warning();
     if (w.empty() || !result.is_object()) return;
     if (!result.contains("content") || !result["content"].is_array()) result["content"] = json::array();
-    result["content"].insert(result["content"].begin(), json{{"type", "text"}, {"text", w}});
-    if (result.contains("structuredContent") && result["structuredContent"].is_object()) result["structuredContent"]["version_warning"] = w;
+    json &content = result["content"];
+    bool rewritten = false;
+    if (result.contains("structuredContent") && result["structuredContent"].is_object()) {
+        json &sc = result["structuredContent"];
+        for (json &c : content) {
+            if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
+            if (json::parse(c["text"].get<std::string>(), nullptr, false) == sc) {
+                std::string body = sc.dump(-1, ' ', false, json::error_handler_t::replace);  // {...} without the warning
+                c["text"] = "{\"version_warning\":" + json(w).dump(-1, ' ', false, json::error_handler_t::replace) +
+                            (body.size() > 2 ? "," + body.substr(1) : "}");
+                rewritten = true;
+            }
+            break;  // only the first text block can be the JSON
+        }
+        sc["version_warning"] = w;
+    }
+    if (!rewritten) content.insert(content.begin(), json{{"type", "text"}, {"text", w}});
 }
 
 json local_result(const json &msg, json r) {
@@ -969,6 +986,13 @@ json tool_text(json structured, bool error) {
 }
 json tool_error(const std::string &code, const std::string &message) {
     return tool_text(json{{"error", {{"code", code}, {"message", message}}}}, true);
+}
+// The answer to a tool call while the game is unreachable: the module's error shape, as text and structuredContent.
+json not_running_error() {
+    return tool_text(json{{"error", {{"code", "game_not_running"},
+                                     {"message", not_running_text()},
+                                     {"details", {{"host", "127.0.0.1"}, {"port", g_port}, {"reason", why_down()}}}}}},
+                     true);
 }
 
 // A tool of the game, called by the bridge itself (legacy era, no stream). Returns its structuredContent, or
@@ -1660,10 +1684,7 @@ void handle_request(const json &msg) {
     } else if (method == "tools/call" && !launched_answer(fwd).is_null()) {
         out(local_result(msg, launched_answer(fwd)));
     } else if (method == "tools/call") {
-        json text{{"type", "text"}, {"text", not_running_text()}};
-        out(local_result(msg, json{{"content", json::array({text})},
-                                   {"structuredContent", {{"error", {{"code", "game_not_running"}, {"message", not_running_text()}}}}},
-                                   {"isError", true}}));
+        out(local_result(msg, not_running_error()));
     } else {
         out(rpc_error(id, err::kInternalError, not_running_text()));
     }
