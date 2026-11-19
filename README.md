@@ -387,6 +387,7 @@ start by hand, nor a console or Lua map load started while a launch is creating 
 other games load or launch.
 Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`): wait and retry. Best
 order: launch all clients in one `instances_launch`, then work. `GMOD_MCP_FP7137_WORKAROUND=0` turns the wait off.
+The game that holds the base port is the coordinator (`instances_list` shows it): when it ends, another game takes the role over in about 3 s and calls with `instance` answer the retryable `coordinator_changing` meanwhile (the bridge retries for 10 s); `instances_close` says when it closed the coordinator.
 
 The clients share the game folder with your own game, including `data/` and the cookies (`sv.db`/`cl.db`): a test
 that writes there changes your game too.

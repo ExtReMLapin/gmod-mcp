@@ -4,6 +4,7 @@
 #include <thread>
 
 #include "agent.h"
+#include "coordinator.h"
 #include "events.h"
 #include "jobs.h"
 #include "log.h"
@@ -134,7 +135,10 @@ static json disconnect_impl(const json &args) {
 static json quit_tool(const json &) {
     json r = agent::rt(host(), "quit", json::object(), 5.0);
     if (!r.value("ok", false)) return r;
-    return ok(json{{"quitting", true}, {"note", "clean shutdown requested; the MCP server will go away with the process"}});
+    json res{{"quitting", true}, {"note", "clean shutdown requested; the MCP server will go away with the process"}};
+    json lv = coordinator::leaving_note();  // issue #6: the coordinator ends while other instances live
+    if (!lv.is_null()) res.update(lv);
+    return ok(res);
 }
 
 static json terminate_tool(const json &args) {
@@ -146,8 +150,11 @@ static json terminate_tool(const json &args) {
         plat::sleep_ms(delay);
         plat::terminate_process(1);
     }).detach();
-    return ok(json{{"terminating", true}, {"pid", pid}, {"main_thread_stalled", jobs::seconds_since_last_frame() > 5.0},
-                   {"last_tick_age_s", jobs::seconds_since_last_frame()}});
+    json res{{"terminating", true}, {"pid", pid}, {"main_thread_stalled", jobs::seconds_since_last_frame() > 5.0},
+             {"last_tick_age_s", jobs::seconds_since_last_frame()}};
+    json lv = coordinator::leaving_note();  // issue #6: the coordinator ends while other instances live
+    if (!lv.is_null()) res.update(lv);
+    return ok(res);
 }
 
 static json wait_for_tool(const json &args) {
@@ -262,7 +269,7 @@ void register_session() {
                         "too: before quitting, the module gives the archived convars their command line changed (fps_max, "
                         "fps_max_nofocus, snd_mute_losefocus, and those named by instances_launch commands or launch_args) the user's values from cfg/config.cfg, or their defaults when the file "
                         "has no line. "
-                        "Result: {quitting: true}.",
+                        "Result: {quitting: true}; on the coordinator while other instances live, also coordinator_moved: true, remaining_instances and a warning (they elect a new coordinator).",
                         json::object(), json{{"destructiveHint", true}}, quit_tool});
     mcp::register_tool({"game_terminate", "Kill the game immediately",
                         "Kills this game process at once (no config saved, no clean shutdown), from the network thread, so it works "

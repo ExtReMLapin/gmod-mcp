@@ -16,6 +16,11 @@ Cases (default: a f):
   lua_mount_verify instances_launch {lua_mount}: the result reports the mount each engine really has (fake game server)
   launch_options instances_launch {fps_max, fps_max_nofocus, commands, launch_args} (Issue #10): command line, commands in
          order before the map, convars to restore listed for the module, bad options refused before anything starts
+  handover Issue #6: the coordinator role moves to another game: calls wait for it and retry coordinator_changing, but
+         never wait when no other instance is known to live (fake server)
+  launch_mount_first Issue #6: instances_launch checks (and re-applies) the lua_mount before any map loads, no map for a client
+         without it, coordinator_changing waited out (fake server, stand-in game)
+  close_coordinator Issue #6: instances_close of the coordinator says the role moved and to whom; instances_list warns beforehand
   crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
          in flight when the client dies reports the crash, an old dump is not taken for its own (Windows)
@@ -36,7 +41,7 @@ Cases (default: a f):
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash fp7137 orphan portconflict unseen fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash fp7137 orphan portconflict unseen handover launch_mount_first close_coordinator fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -235,6 +240,16 @@ class Fake(http.server.BaseHTTPRequestHandler):
         token = params.get("_meta", {}).get("progressToken", "pt")
         prog = lambda i: {"jsonrpc": "2.0", "method": "notifications/progress",
                           "params": {"progressToken": token, "progress": i}}
+        if name == "echo" and srv.changing > 0:  # Issue #6: the coordinator role is moving
+            srv.changing -= 1
+            sc = {"error": {"code": "coordinator_changing", "message": "the coordinator role just moved", "details": {"retry_after_s": 0.3}}}
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": True}))
+        if name == "game_terminate" and srv.terminate_hook:  # Issue #6
+            srv.terminate_hook(args)
+            return self.reply_json(text("terminating"))
+        if name == "instances_list" and srv.instances_answer:  # Issue #6: the test decides what the directory says
+            sc = srv.instances_answer()
+            return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
         if name == "echo":
             h = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("mcp")}
             return self.reply_json(res({"content": [{"type": "text", "text": "echo"}],
@@ -310,6 +325,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.version, self.token = version, token
         self.instructions = "fake instructions"
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
+        self.changing, self.terminate_hook, self.instances_answer = 0, None, None  # Issue #6
         self.map_load_hook = None
         self.exec_answer, self.exec_calls, self.order = None, [], []  # Issue #10: console_exec answers and the order of console_exec / map_load calls
         self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
@@ -2269,8 +2285,206 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "fuzz"]
+def tool_names(srv):
+    with srv.lock: return [b["params"]["name"] for b, _ in srv.seen if b.get("method") == "tools/call"]
+
+
+def case_handover():
+    """Issue #6: the coordinator role moves (the game on the base port ends, another takes over a few seconds later).
+    The bridge rides it out instead of answering game_not_running / the raw coordinator_changing, but only when other
+    instances are known to live (it never makes a call wait when the only game is closed)."""
+    print("== HANDOVER: a call survives the coordinator role moving to another game", flush=True)
+    cluster = lambda: {"instances": [{"id": "client-1", "pid": 1, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True},
+                                     {"id": "client-2", "pid": 2, "port": 27082, "mode": "client", "state": "running", "role": "member"}],
+                       "coordinator_id": "client-1"}
+    env0 = isolated_config(with_token=True)
+    env0["GMOD_MCP_HANDOVER_WAIT_S"] = "4"  # the real wait is 10 s: the tests that give up do not need that long
+    # 1. Nothing else known to live: the game closes, the next call says game_not_running at once (no wait added).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    b = Bridge(port, env0)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("HANDOVER a call is answered while the game runs", r and not r["result"].get("isError"), r)
+    srv.stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {}}, 20)
+    check("HANDOVER the only game closed: game_not_running at once, no wait",
+          r and "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
+    # 2. Several instances live (the bridge saw them in instances_list): the coordinator ends, another takes the port 2 s later.
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = cluster
+    b = Bridge(port, env0)
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    check("HANDOVER instances_list answers with the coordinator named", r and r["result"]["structuredContent"].get("coordinator_id") == "client-1", r)
+    srv.stop()
+    new = {}
+    threading.Thread(target=lambda: (time.sleep(2.0), new.setdefault("srv", FakeServer(port, version=bridge_version()))), daemon=True).start()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    took = time.time() - t0
+    check("HANDOVER a call for another instance waits for the new coordinator and succeeds",
+          r and not r["result"].get("isError") and r["result"]["structuredContent"]["args"].get("instance") == "client-2" and 1.5 < took < 4, (took, r))
+    # 3. The new coordinator says coordinator_changing twice (members not registered yet): retried, the answer is the real one.
+    if "srv" not in new:  # the bridge answered before the new coordinator existed (red run): bring it up anyway
+        time.sleep(2.5); new["srv"] = new.get("srv") or FakeServer(port, version=bridge_version())
+    new["srv"].changing = 2
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("HANDOVER coordinator_changing is retried, the caller gets the real answer",
+          r and not r["result"].get("isError") and r["result"]["structuredContent"]["args"].get("instance") == "client-2" and new["srv"].changing == 0, (time.time() - t0, r))
+    # 4. It never recovers: the caller gets the retryable coordinator_changing (with a delay), not game_not_running.
+    new["srv"].changing = 10 ** 6
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("HANDOVER still changing after the wait: the retryable coordinator_changing, relayed",
+          r and r["result"].get("isError") and sc.get("error", {}).get("code") == "coordinator_changing" and 3 < time.time() - t0 < 12, (time.time() - t0, r))
+    new["srv"].stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("HANDOVER nobody takes the role over: coordinator_changing with retry_after_s after the wait (not game_not_running)",
+          r and r["result"].get("isError") and sc.get("error", {}).get("code") == "coordinator_changing" and sc["error"].get("details", {}).get("retry_after_s", 0) > 0
+          and 3 < time.time() - t0 < 12, (time.time() - t0, r))
+    b.close()
+
+
+def case_launch_mount_first():
+    """Issue #6: instances_launch never leaves a client without the requested lua_mount. The mount is checked (and
+    re-applied when it is missing) BEFORE any map loads; a client that still has none gets no map and a clear error;
+    a hand-over answer while checking is waited out."""
+    print("== LAUNCH_MOUNT_FIRST: the mount is checked before the map loads", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("LAUNCH_MOUNT_FIRST stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-mount-")
+    wt = os.path.join(work, "wt")
+    os.makedirs(os.path.join(wt, "lua"))
+    pid_file = os.path.join(work, "pid.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_PID"] = pid_file
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    srv.map_hold = {"*": 0.1}
+    b = Bridge(port, env)
+    state, answers = {"m": None, "seq": 0}, {}
+    srv.lua_mount_answer = lambda a: answers["now"](a)
+
+    def launch():
+        if os.path.exists(pid_file): os.remove(pid_file)
+        with srv.lock: del srv.seen[:]
+        state["seq"] = 0
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "lmf", "timeout_s": 20, "game_dir": game,
+                                                                          "lua_mount": wt, "map": "gm_test"}}, 60)
+        res = (r or {}).get("result", {})
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "lmf"}}, 20)
+        sc = res.get("structuredContent", {})
+        return res, sc, (sc.get("instances") or [{}])[0], tool_names(srv)
+
+    # 1. The client has no mount (the module did not apply it): re-applied with lua_mount {path}, then the map loads.
+    def missing_then_ok(a):
+        if "path" in a: state["m"] = a["path"]
+        return {"lua_mount": state["m"], "base_lua_mounted": True}
+    answers["now"] = missing_then_ok
+    res, sc, inst, names = launch()
+    check("LAUNCH_MOUNT_FIRST a missing mount is re-applied and verified before the map loads",
+          not res.get("isError") and inst.get("lua_mount", {}).get("active") is True and inst.get("lua_mount", {}).get("reapplied") is True
+          and inst.get("map") == "gm_test" and names.index("lua_mount") < names.index("map_load"), (names, sc))
+    # 2. Every check says "no mount" and the re-apply fails: no map is loaded, the client says why.
+    state["m"] = None
+    answers["now"] = lambda a: ({"error": {"code": "unsupported_platform", "message": "cannot mount"}} if "path" in a else {"lua_mount": None, "base_lua_mounted": True})
+    res, sc, inst, names = launch()
+    check("LAUNCH_MOUNT_FIRST a mount that cannot be applied: no map_load at all, clear error, isError",
+          res.get("isError") and "map_load" not in names and inst.get("lua_mount", {}).get("active") is False and inst.get("map") is None
+          and inst.get("map_error", {}).get("code") == "lua_mount_not_active" and wt in inst.get("map_error", {}).get("message", ""), (names, sc))
+    # 3. The coordinator is changing while the mount is checked: waited out, the mount counts as active, nothing re-applied.
+    state["m"] = wt
+    seq = {"n": 0}
+    def changing_twice(a):
+        seq["n"] += 1
+        if seq["n"] <= 2: return {"error": {"code": "coordinator_changing", "message": "moving", "details": {"retry_after_s": 0.2}}}
+        return {"lua_mount": state["m"], "base_lua_mounted": True}
+    answers["now"] = changing_twice
+    res, sc, inst, names = launch()
+    paths = [c for c in srv.lua_mount_calls if "path" in c]
+    check("LAUNCH_MOUNT_FIRST coordinator_changing while checking: retried, mount active, map loaded, nothing re-applied",
+          not res.get("isError") and inst.get("lua_mount", {}).get("active") is True and inst.get("map") == "gm_test" and not any(c.get("path") == wt and c.get("instance") for c in paths[2:]), (names, sc, paths))
+    b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def case_close_coordinator():
+    """Issue #6: instances_close on a client that is the coordinator while other instances live says so and reports the
+    instance that took the role; instances_list warns about it beforehand."""
+    print("== CLOSE_COORDINATOR: closing the coordinator says the role moves", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("CLOSE_COORDINATOR stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-cc-")
+    pid_file = os.path.join(work, "pid.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_PID"] = pid_file
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    st = {"closed": False, "others": True}
+
+    def directory():
+        pid = int(open(pid_file).read().strip() or 0)
+        me = "fake-%d" % pid
+        other = {"id": "other-1", "pid": 4242, "port": 27082, "mode": "client", "state": "running", "role": "member", "self": False}
+        if not st["closed"]:
+            ents = [{"id": me, "pid": pid, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True}]
+            ents += [other] if st["others"] else []
+            return {"instances": ents, "coordinator_id": me}
+        other.update(role="coordinator", self=True)
+        return {"instances": [other], "coordinator_id": "other-1"}
+    srv.instances_answer = directory
+    srv.terminate_hook = lambda a: st.update(closed=True)
+    b = Bridge(port, env)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "cc", "timeout_s": 20, "game_dir": game}}, 60)
+    check("CLOSE_COORDINATOR launched", r and not r["result"].get("isError"), r)
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("CLOSE_COORDINATOR instances_list warns that a client of this session (owner cc) is the coordinator",
+          "coordinator" in sc.get("coordinator_warning", "") and "cc" in sc.get("coordinator_warning", "") and "instances_close" in sc.get("coordinator_warning", ""), sc)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "cc"}}, 40)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    c = (sc.get("closed") or [{}])[0]
+    check("CLOSE_COORDINATOR instances_close names the role move and the instance that took it over",
+          c.get("was_coordinator") is True and c.get("coordinator_moved_to") == "other-1" and "coordinator" in sc.get("warning", ""), sc)
+    # Alone: closing the coordinator says nothing (nothing to hand over).
+    st.update(closed=False, others=False)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "cc2", "timeout_s": 20, "game_dir": game}}, 60)
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("CLOSE_COORDINATOR alone: no coordinator warning", "coordinator_warning" not in sc, sc)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "cc2"}}, 40)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    c = (sc.get("closed") or [{}])[0]
+    check("CLOSE_COORDINATOR alone: closing it says nothing about the role", "was_coordinator" not in c and "warning" not in sc, sc)
+    b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

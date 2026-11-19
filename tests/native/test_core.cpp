@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <string>
 #include <set>
 #include <thread>
@@ -917,6 +918,7 @@ struct Child {
 static void test_crash_report_coordinator() {
     tools::register_core();     // status
     tools::register_session();  // game_terminate
+    tools::register_instances();
     auto &cfg = agent::config();
     std::string saved_token = cfg.token, saved_id = cfg.instance_id, saved_dir = cfg.game_dir;
     cfg.token = "coretests-token-0123456789abcdef";
@@ -1043,6 +1045,41 @@ static void test_crash_report_coordinator() {
     }
     // 9. An id that never existed.
     CHECK(status_of("never-1").value("code", "") == "unknown_instance");
+    // 10. Issue #6: right after this instance took the base port over from a coordinator that went away, an instance it does
+    // not know yet may just not have re-registered: the answer is the retryable coordinator_changing, nothing was sent to it.
+    {
+        CHECK(!coordinator::in_handover() && coordinator::handover_info().is_null());
+        coordinator::note_takeover_for_tests(true);
+        json e = status_of("late-1");
+        CHECK(e.value("code", "") == "coordinator_changing");
+        CHECK(e.value("details", json::object()).value("retry_after_s", 0.0) > 0 && e.value("details", json::object()).value("instance", "") == "late-1");
+        CHECK(coordinator::in_handover() && coordinator::handover_info().value("state", "") == "changing");
+        json sc = mcp::call_tool("instances_list", json::object()).value("structuredContent", json::object());
+        CHECK(sc.value("coordinator_changing", false) && sc.value("coordinator_id", "") == "coordinator-test" && sc.value("coordinator", false));
+        // A member that registered meanwhile is relayed to as usual (here: its process is alive, its port answers nothing).
+        {
+            Child c;
+            CHECK(c.start() && heartbeat("late-2", "client", c.pi.dwProcessId));
+            CHECK(status_of("late-2").value("code", "") == "instance_unreachable");
+            c.end(1);
+        }
+        coordinator::note_takeover_for_tests(false);
+        CHECK(status_of("late-1").value("code", "") == "unknown_instance");
+        sc = mcp::call_tool("instances_list", json::object()).value("structuredContent", json::object());
+        CHECK(!sc.contains("coordinator_changing") && sc.value("coordinator_id", "") == "coordinator-test");
+    }
+    // 11. Issue #6: game_quit / game_terminate on the coordinator while other instances live say the role moves.
+    {
+        // The earlier members are dead and purged: nobody else lives, nothing to warn about.
+        CHECK(coordinator::leaving_note().is_null());
+        Child c;
+        CHECK(c.start() && heartbeat("lead-1", "client", c.pi.dwProcessId));
+        json n = coordinator::leaving_note();
+        CHECK(n.is_object() && n.value("coordinator_moved", false) && n.value("remaining_instances", json::array()) == json::array({"lead-1"}));
+        CHECK(n.is_object() && n.value("warning", "").find("coordinator_changing") != std::string::npos);
+        c.end(1);
+        CHECK(coordinator::leaving_note().is_null());  // it ended: purged, no one left to elect
+    }
 
     coordinator::stop();
     httpsrv::stop();
@@ -1174,7 +1211,153 @@ static void test_port_conflict_link() {
     cfg.port = saved_port;
 }
 
-int main() {
+#ifdef _WIN32
+// Issue #6: a real cluster of three processes sharing a base port. Each runs the module's own server and coordinator code
+// (httpsrv + coordinator, no game): `gmod-mcp-coretests --cluster-node <base port> <id>`. The coordinator (first one) is
+// killed like a game that crashes; the test measures how long the survivors need to answer on the base port again, and
+// that a call for one of them is not answered `unknown_instance` meanwhile.
+static const char *kClusterToken = "coretests-cluster-token-0123456789abcdef";
+
+static int cluster_node(int base, const std::string &id) {
+    auto &cfg = agent::config();
+    cfg.token = kClusterToken;
+    cfg.instance_id = id;
+    cfg.base_port = base;
+    cfg.game_dir = (fs::temp_directory_path() / "gmod-mcp-coretests-cluster" / id).u8string();
+    tools::register_core();
+    tools::register_instances();
+    cfg.port = httpsrv::start(base, 16, cfg.token);
+    if (!cfg.port) return 2;
+    coordinator::start();
+    for (int i = 0; i < 1200; ++i) plat::sleep_ms(100);  // 2 minutes at most: a failed test leaves nothing behind
+    return 0;
+}
+
+struct Node {
+    PROCESS_INFORMATION pi{};
+    bool alive = false;
+    bool start(int base, const std::string &id) {
+        char exe[MAX_PATH * 2] = {};
+        GetModuleFileNameA(nullptr, exe, sizeof exe);
+        std::string cmd = std::string("\"") + exe + "\" --cluster-node " + std::to_string(base) + " " + id;
+        STARTUPINFOA si{};
+        si.cb = sizeof si;
+        alive = CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi) != 0;
+        return alive;
+    }
+    void kill() {
+        if (!alive) return;
+        TerminateProcess(pi.hProcess, 0xC0000005u);
+        WaitForSingleObject(pi.hProcess, 10000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        alive = false;
+    }
+    ~Node() { kill(); }
+};
+
+// tools/call on a port; returns the structuredContent, or null when nothing answered.
+static json cluster_call(int port, const std::string &tool, const json &args) {
+    httplib::Client cli("127.0.0.1", port);
+    cli.set_connection_timeout(1, 0);
+    cli.set_read_timeout(5, 0);
+    cli.set_bearer_token_auth(kClusterToken);
+    json req{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", args}}}};
+    auto r = cli.Post("/mcp", req.dump(), "application/json");
+    if (!r || r->status != 200) return json();
+    try {
+        json j = json::parse(r->body);
+        return j.value("result", json::object()).value("structuredContent", json::object());
+    } catch (...) {
+        return json();
+    }
+}
+
+static std::set<std::string> cluster_ids(const json &list) {
+    std::set<std::string> ids;
+    if (list.is_object())
+        for (const auto &e : list.value("instances", json::array())) ids.insert(e.value("id", ""));
+    return ids;
+}
+
+static void test_coordinator_handover_cluster() {
+    int base = 39800 + (int)(GetCurrentProcessId() % 100) * 16;
+    Node a, b, c;
+    CHECK(a.start(base, "node-a"));
+    // Wait for the first node to hold the base port, then start the two members.
+    auto until = [](auto pred, double max_s) {
+        auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < max_s) {
+            if (pred()) return true;
+            plat::sleep_ms(50);
+        }
+        return pred();
+    };
+    CHECK(until([&] { return cluster_call(base, "instances_list", json::object()).is_object(); }, 15));
+    CHECK(b.start(base, "node-b"));
+    CHECK(c.start(base, "node-c"));
+    std::set<std::string> all{"node-a", "node-b", "node-c"};
+    CHECK(until([&] { return cluster_ids(cluster_call(base, "instances_list", json::object())) == all; }, 20));
+    json first = cluster_call(base, "instances_list", json::object());
+    CHECK(first.value("coordinator_id", "") == "node-a" && first.value("coordinator", false));
+
+    // The coordinator dies.
+    auto t0 = std::chrono::steady_clock::now();
+    auto since = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    a.kill();
+    std::set<std::string> survivors{"node-b", "node-c"};
+    double t_answer = -1, t_full = -1;
+    // From the first answer on, a call for a survivor must be relayed or answered retryable, never unknown_instance. The
+    // target has no game, so the call ends after its 1 s timeout: done in the background not to slow the polling.
+    auto probe = [&](const std::string &id) {
+        json r = cluster_call(base, "lua_exec", json{{"instance", id}, {"code", "return 1"}, {"realm", "menu"}, {"timeout_s", 1}});
+        return r.value("error", json::object()).value("code", "");
+    };
+    std::future<std::string> probe_b, probe_c;
+    while (since() < 25 && t_full < 0) {
+        json l = cluster_call(base, "instances_list", json::object());
+        if (l.is_object()) {
+            if (t_answer < 0) {
+                t_answer = since();
+                probe_b = std::async(std::launch::async, probe, "node-b");
+                probe_c = std::async(std::launch::async, probe, "node-c");
+            }
+            if (cluster_ids(l).count("node-b") && cluster_ids(l).count("node-c")) t_full = since();
+        }
+        plat::sleep_ms(50);
+    }
+    std::string code_b = probe_b.valid() ? probe_b.get() : "", code_c = probe_c.valid() ? probe_c.get() : "";
+    bool unknown_seen = code_b == "unknown_instance" || code_c == "unknown_instance";
+    std::printf("  hand-over: base port answers again after %.2f s, both survivors listed after %.2f s\n", t_answer, t_full);
+    CHECK(t_answer >= 0 && t_full >= 0);
+    CHECK(t_full >= 0 && t_full < 5.0);  // was 9 to 15 s: 3 slow heartbeats (a refused loopback connection takes 2 s on Windows), then the others re-registered at their own pace
+    CHECK(!unknown_seen);
+    json now = cluster_call(base, "instances_list", json::object());
+    int coords = 0;
+    std::string who;
+    for (const auto &e : now.value("instances", json::array()))
+        if (e.value("role", "") == "coordinator") {
+            ++coords;
+            who = e.value("id", "");
+        }
+    CHECK(coords == 1 && (who == "node-b" || who == "node-c") && now.value("coordinator_id", "") == who);
+    CHECK(cluster_ids(now) == survivors);
+    // A member relays through the new coordinator to the other survivor.
+    std::string other = who == "node-b" ? "node-c" : "node-b";
+    json st = cluster_call(base, "lua_exec", json{{"instance", other}, {"code", "return 1"}, {"realm", "menu"}, {"timeout_s", 1}});
+    if (st.value("relayed_by", "") != who) std::printf("  relay answer: %s\n", st.dump().c_str());
+    CHECK(st.value("relayed_by", "") == who && st.value("error", json::object()).value("code", "") != "unknown_instance");
+    b.kill();
+    c.kill();
+}
+#endif
+
+int main(int argc, char **argv) {
+#ifdef _WIN32
+    if (argc >= 4 && std::string(argv[1]) == "--cluster-node") return cluster_node(std::atoi(argv[2]), argv[3]);
+#endif
+    (void)argc;
+    (void)argv;
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
     test_installer_roundtrip();
     test_cmdline();
@@ -1196,6 +1379,7 @@ int main() {
     test_port_conflict_link();
 #ifdef _WIN32
     test_crash_report_coordinator();
+    test_coordinator_handover_cluster();  // Issue #6
 #endif
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;

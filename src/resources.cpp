@@ -270,7 +270,9 @@ Resources: `gmod://errors` and `gmod://console` (subscribable), templates `gmod:
 ## Structured errors
 Every tool returns `isError: true` and `{"error": {"code", "message", "details"}}`. Common codes:
 `realm_unavailable`, `client_locked`, `main_thread_timeout`, `invalid_params`, `lua_error`, `timeout`, `not_found`.
-Calls to another instance (`instance` argument) can also fail with: `unknown_instance`, `instance_unreachable` (its process
+Calls to another instance (`instance` argument) can also fail with: `unknown_instance`, `coordinator_changing` (the game that
+held the directory of instances ended and another is taking the role over, or has not heard from that instance yet: nothing
+was sent, retry after `details.retry_after_s`; the plugin already waits a few seconds before giving it to you), `instance_unreachable` (its process
 runs but does not answer: frozen or busy; `status {instance}`, `game_terminate {instance}`), `instance_gone` (its process
 ended normally: quit, closed or killed on request) and `client_crashed` / `server_crashed` (see below).
 
