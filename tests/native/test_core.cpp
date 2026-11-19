@@ -22,6 +22,7 @@
 #include "agent.h"
 #include "argcheck.h"
 #include "cmdline.h"
+#include "gamedir.h"
 #include "console.h"
 #include "coordinator.h"
 #include "http_server.h"
@@ -262,6 +263,67 @@ static void test_small_b6() {
     CHECK(coordinator::same_process_running(99999, 0));        // never recorded: cannot tell, assume alive
     CHECK(coordinator::same_process_running(1, 12345));        // unreadable (access denied): assume alive
     CHECK(coordinator::same_process_running(12345, 1));
+}
+
+// Issue #4: a PE file with just enough header for pe_machine (DOS header, e_lfanew = 0x80, "PE\0\0", machine).
+static void write_pe(const fs::path &p, uint16_t machine) {
+    fs::create_directories(p.parent_path());
+    std::string b(0x100, '\0');
+    b[0] = 'M';
+    b[1] = 'Z';
+    b[0x3C] = (char)0x80;
+    b.replace(0x80, 4, std::string("PE\0\0", 4));
+    b[0x84] = (char)(machine & 0xFF);
+    b[0x85] = (char)(machine >> 8);
+    std::ofstream(p, std::ios::binary) << b;
+}
+
+// Issue #4: the current x86-64 install has bin/win64/gmod.exe and no gmod_win64.exe (its root gmod.exe is 32-bit).
+static void test_game_exe_layouts() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-gamedir";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    auto exe_of = [&](const char *name) { return gamedir::find_game_exe((base / name).u8string()); };
+    auto is = [&](const std::string &found, const fs::path &want) { return !found.empty() && same(found, want); };
+
+    write_pe(base / "old/gmod_win64.exe", gamedir::kMachineX64);
+    CHECK(gamedir::pe_machine((base / "old/gmod_win64.exe").u8string()) == gamedir::kMachineX64);  // Issue #4
+    CHECK(is(exe_of("old"), base / "old/gmod_win64.exe"));  // Issue #4: the older layout still works
+
+    write_pe(base / "cur/gmod.exe", gamedir::kMachineX86);  // the 32-bit game at the root, never taken
+    write_pe(base / "cur/bin/win64/gmod.exe", gamedir::kMachineX64);
+    CHECK(gamedir::pe_machine((base / "cur/gmod.exe").u8string()) == gamedir::kMachineX86);  // Issue #4
+    CHECK(is(exe_of("cur"), base / "cur/bin/win64/gmod.exe"));  // Issue #4: the current layout is found
+
+    write_pe(base / "both/gmod_win64.exe", gamedir::kMachineX64);
+    write_pe(base / "both/bin/win64/gmod.exe", gamedir::kMachineX64);
+    CHECK(is(exe_of("both"), base / "both/gmod_win64.exe"));  // Issue #4: the root name stays first when both are 64-bit
+
+    write_pe(base / "wrong/gmod_win64.exe", gamedir::kMachineX86);
+    write_pe(base / "wrong/bin/win64/gmod.exe", gamedir::kMachineX64);
+    CHECK(is(exe_of("wrong"), base / "wrong/bin/win64/gmod.exe"));  // Issue #4: the machine type decides, not the name
+
+    write_pe(base / "only32/gmod.exe", gamedir::kMachineX86);
+    CHECK(exe_of("only32").empty());  // Issue #4: a 32-bit install has no 64-bit game
+    write_pe(base / "only32b/bin/win64/gmod.exe", gamedir::kMachineX86);
+    CHECK(exe_of("only32b").empty());  // Issue #4
+
+    touch(base / "plain/bin/win64/gmod.exe");  // not a PE image: kept when nothing better exists (tests use stand-ins)
+    CHECK(gamedir::pe_machine((base / "plain/bin/win64/gmod.exe").u8string()) == 0);  // Issue #4
+    CHECK(is(exe_of("plain"), base / "plain/bin/win64/gmod.exe"));  // Issue #4
+    touch(base / "mix/gmod_win64.exe");
+    write_pe(base / "mix/bin/win64/gmod.exe", gamedir::kMachineX64);
+    CHECK(is(exe_of("mix"), base / "mix/bin/win64/gmod.exe"));  // Issue #4: a real 64-bit image beats a file of unknown type
+
+    fs::create_directories(base / "empty");
+    CHECK(exe_of("empty").empty() && exe_of("missing").empty() && gamedir::find_game_exe("").empty());  // Issue #4
+    CHECK(gamedir::pe_machine((base / "missing/x.exe").u8string()) == 0);  // Issue #4
+    std::string msg = gamedir::missing_exe_message((base / "empty").u8string());
+    CHECK(msg.find("gmod_win64.exe") != std::string::npos && msg.find("bin") != std::string::npos &&
+          msg.find("win64") != std::string::npos && msg.find("gmod.exe") != std::string::npos);  // Issue #4: names both paths
+    msg = gamedir::missing_exe_message((base / "only32").u8string());
+    CHECK(msg.find("32-bit") != std::string::npos);  // Issue #4: says what it saw
+    fs::remove_all(base, ec);
 }
 
 // B1 lua_mount: which folders are accepted as a mount root (no game needed for this part).
@@ -984,6 +1046,7 @@ int main() {
     test_argcheck();
     test_job_ids();
     test_lua_mount_paths();
+    test_game_exe_layouts();
 #ifdef _WIN32
     test_crash_report_coordinator();
 #endif

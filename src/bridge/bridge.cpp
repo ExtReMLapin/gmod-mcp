@@ -42,6 +42,7 @@
 #include "argcheck.h"
 #include "bridge_snapshot.h"
 #include "crashinfo.h"
+#include "gamedir.h"
 #include "fp7137.h"  // FP7137
 #include "mcp_protocol.h"
 #include "platform/platform.h"
@@ -752,7 +753,7 @@ json bridge_tools() {
          "it keeps their exit short; a clean quit is safe too, see the convar note below). Sub-agents of one Claude Code session share "
          "this bridge: give each one's clients an `owner` label and close them with instances_close {owner}, never "
          "{all: true}, which would close the other sub-agents' clients too. The game is found through Steam; pass "
-         "game_dir (the folder holding gmod_win64.exe) if it is elsewhere. Windows only for now.\n"
+         "game_dir (the folder holding gmod_win64.exe or bin/win64/gmod.exe) if it is elsewhere. Windows only for now.\n"
          "Presets: 'light' (default: 640x360, 20 fps; for most tests, NOT for performance measurements: the 20 fps cap "
          "hides per-frame cost) and 'normal' (640x360, 30 fps; for rendering checks, screenshots and frame-time sensitive "
          "tests). sound: false (-nosound) changes what the engine reports about sounds: SoundDuration of compressed "
@@ -808,7 +809,7 @@ json bridge_tools() {
                                          "the addon: its root or its lua/ folder). Applies from their first map load; see lua_mount. "
                                          "The result then reports what each engine really has (instances[i].lua_mount.active); a mount "
                                          "that is not active is isError with a warning. Windows only."}}},
-            {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe), if Steam does not know it."}}},
+            {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe or bin/win64/gmod.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
           {"additionalProperties", false}}},
         {"annotations", {{"title", "Launch test clients"}, {"readOnlyHint", false}, {"destructiveHint", false}, {"openWorldHint", false}}}};
@@ -988,19 +989,14 @@ std::string parent_of(std::string p) {
     return s == std::string::npos ? p : p.substr(0, s);
 }
 
-bool file_is(const std::string &p) {
-    std::error_code ec;
-    return std::filesystem::is_regular_file(std::filesystem::u8path(p), ec);
-}
-
 // The game folder: the argument, then what the module reported (status: game_dir), then Steam's libraries.
 [[maybe_unused]] std::string find_game_root(const std::string &arg, std::string &how) {
     auto ok = [](std::string d) {
         while (!d.empty() && (d.back() == '/' || d.back() == '\\')) d.pop_back();
         std::string low = d;
         for (auto &c : low) c = (char)std::tolower((unsigned char)c);
-        if (low.size() >= 9 && low.compare(low.size() - 9, 9, "garrysmod") == 0 && !file_is(d + "/gmod_win64.exe")) d = parent_of(d);
-        return file_is(d + "/gmod_win64.exe") ? d : std::string();
+        if (low.size() >= 9 && low.compare(low.size() - 9, 9, "garrysmod") == 0 && gamedir::find_game_exe(d).empty()) d = parent_of(d);
+        return gamedir::find_game_exe(d).empty() ? std::string() : d;
     };
     if (!arg.empty()) {
         how = "game_dir argument";
@@ -1120,8 +1116,12 @@ json launch_tool(const json &args, const json &token) {
         if (!lua_mount::normalize_root(args["lua_mount"].get<std::string>(), mount_root, oerr)) return tool_error("invalid_params", "lua_mount: " + oerr);
     }
     std::string how, root = find_game_root(args.value("game_dir", ""), how);
-    if (root.empty())
-        return tool_error("game_not_found", "Garry's Mod not found (" + how + "): pass game_dir, the folder holding gmod_win64.exe (the gmod-mcp skill explains how to find it)");
+    if (root.empty()) {
+        // Issue #4: the 64-bit game is gmod_win64.exe at the root (older installs) or bin/win64/gmod.exe (current ones).
+        std::string given = args.value("game_dir", "");
+        return tool_error("game_not_found", "Garry's Mod not found (" + how + "): pass game_dir, the folder holding gmod_win64.exe or bin/win64/gmod.exe (the gmod-mcp skill explains how to find it)" +
+                                                (given.empty() ? "" : "; " + gamedir::missing_exe_message(given)));
+    }
     if (!mount_root.empty()) {
         std::string inside = lua_mount::refuse_inside_game(mount_root, root + "/garrysmod");
         if (!inside.empty()) return tool_error("invalid_params", "lua_mount: " + inside);
@@ -1145,7 +1145,7 @@ json launch_tool(const json &args, const json &token) {
     if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"";
     SetEnvironmentVariableA("SteamAppId", "4000");
     SetEnvironmentVariableA("SteamGameId", "4000");
-    std::string exe = root + "\\gmod_win64.exe";
+    std::string exe = gamedir::find_game_exe(root);  // Issue #4: gmod_win64.exe or bin/win64/gmod.exe
     for (auto &c : exe)
         if (c == '/') c = '\\';
     // FP7137: wait while a map loads in any game (shared lock), then hold the launch slot while the processes are created.

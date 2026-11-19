@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **The current x86-64 install of Garry's Mod is found** (issue #4). It has no `gmod_win64.exe`: the 64-bit game is
+  `bin\win64\gmod.exe`, and the `gmod.exe` at the root of the game folder is the 32-bit one. `instances_launch` now looks
+  for `gmod_win64.exe` at the root, then for `bin\win64\gmod.exe`, prefers the file whose PE header says x86-64, never
+  starts a 32-bit one, and starts the game with the game folder as working directory. The `game_not_found` message names
+  both paths. The skill no longer tells an agent to give up when `gmod_win64.exe` is missing: it gives the
+  `bin\win64\gmod.exe` start command and how to tell a 32-bit executable from a 64-bit one.
+
 ## 0.3.6
 
 Guards against an engine crash when a game starts while another finishes a map load (Garry's Mod issue 7137),

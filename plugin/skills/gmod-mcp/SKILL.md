@@ -53,16 +53,22 @@ Once the server is connected, its own instructions (sent by the server) take ove
 Steam must be running and logged in. If it is not, start it (`steam.exe` / `steam`) and wait until it is ready; never
 kill it.
 
-**Windows** (64-bit game, `gmod_win64.exe` at the root of the game folder). Start it directly; the two variables are
-required, otherwise the game stops with "No appID found":
+**Windows** (64-bit game). The 64-bit executable is `<game folder>\bin\win64\gmod.exe` on current x86-64 installs, or
+`<game folder>\gmod_win64.exe` on older ones: use whichever exists. Start it directly with the game folder as working
+directory; the two variables are required, otherwise the game stops with "No appID found":
 
 ```powershell
 $env:SteamAppId = "4000"; $env:SteamGameId = "4000"
-Start-Process -FilePath "<game folder>\gmod_win64.exe" -WorkingDirectory "<game folder>" `
+$exe = "<game folder>\gmod_win64.exe"
+if (-not (Test-Path $exe)) { $exe = "<game folder>\bin\win64\gmod.exe" }
+Start-Process -FilePath $exe -WorkingDirectory "<game folder>" `
   -ArgumentList "-mcp -windowed -w 1280 -h 720 -novid -condebug +engine_no_focus_sleep 0 +snd_mute_losefocus 0"
 ```
 
-If `gmod_win64.exe` is missing, the game is on 32-bit binaries: tell the user (the module is 64-bit only) and stop.
+The `gmod.exe` at the root of the game folder is the 32-bit game on the x86-64 branch: do not start it. To tell the
+two apart, read the PE header: the 2 bytes at offset `e_lfanew + 4` (the 4-byte value at offset 0x3C) are `64 86`
+for 64-bit (machine 0x8664) and `4C 01` for 32-bit (0x014C). If neither a 64-bit `gmod_win64.exe` nor a 64-bit
+`bin\win64\gmod.exe` exists, the game is on 32-bit binaries: tell the user (the module is 64-bit only) and stop.
 
 **Linux**, or as a fallback on Windows: `steam -applaunch 4000 -mcp -windowed -novid +engine_no_focus_sleep 0
 +snd_mute_losefocus 0` (on Windows, `"<Steam>\steam.exe" -applaunch 4000 ...`). Steam adds the user's own launch options.

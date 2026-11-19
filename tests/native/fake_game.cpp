@@ -1,4 +1,4 @@
-// Stand-in for gmod_win64.exe in the bridge tests: a game in which gmod-mcp never loads (it never answers).
+// Stand-in for the 64-bit game (gmod_win64.exe or bin/win64/gmod.exe) in the bridge tests: a game in which gmod-mcp never loads (it never answers).
 // Lives 120 s at most, so a failed test leaves nothing behind for long. When GMCP_FAKE_ARGV names a file, it appends
 // its raw command line there (one line per start, UTF-8), so a test can check what the bridge passed.
 // Crash mode (tests of the crash report): when GMCP_FAKE_TRIGGER names a file, the game waits for it to exist, then writes
@@ -28,6 +28,21 @@ int main(int argc, char **argv) {
 #else
             for (int i = 0; i < argc; ++i) std::fprintf(f, "%s%s", i ? " " : "", argv[i]);
             std::fprintf(f, "\n");
+#endif
+            std::fclose(f);
+        }
+    }
+    // GMCP_FAKE_CWD names a file that gets the working directory (UTF-8): a test checks where the bridge started the game.
+    const char *cwdf = std::getenv("GMCP_FAKE_CWD");
+    if (cwdf && *cwdf) {
+        if (FILE *f = std::fopen(cwdf, "wb")) {
+#ifdef _WIN32
+            wchar_t w[1024] = {0};
+            DWORD wn = GetCurrentDirectoryW(1024, w);
+            int n = wn ? WideCharToMultiByte(CP_UTF8, 0, w, (int)wn, nullptr, 0, nullptr, nullptr) : 0;
+            std::string u((size_t)n, '\0');
+            if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, (int)wn, u.data(), n, nullptr, nullptr);
+            std::fwrite(u.data(), 1, u.size(), f);
 #endif
             std::fclose(f);
         }
