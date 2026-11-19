@@ -19,6 +19,10 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
 
 - **English only**: code, comments, log messages, tool descriptions, docs.
 - **No AI attribution** in commits (no `Co-Authored-By`, no session links).
+- **GitHub issues**: a commit that fully fixes an issue ends its message with `Fixes #N` (GitHub closes the issue when
+  it reaches `main`); a commit that only covers part of it says `Refs #N`. A test written for an issue names it in a
+  comment next to the test (`// Issue #N: ...`, `# Issue #N: ...`) and in its `docs/TESTS.md` row, so the issue, the
+  fix and the test point at each other.
 - **Conformance fixtures live only in `tests/conformance/`**, and only the `gmod-mcp-conformance-host` executable links
   them. `src/` never calls `mcp::set_request_hooks` (a test-only seam for the conformance host; only its declaration and
   definition in `src/mcp.h` / `src/mcp.cpp` may name it). `tests/conformance/check_fixtures_absent.py` enforces both in CI,
