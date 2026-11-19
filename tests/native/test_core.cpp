@@ -460,6 +460,36 @@ static void test_lua_mount_paths() {
     CHECK(r.value("isError", false) && r.dump().find("lua") != std::string::npos);
 }
 
+// Issue #9: the GMod x86-64 build of 2026-11-19 grew IAppSystem from 5 to 9 slots, so every IFileSystem slot moved by
+// 4: slot 7 (AddSearchPath before) became a bare `ret 0` and slot 13 (GetSearchPath before) RemoveAllSearchPaths. The
+// module now reads the layout from the code of slots 7, 8, 11 and 12. Bytes copied from both filesystem_stdio.dll
+// builds (docs/REVERSE.md, "Lua mount: search paths").
+static void test_fs_vtable_layout() {
+    using B = std::vector<uint8_t>;
+    // Old build (5 IAppSystem slots): 7 AddSearchPath (thunk with a body), 8 RemoveSearchPath; 11/12 do not matter.
+    B old7{0x48, 0x83, 0xec, 0x38, 0xc6, 0x44, 0x24, 0x28, 0x00, 0xc6, 0x44, 0x24, 0x20, 0x01, 0xe8, 0x0d};
+    B old8{0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56, 0x48, 0x81, 0xec, 0x30, 0x01, 0x00, 0x00};
+    // 2026-11-19 build (9 IAppSystem slots): 7 Reconnect `ret 0`, 8 IsSingleton `mov al,1; ret`, 11 AddSearchPath,
+    // 12 RemoveSearchPath.
+    B new7{0xc2, 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc};
+    B new8{0xb0, 0x01, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc};
+    B new11{0x48, 0x83, 0xec, 0x38, 0xc6, 0x44, 0x24, 0x28, 0x00, 0xc6, 0x44, 0x24, 0x20, 0x01, 0xe8, 0x0d};
+    B new12{0x40, 0x53, 0x56, 0x57, 0x41, 0x56, 0x48, 0x81, 0xec, 0x58, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x05};
+    CHECK(lua_mount::fs_slot_base(old7, old8, new11, new12) == 5);  // Issue #9
+    CHECK(lua_mount::fs_slot_base(new7, new8, new11, new12) == 9);  // Issue #9
+    // Anything else is refused rather than guessed: calling a wrong slot wiped every search path (frozen model load).
+    CHECK(lua_mount::fs_slot_base(new7, old8, new11, new12) == -1);  // Issue #9: one trivial, one not
+    CHECK(lua_mount::fs_slot_base(new7, new8, new7, new12) == -1);   // Issue #9: AddSearchPath cannot be a bare ret
+    CHECK(lua_mount::fs_slot_base(B{}, new8, new11, new12) == -1);   // Issue #9: unreadable code
+    // The constant-return shapes MSVC emits for trivial virtuals.
+    for (const B &b : {B{0xc3}, B{0xc2, 0x00, 0x00}, B{0x32, 0xc0, 0xc3}, B{0x33, 0xc0, 0xc3}, B{0xb0, 0x01, 0xc3},
+                       B{0xb8, 0x04, 0x00, 0x00, 0x00, 0xc3}, B{0x48, 0x33, 0xc0, 0xc3}})
+        CHECK(lua_mount::is_constant_return(b));  // Issue #9
+    CHECK(!lua_mount::is_constant_return(old7));             // Issue #9
+    CHECK(!lua_mount::is_constant_return(B{0xe9, 0, 0, 0, 0}));  // Issue #9: a jump thunk is not followed: not trivial
+    CHECK(!lua_mount::is_constant_return(B{0xb8, 0x04, 0x00}));  // Issue #9: truncated
+}
+
 // srcds: Lua errors come from the console. An error in code without a .lua file name (lua_exec, CompileString chunks,
 // "=name" chunks) was missed: seen live on a Windows srcds 2026-11-14.
 static void test_srcds_error_parsing() {
@@ -2003,6 +2033,7 @@ int main(int argc, char **argv) {
     test_argcheck();
     test_job_ids();
     test_lua_mount_paths();
+    test_fs_vtable_layout();
     test_issue9_mount_reload();
     test_game_exe_layouts();
     test_launch_options();

@@ -10,6 +10,7 @@
 // vtable layouts are not verified, and a dedicated server's filesystem is not reachable the same way.
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -26,6 +27,16 @@ bool normalize_root(const std::string &in, std::string &root, std::string &err);
 // the game folder (garrysmod itself, an installed addon) is already searched by the engine: mounting it would only
 // reorder the game's own paths.
 std::string refuse_inside_game(const std::string &root, const std::string &game_dir);
+
+// Pure: whether `code` (the first bytes of a function) only returns a constant: `ret`, `ret n`, or one
+// `xor`/`mov` into al/eax/rax then `ret`. A jump thunk is not followed (not constant).
+bool is_constant_return(const std::vector<uint8_t> &code);
+// Pure: first IFileSystem slot of the "VFileSystem022" primary vtable, from the code of slots 7, 8, 11 and 12:
+// 5 (IAppSystem with 5 slots: 7 AddSearchPath, 8 RemoveSearchPath), 9 (IAppSystem with 9 slots, GMod x86-64 build of
+// 2026-11-19: 7 Reconnect and 8 IsSingleton only return a constant; 11 AddSearchPath, 12 RemoveSearchPath), or -1 if
+// the code matches neither (the mount is then refused: a wrong slot can wipe every search path). docs/REVERSE.md.
+int fs_slot_base(const std::vector<uint8_t> &s7, const std::vector<uint8_t> &s8, const std::vector<uint8_t> &s11,
+                 const std::vector<uint8_t> &s12);
 
 // Main thread. root empty = remove the mounted folder. Returns {"ok":true,"result":...} or an agent error.
 nlohmann::json set(const std::string &root, bool empty_cache);
