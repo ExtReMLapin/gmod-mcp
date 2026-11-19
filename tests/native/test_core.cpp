@@ -31,6 +31,8 @@
 #include "installer.h"
 #include "launch_opts.h"
 #include "crashinfo.h"
+#include "health.h"
+#include "jobs.h"
 #include "mcp.h"
 #include "lua_mount.h"
 #include "realms.h"
@@ -717,6 +719,87 @@ static void test_job_ids() {
 }
 
 
+// Issue #8: frame rate over a time window, hung / stalled assessment, how long the frame rate stayed low.
+static void test_health() {
+    using health::fps_over_window;
+    auto steady = [](double from, double to, double fps) {
+        std::vector<double> v;
+        for (double t = from; t <= to + 1e-9; t += 1.0 / fps) v.push_back(t);
+        return v;
+    };
+    // A steady 60 fps for 10 s.
+    std::vector<double> a = steady(0, 10, 60);
+    double f = fps_over_window(a, 10.0, 3.0);
+    CHECK(f > 57 && f < 63);
+    // 128 s at 2 fps (a map load), then 3.5 s at 20 fps: the window forgets the slow stretch (the last 256 frames did not).
+    std::vector<double> b = steady(0, 128, 2);
+    for (double t : steady(128.5, 132, 20)) b.push_back(t);
+    f = fps_over_window(b, 132.0, 3.0);
+    CHECK(f > 17 && f < 23);
+    // Nothing for 10 s (the main thread is blocked): 0, not the rate of before.
+    CHECK(fps_over_window(a, 20.0, 3.0) == 0);
+    // Blocked for 1.5 s inside the window: reported lower than the nominal rate.
+    f = fps_over_window(steady(0, 8.5, 20), 10.0, 3.0);
+    CHECK(f > 8 && f < 11.5);
+    // Not enough data.
+    CHECK(fps_over_window({}, 5.0, 3.0) < 0);
+    CHECK(fps_over_window({4.9}, 5.0, 3.0) < 0);
+    // Frames at 2000 per second for 5 s (more than the history holds) still read right.
+    f = fps_over_window(steady(0, 5, 2000), 5.0, 3.0);
+    CHECK(f > 1900 && f < 2100);
+    // The jobs frame statistics use the same window: fps and the old fields.
+    for (double t : steady(1000, 1128, 2)) jobs::on_frame_at(t);
+    for (double t : steady(1128.5, 1132, 20)) jobs::on_frame_at(t);
+    json st = jobs::frame_stats_at(1132.0);
+    CHECK(st["fps"].is_number() && st["fps"].get<double>() > 17 && st["fps"].get<double>() < 23);
+    CHECK(st.contains("frametime_avg_ms") && st.contains("frametime_max_ms") && st.contains("samples"));
+    json stalled = jobs::frame_stats_at(1142.0);
+    CHECK(stalled["fps"].is_number() && stalled["fps"].get<double>() == 0);
+
+    // assess: a ticking game, a slow one, a hung one, a loading one, a silent one.
+    using health::assess;
+    auto h = assess(0.02, 1.0, false);
+    CHECK(h.stalled_s == 0 && !h.hung);
+    h = assess(30.0, 1.0, false);
+    CHECK(h.stalled_s > 30 && h.stalled_s < 33 && !h.hung);       // blocked for 30 s: reported, not hung yet
+    h = assess(70.0, 1.0, false);
+    CHECK(h.hung && h.stalled_s >= 70 && h.hung_after_s == health::kHungAfterS);
+    h = assess(70.0, 1.0, true);
+    CHECK(!h.hung && h.stalled_s >= 70 && h.hung_after_s == health::kHungAfterLoadingS);  // a map load may take that long
+    h = assess(190.0, 1.0, true);
+    CHECK(h.hung);
+    h = assess(0.02, 8.0, false);                                  // heartbeats stopped: the silence counts
+    CHECK(h.stalled_s >= 8 && !h.hung);
+    h = assess(0.02, 65.0, false);
+    CHECK(h.hung && h.stalled_s >= 65);
+    h = assess(0.5, 2.5, false);                                   // an ordinary moment between two heartbeats
+    CHECK(h.stalled_s == 0 && !h.hung);
+    h = assess(70.0, 1.0, false, 100.0);                           // explicit limit (tests)
+    CHECK(!h.hung && h.hung_after_s == 100.0);
+
+    // FpsWatch: the time the rate stayed under 10 fps.
+    health::FpsWatch w;
+    CHECK(w.low_s(0) == 0);
+    for (double t = 0; t <= 10; t += 2) w.feed(t, 3.0, false);
+    CHECK(w.low_s(10) >= 10 - 0.01 && w.low_s(10) <= 10.5);
+    w.feed(12, 20.0, false);                                       // recovered
+    CHECK(w.low_s(12) == 0);
+    health::FpsWatch w2;
+    for (double t = 0; t <= 4; t += 2) w2.feed(t, 3.0, false);
+    CHECK(w2.low_s(4) == 0);                                       // under kLowFpsShownS: not worth a flag yet
+    health::FpsWatch w3;
+    for (double t = 0; t <= 20; t += 2) w3.feed(t, 1.0, true);     // loading or stalled: those have their own flags
+    CHECK(w3.low_s(20) == 0);
+    health::FpsWatch w4;
+    for (double t = 0; t <= 10; t += 2) w4.feed(t, -1.0, false);   // unknown rate
+    CHECK(w4.low_s(10) == 0);
+    health::FpsWatch w5;
+    w5.feed(0, 3.0, false);
+    w5.feed(2, 3.0, false);
+    w5.feed(30, 3.0, false);                                       // a gap in the samples starts over
+    CHECK(w5.low_s(30) == 0);
+}
+
 // B6: a game that is gone is told as crashed or quit. Pure decision (judge), dump matching, the folders searched, the
 // exit code read through a handle that outlives the process, and the words of the answer.
 static crashinfo::Facts facts_ended(double exit_unix) {
@@ -937,10 +1020,11 @@ static void test_crash_report_coordinator() {
     fs::create_directories(game / "garrysmod");
     fs::create_directories(game / "crashes");
     auto write_dump = [&](const char *name) { std::ofstream(game / "crashes" / name, std::ios::binary) << "MDMP"; };
-    auto heartbeat = [&](const std::string &id, const std::string &mode, DWORD pid, bool closing = false) {
+    auto heartbeat = [&](const std::string &id, const std::string &mode, DWORD pid, bool closing = false, const json &extra = json::object(), int member_port = 1) {
         httplib::Client cli("127.0.0.1", port);
         cli.set_bearer_token_auth(cfg.token);
-        json j{{"id", id}, {"port", 1}, {"pid", pid}, {"mode", mode}, {"game_dir", (game / "garrysmod").u8string()}, {"map", ""}};
+        json j{{"id", id}, {"port", member_port}, {"pid", pid}, {"mode", mode}, {"game_dir", (game / "garrysmod").u8string()}, {"map", ""}};
+        for (auto it = extra.begin(); it != extra.end(); ++it) j[it.key()] = it.value();
         if (closing) j["closing"] = true;
         auto r = cli.Post("/internal/heartbeat", j.dump(), "application/json");
         return r && r->status == 200;
@@ -1079,6 +1163,171 @@ static void test_crash_report_coordinator() {
         CHECK(n.is_object() && n.value("warning", "").find("coordinator_changing") != std::string::npos);
         c.end(1);
         CHECK(coordinator::leaving_note().is_null());  // it ended: purged, no one left to elect
+    }
+    for (auto &f : fs::directory_iterator(game / "crashes", ec)) fs::remove(f.path(), ec);  // no dump of the steps above can be matched to the next ones
+    // 12. Issue #8: a main thread blocked for a long time. instances_list says how long (stalled_s) and, past the limit, the
+    // state is "hung" with advice; while a map load is in progress the limit is longer.
+    {
+        auto entry_of = [&](const std::string &id) {
+            for (const auto &x : coordinator::instances())
+                if (x.value("id", "") == id) return x;
+            return json();
+        };
+        Child c;
+        CHECK(c.start());
+        CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.01}, {"main_thread_stalled", false}, {"fps", 20}, {"loading", false}}));
+        json e = entry_of("hang-1");
+        CHECK(e.value("state", "") == "running" && e.value("stalled_s", -1.0) == 0 && e.value("fps_low_s", -1.0) == 0);
+        CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 30.0}, {"main_thread_stalled", true}, {"fps", 0}, {"loading", false}}));
+        e = entry_of("hang-1");
+        CHECK(e.value("state", "") == "running" && e.value("stalled_s", 0.0) >= 30 && e.value("stalled_s", 0.0) < 35);
+        CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 90.0}, {"main_thread_stalled", true}, {"fps", 0}, {"loading", false}}));
+        e = entry_of("hang-1");
+        CHECK(e.value("state", "") == "hung" && e.value("stalled_s", 0.0) >= 90);
+        std::string note = e.value("note", "");
+        CHECK(note.find("instances_close") != std::string::npos && note.find("game_terminate") != std::string::npos && note.find("relaunch") != std::string::npos);
+        CHECK(e.value("pid", 0u) == c.pi.dwProcessId && e.value("heartbeat_age_s", 99.0) < 3);
+        // A map load in progress: 90 s is not hung yet, 200 s is.
+        CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 90.0}, {"main_thread_stalled", true}, {"fps", 0}, {"loading", true}}));
+        e = entry_of("hang-1");
+        CHECK(e.value("state", "") == "running" && e.value("stalled_s", 0.0) >= 90 && e["loading"] == true);
+        CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 200.0}, {"main_thread_stalled", true}, {"fps", 0}, {"loading", true}}));
+        CHECK(entry_of("hang-1").value("state", "") == "hung");
+        // It recovers: running again.
+        CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.02}, {"main_thread_stalled", false}, {"fps", 20}, {"loading", false}}));
+        e = entry_of("hang-1");
+        CHECK(e.value("state", "") == "running" && e.value("stalled_s", -1.0) == 0 && !e.contains("note"));
+        c.end(1);
+    }
+    // 13. Issue #8: no heartbeat at all while the process lives (frozen whole, crash dialog): the instance used to vanish from
+    // the list after 10 s. It stays listed: "unresponsive", then "hung" past the limit; a clean quit is not listed.
+    {
+        coordinator::set_timing_for_tests(1.0, 3.0, 0, 0);
+        auto entry_of = [&](const std::string &id) {
+            for (const auto &x : coordinator::instances())
+                if (x.value("id", "") == id) return x;
+            return json();
+        };
+        Child c;
+        CHECK(c.start());
+        CHECK(heartbeat("silent-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.01}, {"loading", false}}));
+        plat::sleep_ms(1600);
+        json e = entry_of("silent-1");
+        CHECK(e.value("state", "") == "unresponsive" && e.value("stalled_s", 0.0) >= 1.5 && e.value("note", "").find("heartbeat") != std::string::npos);
+        plat::sleep_ms(2500);
+        e = entry_of("silent-1");
+        CHECK(e.value("state", "") == "hung" && e.value("note", "").find("instances_close") != std::string::npos && e.value("pid", 0u) == c.pi.dwProcessId);
+        CHECK(heartbeat("silent-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.01}, {"loading", false}}));  // it came back
+        CHECK(entry_of("silent-1").value("state", "") == "running");
+        plat::sleep_ms(1600);
+        CHECK(entry_of("silent-1").value("state", "") == "unresponsive");
+        CHECK(heartbeat("silent-1", "client", c.pi.dwProcessId, true));  // it said goodbye: closing, not hung
+        plat::sleep_ms(300);
+        c.end(0);
+        CHECK(entry_of("silent-1").is_null());
+        coordinator::set_timing_for_tests(-1, -1, -1, -1);
+    }
+    // 14. Issue #8: the frame rate stayed low for a while: fps_low_s; not while the game loads.
+    {
+        coordinator::set_timing_for_tests(0, 0, 0, 1.0);
+        auto entry_of = [&](const std::string &id) {
+            for (const auto &x : coordinator::instances())
+                if (x.value("id", "") == id) return x;
+            return json();
+        };
+        Child c;
+        CHECK(c.start());
+        for (int i = 0; i < 3; ++i) {
+            CHECK(heartbeat("slow-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.2}, {"fps", 3}, {"loading", false}}));
+            plat::sleep_ms(700);
+        }
+        json e = entry_of("slow-1");
+        CHECK(e.value("state", "") == "running" && e.value("fps_low_s", 0.0) >= 1.0 && e.value("fps_low_s", 0.0) < 5);
+        CHECK(heartbeat("slow-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.01}, {"fps", 20}, {"loading", false}}));
+        CHECK(entry_of("slow-1").value("fps_low_s", -1.0) == 0);
+        for (int i = 0; i < 3; ++i) {
+            CHECK(heartbeat("slow-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.2}, {"fps", 1}, {"loading", true}}));
+            plat::sleep_ms(700);
+        }
+        CHECK(entry_of("slow-1").value("fps_low_s", -1.0) == 0);
+        c.end(1);
+        coordinator::set_timing_for_tests(-1, -1, -1, -1);
+    }
+    // 15. Issue #8: the process dies while a call to it is in flight and its connection stays open (a crash dialog, a handle
+    // inherited by another process): the call fails at once with client_crashed, it does not wait for its own timeout.
+    {
+        (void)coordinator::instances();  // ends the earlier children's business now: a dump written later must not be matched to them
+        for (auto &f : fs::directory_iterator(game / "crashes", ec)) fs::remove(f.path(), ec);  // nor the dumps of earlier steps to this one
+        httplib::Server fake;
+        std::atomic<bool> release{false};
+        fake.Post("/mcp", [&](const httplib::Request &, httplib::Response &res) {
+            for (int i = 0; i < 80 && !release; ++i) plat::sleep_ms(100);  // 8 s
+            res.set_content("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"late\":true}}}", "application/json");
+        });
+        int fport = fake.bind_to_any_port("127.0.0.1");
+        std::thread srv([&] { fake.listen_after_bind(); });
+        Child c;
+        CHECK(fport > 0 && c.start());
+        CHECK(heartbeat("flight-2", "client", c.pi.dwProcessId, false, json::object(), fport));
+        write_dump("gmod_win64_20261114_101313_1_accessviolation.mdmp");
+        std::thread killer([&] {
+            plat::sleep_ms(500);
+            c.end(0xC0000005u);
+        });
+        auto t0 = std::chrono::steady_clock::now();
+        json e = status_of("flight-2");
+        double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        killer.join();
+        CHECK(e.value("code", "") == "client_crashed" && e.value("message", "").find("gmod_win64_20261114_101313_1_accessviolation.mdmp") != std::string::npos);
+        CHECK(took < 4.0);
+        release = true;
+        fake.stop();
+        srv.join();
+    }
+    // 16. Issue #8: the process lives but stopped sending heartbeats while a call is in flight (frozen whole): the call fails
+    // with instance_hung once the silence outlasts the limit, naming how to end it.
+    {
+        coordinator::set_timing_for_tests(1.0, 0, 1.5, 0);
+        httplib::Server fake;
+        std::atomic<bool> release{false};
+        fake.Post("/mcp", [&](const httplib::Request &, httplib::Response &res) {
+            for (int i = 0; i < 80 && !release; ++i) plat::sleep_ms(100);
+            res.set_content("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"late\":true}}}", "application/json");
+        });
+        int fport = fake.bind_to_any_port("127.0.0.1");
+        std::thread srv([&] { fake.listen_after_bind(); });
+        Child c;
+        CHECK(fport > 0 && c.start());
+        CHECK(heartbeat("flight-3", "client", c.pi.dwProcessId, false, json::object(), fport));
+        auto t0 = std::chrono::steady_clock::now();
+        json e = status_of("flight-3");
+        double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        CHECK(e.value("code", "") == "instance_hung");
+        CHECK(e.value("message", "").find("game_terminate") != std::string::npos && e.value("message", "").find("instances_close") != std::string::npos);
+        CHECK(e.value("details", json::object()).value("pid", 0u) == c.pi.dwProcessId && e["details"].value("silent_s", 0.0) >= 1.5);
+        CHECK(took >= 1.4 && took < 5.0);
+        // A healthy client whose heartbeats keep coming is not cut off: the call returns the member's own answer.
+        CHECK(heartbeat("flight-4", "client", c.pi.dwProcessId, false, json::object(), fport));
+        std::atomic<bool> beat{true};
+        std::thread beater([&] {
+            while (beat) {
+                heartbeat("flight-4", "client", c.pi.dwProcessId, false, json::object(), fport);
+                plat::sleep_ms(300);
+            }
+        });
+        std::thread releaser([&] {
+            plat::sleep_ms(2500);
+            release = true;
+        });
+        json ok = status_of("flight-4");
+        beat = false;
+        beater.join();
+        releaser.join();
+        CHECK(ok.is_null() || ok.value("code", "") != "instance_hung");  // no error object: the call went through
+        c.end(1);
+        fake.stop();
+        srv.join();
+        coordinator::set_timing_for_tests(-1, -1, -1, -1);
     }
 
     coordinator::stop();
@@ -1362,6 +1611,7 @@ int main(int argc, char **argv) {
     test_installer_roundtrip();
     test_cmdline();
     test_crash_report();
+    test_health();
     test_console_wait();
     test_errors_map_tags();
     test_errors_filter_before_limit();

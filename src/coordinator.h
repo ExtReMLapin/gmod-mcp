@@ -38,5 +38,8 @@ nlohmann::json handover_info();
 nlohmann::json leaving_note();
 // Tests only: starts (true) or ends (false) the hand-over grace period without an election.
 void note_takeover_for_tests(bool on);
+// Tests only: shortens the waits (seconds; a value <= 0 keeps the default): no heartbeat before an instance leaves the list,
+// main thread blocked before it is `hung`, heartbeat silence that aborts a call in flight, low fps before `fps_low_s` shows.
+void set_timing_for_tests(double dead_after_s, double hung_after_s, double inflight_silent_s, double low_fps_shown_s);
 
 }  // namespace coordinator

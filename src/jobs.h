@@ -29,5 +29,8 @@ uint64_t frame_count();
 double seconds_since_last_frame();
 // Frame statistics (fps, average/max frametime over the sliding window).
 nlohmann::json frame_stats();
+// Tests: the same with the frame clock given (seconds on any steady clock; `now_s` in frame_stats_at is on the same one).
+void on_frame_at(double t_s);
+nlohmann::json frame_stats_at(double now_s);
 
 }  // namespace jobs
