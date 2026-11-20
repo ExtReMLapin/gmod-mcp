@@ -355,6 +355,12 @@
   next to the JSON). The version-mismatch warning is a field of the result's JSON (first key of the text) instead of a prose
   block in front of it, so the text stays the JSON of `structuredContent` (what code-mode hosts parse).
 
+### Docs
+
+- **A "Code Mode" section in the README and the guide** (Issue #3): a result arrives as a JSON string (`JSON.parse` it), an error
+  throws with `e.detail` = `{error: {code, message, details, next_call?}}`, long calls are answered in place for a script, at most
+  10 calls run in parallel, and map loads are still serialized by the FP7137 lock. `GMOD_MCP_TASKS` is in the README configuration.
+
 ## 0.3.6
 
 Guards against an engine crash when a game starts while another finishes a map load (Garry's Mod issue 7137),

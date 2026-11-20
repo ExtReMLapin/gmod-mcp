@@ -2309,6 +2309,24 @@ static void test_error_text_is_json() {
     }
 }
 
+// Issue #3 (Claude Code Code Mode): the guide and the README have a short "Code Mode" section saying what a script gets: the
+// result as a JSON string, errors thrown with e.detail, long calls answered in place, the parallel limit and the FP7137 lock.
+// GMOD_MCP_TASKS is documented in the README configuration section.
+static void test_code_mode_docs() {
+    json g = resources::read("mcpagent://guide");
+    std::string guide = g.is_object() && g.contains("text") ? g["text"].get<std::string>() : "";
+    std::ifstream in(fs::u8path(std::string(GMOD_MCP_SOURCE_DIR) + "/README.md"), std::ios::binary);
+    std::string readme((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    for (const std::string *doc : {&guide, &readme}) {
+        size_t at = doc->find("# Code Mode");
+        CHECK(at != std::string::npos);
+        std::string sec = at == std::string::npos ? "" : doc->substr(at, 2500);
+        for (const char *term : {"JSON.parse", "e.detail", "string", "synchronously", "10", "map_load", "FP7137"})
+            CHECK(sec.find(term) != std::string::npos);
+    }
+    CHECK(readme.find("GMOD_MCP_TASKS") != std::string::npos && readme.find("`off`") != std::string::npos);
+}
+
 // Issue #3: the guide documents where the hints of a result live (the model of some clients reads structuredContent on
 // success and only the text on an error), so the conventions are written down and cannot silently drift.
 static void test_guide_result_conventions() {
@@ -3264,6 +3282,7 @@ int main(int argc, char **argv) {
     test_map_load_call_flag();  // first: later tests (map loads, server states) leave the load flag on for the rest of the run
     test_installer_roundtrip();
     test_guide_result_conventions();
+    test_code_mode_docs();
     test_error_text_is_json();
     test_output_schemas();
     test_output_schemas_nonfinite();

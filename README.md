@@ -55,6 +55,7 @@ errors, inspect and edit the world, take screenshots, trace hooks and look up th
   - [Testing a branch: the mounted Lua folder](#testing-a-branch-the-mounted-lua-folder)
 - [How it works](#how-it-works)
 - [Several games at once](#several-games-at-once)
+- [Code Mode (Claude Code)](#code-mode-claude-code)
 - [Configuration](#configuration)
 - [Security](#security)
 - [What gets modified in your game folder](#what-gets-modified-in-your-game-folder)
@@ -463,6 +464,22 @@ The archived convars these options change (`fps_max`, a `+convar` token, a comma
 snd_mute_losefocus`) are given back to your value before a clean quit, exactly like the built-in ones above (the bridge
 lists their names to the module with `-mcp_restore_convars`; this needs the module of the same release, an older one
 restores only the four it knew). A convar changed by `exec` of a cfg file is not tracked.
+
+## Code Mode (Claude Code)
+
+Claude Code's experimental Code Mode lets the model write JavaScript that calls the tools
+(`await tools["mcp__plugin_gmod-mcp_gmod__status"]({})`). gmod-mcp works with it:
+
+- A result arrives as a string, the JSON of `structuredContent`: `JSON.parse` it (and accept an object too, a later Claude
+  Code version may pass one).
+- An error throws, and `e.detail` is the parsed error `{"error": {code, message, details, next_call?}}`: the text of every
+  error is exactly that JSON object, also the ones the bridge answers itself (`game_not_running`, `port_conflict`...) and
+  when the plugin and the module have different versions (the warning is a field of that object, `version_warning`).
+- A long call (`map_load`, a wait of 15 s or more) is answered synchronously when it comes from a script (Claude Code marks
+  those calls), so `await map_load(...)` returns the real result. Outside Code Mode, a client that supports MCP tasks gets
+  `map_load` as a background task: set `GMOD_MCP_TASKS=off` (see Configuration) to turn that off for every client.
+- At most 10 calls run in parallel in a script. Map loads and launches are still one at a time (the
+  [FP7137](#several-games-at-once) lock), so parallel `map_load` calls queue.
 
 ## Configuration
 
