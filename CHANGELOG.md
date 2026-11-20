@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Features
+
+- **Listed in the official MCP Registry.** Each release now attaches `gmod-mcp.mcpb` (one MCP Bundle with the bridge for Windows
+  and Linux x86-64, built by `cmake/mcp_registry.py` and run once in CI before the release) and, from a tag, publishes
+  `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the
+  bridge; the module for the game is still installed as before. See `docs/MCP_REGISTRY.md`.
+
+### Fixes
+
 - **Tool annotations match what the tools do.** `lua_job_status` no longer reads as destructive (it only forgets the job whose
   result it hands over). `wait_for`, `lua_inspect` and `lua_function_source` run caller-supplied Lua, so they are no longer
   read-only (destructive, like `lua_exec`). `lua_file_write`, `ui_click` and `ui_key` are marked destructive (overwrite a file;

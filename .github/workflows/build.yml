@@ -225,9 +225,51 @@ jobs:
             dist/gmod-mcp-plugin.zip
             dist/gmod-mcp-plugin.zip.sha256
 
+  # The MCPB bundle (one zip, both bridges) that the official MCP Registry's server.json points at. Built and checked on every
+  # run, not only on tags: a broken bundle must show up in a pull request, not after the release job needed it.
+  mcpb:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: plugin-part-*
+          path: parts
+          merge-multiple: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 cmake/mcp_registry.py pack --win-bridge parts/bin/gmod-mcp-bridge.exe --linux-bridge parts/bin/gmod-mcp-bridge \
+            --out dist/gmod-mcp.mcpb
+          (cd dist && sha256sum gmod-mcp.mcpb > gmod-mcp.mcpb.sha256)
+      # The official MCPB CLI (pinned) validates the manifest the bundle carries and reads the bundle back.
+      - name: Validate with the official mcpb CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p check
+          unzip -p dist/gmod-mcp.mcpb manifest.json > check/manifest.json
+          npx --yes @anthropic-ai/mcpb@2.1.2 validate check/manifest.json
+          npx --yes @anthropic-ai/mcpb@2.1.2 info dist/gmod-mcp.mcpb
+      # Unpacks the bundle and starts its server the way a client does (initialize, tools/list, one call: no game runs).
+      - name: Run the bundle (no game)
+        run: python3 tests/ci/mcpb_smoke.py dist/gmod-mcp.mcpb --expect-tools 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: gmod-mcp-mcpb
+          path: |
+            dist/gmod-mcp.mcpb
+            dist/gmod-mcp.mcpb.sha256
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, plugin]
+    needs: [build, plugin, mcpb]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -250,6 +292,7 @@ jobs:
         with:
           files: |
             dist/*.zip
+            dist/*.mcpb
             dist/*.sha256
           body_path: release-notes.md
 
@@ -291,6 +334,56 @@ jobs:
           git add .claude-plugin/marketplace.json
           git diff --cached --quiet || git commit -m "Marketplace: plugin ${tag}"
           git push origin HEAD:main
+
+  # Lists the release in the official MCP Registry (registry.modelcontextprotocol.io) as io.github.ExtReMLapin/gmod-mcp. The
+  # registry stores metadata only: server.json points at the .mcpb asset of the release (it checks that the URL answers at
+  # publish time, hence `needs: release`) and carries its SHA-256, which MCP clients verify before installing it. Authentication
+  # is GitHub Actions OIDC (the registry grants io.github.<repository owner>/*): no secret, no token. Not part of the release:
+  # if this job fails, the release stays; fix the cause and re-run the job (a version can only be published once).
+  registry:
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'ExtReMLapin/gmod-mcp'
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      # Pinned like every other download of this workflow: the SHA-256 is the one of the release's checksums file
+      # (registry_<version>_checksums.txt, signed with sigstore by the registry project). To upgrade: take the new tag and
+      # the line of mcp-publisher_linux_amd64.tar.gz from that file.
+      MCP_PUBLISHER_VERSION: v1.8.10
+      MCP_PUBLISHER_SHA256: 32d287ed6fb7dc04eddd2621097784c06a355b2348b35ccc630a1643aa75ff4a
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: gmod-mcp-mcpb
+          path: dist
+      # What the registry will point at is what the release job uploaded, byte for byte.
+      - name: Compare with the released asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --output released.mcpb \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/gmod-mcp.mcpb"
+          cmp released.mcpb dist/gmod-mcp.mcpb
+      - name: Write server.json
+        run: python3 cmake/mcp_registry.py server-json --tag "${GITHUB_REF_NAME}" --mcpb dist/gmod-mcp.mcpb --out server.json
+      - name: Install mcp-publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=mcp-publisher_linux_amd64.tar.gz
+          curl --fail --location --silent --show-error --output "$archive" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/$archive"
+          echo "${MCP_PUBLISHER_SHA256}  $archive" | sha256sum --check -
+          tar xzf "$archive" mcp-publisher
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.json
+      - name: Log in (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+      - name: Publish
+        run: ./mcp-publisher publish server.json
 
   # The README badges: tests.json and mcp-conformance.json (shields.io endpoint format) on the orphan branch `badges`.
   # Pushes to main only (not tags, not pull requests). It is a separate job, not a step of the Linux leg, so that it

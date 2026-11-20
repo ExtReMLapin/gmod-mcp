@@ -1,0 +1,51 @@
+{
+  "manifest_version": "0.3",
+  "name": "gmod-mcp",
+  "display_name": "gmod-mcp (Garry's Mod)",
+  "version": "0.3.7",
+  "description": "MCP server for Garry's Mod: Lua in every realm, maps, console, errors, screenshots and hook tracing.",
+  "long_description": "gmod-mcp-bridge, the stdio side of gmod-mcp. It relays to the gmod-mcp module running inside Garry's Mod, stays connected while the game is closed (every tool then answers `game_not_running`) and tells the client when the game is back.\n\n**The module for the game is a separate install** (two files, in the game folder): see the Install section of the README. The game must run with the launch option `-mcp`. Everything stays on your machine (127.0.0.1, bearer token read from a file under your user profile).\n\nWindows and Linux (x86-64) only.",
+  "author": {
+    "name": "ExtReMLapin",
+    "url": "https://github.com/ExtReMLapin"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ExtReMLapin/gmod-mcp"
+  },
+  "homepage": "https://github.com/ExtReMLapin/gmod-mcp",
+  "documentation": "https://github.com/ExtReMLapin/gmod-mcp#install",
+  "support": "https://github.com/ExtReMLapin/gmod-mcp/issues",
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": ["garrys-mod", "gmod", "lua", "game", "debugging"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/gmod-mcp-bridge",
+    "mcp_config": {
+      "command": "${__dirname}/server/gmod-mcp-bridge",
+      "args": [],
+      "env": {
+        "GMOD_MCP_FEEDBACK_OFFERS": "${user_config.feedback_offers}"
+      },
+      "platform_overrides": {
+        "win32": {
+          "command": "${__dirname}/server/gmod-mcp-bridge.exe"
+        }
+      }
+    }
+  },
+  "tools_generated": true,
+  "compatibility": {
+    "platforms": ["win32", "linux"]
+  },
+  "user_config": {
+    "feedback_offers": {
+      "type": "boolean",
+      "title": "Offer to report frictions",
+      "description": "On (default): at the end of a task, agents may offer to report the frictions they met with gmod-mcp as a public GitHub issue (no secrets or project data; you agree to each one). Off: they never ask.",
+      "default": true,
+      "required": false
+    }
+  }
+}
