@@ -14,6 +14,7 @@
 #include "log.h"
 #include "luaapi.h"
 #include "mcp.h"
+#include "netaddr.h"
 #include "platform/platform.h"
 #include "realms.h"
 #include "resources.h"
@@ -169,6 +170,12 @@ static bool start(lua_State *L) {
     if (cfg.mode == agent::Mode::Dedicated) console::set_parse_errors_from_console(true);
 
     tools::register_all();
+
+    // The fixed vtable slots and offsets the module relies on are checked once, now (layout.h): a slot the game build moved turns off
+    // the feature that needs it, with a reason in `status` (layout_check) and one log line here, instead of calling another function.
+    realms::verify_layout();
+    lua_mount::verify_layout(cfg.mode == agent::Mode::Dedicated);
+    netaddr::verify_layout(cfg.mode == agent::Mode::Client);
 
     // -mcp_lua_mount "<folder>": a test client started on a worktree's code (instances_launch {lua_mount}).
     // The game's own command line is ANSI (tier0): a folder with characters outside the code page would arrive damaged.

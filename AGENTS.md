@@ -11,6 +11,10 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
   parsing of the `Wrote '...'` console line, path validation, the capture sequence with the game injected through `enginejpeg::Io`);
   the tool wiring is `engine_jpeg_shot` in `tools_world.cpp`. It deletes the file the engine named and nothing else: keep every
   path through `check_rel_path` (`screenshots/<one name>.jpg`).
+- `src/layout.*` — slot checks: the pure decisions (from the code bytes behind a vtable slot) and the `status.layout_check` verdicts.
+  **Never call a fixed vtable slot of an engine interface, or trust a fixed offset, without a check there** (docs/REVERSE.md, "Slot
+  checks"): add the shape check, test it with the real bytes (`tests/native/slot_fixtures.h`, regenerate with
+  `tests/native/tools/gen_slot_fixtures.py`), and turn off only the feature that needs it when it is not recognized.
 - `src/lua/*.lua` — Lua runtime injected into each realm, embedded into the DLL at build time
   (`cmake/embed_lua.cmake`, alphabetical order).
 - `src/installer.cpp` — the main-menu loader block the module writes into `garrysmod/lua/menu/menu.lua`.

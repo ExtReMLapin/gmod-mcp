@@ -76,13 +76,31 @@ json console_line() { return obj({{"seq", N}, {"t", N}, {"level", S}, {"text", S
 // What lua_exec and lua_job return for the values.
 json values_props_note() { return S; }
 
+// status.layout_check (src/layout.h): one verdict per interface the module calls into by fixed slot or offset.
+json layout_check() {
+    auto entry = [](Props extra) {
+        json p = json::object();
+        p["ok"] = B;
+        p["state"] = S;  // verified | pending (checked before its first use) | refused | not_applicable
+        p["reason"] = S;
+        for (const auto &kv : extra) p[kv.first] = kv.second;
+        return json{{"type", "object"}, {"properties", p}, {"additionalProperties", true}, {"required", json::array({"ok", "state"})}};
+    };
+    return obj({{"ifilesystem", entry({{"first_slot", N}, {"lua_shared_agrees", B}})},
+                {"iluashared", entry({{"get_lua_interface", B}, {"mount_lua", B}, {"mount_lua_add", B}, {"unmount_lua", B}, {"empty_cache", B},
+                                      {"file_system_mark_slot", N}, {"file_system_remove_slot", N}})},
+                {"ivengineclient", entry({{"client_cmd", B}, {"get_net_channel_info", B}})},
+                {"inetchannelinfo", entry({{"get_address", B}})},
+                {"lua_offsets", entry({{"state_offset", N}, {"luabase_offset", N}, {"backref_ok", N}, {"backref_mismatch", N}, {"top_shape", nullable("boolean")}})}});
+}
+
 json build(const std::string &tool) {
     static const std::map<std::string, json> m = [] {
         std::map<std::string, json> s;
         // --- status
         s["status"] = obj({{"instance", S}, {"mode", S}, {"agent_version", S}, {"platform", S}, {"pid", N}, {"port", N},
                            {"coordinator", B}, {"uptime_s", N}, {"frames", N}, {"last_tick_age_s", N},
-                           {"main_thread_stalled", B}, {"perf", Obj}, {"realms", Obj}, {"client_lock", Obj},
+                           {"main_thread_stalled", B}, {"perf", Obj}, {"realms", Obj}, {"client_lock", Obj}, {"layout_check", layout_check()},
                            {"console_capture", S}, {"tmp_dir", S}, {"game_dir", S}, {"menu", Obj}, {"server", Obj}, {"client", Obj},
                            {"host_error", Obj}, {"map", NS}, {"gamemode", ANY}, {"maxplayers", ANY}, {"loading", B}, {"loading_stuck", B}, {"loading_stuck_note", S},
                            {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS},

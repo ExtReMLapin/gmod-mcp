@@ -4,6 +4,20 @@
 
 ### Features
 
+- **The fixed vtable slots and offsets are verified before they are used.** The module called `ILuaShared` slots 6, 9 and 17,
+  `IVEngineClient` slots 7 and 72 and `INetChannelInfo` slot 1 by fixed index, and trusted two struct offsets of the Lua state, with
+  only the `IFileSystem` layout read from the code (the 5 or 9 slot `IAppSystem`). A game update that moves a slot would have made it
+  call another function. Each one is now checked once per process against the code behind it (`src/layout.*`: the shape of the
+  function, never exact bytes, so a recompiled build still passes): `GetLuaInterface` is the plain read of the realm array, `MountLua`
+  calls `MountLuaAdd` for `"lua"` and `"gamemodes"`, `MountLuaAdd` and `UnMountLua` tail-call the file system (and their slots must
+  agree with the `IFileSystem` layout that was read), `EmptyCache` walks the file cache, `ClientCmd` hands its text to the command
+  buffer, `GetNetChannelInfo` returns a global and the net channel's `GetAddress` formats the remote address (and returns short
+  printable text). A slot that is not recognized turns off only the feature that needs it, with the reason: no realms (`realm_unavailable`),
+  `lua_mount` refused (`interface_missing`, the failed slots named; `empty_cache` alone is refused when slot 17 is the one), the blocked
+  console commands not sent, and the client lock **fails safe** (no address: the client realm stays locked). `status.layout_check`
+  reports `ifilesystem`, `iluashared`, `ivengineclient`, `inetchannelinfo` and `lua_offsets` (`ok`, `state`: `verified`, `pending` until
+  the first use, `refused`, `not_applicable` on Linux and on a dedicated server; `reason`; the per-slot verdicts and counters), and a
+  refused interface is logged once at load. Tested against the real bytes of two builds of each engine library.
 - **`ui_click` and `ui_key`: click and type into a test client's UI.** Some UI has no console command: a VGUI2 dialog such as
   "Disconnected by the server", a Derma panel, a button of the menu's HTML. `ui_click {x, y, button?, double?, wheel?, coords?,
   screenshot_size?, wait_frames?, screenshot_after?}` posts `WM_MOUSEMOVE`, then the button down and up (double: down, up,
