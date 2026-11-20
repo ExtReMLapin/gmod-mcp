@@ -1727,11 +1727,26 @@ json launch_tool(const json &args, const json &token) {
     if (!fp_gate.ok()) return retry_later(fp_gate.error_result(), "instances_launch", args, 180.0);  // FP7137
     if (fp_gate.waited_s() > 0) g_fp7137_progress_offset = fp_gate.waited_s() + 1;  // FP7137
     std::vector<Launched> started;
+    unsigned long long return_target = 0;  // the foreground window before the first start: the clients give the foreground back to it
     for (int i = 0; i < count; ++i) {
-        std::string cmd = "\"" + exe + "\" " + opts;
+        // A test client takes the foreground window when it starts: tell it which window had it, so it hands it back once its own window is up.
+        // The foreground window of a client this launch just started (it has not handed it back yet) is not a target: keep the earlier one.
+        std::string client_opts = opts;
+        {
+            plat::Foreground fg;
+            bool have = plat::foreground_window(fg);
+            bool ours = false;
+            for (const auto &l : started) ours = ours || (have && l.pid == fg.pid);
+            return_target = launchopts::pick_return_target(have ? fg.hwnd : 0, ours, return_target);
+            std::string t = launchopts::format_return_focus(return_target);
+            if (!t.empty()) client_opts += " -mcp_return_focus " + t;
+        }
+        std::string cmd = "\"" + exe + "\" " + client_opts;
         std::wstring wcmd = utf8_to_wide(cmd), wdir = utf8_to_wide(root);
         STARTUPINFOW si{};
         si.cb = sizeof si;
+        si.dwFlags = STARTF_USESHOWWINDOW;  // the first ShowWindow of the client shows its window without activating it (it does not take the foreground)
+        si.wShowWindow = SW_SHOWNOACTIVATE;
         PROCESS_INFORMATION pi{};
         HANDLE job = keep ? nullptr : client_job();  // issue #8: ends with the bridge unless keep: true
         if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {

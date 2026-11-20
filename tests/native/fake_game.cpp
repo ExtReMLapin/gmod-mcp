@@ -90,6 +90,21 @@ int main(int argc, char **argv) {
         }
 #endif
     }
+#ifdef _WIN32
+    // GMCP_FAKE_STARTUP names a file: append "show=<wShowWindow> uses_show=<0|1>" from the STARTUPINFO this process got (the bridge asks
+    // for a window shown without activation, so a client does not take the user's foreground).
+    if (const char *so = std::getenv("GMCP_FAKE_STARTUP")) {
+        if (*so) {
+            STARTUPINFOW si{};
+            si.cb = sizeof si;
+            GetStartupInfoW(&si);
+            if (FILE *f = std::fopen(so, "ab")) {
+                std::fprintf(f, "show=%u uses_show=%d\n", (unsigned)si.wShowWindow, (si.dwFlags & STARTF_USESHOWWINDOW) ? 1 : 0);
+                std::fclose(f);
+            }
+        }
+    }
+#endif
     const char *out = std::getenv("GMCP_FAKE_ARGV");
     if (out && *out) {
         if (FILE *f = std::fopen(out, "ab")) {

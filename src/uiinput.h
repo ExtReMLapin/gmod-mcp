@@ -67,7 +67,15 @@ struct ClickRequest {
     bool dbl = false;
     bool has_wheel = false;
     int wheel = 0;            // notches, positive = away from the user (up)
+    int settle_moves = 0;     // extra moves to the same point before the press (settle_moves(): the game is the foreground window)
 };
+// While the game is the foreground window the engine also reads the real cursor, which is nowhere near the posted point, and a click
+// posted as one move then a press is lost now and then (about one in five on a test client in front, none when it is in the
+// background). The cursor is never moved for real (no SetCursorPos, no SendInput): the same move is posted again, a frame apart, before
+// the press. Measured live: 0 of 60 lost with two extra moves, 11 of 60 without.
+constexpr int kForegroundSettleMoves = 2;
+int settle_moves(bool game_foreground);
+
 struct ClickPlan {
     bool ok = false;
     std::string code, message;

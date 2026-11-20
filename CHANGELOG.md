@@ -126,6 +126,20 @@
 
 ### Fixes
 
+- **A test client no longer keeps the user's foreground** (live, x86-64 branch). Every client `instances_launch` started became the foreground
+  window and kept it, so the user's terminal lost the focus at each launch. The bridge now starts the client with a window shown without
+  activation (`STARTF_USESHOWWINDOW`, `SW_SHOWNOACTIVATE`: three launches in a row and a launch of two, 0 of 1,216 samples taken during the
+  launches differed from the window the user had) and records the foreground window before each start, passing it as
+  `-mcp_return_focus <decimal window handle>`. If the client still ends up in front (a game started by hand with the option: the
+  engine took it 0.4 s after the start), the module of a test client (`-mcp_test_client` only, never the user's own game) gives the foreground
+  back with `SetForegroundWindow` once its window is the foreground one (allowed: the foreground process does it), at most 3 times and
+  during the first 3 minutes, so a window the user focuses on purpose later is left alone; a target that is gone, hidden or minimized is
+  not used. A later client of the same launch keeps the user's window as target instead of the earlier client's. The option's value is
+  validated (plain decimal, 1 to 4294967295). Event `focus_returned`.
+- **`ui_click` loses a click now and then while the game is the foreground window** (live, x86-64 branch). In front, the engine also
+  reads the real cursor (nowhere near the posted point), and a click posted as one move then a press was lost about one time in five
+  (11 of 60 on a test client in front; none in the background, 10 of 10). With the game in front `ui_click` now posts the move three times,
+  a frame apart, before the press (0 of 90 lost). The real cursor is never moved (no `SetCursorPos`, no `SendInput`).
 - **`instances_list` carries `silent_s` on every entry** (live verification of 0.3.7). A frozen member showed `state: "unresponsive"` and
   `stalled_s` but no `silent_s`, which only the `instance_hung` error had. Every entry now has `silent_s`, the seconds since its last
   heartbeat (0 for this game, rounded to 0.1 s, like the error's), and the `instances_list` result schema describes the entries

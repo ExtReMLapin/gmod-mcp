@@ -229,6 +229,7 @@ json ui_click_tool(const json &a) {
     r.dbl = a.value("double", false);
     r.has_wheel = a.contains("wheel");
     r.wheel = a.value("wheel", 0);
+    r.settle_moves = uiinput::settle_moves(plat::process_has_foreground() == 1);
     uiinput::ClickPlan plan = uiinput::plan_click(r, p.geometry);
     if (!plan.ok) return agent::err(plan.code, plan.message, p.info);
     std::vector<std::string> sent;

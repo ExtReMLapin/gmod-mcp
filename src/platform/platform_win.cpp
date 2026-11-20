@@ -282,6 +282,34 @@ bool send_focus_lost() {
     return true;
 }
 
+bool foreground_window(Foreground &out) {
+    out = Foreground{};
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    out.hwnd = static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(fg));
+    out.pid = pid;
+    return true;
+}
+
+void focus_target_state(unsigned long long hwnd, bool &exists, bool &usable) {
+    HWND w = reinterpret_cast<HWND>(static_cast<uintptr_t>(hwnd));
+    exists = usable = false;
+    if (!hwnd || !IsWindow(w)) return;
+    exists = true;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    usable = pid != GetCurrentProcessId() && IsWindowVisible(w) && !IsIconic(w);
+}
+
+bool return_focus_to(unsigned long long hwnd) {
+    HWND w = reinterpret_cast<HWND>(static_cast<uintptr_t>(hwnd));
+    if (!IsWindow(w)) return false;
+    SetForegroundWindow(w);
+    return GetForegroundWindow() == w;
+}
+
 // --- Close guard ---
 static WNDPROC g_orig_proc = nullptr;
 static bool (*g_guard_before)() = nullptr;
