@@ -1,0 +1,11 @@
+# Dependabot: the GitHub Actions used by the workflows. The C++ dependencies are fetched by CMake (FetchContent, pinned
+# by SHA-256), which Dependabot does not read.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]
