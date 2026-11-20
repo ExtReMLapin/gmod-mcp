@@ -96,6 +96,10 @@
 
 ### Fixes
 
+- **`instances_list` carries `silent_s` on every entry** (live verification of 0.3.7). A frozen member showed `state: "unresponsive"` and
+  `stalled_s` but no `silent_s`, which only the `instance_hung` error had. Every entry now has `silent_s`, the seconds since its last
+  heartbeat (0 for this game, rounded to 0.1 s, like the error's), and the `instances_list` result schema describes the entries
+  (`state`, `heartbeat_age_s`, `silent_s`, `stalled_s`, `fps_low_s`, `loading`).
 - **An unknown argument is named at the start of the `invalid_params` message** (live verification of 0.3.7). `console_exec {cmd,
   timeout_s}` was refused with a message that began with the validator's own words (`At  of {...} - validation failed...`), so a client
   that showed or cut the start of it never saw the name. The message now starts with `invalid arguments: Unknown argument '...'` (and

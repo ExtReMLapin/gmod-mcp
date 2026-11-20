@@ -238,7 +238,7 @@ Repos: [ExtReMLapin/gmod-mcp](https://github.com/ExtReMLapin/gmod-mcp) · [AmyJe
 | Errors | `errors_since`, `errors_clear` (Lua errors from all three realms, with stack) |
 | World | `ents_find`, `ent_info`, `ent_spawn`, `ent_remove`, `ent_fire`, `players_list`, `player_set`, `bots_add`, `trace`, `trace_through` (every surface crossed, with thickness and material) |
 | Rendering | `screenshot`, `screenshot_from` (arbitrary camera), `debug_draw`, `debug_clear` |
-| UI input | `ui_click` (click or scroll at a pixel of a `screenshot`), `ui_key` (keys and Unicode text): dialogs, Derma and menu buttons that have no console command. Windows test clients only; posted to the game's own window, your real mouse and focus are untouched |
+| UI input | `ui_click` (click or scroll at a pixel of a `screenshot`), `ui_key` (keys and text; characters outside the machine's ANSI code page are refused, the engine would alter them): dialogs, Derma and menu buttons that have no console command. Windows test clients only; posted to the game's own window, your real mouse and focus are untouched |
 | Sound | `sound_emit`, `sound_trace` |
 | Performance | `perf_snapshot` |
 | Documentation | `api_search` (what really exists in each realm), `wiki_search`, `wiki_page` (wiki.facepunch.com, cached) |

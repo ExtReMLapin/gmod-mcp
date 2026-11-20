@@ -1973,6 +1973,10 @@ static void test_crash_report_coordinator() {
         std::string note = e.value("note", "");
         CHECK(note.find("instances_close") != std::string::npos && note.find("game_terminate") != std::string::npos && note.find("relaunch") != std::string::npos);
         CHECK(e.value("pid", 0u) == c.pi.dwProcessId && e.value("heartbeat_age_s", 99.0) < 3);
+        // Live verification of 0.3.7: silent_s (seconds since the last heartbeat) is on every entry, like the instance_hung error's.
+        CHECK(e.contains("silent_s") && e["silent_s"].is_number() && e.value("silent_s", -1.0) >= 0 && e.value("silent_s", 99.0) < 3);
+        for (const auto &x : coordinator::instances())  // self included (0); a crashed entry has no heartbeat to be silent about
+            if (x.value("state", "") != "crashed") CHECK(x.contains("silent_s") && x["silent_s"].is_number());
         // A map load in progress: 90 s is not hung yet, 200 s is.
         CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 90.0}, {"main_thread_stalled", true}, {"fps", 0}, {"loading", true}}));
         e = entry_of("hang-1");
@@ -2000,9 +2004,13 @@ static void test_crash_report_coordinator() {
         plat::sleep_ms(1600);
         json e = entry_of("silent-1");
         CHECK(e.value("state", "") == "unresponsive" && e.value("stalled_s", 0.0) >= 1.5 && e.value("note", "").find("heartbeat") != std::string::npos);
+        // A frozen member: silent_s says for how long it has said nothing (the number instance_hung gives), not null.
+        CHECK(e.contains("silent_s") && e["silent_s"].is_number() && e.value("silent_s", 0.0) >= 1.5 && e.value("silent_s", 0.0) < 3.5);
+        CHECK(std::fabs(e.value("silent_s", 0.0) - e.value("heartbeat_age_s", 0.0)) < 0.2);
         plat::sleep_ms(2500);
         e = entry_of("silent-1");
         CHECK(e.value("state", "") == "hung" && e.value("note", "").find("instances_close") != std::string::npos && e.value("pid", 0u) == c.pi.dwProcessId);
+        CHECK(e.value("silent_s", 0.0) >= 4.0);
         CHECK(heartbeat("silent-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.01}, {"loading", false}}));  // it came back
         CHECK(entry_of("silent-1").value("state", "") == "running");
         plat::sleep_ms(1600);
