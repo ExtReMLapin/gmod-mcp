@@ -282,6 +282,27 @@ r = call("lua_exec", { code = "return 1 +" })
 check(not r.ok and r.error.code == "lua_syntax_error", "syntax error")
 r = call("lua_exec", { code = "\\239\\187\\191return 1" })
 check(r.ok or (not r.ok and r.error.code == "lua_syntax_error"), "BOM at the start: clean answer")
+-- Live verification of 0.3.7: code with a "\\u0041" escape (LuaJIT 2.1 only knows "\\u{41}") came back as an empty result instead of a syntax error.
+-- Every way the compiler can say "no" must come back as lua_syntax_error with the message: the plain error, the escape, and a compiler that
+-- answers with something that is not a function (no message, or the message as the first value, as CompileString does).
+r = call("lua_exec", { code = 'return "\\u0041"' })
+check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message:find("escape", 1, true), "an invalid unicode escape is a syntax error")
+check(r.error and r.error.details and r.error.details.line == 1, "its line is reported")
+r = call("lua_exec", { code = 'return "\\u{41}"' })
+check(r.ok and r.result.values[1] == "A", "\\u{41} is fine")
+do
+	local old = __mcpagent_native.compile
+	__mcpagent_native.compile = function() return nil end
+	r = call("lua_exec", { code = "return 1" })
+	check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message ~= "nil" and #r.error.message > 10, "compiler answering nothing: a syntax error with a message")
+	__mcpagent_native.compile = function() return "bad:1: boom" end
+	r = call("lua_exec", { code = "return 1" })
+	check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message == "bad:1: boom", "compiler answering the message first: a syntax error")
+	__mcpagent_native.compile = function() return false, "bad:2: nope" end
+	r = call("lua_exec", { code = "return 1" })
+	check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message == "bad:2: nope" and r.error.details.line == 2, "false + message")
+	__mcpagent_native.compile = old
+end
 r = call("lua_exec", {})
 check(not r.ok and r.error.code == "invalid_params", "missing code")
 r = call("no_such_tool", {})

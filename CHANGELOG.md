@@ -8,8 +8,14 @@
   "Disconnected by the server", a Derma panel, a button of the menu's HTML. `ui_click {x, y, button?, double?, wheel?, coords?,
   screenshot_size?, wait_frames?, screenshot_after?}` posts `WM_MOUSEMOVE`, then the button down and up (double: down, up,
   double-click, up) a frame apart, or one `WM_MOUSEWHEEL`; `ui_key {key?, text?, wait_frames?, screenshot_after?}` posts a key
-  (named keys, f1..f12, letters, digits; down, `WM_CHAR` when the key types, up) and/or `text` as `WM_CHAR` (Unicode, accents
-  included, 256 characters at most). Coordinates are pixels of the `screenshot` image by default (`screenshot_size` converts from
+  (named keys, f1..f12; enter, tab, backspace and escape as key down, `WM_CHAR`, key up; a letter, a digit or space as the one
+  `WM_CHAR` of the character, like `text`: the game's message loop turns a posted key down into its own `WM_CHAR` from the real
+  keyboard layout, so key down plus `WM_CHAR` typed "aa" and "5(" on AZERTY) and/or `text` as `WM_CHAR` (256 characters at most). The engine narrows
+  every typed `WM_CHAR` through the machine's ANSI code page with best-fit substitutions (live, CP1252: an accent of western Europe
+  arrives, `ł` becomes `l`, `α` `a`, Cyrillic and CJK `?`; `WM_UNICHAR`, IME characters and `VK_PACKET` are ignored, so there is no
+  other way in): a text with such a character is refused with `text_not_representable` (before anything is typed; `details`
+  `code_page` and `characters`) unless `allow_lossy: true`, and the message points to `lua_exec` in the realm that owns the panel
+  (`DTextEntry:SetText`; `SetValue` does nothing while the entry has the keyboard focus). The clipboard is never used. Coordinates are pixels of the `screenshot` image by default (`screenshot_size` converts from
   an image of another size, `coords: "window"` gives client-area pixels); the title bar is never part of them, and a client
   area that differs from the backbuffer the engine renders (DPI scaling) is scaled. The messages go to the game's own main window with
   `PostMessage`: the user's real cursor does not move and no window takes the focus (never `SetCursorPos`, `SendInput` or
@@ -90,6 +96,26 @@
 
 ### Fixes
 
+- **`instances_list` carries `silent_s` on every entry** (live verification of 0.3.7). A frozen member showed `state: "unresponsive"` and
+  `stalled_s` but no `silent_s`, which only the `instance_hung` error had. Every entry now has `silent_s`, the seconds since its last
+  heartbeat (0 for this game, rounded to 0.1 s, like the error's), and the `instances_list` result schema describes the entries
+  (`state`, `heartbeat_age_s`, `silent_s`, `stalled_s`, `fps_low_s`, `loading`).
+- **An unknown argument is named at the start of the `invalid_params` message** (live verification of 0.3.7). `console_exec {cmd,
+  timeout_s}` was refused with a message that began with the validator's own words (`At  of {...} - validation failed...`), so a client
+  that showed or cut the start of it never saw the name. The message now starts with `invalid arguments: Unknown argument '...'` (and
+  `Missing required argument`), then the accepted list, the validator's words last; a wrong type keeps the validator's words first.
+  `console_exec` has no wait budget (it waits `wait_frames` frames; `connect_timeout_s` is the wait of `connect` alone): `timeout_s`
+  says so and points to `console_wait`, `wait_for` and `events_wait`, instead of suggesting `connect_timeout_s`.
+- **Whatever the compiler answers that is not a function is a `lua_syntax_error`** (live verification of 0.3.7: `lua_exec` code with a
+  `"\u0041"` escape, invalid in LuaJIT 2.1 which only knows `"\u{41}"`, came back as an empty result once). `A.compile` now
+  returns a function or `nil` and a message in every case: a compiler that gives the message as its first value (as `CompileString`
+  does) or nothing at all no longer reaches the code that runs the chunk. The plain case already answered `lua_syntax_error` with the
+  message and line in the Lua runtime tests; the live empty result could not be reproduced outside the game.
+- **`loading` is true while a `map_load` is waiting to start the load** (live verification of 0.3.7). `map_load` first waits for the
+  menu to be idle (up to 15 s on a client whose loading screen is stuck) and 30 frames before the engine starts the load; `status` and
+  `instances_list` said `loading: false` for those ~18 s, so a launch or another `map_load` was not held back. The call itself now
+  counts as a load from its first moment to its answer, whatever the engine does (and a stuck loading screen is not reported as
+  `loading_stuck` while it runs).
 - **`map_load` with no game answers as fast as `status`**. It answered `game_not_running` after 2-3 s instead of 1 s: before the call itself,
   the bridge asked the directory which other games were loading (to report them), a second refused connection. It no longer asks
   once a call has found nothing listening.
@@ -111,7 +137,7 @@
   engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
   300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no
   connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
-  false, `status` and `instances_list` say `loading_stuck: true` with the way out (`map_load` or `disconnect` clears it). A real load,
+  false, `status` and `instances_list` say `loading_stuck: true` with the way out (a `map_load` clears it; `disconnect` does not, checked live). A real load,
   even a minute-long one with its realm present, is never cut.
 - **`game_quit` on a dedicated server really quits (Linux) or says it cannot.** On srcds the console `quit` is blocked from server Lua
   (the engine's own blacklist), so `game_quit` answered `{quitting: true}` and the server kept running. The runtime now checks

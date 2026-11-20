@@ -285,6 +285,7 @@ json instances() {
     me["state"] = "running";
     me["role"] = is_coordinator() ? "coordinator" : "member";
     me["heartbeat_age_s"] = 0;
+    me["silent_s"] = 0;
     std::lock_guard<std::mutex> lk(g_mu);
     add_health(me, me.value("last_tick_age_s", 0.0), 0, me.value("loading", false), false, g_self_fps.low_s(steady_s(), g_low_fps_shown_s), me.value("pid", 0u));
     arr.push_back(me);
@@ -297,6 +298,7 @@ json instances() {
         e["role"] = "member";
         double hb_age = std::chrono::duration<double>(now - kv.second.last_seen).count();
         e["heartbeat_age_s"] = hb_age;
+        e["silent_s"] = round1(hb_age);  // the same number instance_hung gives: seconds since its last sign of life
         add_health(e, e.value("last_tick_age_s", e.value("main_thread_stalled", false) ? 5.0 : 0.0), hb_age, e.value("loading", false), false,
                    kv.second.fps_watch.low_s(steady_s(), g_low_fps_shown_s), e.value("pid", 0u));
         arr.push_back(e);
@@ -315,6 +317,7 @@ json instances() {
             e["role"] = "member";
             e["state"] = "unresponsive";
             e["heartbeat_age_s"] = silent_s;
+            e["silent_s"] = round1(silent_s);
             add_health(e, e.value("last_tick_age_s", 0.0), silent_s, e.value("loading", false), true, 0, t.pid);
             if (e["state"] == "unresponsive") e["note"] = unresponsive_note(silent_s, health::assess(0, 0, e.value("loading", false), g_hung_after_s).hung_after_s);
             arr.push_back(e);

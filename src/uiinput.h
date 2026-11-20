@@ -83,20 +83,34 @@ ClickPlan plan_click(const ClickRequest &req, const Geometry &g);
 struct KeyInfo {
     unsigned vk = 0;
     bool extended = false;  // extended-key flag (arrows, home, end...)
-    unsigned ch = 0;        // the WM_CHAR a real key press also sends (enter 13, escape 27, letters...), 0 = none
+    unsigned ch = 0;        // the character the key types (letters, digits, space) or the WM_CHAR of enter 13, tab 9, backspace 8, escape 27; 0 = none
     std::string name;       // canonical name
 };
 // Case-insensitive; aliases (return, esc, pgup, pgdn...). False for an unknown name.
 bool lookup_key(const std::string &name, KeyInfo &out);
 // Scan code of a virtual key (MapVirtualKey on Windows); null = 0.
 using ScanFn = std::function<unsigned(unsigned vk)>;
-// Key down (+ WM_CHAR when the key types something), then key up one step later.
+// A key that types a character (ch >= 0x20: letters, digits, space) is one WM_CHAR, nothing else: a posted WM_KEYDOWN would make the
+// game's own message loop (TranslateMessage) add a second character, from the real keyboard layout. Any other key: key down (+ the
+// WM_CHAR of enter, tab, backspace, escape), then key up one step later.
 std::vector<Step> key_steps(const KeyInfo &k, const ScanFn &scan = nullptr);
 
 constexpr size_t kMaxTextChars = 256;
 // UTF-8 to UTF-16 (strict). False with `err` for invalid UTF-8, a control character (use `key` for enter, tab, backspace...)
 // or more than kMaxTextChars characters.
 bool text_to_utf16(const std::string &utf8, std::u16string &out, std::string &err);
+// The engine narrows every WM_CHAR through the system ANSI code page with best-fit substitutions (live, CP1252: e-acute is kept,
+// l-stroke becomes l, Greek alpha a, Cyrillic and CJK ?); WM_UNICHAR, WM_IME_CHAR and VK_PACKET are ignored. There is no way to type
+// such a character, so the call refuses (text_not_representable) unless allow_lossy. `keeps` says whether one code point survives
+// the code page unchanged (plat::ui_ansi_keeps on Windows; injected for the tests).
+using KeepsFn = std::function<bool(unsigned cp)>;
+// The code points of `text` that `keeps` refuses, each once, in order of first appearance (a surrogate pair is one). ASCII is never asked.
+std::vector<unsigned> altered_chars(const std::u16string &text, const KeepsFn &keeps);
+std::string utf8_of(unsigned cp);
+// code "text_not_representable": names the characters (glyph and code point, 16 at most), the code page, and the way out.
+struct Refusal;  // below
+Refusal not_representable(const std::vector<unsigned> &cps, unsigned code_page);
+
 // One WM_CHAR per UTF-16 unit (a surrogate pair is two, as Windows delivers it), a few per step.
 std::vector<Step> text_steps(const std::u16string &text);
 

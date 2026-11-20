@@ -399,5 +399,30 @@ bool ui_post(uint64_t hwnd, unsigned msg, unsigned long long wparam, long long l
 
 unsigned ui_scan_code(unsigned vk) { return MapVirtualKeyW(vk, MAPVK_VK_TO_VSC); }
 
+unsigned ui_ansi_code_page() { return GetACP(); }
+
+bool ui_ansi_keeps(unsigned cp) {
+    if (cp < 0x80) return true;
+    UINT acp = GetACP();
+    if (acp == CP_UTF8) return true;  // every character; the no-best-fit flag is not allowed for it
+    wchar_t w[2];
+    int wn = 1;
+    if (cp >= 0x10000) {
+        cp -= 0x10000;
+        w[0] = (wchar_t)(0xD800 + (cp >> 10));
+        w[1] = (wchar_t)(0xDC00 + (cp & 0x3FF));
+        wn = 2;
+    } else {
+        w[0] = (wchar_t)cp;
+    }
+    char narrow[8] = {};
+    BOOL used_default = FALSE;
+    int n = WideCharToMultiByte(acp, WC_NO_BEST_FIT_CHARS, w, wn, narrow, (int)sizeof narrow, nullptr, &used_default);
+    if (n <= 0 || used_default) return false;
+    wchar_t back[4] = {};
+    int bn = MultiByteToWideChar(acp, 0, narrow, n, back, 4);
+    return bn == wn && back[0] == w[0] && (wn == 1 || back[1] == w[1]);
+}
+
 }  // namespace plat
 #endif

@@ -133,6 +133,21 @@ static const Synonym *synonym_for(const json &props, const std::string &u) {
     return nullptr;
 }
 
+// Live verification of 0.3.7: an argument that sounds like another one but means something else gets a note instead of a suggestion
+// (console_exec {timeout_s} matched connect_timeout_s, which only waits for the outcome of `connect`).
+struct ArgNote {
+    const char *tool, *arg, *note;
+};
+static const ArgNote kArgNotes[] = {
+    {"console_exec", "timeout_s",
+     "console_exec does not wait for a command to finish, it only waits wait_frames frames (default 5) before reading the console; "
+     "connect_timeout_s is the wait of `connect` alone. To wait for an outcome use console_wait {regex, timeout_s}, wait_for or events_wait."}};
+static const ArgNote *arg_note(const std::string &tool, const std::string &arg) {
+    for (const auto &n : kArgNotes)
+        if (tool == n.tool && arg == n.arg) return &n;
+    return nullptr;
+}
+
 // The accepted argument closest to an unknown one ("" when none is close).
 static std::string closest_argument(const json &props, const std::string &u) {
     if (const Synonym *s = synonym_for(props, u)) return s->accepted;
@@ -150,13 +165,17 @@ static std::string closest_argument(const json &props, const std::string &u) {
 }
 
 // The validator's message alone ("unexpected instance additional property") rarely tells an agent what to send: name
-// the unknown and missing arguments, suggest the closest accepted name, and list what the tool accepts.
-static std::string argument_hint(const Tool &t, const json &value) {
+// the unknown and missing arguments and suggest the closest accepted name (empty when the arguments are all known and present).
+static std::string unknown_and_missing(const Tool &t, const json &value) {
     const json &props = t.input_schema["properties"];
     std::string out;
     if (value.is_object()) {
         for (auto it = value.begin(); it != value.end(); ++it) {
             if (props.contains(it.key())) continue;
+            if (const ArgNote *n = arg_note(t.name, it.key())) {
+                out += " Unknown argument '" + it.key() + "'. " + n->note;
+                continue;
+            }
             std::string best = closest_argument(props, it.key());
             out += " Unknown argument '" + it.key() + "'" + (best.empty() ? "." : " (did you mean '" + best + "'?).");
             if (const Synonym *s = synonym_for(props, it.key()))
@@ -166,14 +185,19 @@ static std::string argument_hint(const Tool &t, const json &value) {
     json req = t.input_schema.value("required", json::array());
     for (const auto &r : req)
         if (!value.is_object() || !value.contains(r.get<std::string>())) out += " Missing required argument '" + r.get<std::string>() + "'.";
+    return out;
+}
+
+// What the tool accepts.
+static std::string accepted_list(const Tool &t) {
+    const json &props = t.input_schema["properties"];
     std::string list;
     for (auto p = props.begin(); p != props.end(); ++p) {
         if (!list.empty()) list += ", ";
         list += p.key();
         if (p.value().contains("type") && p.value()["type"].is_string()) list += " (" + p.value()["type"].get<std::string>() + ")";
     }
-    out += " Accepted arguments: " + list + ".";
-    return out;
+    return " Accepted arguments: " + list + ".";
 }
 
 // The call with each unknown argument renamed to its closest accepted name, when that makes it valid (else null).
@@ -188,7 +212,7 @@ static json corrected_call(const Tool &t, const json &value) {
             continue;
         }
         std::string best = closest_argument(props, it.key());
-        if (best.empty() || value.contains(best) || fixed.contains(best)) return nullptr;
+        if (best.empty() || value.contains(best) || fixed.contains(best) || arg_note(t.name, it.key())) return nullptr;
         const Synonym *syn = synonym_for(props, it.key());
         if (syn && syn->opposite) {
             if (!it.value().is_boolean()) return nullptr;  // only a boolean can be inverted
@@ -213,7 +237,11 @@ static std::string validate_tool(const Tool &t, const json &value) {
     } catch (const std::exception &e) {
         std::string what = e.what();
         while (!what.empty() && (std::isspace((unsigned char)what.back()) || what.back() == '.')) what.pop_back();
-        return "invalid arguments: " + what + "." + argument_hint(t, value);
+        // The part that tells what to send comes first: the validator's own words start with the whole argument object and its
+        // JSON path, and a client that shows the start of a long message (or cuts it) hid the name of the unknown argument.
+        std::string named = unknown_and_missing(t, value);
+        if (named.empty()) return "invalid arguments: " + what + "." + accepted_list(t);
+        return "invalid arguments:" + named + accepted_list(t) + " Validator: " + what + ".";
     }
     return "";
 }

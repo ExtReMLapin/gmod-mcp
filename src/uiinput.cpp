@@ -1,5 +1,6 @@
 #include "uiinput.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -198,6 +199,11 @@ bool lookup_key(const std::string &name_in, KeyInfo &out) {
 }
 
 std::vector<Step> key_steps(const KeyInfo &k, const ScanFn &scan) {
+    // A key that types a character (letter, digit, space): only the WM_CHAR, like `text`. The game's message loop runs
+    // TranslateMessage on a posted WM_KEYDOWN and makes its own WM_CHAR from the real keyboard layout, next to ours: the character
+    // came twice ("aa"), and on AZERTY the digit key typed "5(" (live, 0.3.7). The control keys (enter, tab, backspace, escape) are
+    // not doubled: the engine reads them from the key messages.
+    if (k.ch >= 0x20) return {one(make(kWmChar, k.ch, 1))};
     long long scancode = scan ? (long long)(scan(k.vk) & 0xFF) : 0;
     long long base = 1 | (scancode << 16) | (k.extended ? (1LL << 24) : 0);
     std::vector<Step> out;
@@ -259,6 +265,56 @@ bool text_to_utf16(const std::string &s, std::u16string &out, std::string &err) 
         i += len;
     }
     return true;
+}
+
+std::string utf8_of(unsigned cp) {
+    std::string s;
+    if (cp < 0x80) {
+        s += (char)cp;
+    } else if (cp < 0x800) {
+        s += (char)(0xC0 | (cp >> 6));
+        s += (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        s += (char)(0xE0 | (cp >> 12));
+        s += (char)(0x80 | ((cp >> 6) & 0x3F));
+        s += (char)(0x80 | (cp & 0x3F));
+    } else {
+        s += (char)(0xF0 | (cp >> 18));
+        s += (char)(0x80 | ((cp >> 12) & 0x3F));
+        s += (char)(0x80 | ((cp >> 6) & 0x3F));
+        s += (char)(0x80 | (cp & 0x3F));
+    }
+    return s;
+}
+
+std::vector<unsigned> altered_chars(const std::u16string &text, const KeepsFn &keeps) {
+    std::vector<unsigned> out;
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned cp = text[i];
+        if (cp >= 0xD800 && cp < 0xDC00 && i + 1 < text.size() && text[i + 1] >= 0xDC00 && text[i + 1] < 0xE000) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (text[i + 1] - 0xDC00);
+            ++i;
+        }
+        if (cp < 0x80) continue;
+        if (std::find(out.begin(), out.end(), cp) != out.end()) continue;
+        if (!keeps || !keeps(cp)) out.push_back(cp);
+    }
+    return out;
+}
+
+Refusal not_representable(const std::vector<unsigned> &cps, unsigned code_page) {
+    constexpr size_t kListed = 16;
+    std::string list;
+    for (size_t i = 0; i < cps.size() && i < kListed; ++i) list += (i ? ", " : "") + utf8_of(cps[i]) + " (" + hex(cps[i], 4, "U+") + ")";
+    if (cps.size() > kListed) list += " and " + std::to_string(cps.size() - kListed) + " more";
+    std::string msg =
+        "the game cannot receive these characters unchanged: " + list + ". The engine narrows every typed character through this machine's "
+        "ANSI code page (" + std::to_string(code_page) + ") with best-fit substitutions, so each would arrive as another character or as '?' "
+        "(WM_UNICHAR, IME characters and VK_PACKET are ignored, there is no other way in). Set the text from Lua instead: lua_exec in the "
+        "realm that owns the panel (menu for the main menu's dialogs, client for Derma in game), e.g. entry:SetText(\"...\") on a DTextEntry "
+        "(DTextEntry:SetValue does nothing while the entry has the keyboard focus, which a ui_click gives it; call entry:OnValueChange(text) "
+        "afterwards if the page listens to it). Or pass allow_lossy: true to type the text anyway, altered.";
+    return Refusal{"text_not_representable", msg};
 }
 
 std::vector<Step> text_steps(const std::u16string &text) {

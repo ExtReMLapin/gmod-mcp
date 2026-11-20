@@ -1436,6 +1436,46 @@ static void test_health() {
     CHECK(w5.low_s(30) == 0);
 }
 
+// Live verification of 0.3.7: the note said "map_load (or `disconnect`) clears it" but only a map_load clears the engine's stuck loading
+// screen (`disconnect` leaves it: checked live). The wording everywhere says what clears it, and that `disconnect` does not.
+static void test_loading_stuck_wording() {
+    if (mcp::tools().empty()) tools::register_all();
+    std::string note = agent::loading_stuck_note();
+    CHECK(note.find("map_load") != std::string::npos);
+    CHECK(note.find("(or `disconnect`)") == std::string::npos && note.find("`disconnect` clears") == std::string::npos);
+    CHECK(note.find("`disconnect` does not") != std::string::npos);
+    const mcp::Tool *list = mcp::find_tool("instances_list");
+    CHECK(list != nullptr);
+    if (list) {
+        CHECK(list->description.find("map_load or `disconnect` clears") == std::string::npos);
+        CHECK(list->description.find("map_load clears it") != std::string::npos);
+    }
+}
+
+// Live verification of 0.3.7: a bridge-started map_load first waits for the menu (up to 15 s on a client whose loading screen is stuck) and
+// 30 frames before the engine starts the load; `status` said loading false meanwhile. agent::MapLoadCall marks that span: status and the
+// instances_list entry of this instance say loading true while it lives, and the flag falls back when it ends.
+static void test_map_load_call_flag() {
+    if (mcp::tools().empty()) tools::register_all();
+    auto self_loading = [] {
+        for (const auto &e : coordinator::instances())
+            if (e.value("self", false)) return e.value("loading", false);
+        return false;
+    };
+    CHECK(!agent::map_loading());  // nothing has started a load yet in this run
+    {
+        agent::MapLoadCall call;
+        CHECK(agent::map_loading());
+        json st = mcp::call_tool("status", json::object()).value("structuredContent", json::object());
+        CHECK(st.value("loading", false) == true);
+        CHECK(self_loading());
+        CHECK(!agent::map_loading_stuck());
+    }
+    CHECK(!agent::map_loading() && !self_loading());
+    json st = mcp::call_tool("status", json::object()).value("structuredContent", json::object());
+    CHECK(st.value("loading", true) == false);
+}
+
 // Issue #8 (chaos test B2): `status.loading` and the `loading` of this instance in `instances_list` come from the same flag (the
 // list said true for minutes while status said false: status read only the menu's IsInLoading).
 static void test_status_loading_agrees() {
@@ -1933,6 +1973,10 @@ static void test_crash_report_coordinator() {
         std::string note = e.value("note", "");
         CHECK(note.find("instances_close") != std::string::npos && note.find("game_terminate") != std::string::npos && note.find("relaunch") != std::string::npos);
         CHECK(e.value("pid", 0u) == c.pi.dwProcessId && e.value("heartbeat_age_s", 99.0) < 3);
+        // Live verification of 0.3.7: silent_s (seconds since the last heartbeat) is on every entry, like the instance_hung error's.
+        CHECK(e.contains("silent_s") && e["silent_s"].is_number() && e.value("silent_s", -1.0) >= 0 && e.value("silent_s", 99.0) < 3);
+        for (const auto &x : coordinator::instances())  // self included (0); a crashed entry has no heartbeat to be silent about
+            if (x.value("state", "") != "crashed") CHECK(x.contains("silent_s") && x["silent_s"].is_number());
         // A map load in progress: 90 s is not hung yet, 200 s is.
         CHECK(heartbeat("hang-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 90.0}, {"main_thread_stalled", true}, {"fps", 0}, {"loading", true}}));
         e = entry_of("hang-1");
@@ -1960,9 +2004,13 @@ static void test_crash_report_coordinator() {
         plat::sleep_ms(1600);
         json e = entry_of("silent-1");
         CHECK(e.value("state", "") == "unresponsive" && e.value("stalled_s", 0.0) >= 1.5 && e.value("note", "").find("heartbeat") != std::string::npos);
+        // A frozen member: silent_s says for how long it has said nothing (the number instance_hung gives), not null.
+        CHECK(e.contains("silent_s") && e["silent_s"].is_number() && e.value("silent_s", 0.0) >= 1.5 && e.value("silent_s", 0.0) < 3.5);
+        CHECK(std::fabs(e.value("silent_s", 0.0) - e.value("heartbeat_age_s", 0.0)) < 0.2);
         plat::sleep_ms(2500);
         e = entry_of("silent-1");
         CHECK(e.value("state", "") == "hung" && e.value("note", "").find("instances_close") != std::string::npos && e.value("pid", 0u) == c.pi.dwProcessId);
+        CHECK(e.value("silent_s", 0.0) >= 4.0);
         CHECK(heartbeat("silent-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.01}, {"loading", false}}));  // it came back
         CHECK(entry_of("silent-1").value("state", "") == "running");
         plat::sleep_ms(1600);
@@ -2411,6 +2459,31 @@ static void test_next_call() {
     json r2 = mcp::call_tool("console_exec", json{{"comand", "echo hi"}, {"realm", "nowhere"}});
     CHECK(r2["structuredContent"]["error"].value("next_call", json()).is_null());
 
+    // Live verification of 0.3.7: console_exec {timeout_s} was refused with a message whose first words were the validator's ("invalid
+    // arguments ... validation fa...": the display cut the rest, so the unknown argument's name never showed). The unknown (or missing)
+    // argument comes first, then the accepted list, the validator's own words last; console_exec explains that it has no wait budget
+    // (timeout_s is a substring of connect_timeout_s: no "did you mean" and no corrected call for it, that would be another meaning).
+    {
+        json t = mcp::call_tool("console_exec", json{{"cmd", "echo hi"}, {"timeout_s", 5}});
+        json te = t["structuredContent"]["error"];
+        std::string tm = te.value("message", "");
+        CHECK(t.value("isError", false) && te.value("code", "") == "invalid_params");
+        CHECK(tm.rfind("invalid arguments: Unknown argument 'timeout_s'", 0) == 0);
+        CHECK(tm.find("wait_frames") != std::string::npos && tm.find("connect_timeout_s") != std::string::npos && tm.find("console_wait") != std::string::npos);
+        CHECK(tm.find("did you mean") == std::string::npos && te.value("next_call", json()).is_null());
+        CHECK(tm.find("Accepted arguments: cmd (string)") != std::string::npos);
+        size_t acc = tm.find("Accepted arguments:"), unk = tm.find("Unknown argument");
+        CHECK(unk != std::string::npos && acc != std::string::npos && unk < acc);
+        // A typo of another tool keeps its suggestion, first in the message.
+        json t2 = mcp::call_tool("console_exec", json{{"command", "echo hi"}});
+        std::string m2 = t2["structuredContent"]["error"].value("message", "");
+        CHECK(m2.rfind("invalid arguments: Unknown argument 'command' (did you mean 'cmd'?)", 0) == 0);
+        // A wrong type has no unknown argument: the validator's words stay first, then the accepted list.
+        json t3 = mcp::call_tool("console_exec", json{{"cmd", "echo hi"}, {"wait_frames", "many"}});
+        std::string m3 = t3["structuredContent"]["error"].value("message", "");
+        CHECK(m3.rfind("invalid arguments: ", 0) == 0 && m3.find("Unknown argument") == std::string::npos && m3.find("Accepted arguments:") != std::string::npos);
+    }
+
     // Issue #11: lua_job {wait: false} used to be answered "did you mean 'jit'?" (the closest spelling). A wait-like key means
     // `async`; since `wait` and `async` are opposites, the corrected call inverts a boolean.
     auto err_of = [](const json &res) { return res["structuredContent"]["error"]; };
@@ -2484,6 +2557,31 @@ static void test_ui_tools() {
     CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "hi"}})) == "not_a_test_client");
 #else
     CHECK(err_code(mcp::call_tool("ui_click", json{{"x", 1}, {"y", 1}})) == "unsupported");
+#endif
+#ifdef _WIN32
+    // Live verification of 0.3.7: the engine narrows every WM_CHAR through the ANSI code page with best-fit (l-stroke -> l, alpha -> a,
+    // Cyrillic and CJK -> ?). A text with such a character is refused before anything is posted (no game access), unless allow_lossy.
+    // U+65E5 (a CJK character) is outside every single-byte code page; on a CJK or UTF-8 machine the check is skipped.
+    if (!plat::ui_ansi_keeps(0x65E5)) {
+        cfg.test_client = true;
+        json lossy = mcp::call_tool("ui_key", json{{"text", "ab \xE6\x97\xA5 \xC5\x82 cd"}});
+        const json le = lossy.value("isError", false) ? lossy["structuredContent"]["error"] : json::object();
+        CHECK(le.value("code", "") == "text_not_representable");
+        std::string lm = le.value("message", "");
+        CHECK(lm.find("\xE6\x97\xA5 (U+65E5)") != std::string::npos && lm.find("U+0142") != std::string::npos && lm.find("lua_exec") != std::string::npos &&
+              lm.find("allow_lossy") != std::string::npos && lm.find(std::to_string(plat::ui_ansi_code_page())) != std::string::npos);
+        CHECK(le["details"].value("code_page", 0u) == plat::ui_ansi_code_page() && le["details"]["characters"].is_array());
+        // The same text with allow_lossy goes on to the policy check of the call (this test game was not started by instances_launch).
+        cfg.test_client = false;
+        CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "\xE6\x97\xA5"}, {"allow_lossy", true}})) == "not_a_test_client");
+        // Text that survives the code page is not refused for that reason.
+        CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "caf\xC3\xA9"}})) != "text_not_representable");
+        // A dedicated server says unsupported first, whatever the text.
+        cfg.mode = agent::Mode::Dedicated;
+        cfg.test_client = true;
+        CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "\xE6\x97\xA5"}})) == "unsupported");
+        cfg.mode = agent::Mode::Client;
+    }
 #endif
     cfg.mode = mode;
     cfg.test_client = test_client;
@@ -2944,6 +3042,7 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
+    test_map_load_call_flag();  // first: later tests (map loads, server states) leave the load flag on for the rest of the run
     test_installer_roundtrip();
     test_guide_result_conventions();
     test_output_schemas();
@@ -2988,6 +3087,7 @@ int main(int argc, char **argv) {
     test_coordinator_handover_cluster();  // Issue #6
     test_coordinator_tombstone_cluster();  // Issue #6
 #endif
+    test_loading_stuck_wording();
     test_status_loading_agrees();  // Issue #8: sets the load flag (it stays on): keep it after the tests that read the flag
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;

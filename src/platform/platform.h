@@ -116,5 +116,10 @@ bool ui_window(UiWindow &out);  // false: no visible top-level window of this pr
 // Posts one message to `hwnd` (refused unless it is a window of this process). `err` says why not.
 bool ui_post(uint64_t hwnd, unsigned msg, unsigned long long wparam, long long lparam, std::string &err);
 unsigned ui_scan_code(unsigned vk);  // MapVirtualKey; 0 elsewhere
+// The system ANSI code page (GetACP; 0 elsewhere) and whether one code point (UTF-32) goes through it unchanged: a
+// WideCharToMultiByte round trip without best-fit (the engine narrows every typed WM_CHAR that way). True for all when the
+// code page is UTF-8 and everywhere but Windows.
+unsigned ui_ansi_code_page();
+bool ui_ansi_keeps(unsigned cp);
 
 }  // namespace plat

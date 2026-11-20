@@ -102,8 +102,8 @@ json window_info(const plat::UiWindow &w, const uiinput::Geometry &g) {
     return json{{"client_w", g.client_w}, {"client_h", g.client_h}, {"dpi", w.dpi}, {"dpi_awareness", w.dpi_awareness}, {"class", w.window_class}};
 }
 
-// Everything that can refuse the call, in uiinput::decide's order; fills `p` when it does not.
-void prepare(const json &a, Prepared &p) {
+// The refusals that need nothing from the game (srcds, not Windows, not a test client): an error result, or null.
+json early_refusal(const json &a) {
     uiinput::Facts f;
     f.client_mode = agent::config().mode == agent::Mode::Client;
     f.windows = plat::ui_supported();
@@ -111,10 +111,19 @@ void prepare(const json &a, Prepared &p) {
     f.allow_user_game = a.value("allow_user_game", false);
     f.cursor_visible = true;  // not known yet: only the policy refusals can come out of this first pass
     uiinput::Refusal early = uiinput::decide(f);
-    if (!early.code.empty()) {
-        p.error = agent::err(early.code, early.message);
-        return;
-    }
+    if (!early.code.empty()) return agent::err(early.code, early.message);
+    return nullptr;
+}
+
+// Everything that can refuse the call, in uiinput::decide's order; fills `p` when it does not.
+void prepare(const json &a, Prepared &p) {
+    p.error = early_refusal(a);
+    if (!p.error.is_null()) return;
+    uiinput::Facts f;
+    f.client_mode = agent::config().mode == agent::Mode::Client;
+    f.windows = plat::ui_supported();
+    f.test_client = agent::config().test_client;
+    f.allow_user_game = a.value("allow_user_game", false);
     Gathered g = gather();
     if (!g.error.is_null()) {
         p.error = g.error;
@@ -253,6 +262,16 @@ json ui_key_tool(const json &a) {
         std::string e;
         if (!uiinput::text_to_utf16(a["text"].get<std::string>(), text, e)) return agent::err("invalid_params", e);
     }
+    // Characters the engine would alter (ANSI code page narrowing): refused, before the game is touched, unless allow_lossy.
+    std::vector<unsigned> lossy = uiinput::altered_chars(text, [](unsigned cp) { return plat::ui_ansi_keeps(cp); });
+    if (!lossy.empty() && !a.value("allow_lossy", false)) {
+        json early = early_refusal(a);  // srcds, not Windows, not a test client come first
+        if (!early.is_null()) return early;
+        uiinput::Refusal r = uiinput::not_representable(lossy, plat::ui_ansi_code_page());
+        json chars = json::array();
+        for (unsigned cp : lossy) chars.push_back(uiinput::utf8_of(cp));
+        return agent::err(r.code, r.message, json{{"code_page", plat::ui_ansi_code_page()}, {"characters", chars}});
+    }
     Prepared p;
     prepare(a, p);
     if (!p.error.is_null()) return p.error;
@@ -269,6 +288,12 @@ json ui_key_tool(const json &a) {
     json res = json::object();
     if (has_key) res["key"] = key.name;
     if (has_text) res["text_units"] = text.size();
+    if (!lossy.empty()) {  // allow_lossy: say which characters the engine changed
+        json chars = json::array();
+        for (unsigned cp : lossy) chars.push_back(uiinput::utf8_of(cp));
+        res["lossy_characters"] = chars;
+        res["ansi_code_page"] = plat::ui_ansi_code_page();
+    }
     return finish(a, p, res, sent, frames);
 }
 
@@ -319,14 +344,20 @@ void register_ui() {
         {"ui_key", "Press a key or type text in the game UI",
          "Presses a key and/or types text into the focused part of the game UI (a text entry of a dialog, a Derma TextEntry, an HTML "
          "input): key is a named key (enter, escape, tab, backspace, space, up, down, left, right, home, end, pageup, pagedown, "
-         "insert, delete, f1..f12, a letter or a digit), text is typed character by character as WM_CHAR, Unicode included "
-         "(accents, up to 256 characters; no control characters: use key). With both, the text is typed first, then the key is "
+         "insert, delete, f1..f12, a letter, a digit or space: those type the character, as WM_CHAR like `text`, they are not pressed as keys), text is typed character by character as WM_CHAR "
+         "(up to 256 characters; no control characters: use key). The engine narrows every typed character through the machine's ANSI code page with best-fit "
+         "(live, CP1252: accents of western Europe arrive, l-stroke becomes l, Greek a, Cyrillic and CJK ?): a text with such a character is refused "
+         "with text_not_representable (before anything is typed; details: code_page, characters) unless allow_lossy: true. For those, set the text from Lua with "
+         "lua_exec in the realm that owns the panel (menu for the main menu's dialogs, client for Derma in game): entry:SetText(\"...\") on a "
+         "DTextEntry (DTextEntry:SetValue does nothing while the entry has the keyboard focus, which a ui_click gives it; entry:OnValueChange(text) "
+         "afterwards if the page listens to it). With both, the text is typed first, then the key is "
          "pressed (text \"hello\" + key enter). Click the field first with ui_click. Result: {sent: [messages], key?, text_units?, "
-         "frames_waited, window, screen, cursor_via, screenshot?}." + common +
+         "lossy_characters? and ansi_code_page? (allow_lossy), frames_waited, window, screen, cursor_via, screenshot?}." + common +
          " Example: {\"text\": \"my name\", \"key\": \"enter\"}.",
          json{{"properties",
                {{"key", {{"type", "string"}, {"description", "Named key to press (enter, escape, tab, backspace, up, f1...)."}}},
-                {"text", {{"type", "string"}, {"description", "Text to type (UTF-8, accents fine, 256 characters at most)."}}},
+                {"text", {{"type", "string"}, {"description", "Text to type (UTF-8, 256 characters at most). Only characters of the machine's ANSI code page arrive unchanged (accents of western Europe on CP1252); see text_not_representable."}}},
+                {"allow_lossy", {{"type", "boolean"}, {"description", "Type the text even if the engine will alter some characters (l-stroke becomes l, Greek a, Cyrillic and CJK ?). Default false: the call is refused with text_not_representable."}}},
                 {"wait_frames", wait_frames},
                 {"screenshot_after", shot_after},
                 {"allow_user_game", allow}}}},

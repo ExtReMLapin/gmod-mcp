@@ -644,7 +644,54 @@ static void test_loadflag() {
     CHECK(chg.active(21) && !chg.menu_stuck(21));
 }
 
+// Live verification of 0.3.7: while a map_load that this module executes is in flight on a client whose engine state is stuck, `loading`
+// said false for about 18 s (map_load first waits for the menu to be idle, up to 15 s, then 30 frames; the engine has not started the
+// load yet, so neither the server nor the menu source is on). The Call source is on from the start of the tool to its end.
+static void test_loadflag_call() {
+    using loadflag::Tracker;
+    Tracker c;
+    CHECK(c.set(Tracker::Call, true, 0) && c.active(0));   // the flag changes at once: no menu poll, no server state needed
+    CHECK(c.active(15) && c.since_s(15) == 15);
+    CHECK(!c.set(Tracker::Call, true, 16));                // a repeat does not restart it
+    CHECK(c.set(Tracker::Call, false, 20) && !c.active(20));
+    // The engine's stuck loading screen: not a load, but a map_load in flight is, and it is not reported stuck meanwhile.
+    auto pump = [](Tracker &t, double from, double to) {
+        for (double x = from; x <= to; x += 0.25) {
+            t.set(Tracker::Menu, true, x);
+            t.note_menu_context(false, x);
+        }
+    };
+    Tracker s;
+    s.set(Tracker::Menu, false, 0);
+    pump(s, 0.5, 20);
+    CHECK(!s.active(20) && s.menu_stuck(20));              // stuck: loading false, loading_stuck true
+    CHECK(s.set(Tracker::Call, true, 20));                 // map_load starts waiting for the menu
+    CHECK(s.active(21) && !s.menu_stuck(21));              // loading true, and not "stuck" at the same time
+    pump(s, 20.25, 38);                                    // the 18 s of the live report
+    CHECK(s.active(38) && !s.menu_stuck(38));
+    CHECK(s.set(Tracker::Call, false, 38));
+    CHECK(!s.active(38) && s.menu_stuck(38));              // the call ended (failed, say): back to "stuck, not a load"
+    // The engine starts the load meanwhile: the server source takes over, and the call ending does not end the load.
+    Tracker w;
+    w.set(Tracker::Menu, false, 0);
+    w.set(Tracker::Call, true, 1);
+    CHECK(!w.set(Tracker::Server, true, 20, true) && w.active(20));
+    CHECK(!w.set(Tracker::Call, false, 21) && w.active(21));        // the load goes on (server source)
+    CHECK(w.set(Tracker::Server, false, 22) && !w.active(22));
+    // And the other way round: the server source ends first, the call is still in flight.
+    Tracker v;
+    v.set(Tracker::Menu, false, 0);
+    v.set(Tracker::Call, true, 1);
+    v.set(Tracker::Server, true, 20, true);
+    CHECK(!v.set(Tracker::Server, false, 21) && v.active(21));      // the call is in flight: it ends the flag, not the server source
+    // A call that never ends (a frozen game) stops counting after kMaxLoadS like the other sources.
+    Tracker f;
+    f.set(Tracker::Call, true, 0);
+    CHECK(f.active(loadflag::kMaxLoadS) && !f.active(loadflag::kMaxLoadS + 1));
+}
+
 void test_fp7137() {
+    test_loadflag_call();
     test_pure();
     test_gate();
     test_stale_and_switch();

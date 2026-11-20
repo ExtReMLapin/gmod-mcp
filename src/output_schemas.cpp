@@ -203,7 +203,7 @@ json build(const std::string &tool) {
                              {"scale", Obj}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj}, {"cursor_via", S}, {"screenshot", Obj},
                              {"screenshot_note", S}, {"screenshot_error", ANY}},
                             {"sent", "at", "frames_waited"});
-        s["ui_key"] = obj({{"sent", STRS}, {"key", S}, {"text_units", N}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj},
+        s["ui_key"] = obj({{"sent", STRS}, {"key", S}, {"text_units", N}, {"lossy_characters", STRS}, {"ansi_code_page", N}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj},
                            {"cursor_via", S}, {"screenshot", Obj}, {"screenshot_note", S}, {"screenshot_error", ANY}},
                           {"sent", "frames_waited"});
         s["debug_draw"] = obj({{"added", N}, {"active", N}, {"expire_in_s", N}}, {"added", "active"});
@@ -231,7 +231,10 @@ json build(const std::string &tool) {
         s["perf_hook_cost"] = obj({{"event", S}, {"duration_s", N}, {"functions", ANYS}, {"restored", ANY}}, {"event", "functions"});
         s["tests_run"] = obj({{"files", ANYS}, {"totals", Obj}, {"ok", B}}, {"files", "totals", "ok"});
         // --- instances
-        s["instances_list"] = obj({{"instances", ANYS}, {"coordinator", B}}, {"instances"});
+        // silent_s: seconds since the instance's last heartbeat, on every entry (0 for this game), as in the instance_hung error.
+        s["instances_list"] = obj({{"instances", arr(obj({{"state", S}, {"heartbeat_age_s", N}, {"silent_s", N}, {"stalled_s", N}, {"fps_low_s", N}, {"loading", B}}))},
+                                   {"coordinator", B}},
+                                  {"instances"});
         return s;
     }();
     auto it = m.find(tool);
