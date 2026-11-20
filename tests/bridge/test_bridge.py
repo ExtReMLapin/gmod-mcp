@@ -121,6 +121,36 @@ def json_equal(text, value):
     except (ValueError, TypeError): return False
 
 
+# Issue #3 (Code Mode): Claude Code turns an isError result into a thrown McpToolError whose `message` is the text blocks joined
+# with a newline and whose `detail` is JSON.parse(message) only when the whole message starts with `{`. So the text of EVERY error
+# result the bridge sends must be exactly one JSON object {"error": {"code", "message", ...}}. Every Bridge of every case feeds
+# this audit; main() turns the tally into one check per case (so each error path a case drives is covered).
+ERROR_AUDIT = {"seen": 0, "bad": [], "codes": set()}
+
+
+def error_text_problem(res):
+    """None when the isError result `res` is what code mode needs, else what is wrong."""
+    texts = [c.get("text", "") for c in res.get("content", []) if isinstance(c, dict) and c.get("type") == "text"]
+    if len(texts) != 1: return "%d text blocks (want exactly 1): %r" % (len(texts), texts)
+    if not texts[0].startswith("{"): return "text does not start with '{': %r" % texts[0][:120]
+    try: obj = json.loads(texts[0])
+    except ValueError as e: return "text is not JSON (%s): %r" % (e, texts[0][:120])
+    e = obj.get("error") if isinstance(obj, dict) else None
+    if not (isinstance(e, dict) and isinstance(e.get("code"), str) and isinstance(e.get("message"), str)):
+        return "no error.code / error.message: %r" % texts[0][:200]
+    return None
+
+
+def audit_error_result(m):
+    res = m.get("result") if isinstance(m, dict) else None
+    if not isinstance(res, dict) or res.get("isError") is not True: return
+    ERROR_AUDIT["seen"] += 1
+    problem = error_text_problem(res)
+    code = ((res.get("structuredContent") or {}).get("error") or {}).get("code")
+    if code: ERROR_AUDIT["codes"].add(code)
+    if problem: ERROR_AUDIT["bad"].append(problem + " | " + json.dumps(res)[-700:])
+
+
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
@@ -150,6 +180,7 @@ class Bridge:
     def _read(self):
         for line in self.p.stdout:
             m = json.loads(line)
+            audit_error_result(m)
             with self.cv:
                 self.order.append(m)
                 if "id" in m and "method" not in m: self.by_id[json.dumps(m["id"])] = m
@@ -312,6 +343,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if name == "instances_list" and srv.instances_answer:  # Issue #6: the test decides what the directory says
             sc = srv.instances_answer()
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "jsonerr":  # Issue #3: an error result with no structuredContent whose text is the JSON error (e.g. a cancelled task)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps({"error": {"code": "fake_error", "message": "fails on purpose", "details": {"n": 1}}})}], "isError": True}))
         if name == "echo":
             h = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("mcp")}
             sc = {"args": args, "headers": h}  # like the module: the text is the JSON of structuredContent
@@ -2324,6 +2357,17 @@ def case_version():
     # structuredContent (code-mode hosts parse it), with the warning as its first key so it is read first.
     check("VERSION (issue 3) one text block, the JSON of structuredContent, version_warning first, with what to do",
           len(texts) == 1 and first.startswith('{"version_warning":"') and json_equal(first, sc) and "0.0.1" in first and "skill" in first, texts)
+    # Issue #3 (Code Mode): an error result WITHOUT structuredContent whose text is the JSON error: the warning goes into that JSON,
+    # no prose block in front of it (Claude Code only sets e.detail when the whole message starts with `{`).
+    r = b.req("tools/call", {"name": "jsonerr", "arguments": {}})
+    res = (r or {}).get("result", {})
+    texts_e = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    try: obj_e = json.loads(texts_e[0])
+    except (ValueError, IndexError): obj_e = None
+    check("VERSION (issue 3 code mode) an error without structuredContent: one text block, still a JSON object starting with `{`, error intact, version_warning inside",
+          res.get("isError") is True and len(texts_e) == 1 and texts_e[0].startswith("{") and isinstance(obj_e, dict) and
+          obj_e.get("error") == {"code": "fake_error", "message": "fails on purpose", "details": {"n": 1}} and
+          "0.0.1" in obj_e.get("version_warning", "") and error_text_problem(res) is None, res)
     check("VERSION the tool's own answer is still there", sc.get("args") == {} and "args" in first, res)
     # The bridge's own tools too (seen in a real update, 2026-11-14: "launch an instance" went through instances_launch
     # and the agent never saw the warning).
@@ -2444,6 +2488,41 @@ def case_observe():
     call("instances_close", {"owner": "observe"}, 60)
     os.remove(tmp)
     b.close()
+
+
+def case_codemode_tasks():
+    """Issue #3 (Claude Code Code Mode): GMOD_MCP_TASKS=off. The bridge then removes the Tasks extension from the client
+    capabilities it forwards to the game, so that the game never answers a call with a task (the script of a Code Mode
+    call would only get a stub). Default / auto: forwarded untouched."""
+    print("== CODEMODE_TASKS: GMOD_MCP_TASKS=off keeps the Tasks extension away from the game", flush=True)
+    ext = "io.modelcontextprotocol/tasks"
+    other = "io.example/other"
+    def forwarded(value):
+        port, env = free_port(), isolated_config(with_token=True)
+        if value is not None: env["GMOD_MCP_TASKS"] = value
+        fake = FakeServer(port, version=bridge_version())
+        b = Bridge(port, env)
+        meta = modern_meta()
+        meta["io.modelcontextprotocol/clientCapabilities"] = {"extensions": {ext: {}, other: {"x": 1}}, "elicitation": {}}
+        meta["claudecode/toolUseId"] = "repl_toolu_01abc"
+        r = mreq(b, "tools/call", {"name": "echo", "arguments": {"k": 1}}, meta=meta)
+        with fake.lock: seen = [m for m, _ in fake.seen if m.get("method") == "tools/call"]
+        b.close(); fake.stop()
+        caps = (seen[-1]["params"]["_meta"].get("io.modelcontextprotocol/clientCapabilities") if seen else None)
+        return r, caps, (seen[-1]["params"]["_meta"] if seen else {})
+    r, caps, m = forwarded(None)
+    check("CODEMODE_TASKS default: the Tasks extension is forwarded as the client sent it", caps and ext in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("auto")
+    check("CODEMODE_TASKS auto: the Tasks extension is forwarded", caps and ext in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("off")
+    check("CODEMODE_TASKS off: the Tasks extension is not forwarded; the other capabilities and extensions are kept",
+          caps is not None and ext not in caps.get("extensions", {}) and caps["extensions"].get(other) == {"x": 1} and "elicitation" in caps, caps)
+    check("CODEMODE_TASKS off: the call still works, and the other _meta keys (toolUseId) are untouched",
+          r and not r["result"].get("isError") and m.get("claudecode/toolUseId") == "repl_toolu_01abc", (r, m))
+    r, caps, m = forwarded("OFF")
+    check("CODEMODE_TASKS off is case-insensitive", caps is not None and ext not in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("bogus")
+    check("CODEMODE_TASKS an unknown value keeps the default", caps and ext in caps.get("extensions", {}), caps)
 
 
 def case_feedback():
@@ -3426,14 +3505,17 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
     for c in [a for a in args if a != "--serial"] or DEFAULT:
         t_case = time.time()
         CASES[c]()
+        if ERROR_AUDIT["seen"]:
+            check("CODEMODE (issue 3) [%s] every isError result (%d seen: %s) is exactly one JSON object {error:{code,message}} (e.detail works)" %
+                  (c, ERROR_AUDIT["seen"], ", ".join(sorted(ERROR_AUDIT["codes"]))), not ERROR_AUDIT["bad"], ERROR_AUDIT["bad"][:3])
         cleanup_made()
         print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
 else:

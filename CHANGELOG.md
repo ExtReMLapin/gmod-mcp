@@ -137,6 +137,21 @@
   tombstone and has it judged again. A coordinator that really crashes is still reported `crashed`. Tested with three real node
   processes (`test_coordinator_closed_cluster`: red first, `client_crashed` and listed `crashed` after a `game_terminate` of the
   coordinator).
+- **Code Mode (Claude Code's experimental mode where the model writes JavaScript): long calls are answered in place** (Issue #3).
+  Claude Code marks the calls a script makes (`_meta["claudecode/toolUseId"]` starts with `repl_`). The game answered `map_load`
+  and waits of 15 s or more with a background task to those calls too, and the script only got a "moved to the background" stub
+  (`await map_load(...)` followed by more code broke); they are now answered in place. A new setting, the environment variable
+  `GMOD_MCP_TASKS=off` (default `auto`), turns the tasks the server chooses off for every client: set it for Claude Code (the
+  bridge then does not forward the Tasks extension to the game) or for the game (the module reads it too). A client that asks for a
+  task itself (the 2025-11-25 form) still gets one.
+
+- **Every error text is one JSON object, so `e.detail` works in Code Mode** (Issue #3). Claude Code throws the text of an error
+  result and gives the script `e.detail` (the parsed JSON) only when that whole text starts with `{`. The version-mismatch warning
+  was a prose block in front of an error without `structuredContent` (it is now a field `version_warning` inside the JSON), and two
+  results of the bridge were `isError` with no `error` object: `instances_close` when nothing was closed (now `error.code:
+  "refused"`) and `instances_launch` when the clients started but a map, a startup command or the `lua_mount` failed (now
+  `error.code: "launch_incomplete"`; the whole result is still there). Checked on every error path the bridge tests drive.
+
 - **A test client no longer keeps the user's foreground** (live, x86-64 branch). Every client `instances_launch` started became the foreground
   window and kept it, so the user's terminal lost the focus at each launch. The bridge now starts the client with a window shown without
   activation (`STARTF_USESHOWWINDOW`, `SW_SHOWNOACTIVATE`: three launches in a row and a launch of two, 0 of 1,216 samples taken during the
@@ -350,6 +365,12 @@
   `{"error": {code, message, details: {host, port, reason}}}` as the only text block and as `structuredContent` (it was prose
   next to the JSON). The version-mismatch warning is a field of the result's JSON (first key of the text) instead of a prose
   block in front of it, so the text stays the JSON of `structuredContent` (what code-mode hosts parse).
+
+### Docs
+
+- **A "Code Mode" section in the README and the guide** (Issue #3): a result arrives as a JSON string (`JSON.parse` it), an error
+  throws with `e.detail` = `{error: {code, message, details, next_call?}}`, long calls are answered in place for a script, at most
+  10 calls run in parallel, and map loads are still serialized by the FP7137 lock. `GMOD_MCP_TASKS` is in the README configuration.
 
 ## 0.3.6
 

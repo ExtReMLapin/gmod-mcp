@@ -513,6 +513,28 @@ bool feedback_offers_on() {
     return !(s == "false" || s == "0" || s == "no" || s == "off");
 }
 
+// Issue #3 (Claude Code Code Mode): GMOD_MCP_TASKS=off (default "auto", any other value too). Claude Code declares the
+// 2026-07-28 Tasks extension in the capabilities of every call, also for the calls a Code Mode script makes, and the game
+// then answers map_load and long waits with a task: the script only gets a "moved to the background" stub. With "off" the
+// bridge does not forward that extension, so the game never starts a task on its own.
+bool server_tasks_off() {
+    const char *v = std::getenv("GMOD_MCP_TASKS");
+    if (!v) return false;
+    std::string s = v;
+    for (auto &c : s) c = (char)std::tolower((unsigned char)c);
+    return s == "off";
+}
+
+// Removes the Tasks extension from the client capabilities of a 2026-07-28 request (the other capabilities and
+// extensions stay).
+void strip_tasks_extension(json &msg) {
+    if (!server_tasks_off() || !msg.contains("params") || !msg["params"].is_object()) return;
+    json &p = msg["params"];
+    if (!p.contains("_meta") || !p["_meta"].is_object() || !p["_meta"].contains(kMetaCaps) || !p["_meta"][kMetaCaps].is_object()) return;
+    json &caps = p["_meta"][kMetaCaps];
+    if (caps.contains("extensions") && caps["extensions"].is_object()) caps["extensions"].erase("io.modelcontextprotocol/tasks");
+}
+
 std::string patch_feedback(std::string text) {
     static const std::string head = "Feedback: while you work";
     size_t a = text.find(head);
@@ -596,7 +618,10 @@ std::string version_warning() {
 
 // Adds the warning to a tools/call result as the field structuredContent.version_warning. The text block that is the
 // JSON of structuredContent (what the module sends) is rewritten with the same field, put first so that it is read
-// first; a result whose text is something else keeps it and gets the warning as a prose block before it.
+// first. A result without structuredContent whose first text block is a JSON object (an error such as a cancelled
+// task) gets the field inside that object. Issue #3 (Code Mode): Claude Code builds `e.detail` of a thrown error with
+// JSON.parse only when the whole error text starts with `{`, so a JSON text is never given a prose block in front of it.
+// Any other result keeps its text and gets the warning as a prose block before it.
 void add_version_warning(json &result) {
     std::string w = version_warning();
     if (w.empty() || !result.is_object()) return;
@@ -616,6 +641,19 @@ void add_version_warning(json &result) {
             break;  // only the first text block can be the JSON
         }
         sc["version_warning"] = w;
+    }
+    if (!rewritten) {
+        for (json &c : content) {
+            if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
+            json body = json::parse(c["text"].get<std::string>(), nullptr, false);
+            if (body.is_object()) {  // only the first text block can be the JSON
+                std::string text = body.dump(-1, ' ', false, json::error_handler_t::replace);
+                c["text"] = "{\"version_warning\":" + json(w).dump(-1, ' ', false, json::error_handler_t::replace) +
+                            (text.size() > 2 ? "," + text.substr(1) : "}");
+                rewritten = true;
+            }
+            break;
+        }
     }
     if (!rewritten) content.insert(content.begin(), json{{"type", "text"}, {"text", w}});
 }
@@ -1018,7 +1056,8 @@ json bridge_tools() {
          "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. "
          "With count > 1 the other clients of the call are not closed when one dies at startup: the error lists the ones still "
          "running in details.still_running [{pid, state: answering or still starting, instance?}] and a top-level warning; "
-         "close them (instances_close) or use them. Example: "
+         "close them (instances_close) or use them. When the clients started but a map, a startup command or the lua_mount did not work, "
+         "the call is isError with the whole result above plus error {code: launch_incomplete, message}. Example: "
          "{\"count\": 2, \"map\": \"gm_construct\", \"owner\": \"fork-a\"}, then pass each returned instance id as "
          "`instance`.\n"
          // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
@@ -1088,7 +1127,7 @@ json bridge_tools() {
          "session (a bridge restarted, another agent) that carry that label (instances_list shows it as `owner`; closed[i]."
          "launched_by_other_session is true), but never a game that is not a test client or one without the tag. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
          "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], already_gone?: [{pid, instance?, owner?}] (processes that had ended before the call: nothing was closed), refused?: [ids, pids or "
-         "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error only when nothing was "
+         "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error (code refused, the same fields beside it) only when nothing was "
          "closed. Closing the client that is the coordinator (the game on the base port, see instances_list: role, "
          "coordinator_warning) while other games live moves that role: the answer says so (closed[i].was_coordinator, "
          "coordinator_moved_to, warning) and calls of other agents answer coordinator_changing for a few seconds. "
@@ -2016,6 +2055,22 @@ json launch_tool(const json &args, const json &token) {
         res["warning"] = res.contains("warning") ? json(res["warning"].get<std::string>() + " " + w) : json(w);
     }
     if (!mount_fix.is_null()) res["next_call"] = mount_fix;
+    if (!all_ok) {
+        // Issue #3 (Code Mode): an isError result always carries {"error": {"code", "message"}} (Claude Code throws the text as
+        // e.detail). Here the clients did start: the instances stay in the result, and the error says what did not work.
+        std::string why;
+        auto add = [&why](const std::string &t) { why += (why.empty() ? "" : "; ") + t; };
+        for (const auto &mp : mount_problems) add(mp.get<std::string>());
+        if (!commands_ok) add("a startup command failed (instances[].commands)");
+        for (const auto &e : results)
+            if (e.contains("map_error")) {
+                const json &me = e["map_error"];
+                add(e.value("instance", std::string("a client")) + ": map " + map + " not loaded" +
+                    (me.is_object() && me.contains("code") ? ": " + me.value("code", std::string()) : ""));
+            }
+        res["error"] = json{{"code", "launch_incomplete"},
+                            {"message", "the clients were started (see instances), but not everything you asked for worked: " + (why.empty() ? std::string("see instances[]") : why)}};
+    }
     json fp_res = tool_text(res, !all_ok);  // FP7137
     fp_gate.annotate(fp_res);  // FP7137
     return fp_res;  // FP7137
@@ -2187,7 +2242,11 @@ json close_tool(const json &args) {
             res["why_refused"] = res["why_refused"].get<std::string>() + ". " + not_test_clients + (owner.empty() ? "" : " carries owner \"" + owner + "\"") +
                                  " but is not a test client (not started by instances_launch): never closed by owner";
     }
-    return tool_text(res, !refused.empty() && closed.empty());
+    bool nothing_closed = !refused.empty() && closed.empty();
+    // Issue #3 (Code Mode): an error result always carries {"error": {"code", "message"}} (the text of an isError result is
+    // thrown by Claude Code as e.detail); the other fields stay for the callers that read them.
+    if (nothing_closed) res["error"] = json{{"code", "refused"}, {"message", res.value("why_refused", std::string("nothing was closed"))}};
+    return tool_text(res, nothing_closed);
 }
 
 json select_tool(const json &args) {
@@ -2405,6 +2464,7 @@ void handle_request(const json &msg) {
         return;
     }
     json fwd = msg;
+    if (method == "tools/call") strip_tasks_extension(fwd);  // Issue #3: GMOD_MCP_TASKS=off
     if (tool == "instances_list" && fwd["params"].contains("arguments") && fwd["params"]["arguments"].is_object())
         fwd["params"]["arguments"].erase("owner");
     if (!tool.empty() && takes_instance(tool)) {

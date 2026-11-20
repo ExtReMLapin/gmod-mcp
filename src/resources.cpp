@@ -348,6 +348,18 @@ An error is `{"error": {"code", "message", "details"}}`: branch on `code`, read 
 the numbers. When the game is not running the plugin itself answers `game_not_running` in that same shape (`details`: `host`,
 `port`, `reason`); start the game with `-mcp` and call again.
 
+## Code Mode (Claude Code)
+In Claude Code's experimental Code Mode you write JavaScript and call a tool as `await tools["mcp__<server>__<tool>"]({...})`.
+- A success arrives as a string: the JSON of `structuredContent`. `JSON.parse` it, and accept an object too
+  (`typeof r === "string" ? JSON.parse(r) : r`).
+- An error throws. `e.detail` is the parsed error, `{"error": {code, message, details, next_call?}}` (the text of every error of
+  this server is exactly that one JSON object): branch on `e.detail.error.code`. A call refused before it reaches the game
+  (bad arguments, a permission) throws with `e.message` only and no `e.detail`.
+- Long calls (`map_load`, waits of 15 s or more) are answered synchronously to a Code Mode call, so `await map_load(...)` gives
+  the real result. A normal call may be run as a background task; a script would only get a stub for that.
+- At most 10 calls run in parallel in a script. Map loads and launches still go one at a time (the FP7137 lock, see "Launches and
+  map loads"): parallel `map_load` calls queue.
+
 ## A game crashed
 `client_crashed` (a client) or `server_crashed` (a dedicated server) means the instance's process ended without a clean
 shutdown. The answer's `details` hold `instance`, `pid`, `dump` (the minidump file name in `crashes/` of the game folder,

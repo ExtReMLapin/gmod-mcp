@@ -2287,6 +2287,46 @@ static void test_installer_roundtrip() {
     fs::remove_all(base, ec);
 }
 
+// Issue #3 (Code Mode): Claude Code throws the text of an isError result and sets `e.detail` only when the whole text starts with
+// `{`. So the text of every error of the module is exactly one JSON object {"error": {"code", "message"}} and nothing else (the
+// bridge's own errors are walked by tests/bridge/test_bridge.py, check "CODEMODE").
+static void check_error_text(const json &r) {
+    CHECK(r.value("isError", false));
+    CHECK(r.contains("content") && r["content"].is_array() && r["content"].size() == 1);
+    std::string text = r["content"][0].value("text", "");
+    CHECK(!text.empty() && text[0] == '{');
+    json j = json::parse(text, nullptr, false);
+    CHECK(j.is_object() && j.contains("error") && j["error"].is_object() && j["error"].value("code", "").size() > 0 &&
+          j["error"].value("message", "").size() > 0);
+    CHECK(j == r["structuredContent"]);
+}
+static void test_error_text_is_json() {
+    if (mcp::tools().empty()) tools::register_all();
+    check_error_text(mcp::call_tool("no_such_tool", json::object()));
+    for (const auto &t : mcp::tools()) {
+        check_error_text(mcp::call_tool(t.name, json{{"__no_such_argument", 1}}));  // refused by the input schema, before the handler
+        if (!t.local_only) check_error_text(mcp::call_tool(t.name, json{{"instance", "no-such-instance"}}));  // unknown instance / no coordinator
+    }
+}
+
+// Issue #3 (Claude Code Code Mode): the guide and the README have a short "Code Mode" section saying what a script gets: the
+// result as a JSON string, errors thrown with e.detail, long calls answered in place, the parallel limit and the FP7137 lock.
+// GMOD_MCP_TASKS is documented in the README configuration section.
+static void test_code_mode_docs() {
+    json g = resources::read("mcpagent://guide");
+    std::string guide = g.is_object() && g.contains("text") ? g["text"].get<std::string>() : "";
+    std::ifstream in(fs::u8path(std::string(GMOD_MCP_SOURCE_DIR) + "/README.md"), std::ios::binary);
+    std::string readme((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    for (const std::string *doc : {&guide, &readme}) {
+        size_t at = doc->find("# Code Mode");
+        CHECK(at != std::string::npos);
+        std::string sec = at == std::string::npos ? "" : doc->substr(at, 2500);
+        for (const char *term : {"JSON.parse", "e.detail", "string", "synchronously", "10", "map_load", "FP7137"})
+            CHECK(sec.find(term) != std::string::npos);
+    }
+    CHECK(readme.find("GMOD_MCP_TASKS") != std::string::npos && readme.find("`off`") != std::string::npos);
+}
+
 // Issue #3: the guide documents where the hints of a result live (the model of some clients reads structuredContent on
 // success and only the text on an error), so the conventions are written down and cannot silently drift.
 static void test_guide_result_conventions() {
@@ -3313,6 +3353,8 @@ int main(int argc, char **argv) {
     test_map_load_call_flag();  // first: later tests (map loads, server states) leave the load flag on for the rest of the run
     test_installer_roundtrip();
     test_guide_result_conventions();
+    test_code_mode_docs();
+    test_error_text_is_json();
     test_output_schemas();
     test_output_schemas_nonfinite();
     test_wiki_http_realms();
