@@ -561,7 +561,8 @@ std::string mount_warning(const json &st) {
         out += "The ";
         size_t n = 0;
         for (const auto &r : st["realms_without_mount"]) out += (n++ ? "/" : "") + r.get<std::string>();
-        out += " realm loaded its Lua before this folder was mounted, so it runs the installed addon's files: map_load.";
+        out += " realm did not load with this folder in front (it loaded before the folder was mounted or changed, or its load did not go "
+               "through the folder): its code may be another copy than the folder's. map_load loads it again with the folder.";
     }
     return out;
 }
@@ -632,7 +633,7 @@ static json reload_mounted_changed(const json &args) {
              {"realms_without_mount", st["realms_without_mount"]}};
     if (reloaded.empty() && plan["skipped"].empty()) out["note"] = "no mounted file changed since the realms loaded them: nothing to reload";
     if (!st["realms_without_mount"].empty())
-        out["warning"] = "a realm loaded its Lua before the folder was mounted: files run here from the folder, but the rest of its code is the installed copy: map_load";
+        out["warning"] = "a realm did not load with the folder in front (see realms_without_mount): the files run here come from the folder, the rest of its code may be another copy: map_load";
     return ok(out);
 }
 

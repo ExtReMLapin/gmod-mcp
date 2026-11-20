@@ -203,7 +203,8 @@ a caller by its file path sees another name. gmod-mcp's tools use the same names
 Editing a file of the folder: there is no autorefresh, saving a file does not reload it. `status.lua_mount` tells what is
 out of date: `stale_files` lists the folder's .lua files whose time differs from what each realm loaded (modified, added,
 deleted; a `git checkout` that brings an OLDER file counts too), with the realms each runs in; `realms_without_mount`
-names a realm that loaded before the folder was mounted (it runs the installed copies: `map_load`). `map_load` repeats the
+names a realm that did not load with the folder in front (the folder was mounted or changed after that realm loaded, or the
+load did not go through it: its code may be another copy than the folder's: `map_load`). `map_load` repeats the
 check when it ends (`warning` and `lua_mount` in its result) and empties the engine's Lua file cache first. To run the edits:
 `lua_reload {mounted_changed: true}` runs again every changed file of the folder in its realms (alphabetical order; deleted
 files and entity/weapon/effect files are listed in `skipped`: `map_load`, or `lua_reload {path}` to force one), or

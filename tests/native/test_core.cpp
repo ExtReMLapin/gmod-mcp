@@ -903,6 +903,11 @@ static void test_issue9_folder_missing() {
     st = tools::mount_state({SV});
     CHECK(!st.contains("folder_missing") && st["loaded_with_mount"]["server"] == false);  // Issue #9
     CHECK(st.value("warning", "").find("map_load") != std::string::npos);  // Issue #9
+    // F6: the warning only states what is known. A realm without a record may have loaded the folder's files (the mid-load race:
+    // the hook ran for another state of the folder) or the installed ones: it must not claim it ran the installed addon's files.
+    std::string wr = st.value("warning", "");
+    CHECK(wr.find("server") != std::string::npos && wr.find("did not load") != std::string::npos);  // Issue #9
+    CHECK(wr.find("installed addon") == std::string::npos && wr.find("before this folder was mounted") == std::string::npos);  // Issue #9
     lua_mount::forget_loads_for_tests();
     lua_mount::set_current_for_tests("");
     fs::remove_all(base, ec);
