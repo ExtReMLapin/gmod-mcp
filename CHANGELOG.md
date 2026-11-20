@@ -173,6 +173,10 @@
 - **A killed bridge no longer leaves its `keep: false` clients running** (issue #8, live chaos test). `taskkill /F` on a
   bridge ran no exit code, so the test clients it had launched ran for ever. On Windows they are now started in a job object
   that closes with the bridge (`KILL_ON_JOB_CLOSE`), helper processes of the game included; `keep: true` clients stay out of it.
+- **`low_memory` counts games, not their helper processes** (issue #8, live chaos test). The `game_processes` figure counted
+  every process running the game's executable; each game starts helper processes of the same executable (`--type=renderer`,
+  `--type=utility`), so it was about 3 times too high and could refuse a launch the machine could take. A process whose parent
+  is a game process that started before it is a helper and is no longer counted.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for

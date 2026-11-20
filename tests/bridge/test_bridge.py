@@ -2870,20 +2870,23 @@ def case_chaos_memory():
         check("CHAOS_MEMORY nothing runs: low_memory with running_clients 0, registered_clients 0, game_processes 0",
               sc.get("error", {}).get("code") == "low_memory" and d.get("running_clients") == 0 and d.get("registered_clients") == 0 and d.get("game_processes") == 0, sc)
         # Three game processes started by other sessions, not registered (still starting); one of them is registered after all, plus a registered fake.
-        procs = [sp.Popen([exe], stdout=sp.DEVNULL, stderr=sp.DEVNULL) for _ in range(3)]
-        time.sleep(0.5)
+        # Issue #8 (live chaos test): every game starts about 2 helper processes of the same executable; they are not games (stand-ins
+        # started with GMCP_FAKE_CHILDREN=2 do the same: 3 games, 6 helpers).
+        procs = [sp.Popen([exe], stdout=sp.DEVNULL, stderr=sp.DEVNULL, env=dict(os.environ, GMCP_FAKE_CHILDREN="2")) for _ in range(3)]
+        time.sleep(1.5)
         S["srv"].extra_instances = [{"id": "reg-1", "pid": procs[0].pid, "port": 1, "mode": "client", "state": "running"},
                                     {"id": "reg-2", "pid": 4000001, "port": 1, "mode": "client", "state": "running"}]
         sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
         e = sc.get("error", {}); d = e.get("details", {})
         check("CHAOS_MEMORY 3 unregistered-or-not game processes + 1 fake registered one: running_clients 4 (union), registered_clients 2, game_processes 3",
               e.get("code") == "low_memory" and d.get("running_clients") == 4 and d.get("registered_clients") == 2 and d.get("game_processes") == 3, sc)
+        check("CHAOS_MEMORY the helper processes a game starts (same executable, parent is a game) are not counted: 3 games with 6 helpers read 3",
+              d.get("game_processes") == 3, d)
         check("CHAOS_MEMORY the message gives both numbers", "2 registered" in e.get("message", "") and "3 game processes" in e.get("message", ""), e)
         check("CHAOS_MEMORY nothing started", S["started"]() == [], S["started"]())
     finally:
         for p in procs:
-            try: p.kill()
-            except OSError: pass
+            sp.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)  # the helpers too (a killed game leaves them)
         S["close"]()
 
 

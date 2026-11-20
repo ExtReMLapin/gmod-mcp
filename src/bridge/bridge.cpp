@@ -1482,13 +1482,25 @@ std::string describe_unhealthy(const json &peers) {
 }
 
 #ifdef _WIN32
-// Issue #8 (chaos test G4): pids of the processes running this game's executable (any session's client, registered with the
+// Issue #8 (chaos test G4): pids of the games running this game's executable (any session's client, registered with the
 // directory or still starting). Matched by the full image path (case-insensitive), so another copy of the game is not counted.
+// Each game also starts helper processes of the same executable (`--type=renderer`, `--type=utility`: about 4 on a live game, 2 on a
+// light one), which are not games and each hold memory of their own to a small degree only: a process whose parent is itself a
+// process of the game (created before it: the pid may have been reused) is left out. Seen live: 14 processes for 3 games.
 std::set<uint32_t> game_process_pids(const std::string &exe) {
     std::set<uint32_t> out;
+    std::map<uint32_t, uint32_t> parent;
     auto norm = [](std::wstring w) {
         for (auto &c : w) c = c == L'/' ? L'\\' : (wchar_t)towlower(c);
         return w;
+    };
+    auto created = [](uint32_t pid) -> uint64_t {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) return 0;
+        FILETIME c{}, e{}, k{}, u{};
+        uint64_t t = GetProcessTimes(h, &c, &e, &k, &u) ? (((uint64_t)c.dwHighDateTime << 32) | c.dwLowDateTime) : 0;
+        CloseHandle(h);
+        return t;
     };
     std::wstring want = norm(utf8_to_wide(exe));
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -1500,11 +1512,24 @@ std::set<uint32_t> game_process_pids(const std::string &exe) {
         if (!h) continue;
         wchar_t buf[2048];
         DWORD n = 2048;
-        if (QueryFullProcessImageNameW(h, 0, buf, &n) && norm(std::wstring(buf, n)) == want) out.insert(e.th32ProcessID);
+        if (QueryFullProcessImageNameW(h, 0, buf, &n) && norm(std::wstring(buf, n)) == want) {
+            out.insert(e.th32ProcessID);
+            parent[e.th32ProcessID] = e.th32ParentProcessID;
+        }
         CloseHandle(h);
     }
     CloseHandle(snap);
-    return out;
+    std::set<uint32_t> games;
+    for (uint32_t pid : out) {
+        auto pp = parent.find(pid);
+        bool helper = false;
+        if (pp != parent.end() && out.count(pp->second) && pp->second != pid) {
+            uint64_t tp = created(pp->second), tc = created(pid);
+            helper = tp != 0 && tc != 0 && tp <= tc;  // the parent is a game process that started first: this is its helper
+        }
+        if (!helper) games.insert(pid);
+    }
+    return games;
 }
 #endif
 
