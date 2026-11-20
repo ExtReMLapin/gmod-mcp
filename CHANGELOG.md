@@ -155,6 +155,11 @@
   as "coordinator gone", so such a call (and the first calls of bridges that had launched no client) answered
   `game_not_running`. A connection that breaks within 0.5 s with nothing of an answer now counts as refused: with other
   games known to live the bridge waits for the next coordinator like for any hand-over.
+- **No wait for a hand-over that cannot happen** (issue #6, live chaos test). After the last games closed, other bridges
+  answered `coordinator_changing` for up to 30 s (a call waited 10 s) because "several games live" stayed in their memory for
+  30 s. The bridge now remembers which processes could take the coordinator role over (the members of the last list that
+  showed several games) and answers `game_not_running` at once when none lives any more, or when a later list shows a single
+  game.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for

@@ -2482,9 +2482,7 @@ def case_handover():
     The bridge rides it out instead of answering game_not_running / the raw coordinator_changing, but only when other
     instances are known to live (it never makes a call wait when the only game is closed)."""
     print("== HANDOVER: a call survives the coordinator role moving to another game", flush=True)
-    cluster = lambda: {"instances": [{"id": "client-1", "pid": 1, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True},
-                                     {"id": "client-2", "pid": 2, "port": 27082, "mode": "client", "state": "running", "role": "member"}],
-                       "coordinator_id": "client-1"}
+    cluster = live_cluster(os.getpid())  # the member's process lives (the bridge checks it before it waits for a hand-over)
     env0 = isolated_config(with_token=True)
     env0["GMOD_MCP_HANDOVER_WAIT_S"] = "4"  # the real wait is 10 s: the tests that give up do not need that long
     # 1. Nothing else known to live: the game closes, the next call says game_not_running at once (no wait added).
@@ -2988,6 +2986,31 @@ def case_chaos_relay():
     r = b.req("tools/call", {"name": "echo", "arguments": {}}, 25)
     check("CHAOS_RELAY BUG-2: a fresh call reset with no other game known: game_not_running at once", "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
     b.close(); dying.stop()
+    # 7. Issue #6 (BUG-3): the last other games are gone (the member's process died with the coordinator): nobody can take the role
+    # over. The bridge knew two games a moment ago, but no process of them lives: game_not_running at once, not 30 s of coordinator_changing.
+    member = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(member.pid)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop(); member.kill(); member.wait()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("CHAOS_RELAY BUG-3: the other games' processes are all gone: game_not_running at once (no coordinator_changing)",
+          "game_not_running" in json.dumps(r) and "coordinator_changing" not in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
+    # 8. A list that shows one instance only (the others closed) forgets the hand-over memory, even when a process of the earlier list lives.
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.instances_answer = lambda: {"instances": [{"id": "client-1", "pid": me, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True}], "coordinator_id": "client-1"}
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("CHAOS_RELAY BUG-3: a list showing one instance resets the hand-over memory: game_not_running at once", "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
     if os.name != "nt":
         print("   (the launch scenarios are Windows only)", flush=True)
         return

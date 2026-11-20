@@ -855,12 +855,41 @@ std::atomic<int64_t> g_multi_seen_ms{0};
 
 int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() + 1; }
 
-// instances_list answer: several live instances seen now means a coordinator change is worth waiting for.
+std::mutex g_peers_mu;
+bool g_peers_known = false;           // the last list that showed several games named their members
+std::vector<uint32_t> g_peer_pids;    // their pids (0 = unknown): the running games other than the coordinator, who would take its role over
+
+// instances_list answer: several live instances seen now means a coordinator change is worth waiting for; a list that shows one
+// game (or none) means there is nothing to wait for (issue #6). A list of a coordinator that has just changed is incomplete: ignored.
 void note_instances(const json &sc) {
+    if (!sc.is_object() || !sc.contains("instances") || !sc["instances"].is_array() || sc.value("coordinator_changing", false)) return;
     int running = 0;
-    for (const auto &e : sc.value("instances", json::array()))
-        if (e.is_object() && e.value("state", "running") == "running") ++running;
-    if (running >= 2) g_multi_seen_ms = steady_ms();
+    std::string coord = sc.value("coordinator_id", "");
+    std::vector<uint32_t> members;
+    for (const auto &e : sc["instances"])
+        if (e.is_object() && e.value("state", "running") == "running") {
+            ++running;
+            if (e.value("role", "") != "coordinator" && e.value("id", "") != coord) members.push_back(e.value("pid", 0u));
+        }
+    std::lock_guard<std::mutex> lk(g_peers_mu);
+    if (running >= 2) {
+        g_multi_seen_ms = steady_ms();
+        g_peers_known = true;
+        g_peer_pids = members;
+    } else {
+        g_multi_seen_ms = 0;
+        g_peers_known = false;
+        g_peer_pids.clear();
+    }
+}
+
+// Issue #6 (BUG-3): does a game that could take the coordinator role over still run? Unknown (no list seen) counts as yes.
+bool peers_may_live() {
+    std::lock_guard<std::mutex> lk(g_peers_mu);
+    if (!g_peers_known) return true;
+    for (uint32_t pid : g_peer_pids)
+        if (pid == 0 || plat::process_start_stamp(pid) != 0) return true;
+    return false;
 }
 
 // A client this session launched, that answered once, still runs.
@@ -876,8 +905,12 @@ bool launched_client_alive() {
 }
 
 bool handover_expected() {
+    if (launched_client_alive()) return true;
     int64_t t = g_multi_seen_ms.load();
-    return launched_client_alive() || (t != 0 && steady_ms() - t < 30000);
+    if (t == 0 || steady_ms() - t >= 30000) return false;
+    if (peers_may_live()) return true;
+    g_multi_seen_ms = 0;  // issue #6 (BUG-3): the games that could take the role over are gone: nothing to wait for
+    return false;
 }
 
 // The result of a tool call is the retryable coordinator_changing: *retry_after gets the advised delay.
@@ -1151,11 +1184,11 @@ json launched_crash_error(const Launched &l, int wait_ms = 0) {
 // instances_list, completed by the bridge: the owner label of each client it launched, the clients it launched that
 // never answered (gmod-mcp not loaded, still starting), and an optional owner filter. `sc` is the game's answer
 // (or an empty list when no game answers).
-json annotate_instances(json sc, const json &args) {
+json annotate_instances(json sc, const json &args, bool from_game = true) {
     std::string want = args.value("owner", "");
     std::set<uint32_t> listed;
     json kept = json::array();
-    note_instances(sc);
+    if (from_game) note_instances(sc);
     json coord_warning;  // issue #6: the coordinator is a client this session launched, and other instances depend on it
     {
         int running = 0;
@@ -2423,7 +2456,7 @@ void handle_request(const json &msg) {
                 {"note", g_conflict ? "no game instance reachable: port_conflict: " + port_conflict_text()
                                     : "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
                                           "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
-        out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object())), false)));
+        out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object()), false), false)));  // the bridge's own empty list: not a reading of the games
     } else if (method == "tools/call" && !launched_answer(fwd).is_null()) {
         out(local_result(msg, launched_answer(fwd)));
     } else if (method == "tools/call") {
