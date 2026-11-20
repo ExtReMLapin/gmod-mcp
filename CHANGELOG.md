@@ -2,60 +2,6 @@
 
 ## Unreleased
 
-### Fixes
-
-- **`map_load` with no game answers as fast as `status`**. It answered `game_not_running` after 2-3 s instead of 1 s: before the call itself,
-  the bridge asked the directory which other games were loading (to report them), a second refused connection. It no longer asks
-  once a call has found nothing listening.
-- **A crash answer says where the dump's exception happened** (issue #8, live verification). `client_crashed` / `server_crashed` named
-  the minidump and nothing else. The module now reads it (exception record, the faulting thread's stack pointer and stack memory, the
-  module list) and `details` and the `instances_list` crash entry carry `fault` (e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up
-  to 8 stack words that point into a module, from the stack pointer up). The guide adds that a crash only on test clients may be
-  timing (`fps_max` 20 runs several server ticks per frame): retry with `fps_max: 300` to tell.
-- **`instances_launch` under a foreign-held base port** (issue #5, live verification). Every call already answered `port_conflict` when a
-  program that is not gmod-mcp holds the base port, but `instances_launch` started its clients (which take the next free port, where the
-  bridge never looks) and waited its whole budget to fail `timeout` "gmod-mcp did not load in them". It now refuses up front with
-  `port_conflict` (the fix, `GMOD_MCP_PORT`, and the gmod-mcp found on the next port when there is one) and starts nothing; when the port
-  is taken while a launch waits, it gives up after 10 s and the `timeout` error names the conflict.
-- **A frozen but live instance keeps answering `instance_hung`** (issue #8, live chaos test). The first call to a member that stopped
-  heartbeating (frozen as a whole) answered `instance_hung`, every later one `instance_gone` in 0.2 s although the process still
-  ran: the member had been dropped from the directory and the tombstone assumed it was gone. `instance_gone` now means the process
-  ended; a live silent one answers `instance_hung` (details `pid`, `silent_s`) with how to close it.
-- **A stuck loading screen is not a load** (issue #8, live check I-C1). After `map gm_flatgrass` then `disconnect` within a second the
-  engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
-  300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no
-  connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
-  false, `status` and `instances_list` say `loading_stuck: true` with the way out (`map_load` or `disconnect` clears it). A real load,
-  even a minute-long one with its realm present, is never cut.
-- **`game_quit` on a dedicated server really quits (Linux) or says it cannot.** On srcds the console `quit` is blocked from server Lua
-  (the engine's own blacklist), so `game_quit` answered `{quitting: true}` and the server kept running. The runtime now checks
-  `IsConCommandBlocked("quit")`: when blocked, the module ends the process itself with SIGTERM half a second after the answer (the
-  server's own clean shutdown, `via: "signal"`); where it cannot (Windows srcds) the answer is the error `blocked`, never
-  `quitting: true` for nothing. `game_terminate` was already working on Linux (checked live).
-- **The Linux module loads on the dev-branch server.** `plat::find_loaded_module` only tried `dlopen(bare name, RTLD_NOLOAD)`, but the
-  dev branch loads `lua_shared_srv.so` by full path from `garrysmod/bin/linux64` (no SONAME, not on `LD_LIBRARY_PATH`), so the module
-  never found the Lua library and stayed inactive. It now also walks the loaded objects (`dl_iterate_phdr`) for one with a matching
-  file name and takes a handle on it by its full path.
-- **`lua_mount` file times on libstdc++ < 13** (Linux, GCC 11/12). The file system clock of those libraries counts from the year 2174, so every
-  current file time is a negative tick count, and `unix_seconds_of` took negative as unknown: the engine-serves probes then expected no
-  time and a copy with another time was reported as served. Unknown is now an explicit marker (`kUnknownTime`), not a sign.
-- **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
-  the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
-  do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;
-  the next tick of the same frame sends a snapshot from the half-torn server. `console_exec` now leaves the map first (as
-  `disconnect` does, `left_game_first: true` in the result) and then runs `killserver`, which only resets the network mode.
-- **A success result never fails an outputSchema because of a non-finite number** (issue #3, live fuzz). `trace` and
-  `trace_through` with a huge end point, `players_list` / `player_set` after an overflowing or NaN eye angle, `ents_find` with a
-  NaN origin and `convar_get` / `convar_set` with "1e999" answered `null` where the schema said `number`, which the MCP SDK in
-  Claude Code rejects as a whole. Every number of every outputSchema now accepts `null` (a test walks all schemas), and the guide
-  says a non-finite number reads `null`.
-- **`instance_select` refuses an unknown id** (`unknown_instance`, with the known ids; the default stays). When the list of
-  instances cannot be read the id is accepted with a warning.
-- **`ents_find` explains id -1** (clientside-only entities have no index: no tool can address them) in a `note`.
-- **`wiki_page` / `wiki_search` try the client and server realms** when the menu realm has no HTTP function, and say which
-  realms were tried when none has.
-- **`debug_draw` accepts `{type: "arrow", from, to, head?}`**.
-
 ### Features
 
 - **`ui_click` and `ui_key`: click and type into a test client's UI.** Some UI has no console command: a VGUI2 dialog such as
@@ -144,6 +90,57 @@
 
 ### Fixes
 
+- **`map_load` with no game answers as fast as `status`**. It answered `game_not_running` after 2-3 s instead of 1 s: before the call itself,
+  the bridge asked the directory which other games were loading (to report them), a second refused connection. It no longer asks
+  once a call has found nothing listening.
+- **A crash answer says where the dump's exception happened** (issue #8, live verification). `client_crashed` / `server_crashed` named
+  the minidump and nothing else. The module now reads it (exception record, the faulting thread's stack pointer and stack memory, the
+  module list) and `details` and the `instances_list` crash entry carry `fault` (e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up
+  to 8 stack words that point into a module, from the stack pointer up). The guide adds that a crash only on test clients may be
+  timing (`fps_max` 20 runs several server ticks per frame): retry with `fps_max: 300` to tell.
+- **`instances_launch` under a foreign-held base port** (issue #5, live verification). Every call already answered `port_conflict` when a
+  program that is not gmod-mcp holds the base port, but `instances_launch` started its clients (which take the next free port, where the
+  bridge never looks) and waited its whole budget to fail `timeout` "gmod-mcp did not load in them". It now refuses up front with
+  `port_conflict` (the fix, `GMOD_MCP_PORT`, and the gmod-mcp found on the next port when there is one) and starts nothing; when the port
+  is taken while a launch waits, it gives up after 10 s and the `timeout` error names the conflict.
+- **A frozen but live instance keeps answering `instance_hung`** (issue #8, live chaos test). The first call to a member that stopped
+  heartbeating (frozen as a whole) answered `instance_hung`, every later one `instance_gone` in 0.2 s although the process still
+  ran: the member had been dropped from the directory and the tombstone assumed it was gone. `instance_gone` now means the process
+  ended; a live silent one answers `instance_hung` (details `pid`, `silent_s`) with how to close it.
+- **A stuck loading screen is not a load** (issue #8, live check I-C1). After `map gm_flatgrass` then `disconnect` within a second the
+  engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
+  300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no
+  connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
+  false, `status` and `instances_list` say `loading_stuck: true` with the way out (`map_load` or `disconnect` clears it). A real load,
+  even a minute-long one with its realm present, is never cut.
+- **`game_quit` on a dedicated server really quits (Linux) or says it cannot.** On srcds the console `quit` is blocked from server Lua
+  (the engine's own blacklist), so `game_quit` answered `{quitting: true}` and the server kept running. The runtime now checks
+  `IsConCommandBlocked("quit")`: when blocked, the module ends the process itself with SIGTERM half a second after the answer (the
+  server's own clean shutdown, `via: "signal"`); where it cannot (Windows srcds) the answer is the error `blocked`, never
+  `quitting: true` for nothing. `game_terminate` was already working on Linux (checked live).
+- **The Linux module loads on the dev-branch server.** `plat::find_loaded_module` only tried `dlopen(bare name, RTLD_NOLOAD)`, but the
+  dev branch loads `lua_shared_srv.so` by full path from `garrysmod/bin/linux64` (no SONAME, not on `LD_LIBRARY_PATH`), so the module
+  never found the Lua library and stayed inactive. It now also walks the loaded objects (`dl_iterate_phdr`) for one with a matching
+  file name and takes a handle on it by its full path.
+- **`lua_mount` file times on libstdc++ < 13** (Linux, GCC 11/12). The file system clock of those libraries counts from the year 2174, so every
+  current file time is a negative tick count, and `unix_seconds_of` took negative as unknown: the engine-serves probes then expected no
+  time and a copy with another time was reported as served. Unknown is now an explicit marker (`kUnknownTime`), not a sign.
+- **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
+  the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
+  do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;
+  the next tick of the same frame sends a snapshot from the half-torn server. `console_exec` now leaves the map first (as
+  `disconnect` does, `left_game_first: true` in the result) and then runs `killserver`, which only resets the network mode.
+- **A success result never fails an outputSchema because of a non-finite number** (issue #3, live fuzz). `trace` and
+  `trace_through` with a huge end point, `players_list` / `player_set` after an overflowing or NaN eye angle, `ents_find` with a
+  NaN origin and `convar_get` / `convar_set` with "1e999" answered `null` where the schema said `number`, which the MCP SDK in
+  Claude Code rejects as a whole. Every number of every outputSchema now accepts `null` (a test walks all schemas), and the guide
+  says a non-finite number reads `null`.
+- **`instance_select` refuses an unknown id** (`unknown_instance`, with the known ids; the default stays). When the list of
+  instances cannot be read the id is accepted with a warning.
+- **`ents_find` explains id -1** (clientside-only entities have no index: no tool can address them) in a `note`.
+- **`wiki_page` / `wiki_search` try the client and server realms** when the menu realm has no HTTP function, and say which
+  realms were tried when none has.
+- **`debug_draw` accepts `{type: "arrow", from, to, head?}`**.
 - **Health reporting found wrong by live chaos tests** (issue #8). (1) A client frozen as a whole kept the figures of its last
   heartbeat in `instances_list` (`fps 19`, main thread ticking, `last_tick_age_s 0.05`) for the whole freeze: while the heartbeat
   is stale the entry reads `fps 0`, `main_thread_stalled true` and `last_tick_age_s` as old as the silence, and the last raw
