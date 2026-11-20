@@ -1993,6 +1993,19 @@ static void test_crash_report_coordinator() {
         CHECK(e.value("message", "").find("game_terminate") != std::string::npos && e.value("message", "").find("instances_close") != std::string::npos);
         CHECK(e.value("details", json::object()).value("pid", 0u) == c.pi.dwProcessId && e["details"].value("silent_s", 0.0) >= 1.5);
         CHECK(took >= 1.4 && took < 5.0);
+        // Issue #8 (live chaos test): every later call to the same frozen member answered `instance_gone` in 0.2 s ("stopped answering ... but
+        // its process is still running"): the member had been purged from the directory (no heartbeat for dead_after_s) while its process
+        // lives. instance_gone means the process ended: a live frozen process keeps answering instance_hung, at once, whatever the call.
+        {
+            auto t1 = std::chrono::steady_clock::now();
+            json again = status_of("flight-3");
+            double took2 = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+            CHECK(again.value("code", "") == "instance_hung");
+            CHECK(again.value("message", "").find("game_terminate") != std::string::npos && again.value("message", "").find("still running") != std::string::npos);
+            CHECK(again.value("details", json::object()).value("pid", 0u) == c.pi.dwProcessId && again["details"].value("silent_s", 0.0) >= 1.5);
+            CHECK(took2 < 2.0);
+            CHECK(status_of("flight-3").value("code", "") == "instance_hung");  // and again
+        }
         // A healthy client whose heartbeats keep coming is not cut off: the call returns the member's own answer.
         CHECK(heartbeat("flight-4", "client", c.pi.dwProcessId, false, json::object(), fport));
         std::atomic<bool> beat{true};

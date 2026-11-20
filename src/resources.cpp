@@ -373,7 +373,8 @@ reported) is added, with a sentence when the free commit is under 4 GB: out of m
   recover by itself, close it with `instances_close {pids}` (or `game_terminate {instance}`) and relaunch; results measured on
   it since it stalled are void. `state: "unresponsive"` is the first stage: no heartbeat for 10 s but the process runs.
   A call in flight to an instance whose process runs but sent no heartbeat for 30 s fails with `instance_hung`
-  (`details`: `instance`, `pid`, `silent_s`); a client whose heartbeats still come keeps the call waiting for its own timeout.
+  (`details`: `instance`, `pid`, `silent_s`), and every later call to it answers `instance_hung` at once for as long as the process lives
+  (`instance_gone` is only for a process that ended); a client whose heartbeats still come keeps the call waiting for its own timeout.
 - **Out of memory.** `instances_launch` checks the machine before starting anything: free commit (virtual memory: RAM plus
   page file) must cover 1.6 GB per client plus 1 GB for the rest of the machine, free RAM 1.2 GB per client (a measured
   light client holds about 1.55 GB of commit and 1.2 GB of RAM). Otherwise it fails with `low_memory` and starts nothing:

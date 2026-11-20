@@ -4,6 +4,10 @@
 
 ### Fixes
 
+- **A frozen but live instance keeps answering `instance_hung`** (issue #8, live chaos test). The first call to a member that stopped
+  heartbeating (frozen as a whole) answered `instance_hung`, every later one `instance_gone` in 0.2 s although the process still
+  ran: the member had been dropped from the directory and the tombstone assumed it was gone. `instance_gone` now means the process
+  ended; a live silent one answers `instance_hung` (details `pid`, `silent_s`) with how to close it.
 - **A stuck loading screen is not a load** (issue #8, live check I-C1). After `map gm_flatgrass` then `disconnect` within a second the
   engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
   300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no

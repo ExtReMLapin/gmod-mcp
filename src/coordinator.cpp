@@ -484,7 +484,15 @@ static json relay(const std::string &instance, const std::string &tool, const js
                                         " s (nothing was sent to it)",
                                     json{{"retry_after_s", kHandoverRetryS}, {"instance", instance}});
                 double ago = std::chrono::duration<double>(Clock::now() - g->second.when).count();
-                return wrap_err("instance_gone", gone_message(instance, gt.pid, ago, true));
+                // Issue #8 (live chaos test): its process still runs (finalize_locked says it did not end), so it did not "go": it is frozen
+                // and was dropped from the directory for want of heartbeats. instance_gone is for a process that ended; the first call to a
+                // frozen member said instance_hung, every later one said instance_gone.
+                return wrap_err("instance_hung",
+                                "instance " + instance + (gt.pid ? " (pid " + std::to_string(gt.pid) + ")" : "") + " sent no heartbeat for " + std::to_string((int)ago) +
+                                    " s but its process is still running: it is frozen as a whole (infinite loop, crash dialog, debugger, hung driver or a very long load) and will "
+                                    "not answer; nothing was sent to it. Check it with instances_list; close it with game_terminate {instance} or instances_close {pids:[" +
+                                    std::to_string(gt.pid) + "]} and relaunch a client with instances_launch.",
+                                json{{"instance", instance}, {"pid", gt.pid}, {"silent_s", round1(ago)}});
             }
             if (in_handover())
                 return wrap_err("coordinator_changing",
