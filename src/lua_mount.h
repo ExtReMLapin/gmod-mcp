@@ -78,6 +78,11 @@ long long mtime_of(const std::string &abs);
 // "lua/x.lua" if `abs` is inside the current mount root, else "".
 std::string rel_in_mount(const std::string &abs);
 
+// Whether the mount root and its lua/ folder exist (a folder renamed or deleted since it was mounted is not served).
+bool folder_present(const std::string &root);
+// The hook's entry (main thread): the folder was put in front of the realm's Lua path. Records the folder's files, unless
+// the folder (or its lua/) is gone: the realm then loads without it and must not be reported as loaded with the mount.
+void record_load_start(int realm, const std::string &root);
 // The folder was put in front of the realm's Lua path (hook, main thread): `files` is the folder at that moment. The
 // record becomes the realm's once its runtime is injected (a new Lua state is a new load of every file).
 void note_load_start(int realm, const std::string &root, Files files);

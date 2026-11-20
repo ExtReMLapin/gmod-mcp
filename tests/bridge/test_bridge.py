@@ -1094,6 +1094,11 @@ def case_lua_mount_verify():
     check("LUA_MOUNT_VERIFY Issue #9 engine_serves_folder false: not active, mount_not_effective, isError, warning",
           res.get("isError") and m.get("active") is False and m.get("error_code") == "mount_not_effective" and "mount_not_effective" in m.get("error", "")
           and m.get("engine_serves_folder") is False and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    answers["now"] = lambda a: {"lua_mount": wt, "base_lua_mounted": True, "folder_missing": True}
+    res, sc = launch(wt)
+    m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY Issue #9 folder_missing: not active, mount_folder_missing, isError",
+          res.get("isError") and m.get("active") is False and m.get("error_code") == "mount_folder_missing" and "NOT" in sc.get("warning", ""), sc)
     for served in (True, None):
         answers["now"] = lambda a, served=served: {"lua_mount": wt, "base_lua_mounted": True, "engine_serves_folder": served}
         res, sc = launch(wt)

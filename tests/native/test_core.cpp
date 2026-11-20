@@ -657,6 +657,61 @@ static void test_issue9_engine_serves() {
     fs::remove_all(base, ec);
 }
 
+// Issue #9 (chaos testing 2026-11-20, F2): the mounted folder renamed or deleted (or only its lua/) while the game loads:
+// the map loaded without it, and status still said loaded_with_mount true, no stale file and no warning.
+static void test_issue9_folder_missing() {
+    if (mcp::tools().empty()) tools::register_all();
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-missing", ov = base / "wt", moved = base / "wt-moved";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(ov / "lua/pba/x.lua");
+    touch(ov / "lua/pba/sv_y.lua");
+    const int SV = realms::SERVER;
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+    CHECK(lua_mount::folder_present(ov.u8string()));  // Issue #9
+    CHECK(!lua_mount::folder_present((base / "nothing").u8string()));  // Issue #9
+
+    // Healthy: the hook found the folder, the realm loaded with it, status says nothing.
+    lua_mount::record_load_start(SV, ov.u8string());
+    lua_mount::note_realm_loaded(SV);
+    CHECK(lua_mount::realm_loaded_with_mount(SV));  // Issue #9
+    json st = tools::mount_state({SV});
+    CHECK(!st.contains("folder_missing") && !st.contains("warning"));  // Issue #9
+
+    // The folder is renamed after the load: status says so, once, and does not list every file as deleted.
+    fs::rename(ov, moved);
+    st = tools::mount_state({SV});
+    CHECK(st["folder_missing"] == true);  // Issue #9
+    std::string w = st.value("warning", "");
+    CHECK(w.find("mount_folder_missing") != std::string::npos && w.find(ov.u8string()) != std::string::npos);  // Issue #9
+    CHECK(st["stale_files"].empty());  // Issue #9: one clear message instead of every file "deleted"
+    json r = mcp::call_tool("lua_reload", json{{"mounted_changed", true}});
+    CHECK(r.value("isError", false) && r.dump().find("mount_folder_missing") != std::string::npos);  // Issue #9: nothing to reload from
+    // Only its lua/ deleted: same.
+    fs::rename(moved, ov);
+    fs::remove_all(ov / "lua", ec);
+    st = tools::mount_state({SV});
+    CHECK(st["folder_missing"] == true && st.value("warning", "").find("lua/") != std::string::npos);  // Issue #9
+
+    // The hook ran while the folder was gone: the realm did NOT load with the mount, and says so (not "predates the mount").
+    lua_mount::forget_loads_for_tests();
+    lua_mount::record_load_start(SV, ov.u8string());
+    lua_mount::note_realm_loaded(SV);
+    CHECK(!lua_mount::realm_loaded_with_mount(SV));  // Issue #9
+    st = tools::mount_state({SV});
+    CHECK(st["loaded_with_mount"]["server"] == false && st["folder_missing"] == true);  // Issue #9
+    CHECK(st.value("warning", "").find("mount_folder_missing") != std::string::npos);  // Issue #9
+    // The folder comes back: that load still did not have it (map_load), and the warning is the usual one.
+    touch(ov / "lua/pba/x.lua");
+    st = tools::mount_state({SV});
+    CHECK(!st.contains("folder_missing") && st["loaded_with_mount"]["server"] == false);  // Issue #9
+    CHECK(st.value("warning", "").find("map_load") != std::string::npos);  // Issue #9
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
 // Issue #9: the GMod x86-64 build of 2026-11-19 grew IAppSystem from 5 to 9 slots, so every IFileSystem slot moved by
 // 4: slot 7 (AddSearchPath before) became a bare `ret 0` and slot 13 (GetSearchPath before) RemoveAllSearchPaths. The
 // module now reads the layout from the code of slots 7, 8, 11 and 12. Bytes copied from both filesystem_stdio.dll
@@ -2259,6 +2314,7 @@ int main(int argc, char **argv) {
     test_issue9_mount_reload();
     test_issue9_unloadable_paths();
     test_issue9_engine_serves();
+    test_issue9_folder_missing();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();

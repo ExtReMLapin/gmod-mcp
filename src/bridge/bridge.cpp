@@ -1363,6 +1363,12 @@ std::wstring utf8_to_wide(const std::string &s) {
     json engine = answer.value("lua_mount", json());
     if (engine.is_string() && same(engine.get<std::string>(), requested)) {
         v["active"] = true;
+        if (answer.value("folder_missing", false)) {  // Issue #9: renamed or deleted since it was mounted
+            v["active"] = false;
+            v["error_code"] = "mount_folder_missing";
+            v["error"] = "mount_folder_missing: the mounted folder (or its lua/) does not exist any more: the game serves nothing from it";
+            return v;
+        }
         // Issue #9: the engine lists the folder, but its file system may not be able to read it (UNC, junction, long path...):
         // the game then asks the module's own bookkeeping, not the file system, and runs the installed code.
         if (answer.contains("engine_serves_folder") && answer["engine_serves_folder"].is_boolean()) {

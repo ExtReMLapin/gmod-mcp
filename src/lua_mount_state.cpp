@@ -89,6 +89,22 @@ std::string rel_in_mount(const std::string &abs) {
     return a.substr(r.size());
 }
 
+bool folder_present(const std::string &root) {
+    if (root.empty()) return false;
+    std::error_code ec;
+    return fs::is_directory(fs::u8path(root) / "lua", ec);
+}
+
+void record_load_start(int realm, const std::string &root) {
+    if (!valid_realm(realm)) return;
+    if (!folder_present(root)) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_pending[realm] = Record{};  // nothing was in front for this load
+        return;
+    }
+    note_load_start(realm, root, scan_files(root));
+}
+
 void note_load_start(int realm, const std::string &root, Files files) {
     if (!valid_realm(realm)) return;
     std::lock_guard<std::mutex> lk(g_mu);

@@ -250,6 +250,11 @@ the folder but serves none of its files: the game runs the installed code, whate
 with `error_code: "mount_not_effective"`. `null`: nobody could be asked (no map loaded yet). Remove the folder
 (`lua_mount {path: null}`) and mount a plain local path.
 
+A mounted folder that is renamed, moved or deleted (or whose `lua/` is deleted) serves nothing: `lua_mount {}`, `status.lua_mount`
+and `map_load` then carry `folder_missing: true` and a `mount_folder_missing` warning (no list of "deleted" files), `lua_reload
+{mounted_changed}` answers the error `mount_folder_missing`, and a realm that loaded while the folder was gone is not
+`loaded_with_mount`. Restore the folder (or mount the right one) and `map_load`.
+
 ## Reporting frictions
 The maintainers want to hear about every friction agents meet with gmod-mcp, without making work for the user.
 

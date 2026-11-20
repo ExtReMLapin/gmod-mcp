@@ -107,7 +107,7 @@ json build(const std::string &tool) {
         s["lua_file_delete"] = obj({{"deleted", S}}, {"deleted"});
         s["lua_mount"] = obj({{"lua_mount", NS}, {"base_lua_mounted", ANY}, {"mount_hook", B}, {"hook_calls", N}, {"search_paths", Obj},
                               {"previous", NS}, {"cache_emptied", B}, {"hook_path_ids", Obj}, {"removed", Obj}, {"fs_first_slot", N},
-                              {"engine_serves_folder", nullable("boolean")}, {"engine_serves", Obj}});
+                              {"engine_serves_folder", nullable("boolean")}, {"engine_serves", Obj}, {"folder_missing", B}});
         // --- jobs
         s["lua_job"] = obj({{"job_id", S}, {"state", S}, {"realm", S}, {"generation", N}, {"concurrent_jobs", ANYS}, {"values", ANYS},
                             {"n", N}, {"reports", ANYS}, {"output", S}, {"frames", N}, {"resumes", N}, {"cpu_ms", N}, {"elapsed_s", N},

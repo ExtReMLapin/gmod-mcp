@@ -456,10 +456,14 @@ json mount_state(const std::vector<int> &rs) {
     json st{{"path", root}};
     json with = json::object(), without = json::array();
     std::map<std::string, json> files;
+    // Issue #9: a folder renamed or deleted since it was mounted serves nothing; every file would only show up as "deleted".
+    bool missing = !lua_mount::folder_present(root);
+    if (missing) st["folder_missing"] = true;
     for (int r : rs) {
         bool w = lua_mount::realm_loaded_with_mount(r);
         with[realm_name_of(r)] = w;
         if (!w) without.push_back(realm_name_of(r));
+        if (missing) continue;
         for (const auto &c : lua_mount::changed_files(r)) {
             auto runs_in = default_realms(c.rel);
             if (std::find(runs_in.begin(), runs_in.end(), r) == runs_in.end()) continue;
@@ -476,9 +480,11 @@ json mount_state(const std::vector<int> &rs) {
     st["realms_without_mount"] = without;
     st["stale_files"] = stale;
     // Issue #9: the engine, not the module's bookkeeping, has the last word: does each realm's file system serve the folder?
-    json es = mount_engine_serves(rs);
-    st["engine_serves"] = es["engine_serves"];
-    st["engine_serves_folder"] = es["engine_serves_folder"];
+    if (!missing) {
+        json es = mount_engine_serves(rs);
+        st["engine_serves"] = es["engine_serves"];
+        st["engine_serves_folder"] = es["engine_serves_folder"];
+    }
     std::string w = mount_warning(st);
     if (!w.empty()) st["warning"] = w;
     return st;
@@ -487,6 +493,12 @@ json mount_state(const std::vector<int> &rs) {
 std::string mount_warning(const json &st) {
     if (!st.is_object()) return "";
     std::string out;
+    if (st.value("folder_missing", false)) {
+        // The rest (stale files, realms that predate the mount) is moot while there is nothing to serve.
+        return "mount_folder_missing: the mounted folder " + st.value("path", std::string("?")) +
+               " (or its lua/ folder) does not exist any more (renamed, moved or deleted), so the game serves nothing from it and runs the "
+               "installed code. Restore it, or mount the right folder with lua_mount {path}, or remove it with lua_mount {path: null}; then map_load.";
+    }
     if (st.contains("engine_serves_folder") && st["engine_serves_folder"] == json(false)) {
         out = "The game's file system does not serve this folder's files";
         std::string which;
@@ -574,6 +586,7 @@ static json reload_mounted_changed(const json &args) {
     std::vector<int> present = mount_realms();
     json st = mount_state(present);
     if (st.is_null()) return agent::err("no_mount", "no folder is mounted (lua_mount {path} first): there is nothing to reload from it");
+    if (st.value("folder_missing", false)) return agent::err("mount_folder_missing", mount_warning(st));
     json plan = plan_mount_reload(st);
     json reloaded = json::array();
     bool all_ok = true;

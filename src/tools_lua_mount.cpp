@@ -28,9 +28,15 @@ static json lua_mount_tool(const json &args) {
     // Issue #9: with a map loaded, ask each realm's file system whether it really serves the folder (the engine takes paths
     // it cannot read into its search paths without a word).
     if (r.is_object() && r.value("ok", false) && r["result"].is_object() && r["result"].value("lua_mount", json()).is_string()) {
-        json es = mount_engine_serves(mount_realms());
+        std::string mounted = r["result"]["lua_mount"].get<std::string>();
+        json es = lua_mount::folder_present(mounted) ? mount_engine_serves(mount_realms()) : json::object();
+        if (!lua_mount::folder_present(mounted)) {  // renamed or deleted since it was mounted
+            r["result"]["folder_missing"] = true;
+            std::string w = mount_warning(json{{"folder_missing", true}, {"path", mounted}});
+            r["result"]["warning"] = r["result"].contains("warning") ? r["result"]["warning"].get<std::string>() + " " + w : w;
+        }
         r["result"].update(es);
-        if (es["engine_serves_folder"] == json(false)) {
+        if (es.contains("engine_serves_folder") && es["engine_serves_folder"] == json(false)) {
             std::string w = mount_warning(json{{"engine_serves", es["engine_serves"]}, {"engine_serves_folder", false}});
             r["result"]["warning"] = r["result"].contains("warning") ? r["result"]["warning"].get<std::string>() + " " + w : w;
         }
