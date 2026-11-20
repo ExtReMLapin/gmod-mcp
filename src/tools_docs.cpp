@@ -282,7 +282,7 @@ void register_docs() {
                         "matched against the whole name. Result: {results: [{name, kind: global|library|method, realms: [...], "
                         "wiki_page (URL or null)}], count, realms_searched, wiki_index}. wiki_page needs the wiki page list "
                         "(wiki_search once). Example: {\"pattern\": \"Entity:Emit*\"}.",
-                        json{{"properties", {{"pattern", {{"type", "string"}, {"minLength", 1}}},
+                        json{{"properties", {{"pattern", {{"type", "string"}, {"minLength", 1}, {"description", "Name to find, case-insensitive. A plain substring (\"EmitSound\") or a glob with * matched against the whole name (\"Entity:Emit*\")."}}},
                                              {"realm", realm_prop("Restrict to one realm (default: all available).")},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}, {"description", "Per realm, default 500."}}}}},
                              {"required", {"pattern"}}},
@@ -294,7 +294,7 @@ void register_docs() {
                         "GM:PlayerSpawn, Global.EmitSound, Structures/TraceResult. The page list is downloaded once and cached "
                         "24 h (stale cache used offline). Result: {query, results: [{page, score, url}], total_matches, cache}. "
                         "Then read one with wiki_page. Example: {\"query\": \"TraceLine\"}.",
-                        json{{"properties", {{"query", {{"type", "string"}, {"minLength", 1}}},
+                        json{{"properties", {{"query", {{"type", "string"}, {"minLength", 1}, {"description", "Part of a page name, e.g. \"TraceLine\" or \"Entity:Emit\". The name is searched, not the page text."}}},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}, {"description", "Default 20."}}},
                                              {"refresh", {{"type", "boolean"}, {"description", "Download the page list again (default false)."}}}}},
                              {"required", {"query"}}},
@@ -304,7 +304,7 @@ void register_docs() {
                         "(realm, arguments, returns, notes), format json = the wiki's JSON form. Cached 7 days (stale cache used "
                         "offline; refresh: true re-downloads). Result: {name, format, url, cache, content (text) or page (json)}. "
                         "Error not_found for an unknown name (use wiki_search). Example: {\"name\": \"Entity:EmitSound\"}.",
-                        json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 200}}},
+                        json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 200}, {"description", "Exact page name as wiki_search returns it, e.g. \"Entity:EmitSound\" or \"util.TraceLine\" (200 characters at most)."}}},
                                              {"format", {{"type", "string"}, {"enum", {"text", "json"}}, {"description", "Default text."}}},
                                              {"refresh", {{"type", "boolean"}, {"description", "Download the page again (default false)."}}}}},
                              {"required", {"name"}}},

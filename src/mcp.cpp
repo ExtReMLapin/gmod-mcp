@@ -63,8 +63,15 @@ void register_tool(Tool t) {
         t.output_schema = output_schema_for(t.name);  // the declared shape (output_schemas.cpp), else the permissive default
         if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
     }
+    // Arguments that are no longer advertised but that an old client may still send: accepted (and ignored by the validator
+    // alone; the handler still reads them). `jit` (a boolean) was the old way to turn the Lua time budget off: it is obsolete,
+    // so it is out of the schemas the model reads, but a client that remembers it must not get invalid_params.
+    json validated = s;
+    static const char *const kLegacyJit[] = {"lua_exec", "lua_exec_file", "lua_reload", "lua_job"};
+    for (const char *n : kLegacyJit)
+        if (t.name == n) validated["properties"]["jit"] = json{{"type", "boolean"}};
     t.validator = std::make_shared<nlohmann::json_schema::json_validator>();
-    t.validator->set_root_schema(s);
+    t.validator->set_root_schema(validated);
     g_index[t.name] = g_tools.size();
     g_tools.push_back(std::move(t));
 }

@@ -268,8 +268,6 @@ void register_jobs() {
                 {"resume_limit_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600},
                                     {"description", "Optional, best effort: abort a resume that runs this long without yielding "
                                                     "(loops written in the script itself). None by default."}}},
-                {"jit", {{"type", "boolean"},
-                         {"description", "Obsolete: the compiler is never turned off any more. jit: true now only ignores resume_limit_s."}}},
                 {"async", {{"type", "boolean"},
                            {"description", "true: start the job and return its id at once (poll with lua_job_status). Default false."}}},
                 {"fresh_env", {{"type", "boolean"},
@@ -295,7 +293,9 @@ void register_jobs() {
                 {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table."}}}}}},
-         json{{"readOnlyHint", false}}, lua_job_status_tool});
+         // Not read-only: a finished job's result is handed over once and the job is forgotten. Not destructive: that only drops
+         // the module's own bookkeeping of a result the caller just received (the default would say destructive).
+         json{{"readOnlyHint", false}, {"destructiveHint", false}, {"idempotentHint", false}}, lua_job_status_tool});
     mcp::register_tool({"lua_job_cancel", "Cancel a Lua job",
                         "Asks a running job (started by lua_job, e.g. with async: true) to stop: it ends at its next frame, before "
                         "resuming. Result: {job_id, cancelled (false if the id is unknown), note}. Its final state (cancelled) "

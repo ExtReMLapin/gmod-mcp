@@ -462,6 +462,19 @@ def case_a():
     r = b.req("tools/list")
     names = [t["name"] for t in (r or {}).get("result", {}).get("tools", [])]
     check("A never saw the game, no cache: the full tool list from the embedded snapshot", len(names) > 40 and "lua_exec" in names and "status" in names, names[:5])
+    # Tool-description audit (TDQS), on the snapshot the bridge serves (module tools and the bridge's own three).
+    tl = {t["name"]: t for t in (r or {}).get("result", {}).get("tools", [])}
+    nodesc = ["%s.%s" % (n, k) for n, t in tl.items() for k, v in t.get("inputSchema", {}).get("properties", {}).items() if not str(v.get("description", "")).strip()]
+    check("A TDQS every input property of every tool has a description", len(tl) > 60 and not nodesc, nodesc[:10])
+    check("A TDQS the obsolete `jit` argument is not advertised (lua_exec, lua_exec_file, lua_reload, lua_job)",
+          all(n in tl and "jit" not in tl[n]["inputSchema"]["properties"] for n in ("lua_exec", "lua_exec_file", "lua_reload", "lua_job")), None)
+    notdecl = [n for n, t in tl.items() if not t.get("annotations", {}).get("readOnlyHint") and "destructiveHint" not in t.get("annotations", {})]
+    check("A TDQS every tool that is not read-only says whether it is destructive", not notdecl, notdecl)
+    an = lambda n, h: tl.get(n, {}).get("annotations", {}).get(h)
+    check("A TDQS lua_job_status not read-only, not destructive", an("lua_job_status", "readOnlyHint") is False and an("lua_job_status", "destructiveHint") is False, tl.get("lua_job_status", {}).get("annotations"))
+    check("A TDQS wait_for, lua_inspect, lua_function_source run caller Lua: not read-only, destructive",
+          all(an(n, "readOnlyHint") is not True and an(n, "destructiveHint") is True for n in ("wait_for", "lua_inspect", "lua_function_source")), None)
+    check("A TDQS lua_file_write, ui_click, ui_key destructive", all(an(n, "destructiveHint") is True for n in ("lua_file_write", "ui_click", "ui_key")), None)
     r = b.req("prompts/list")
     check("A prompts from the snapshot", len((r or {}).get("result", {}).get("prompts", [])) >= 1, r)
     r = b.req("resources/list")

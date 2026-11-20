@@ -470,7 +470,7 @@ void register_console() {
                         "Reads or sets how many console lines this game keeps for console_read, console_wait and console_exec (default "
                         "20000; lowering it drops the oldest lines at once). Without `capacity`: just reads it. Result: {capacity, "
                         "cursor (the current console position)}.",
-                        json{{"properties", {{"capacity", {{"type", "integer"}, {"minimum", 16}, {"maximum", 1000000}}}}}},
+                        json{{"properties", {{"capacity", {{"type", "integer"}, {"minimum", 16}, {"maximum", 1000000}, {"description", "Number of console lines to keep (16 to 1000000; default 20000). A smaller value drops the oldest lines at once. Omit to just read it."}}}}}},
                         json{{"idempotentHint", true}, {"destructiveHint", false}}, [](const json &a) {
                             if (a.contains("capacity")) console::set_capacity(a["capacity"].get<size_t>());
                             return ok(json{{"capacity", console::capacity()}, {"cursor", console::cursor_now()}});
@@ -506,7 +506,7 @@ void register_console() {
                         "Value (string as the engine stores it), number (the value as a number when it is one: compare this, since the "
                         "same value can read \"0.0\" or \"0.000000\"), default, help text, flags (decoded), min/max of a convar. "
                         "FCVAR_PROTECTED convars have their value masked.",
-                        json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}}}, {"realm", realm_p}}}, {"required", {"name"}}},
+                        json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"description", "Exact convar name, e.g. 'sv_gravity'. Error not_found if it does not exist."}}}, {"realm", realm_p}}}, {"required", {"name"}}},
                         RO, [](const json &a) { return rt_realm(a, "realm", default_realm(), "convar_get", json{{"name", a["name"]}}); }});
     mcp::register_tool({"convar_set", "Set a convar",
                         "Sets a convar from a realm (RunConsoleCommand; server realm: game.ConsoleCommand), waits 3 frames and reads "
@@ -517,7 +517,7 @@ void register_console() {
                         "previous and via (lua or engine). Errors: not_found, protected (FCVAR_PROTECTED), archived, set_refused "
                         "(cheat without sv_cheats, wrong realm, blocked command). Example: {\"name\": \"sv_gravity\", \"value\": "
                         "300, \"realm\": \"server\"}.",
-                        json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}}},
+                        json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"description", "Exact convar name, e.g. 'sv_gravity'. Error not_found if it does not exist."}}},
                                              {"value", {{"type", {"string", "number", "boolean"}}, {"description", "New value."}}},
                                              {"realm", realm_p},
                                              {"persist", {{"type", "boolean"}, {"description", "Allow changing an FCVAR_ARCHIVE convar (persisted in config.cfg). Default false."}}}}},

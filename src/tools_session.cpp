@@ -321,7 +321,9 @@ void register_session() {
                                {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Max wait in seconds (default 10)."}}},
                                {"interval_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 60}, {"description", "Seconds between evaluations (default 0 = every frame)."}}}}},
                              {"required", {"condition"}}},
-                        RO, wait_for_tool});
+                        // Not read-only: `condition` is Lua evaluated every frame, and arbitrary Lua can modify the game. Destructive
+                        // for the same reason as lua_exec (the module cannot tell a pure condition from one that changes something).
+                        json{{"readOnlyHint", false}, {"destructiveHint", true}}, wait_for_tool});
     mcp::set_task_support("wait_for", "optional");
     mcp::register_tool({"wait_frames", "Wait N frames", "Waits until the game's main loop has run n more frames (counted by gmod-mcp every frame, map or not), e.g. to let "
                         "a console command, a spawn or a SetPos take effect. Result: {frames, elapsed_s}. Error timeout if the game "
