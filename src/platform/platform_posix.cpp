@@ -6,6 +6,9 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <fcntl.h>
+#ifdef __linux__
+#include <link.h>
+#endif
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
@@ -27,6 +30,32 @@ void *find_loaded_module(const std::vector<std::string> &names) {
         void *h = dlopen(n.c_str(), RTLD_LAZY | RTLD_NOLOAD);
         if (h) return h;
     }
+#ifdef __linux__
+    // A module the game loaded by full path (the dev-branch server's garrysmod/bin/linux64/lua_shared_srv.so: no SONAME, not on
+    // LD_LIBRARY_PATH) cannot be found by its bare name: look through the loaded objects for one with that file name, then
+    // take a handle on it by its full path without loading anything.
+    struct Search {
+        const std::vector<std::string> *names;
+        std::string path;
+    } search{&names, ""};
+    dl_iterate_phdr(
+        [](struct dl_phdr_info *info, size_t, void *data) -> int {
+            auto *s = static_cast<Search *>(data);
+            if (!info->dlpi_name || !info->dlpi_name[0]) return 0;
+            std::string full = info->dlpi_name;
+            size_t slash = full.find_last_of('/');
+            std::string base = slash == std::string::npos ? full : full.substr(slash + 1);
+            for (const auto &n : *s->names) {
+                if (base == n) {
+                    s->path = full;
+                    return 1;
+                }
+            }
+            return 0;
+        },
+        &search);
+    if (!search.path.empty()) return dlopen(search.path.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+#endif
     return nullptr;
 }
 

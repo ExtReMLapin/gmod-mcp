@@ -4,6 +4,10 @@
 
 ### Fixes
 
+- **The Linux module loads on the dev-branch server.** `plat::find_loaded_module` only tried `dlopen(bare name, RTLD_NOLOAD)`, but the
+  dev branch loads `lua_shared_srv.so` by full path from `garrysmod/bin/linux64` (no SONAME, not on `LD_LIBRARY_PATH`), so the module
+  never found the Lua library and stayed inactive. It now also walks the loaded objects (`dl_iterate_phdr`) for one with a matching
+  file name and takes a handle on it by its full path.
 - **`lua_mount` file times on libstdc++ < 13** (Linux, GCC 11/12). The file system clock of those libraries counts from the year 2174, so every
   current file time is a negative tick count, and `unix_seconds_of` took negative as unknown: the engine-serves probes then expected no
   time and a copy with another time was reported as served. Unknown is now an explicit marker (`kUnknownTime`), not a sign.
