@@ -15,7 +15,7 @@ static json lua_mount_tool(const json &args) {
         std::string e;
         if (!lua_mount::normalize_root(args["path"].get<std::string>(), root, e)) return agent::err("invalid_params", e);
         std::string code;
-        e = lua_mount::refuse_mount(root, agent::config().game_dir, false, &code);
+        e = lua_mount::refuse_mount(root, agent::config().game_dir, args.value("allow_shadow", false), &code);
         if (!e.empty()) return agent::err(code, e);
     }
     std::string why;
@@ -76,7 +76,9 @@ void register_lua_mount() {
                                          "(e.g. \"D:/dev/my-addon-wt\"), or that lua/ folder itself (same result). Must be "
                                          "outside the game folder. null or \"\" unmounts it (from the next map load). Omit "
                                          "it to read the current state."}}},
-                {"empty_cache", {{"type", "boolean"}, {"description", "Empty the engine's Lua file cache after the change (default true)."}}}}}},
+                {"empty_cache", {{"type", "boolean"}, {"description", "Empty the engine's Lua file cache after the change (default true)."}}},
+                {"allow_shadow", {{"type", "boolean"}, {"description", "Mount a folder that replaces files of the game's own base Lua (lua/includes/init.lua...) "
+                                                                         "anyway. Refused by default (error shadows_base_lua): such a folder made a client hang in its load."}}}}}},
          json{{"destructiveHint", false}, {"idempotentHint", true}}, lua_mount_tool});
 }
 

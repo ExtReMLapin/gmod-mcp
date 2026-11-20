@@ -177,7 +177,9 @@ static bool start(lua_State *L) {
     if (!ov.empty()) {
         std::string root, oerr, why;
         if (!lua_mount::normalize_root(ov, root, oerr)) logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());
-        else if (!(oerr = lua_mount::refuse_mount(root, cfg.game_dir, false)).empty()) logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());
+        else if (!(oerr = lua_mount::refuse_mount(root, cfg.game_dir, util::has_flag(args, "-mcp_lua_mount_allow_shadow") ||
+                                                  util::has_flag(util::split_args(plat::process_command_line()), "-mcp_lua_mount_allow_shadow"))).empty())
+            logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());
         else if (!lua_mount::supported(&why)) logx::warn("-mcp_lua_mount ignored: %s", why.c_str());
         else {
             nlohmann::json r = lua_mount::set(root, false);

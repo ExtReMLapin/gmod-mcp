@@ -168,6 +168,11 @@ device path (`\\?\D:\x`, `\\.\D:\x`) and a folder holding a file whose full path
 characters (MAX_PATH). The engine accepts all of these into its search paths and then loads nothing from them, so the
 mount would report `active` while the game ran the installed code. For the non-ASCII, UNC and long cases a junction on a
 short local path (`mklink /J C:\gmod-wt "<your folder>"`) is the way out.
+A folder that REPLACES the game's own base Lua is refused too (error `shadows_base_lua`, the files are listed): any .lua of
+the folder's `lua/` that also exists in the game's own `garrysmod/lua/`, or of its `gamemodes/base/` that exists in the game's
+`gamemodes/base/` (e.g. `lua/includes/init.lua`: the client then hangs in its load and `map_load` times out). Move those
+files out of the folder; `allow_shadow: true` (`lua_mount`, `instances_launch`) mounts it anyway. A `map_load` that times out
+with a mount set names the mount in its message: look at `errors_since` and `lua_mount {}`.
 
 When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
 set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it

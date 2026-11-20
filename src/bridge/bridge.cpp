@@ -1009,6 +1009,8 @@ json bridge_tools() {
                                          "Each engine is asked what it really has BEFORE any map loads (instances[i].lua_mount.active); a missing mount is "
                                          "applied again, and a client that still has none gets no map (map_error lua_mount_not_active, "
                                          "isError, warning). Windows only."}}},
+            {"allow_shadow", {{"type", "boolean"}, {"description", "With lua_mount: accept a folder that replaces files of the game's own base Lua "
+                                                                                 "(lua/includes/init.lua...). Refused by default (shadows_base_lua): such a client hangs in its load."}}},
             {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe or bin/win64/gmod.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
           {"additionalProperties", false}}},
@@ -1446,7 +1448,7 @@ json launch_tool(const json &args, const json &token) {
                                                 (given.empty() ? "" : "; " + gamedir::missing_exe_message(given)));
     }
     if (!mount_root.empty()) {
-        std::string code, inside = lua_mount::refuse_mount(mount_root, root + "/garrysmod", false, &code);
+        std::string code, inside = lua_mount::refuse_mount(mount_root, root + "/garrysmod", args.value("allow_shadow", false), &code);
         if (!inside.empty()) return tool_error(code, "lua_mount: " + inside);
     }
     // Issue #8: memory first. A machine out of commit crashes every game on it (11 clients, 1.8 GB free: all died, no dump).
@@ -1483,7 +1485,7 @@ json launch_tool(const json &args, const json &token) {
     opts += " -dxlevel 95";
     if (!sound) opts += " -nosound";
     // The folder was checked: no quote or line break can end the argument.
-    if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"";
+    if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"" + (args.value("allow_shadow", false) ? " -mcp_lua_mount_allow_shadow" : "");
     // Issue #10: the extra tokens (validated: no space, quote or ';'), after ours so that a `+convar` of theirs wins; then the
     // names of the convars they and the commands may change, which the module gives back to the user's values before a
     // clean quit (an older module ignores this option).

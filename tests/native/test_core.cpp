@@ -411,7 +411,7 @@ static void test_launch_options() {
     std::vector<std::string> tk;
     CHECK(check_launch_args(json::array({"-noborder", "-nosound", "+cl_showfps", "1"}), tk).empty() && tk.size() == 4 && tk[2] == "+cl_showfps");
     CHECK(check_launch_args(json::array(), tk).empty() && tk.empty());
-    for (const char *bad : {"-multirun", "-MULTIRUN", "-mcp", "-mcpport", "-mcp_test_client", "-mcp_lua_mount", "-mcp_restore_convars", "+mcp_x", "-w", "-h", "-width", "-height",
+    for (const char *bad : {"-multirun", "-MULTIRUN", "-mcp", "-mcpport", "-mcp_test_client", "-mcp_lua_mount", "-mcp_lua_mount_allow_shadow", "-mcp_restore_convars", "+mcp_x", "-w", "-h", "-width", "-height",
                             "-windowed", "-window", "-sw", "-fullscreen", "-full", "-dxlevel", "-condebug", "-game", "+map", "+changelevel",
                             "+connect", "-connect", "+connect_lobby", "+retry", "+redirect", "+quit", "+exit", "+load", "+host_workshop_map"}) {
         std::string e = check_launch_args(json::array({"-noborder", bad}), tk);
@@ -653,6 +653,69 @@ static void test_issue9_engine_serves() {
     CHECK(st["engine_serves_folder"].is_null() && !st.contains("warning"));  // Issue #9
     tools::set_mount_probe_for_tests(nullptr);
     lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F3): a folder holding lua/includes/init.lua shadowed the game's own base Lua: the
+// client hung in its load and map_load timed out after 180 s without a word about the mount. The mount is refused up front,
+// listing the files that would shadow the game's own, unless allow_shadow is passed.
+static void test_issue9_shadow_base() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-shadow", game = base / "garrysmod";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(game / "lua/includes/init.lua");
+    touch(game / "lua/includes/util.lua");
+    touch(game / "lua/autorun/base_autorun.lua");
+    touch(game / "gamemodes/base/gamemode/init.lua");
+    touch(game / "gamemodes/sandbox/gamemode/init.lua");
+    touch(base / "addon/lua/pba/x.lua");                       // an addon's own file: fine
+    touch(base / "addon/gamemodes/mygm/gamemode/init.lua");   // a gamemode of its own: fine
+    touch(base / "shadowing/lua/pba/x.lua");
+    touch(base / "shadowing/lua/includes/init.lua");           // shadows lua/includes/init.lua
+    touch(base / "gmshadow/lua/pba/x.lua");
+    touch(base / "gmshadow/gamemodes/base/gamemode/init.lua");  // shadows the base gamemode
+    touch(base / "gmfork/lua/pba/x.lua");
+    touch(base / "gmfork/gamemodes/sandbox/gamemode/init.lua");  // a fork of another gamemode is the point of the mount
+    auto root = [&](const char *n) { return fs::path(base / n).make_preferred().u8string(); };
+    std::string g = game.u8string();
+    CHECK(lua_mount::shadowed_base_files(root("addon"), g).empty());  // Issue #9
+    CHECK(lua_mount::shadowed_base_files(root("gmfork"), g).empty());  // Issue #9: only the base gamemode counts
+    auto sh = lua_mount::shadowed_base_files(root("shadowing"), g);
+    CHECK(sh.size() == 1 && sh[0] == "lua/includes/init.lua");  // Issue #9: named from the mount root
+    sh = lua_mount::shadowed_base_files(root("gmshadow"), g);
+    CHECK(sh.size() == 1 && sh[0] == "gamemodes/base/gamemode/init.lua");  // Issue #9
+    CHECK(lua_mount::shadowed_base_files(root("shadowing"), "").empty());  // Issue #9: no game folder known: no check
+
+    std::string code;
+    CHECK(lua_mount::refuse_mount(root("addon"), g, false, &code).empty());  // Issue #9
+    std::string why = lua_mount::refuse_mount(root("shadowing"), g, false, &code);
+    CHECK(code == "shadows_base_lua" && why.find("lua/includes/init.lua") != std::string::npos && why.find("allow_shadow") != std::string::npos);  // Issue #9
+    CHECK(lua_mount::refuse_mount(root("shadowing"), g, true, &code).empty());  // Issue #9: the caller knows what it does
+    CHECK(lua_mount::refuse_mount(root("shadowing"), "", false, &code).empty());  // Issue #9
+    // Many files: the message lists a few and counts the rest.
+    for (int i = 0; i < 20; ++i) {
+        touch(game / ("lua/includes/m" + std::to_string(i) + ".lua"));
+        touch(base / "shadowing" / ("lua/includes/m" + std::to_string(i) + ".lua"));
+    }
+    why = lua_mount::refuse_mount(root("shadowing"), g, false, &code);
+    CHECK(code == "shadows_base_lua" && why.find("21 file") != std::string::npos && why.find("...") != std::string::npos);  // Issue #9
+
+    // The tool refuses it too (the arguments are checked on the network thread, before any engine call).
+    tools::register_lua_mount();
+    auto &cfg = agent::config();
+    std::string saved = cfg.game_dir;
+    cfg.game_dir = g;
+    json r = mcp::call_tool("lua_mount", json{{"path", root("shadowing")}});
+    CHECK(r.value("isError", false) && r.dump().find("shadows_base_lua") != std::string::npos && r.dump().find("includes/init.lua") != std::string::npos);  // Issue #9
+    cfg.game_dir = saved;
+
+    // A map_load that times out with a mount set names the mount and where to look (the hang had no word about it).
+    lua_mount::set_current_for_tests("");
+    CHECK(tools::mount_timeout_hint().empty());  // Issue #9: no mount, no hint
+    lua_mount::set_current_for_tests(root("addon"));
+    std::string hint = tools::mount_timeout_hint();
+    CHECK(hint.find(root("addon")) != std::string::npos && hint.find("errors_since") != std::string::npos && hint.find("lua_mount") != std::string::npos);  // Issue #9
     lua_mount::set_current_for_tests("");
     fs::remove_all(base, ec);
 }
@@ -2315,6 +2378,7 @@ int main(int argc, char **argv) {
     test_issue9_unloadable_paths();
     test_issue9_engine_serves();
     test_issue9_folder_missing();
+    test_issue9_shadow_base();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();

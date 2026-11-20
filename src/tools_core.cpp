@@ -490,6 +490,15 @@ json mount_state(const std::vector<int> &rs) {
     return st;
 }
 
+std::string mount_timeout_hint() {
+    std::string root = lua_mount::current();
+    if (root.empty()) return "";
+    return "A Lua mount is set (" + root + "): a mounted folder can break the game's Lua (a file that replaces a base file, a Lua error in its "
+           "autorun, a folder the engine cannot read) and hang the load. errors_since shows the Lua errors of this load, lua_mount {} the "
+           "folder's state (base_lua_mounted, engine_serves_folder, folder_missing). If the game does not recover: lua_mount {path: null}, "
+           "or close this client and relaunch without lua_mount.";
+}
+
 std::string mount_warning(const json &st) {
     if (!st.is_object()) return "";
     std::string out;

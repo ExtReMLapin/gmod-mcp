@@ -1,4 +1,5 @@
 // Mounted folder check (pure: shared by the module and the bridge).
+#include <algorithm>
 #include <filesystem>
 
 #include "lua_mount.h"
@@ -126,12 +127,42 @@ std::string refuse_too_long(const std::string &root, size_t max_path) {
            "C:\\gmod-wt \"<your folder>\") or shorten the file's path";
 }
 
+std::vector<std::string> shadowed_base_files(const std::string &root, const std::string &game_dir) {
+    std::vector<std::string> out;
+    if (root.empty() || game_dir.empty()) return out;
+    auto walk = [&](const fs::path &mount_dir, const fs::path &game_side, const std::string &prefix) {
+        std::error_code ec;
+        if (!fs::is_directory(mount_dir, ec) || !fs::is_directory(game_side, ec)) return;
+        for (fs::recursive_directory_iterator it(mount_dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code e2;
+            if (!it->is_regular_file(e2)) continue;
+            std::string name = it->path().filename().u8string();
+            if (name.size() < 4 || util::to_lower(name.substr(name.size() - 4)) != ".lua") continue;
+            fs::path sub = fs::relative(it->path(), mount_dir, e2);
+            if (e2) continue;
+            if (fs::is_regular_file(game_side / sub, e2)) out.push_back(prefix + "/" + sub.generic_u8string());
+        }
+    };
+    walk(fs::u8path(root) / "lua", fs::u8path(game_dir) / "lua", "lua");
+    walk(fs::u8path(root) / "gamemodes" / "base", fs::u8path(game_dir) / "gamemodes" / "base", "gamemodes/base");
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 std::string refuse_mount(const std::string &root, const std::string &game_dir, bool allow_shadow, std::string *code) {
-    (void)allow_shadow;
     if (code) *code = "invalid_params";
     std::string e = refuse_inside_game(root, game_dir);
     if (e.empty()) e = refuse_too_long(root);
-    return e;
+    if (!e.empty() || allow_shadow) return e;
+    auto sh = shadowed_base_files(root, game_dir);
+    if (sh.empty()) return "";
+    if (code) *code = "shadows_base_lua";
+    std::string list;
+    for (size_t i = 0; i < sh.size() && i < 8; ++i) list += (i ? ", " : "") + sh[i];
+    if (sh.size() > 8) list += ", ...";
+    return "the folder holds " + std::to_string(sh.size()) + " file(s) that also exist in the game's own base Lua (" + list +
+           "): mounting it would replace the game's own files, and a client started that way hung in its load (map_load timed "
+           "out). Move those files out of the mounted folder, or pass allow_shadow: true if you really mean to override the base Lua";
 }
 
 }  // namespace lua_mount

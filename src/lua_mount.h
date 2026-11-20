@@ -32,6 +32,11 @@ std::string refuse_inside_game(const std::string &root, const std::string &game_
 // of at most `max_path` characters (Windows MAX_PATH leaves 259), else why not. The engine accepts a root whose files pass
 // it into its search paths but cannot open any of them: the mount would report active and load nothing.
 std::string refuse_too_long(const std::string &root, size_t max_path = 259);
+// Pure: the files of the folder that would shadow the game's own base Lua (named from the mount root: "lua/includes/init.lua"):
+// every .lua under <root>/lua that also exists under <game_dir>/lua, and under <root>/gamemodes/base that exists in the game's
+// own gamemodes/base. A folder with lua/includes/init.lua replaced the game's base Lua and the client hung in its load.
+// Sorted; empty when `game_dir` is "" (unknown).
+std::vector<std::string> shadowed_base_files(const std::string &root, const std::string &game_dir);
 // Pure: the one check run before a folder is mounted (lua_mount tool, instances_launch, -mcp_lua_mount): "" if it may be,
 // else why not, with the error `code` ("invalid_params", or "shadows_base_lua"). `game_dir` is the garrysmod folder
 // ("" = unknown: only the other checks run).

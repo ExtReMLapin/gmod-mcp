@@ -65,6 +65,8 @@ json plan_mount_reload(const json &state);
 // Tests only: replaces what asks a realm's file system about the mounted folder's files (answers [{exists, time?}] one per
 // probe, or null when it cannot be asked); an empty function restores the real one (the realm's mount_probe).
 void set_mount_probe_for_tests(std::function<json(int, const std::vector<lua_mount::Probe> &)> fn);
+// For a map_load that timed out: one sentence naming the mounted folder and where to look ("" when no folder is mounted).
+std::string mount_timeout_hint();
 // The realms where the mounted folder matters now (server, client) that are up with the runtime.
 std::vector<int> mount_realms();
 // Non-negotiable network rule: "" if the console line may run, else why it is refused (connect/redirect/retry to a

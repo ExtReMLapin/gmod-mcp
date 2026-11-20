@@ -98,7 +98,8 @@ static json map_load_impl(const json &args) {
         if (reqctx::cancelled()) return agent::err("cancelled", "map_load cancelled (the map may keep loading)");
         double left = timeout - since(t0);
         if (left <= 0)
-            return agent::err("timeout", "map not ready after " + std::to_string((int)timeout) + " s",
+            return agent::err("timeout", "map not ready after " + std::to_string((int)timeout) + " s" +
+                                             (lua_mount::current().empty() ? std::string() : ". " + mount_timeout_hint()),
                               json{{"server_available", agent::realm_present(realms::SERVER)},
                                    {"client_available", agent::realm_present(realms::CLIENT)},
                                    {"client_lock", agent::lock_status()}});
