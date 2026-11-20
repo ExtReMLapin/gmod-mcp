@@ -3085,8 +3085,48 @@ def case_chaos_maps():
     shutil.rmtree(game, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "fuzz"]
+def case_chaos_job():
+    """Issue #8 (live chaos test): a bridge killed with taskkill /F (or TerminateProcess) used to leave its keep:false clients running
+    forever (nothing runs in a killed process). The launched keep:false clients now live in a job object that closes with the bridge
+    (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE): the game and the helper processes it started (the real game has about 2) end with it. A
+    keep:true client is NOT in the job and survives (stand-in game that starts children, Windows)."""
+    print("== CHAOS_JOB: keep:false clients end with a bridge that was killed, keep:true ones do not", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_JOB stand-in game built next to the bridge", False)
+        return
+    import shutil
+    def run(keep):
+        cdir = tempfile.mkdtemp(prefix="gmcp-chaos-kids-")
+        S = chaos_session(extra_env={"GMCP_FAKE_CHILDREN": "2", "GMCP_FAKE_CHILD_PID_DIR": cdir})
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "job", "timeout_s": 30, "game_dir": S["game"], "keep": keep})
+        game_pids = S["started"]()
+        end = time.time() + 10
+        while len(os.listdir(cdir)) < 2 and time.time() < end: time.sleep(0.1)
+        kids = [int(open(os.path.join(cdir, f)).read() or 0) for f in os.listdir(cdir)]
+        everyone = game_pids + kids
+        out = {"ok": not err and len(game_pids) == 1 and len(kids) == 2 and all(alive(p) for p in everyone), "sc": sc, "pids": everyone}
+        S["b"].p.kill()  # TerminateProcess: no clean exit, no chance to close anything
+        S["b"].p.wait(10)
+        time.sleep(2.0)
+        out["alive"] = [alive(p) for p in everyone]
+        for p in everyone:
+            if alive(p): subprocess.run(["taskkill", "/F", "/PID", str(p)], capture_output=True)
+        S["srv"].stop()
+        shutil.rmtree(S["game"], ignore_errors=True); shutil.rmtree(S["work"], ignore_errors=True); shutil.rmtree(cdir, ignore_errors=True)
+        return out
+    o = run(False)
+    check("CHAOS_JOB a keep:false client and its 2 helper processes ran before the bridge was killed", o["ok"], o)
+    check("CHAOS_JOB the bridge was killed (TerminateProcess): the client and its helper processes ended with it", o["ok"] and not any(o["alive"]), o)
+    o = run(True)
+    check("CHAOS_JOB a keep:true client and its 2 helper processes ran before the bridge was killed", o["ok"], o)
+    check("CHAOS_JOB ... and they are still running after it (not in the job object)", o["ok"] and all(o["alive"]), o)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

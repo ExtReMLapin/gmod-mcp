@@ -170,6 +170,9 @@
   `instances_launch {count: 2, map}` plus a `map_load` had 5 games loading at once. Every map load of every bridge now
   registers in the shared FP7137 state and waits while 2 others are registered (`map_load_in_progress` at the timeout; the
   kill switch lifts it).
+- **A killed bridge no longer leaves its `keep: false` clients running** (issue #8, live chaos test). `taskkill /F` on a
+  bridge ran no exit code, so the test clients it had launched ran for ever. On Windows they are now started in a job object
+  that closes with the bridge (`KILL_ON_JOB_CLOSE`), helper processes of the game included; `keep: true` clients stay out of it.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for

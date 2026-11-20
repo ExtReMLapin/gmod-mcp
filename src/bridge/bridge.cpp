@@ -952,7 +952,8 @@ json bridge_tools() {
          "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, waits until it answers, "
          "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
          "Returns their instance ids and pids: pass an id as `instance` on every call. "
-         "Without keep: true they end with this bridge session (when it ends, the clients it started are closed); with keep: true they "
+         "Without keep: true they end with this bridge session (when it ends, the clients it started are closed, also when the bridge is killed: "
+         "they run in a job object that dies with it); with keep: true they "
          "outlive it, and a later session closes them by `owner` (below) or by pid / game_terminate. "
          "They close when this session ends unless keep is true; close them earlier with instances_close (not game_quit: "
          "it keeps their exit short; a clean quit is safe too, see the convar note below). Sub-agents of one Claude Code session share "
@@ -1508,6 +1509,26 @@ std::set<uint32_t> game_process_pids(const std::string &exe) {
 #endif
 
 #ifdef _WIN32
+// Issue #8 (live chaos test): the clients this session launches without keep live in a job object that dies with the bridge
+// (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE), so a bridge killed by TerminateProcess / taskkill /F (which runs no exit code) no longer
+// leaves them running for ever. The game starts helper processes of its own executable: they join the job (children inherit it; no
+// breakaway flag is set, and the client is created suspended so that no child can start before it is in the job). Clients started
+// with keep: true are not put in it. Null when the job could not be created (the clients are then started as before).
+HANDLE client_job() {
+    static HANDLE job = [] {
+        HANDLE j = CreateJobObjectW(nullptr, nullptr);
+        if (!j) return (HANDLE) nullptr;
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info, sizeof info)) {
+            CloseHandle(j);
+            return (HANDLE) nullptr;
+        }
+        return j;
+    }();
+    return job;
+}
+
 // Issue #6: a map_load whose answer never came (the connection to the coordinator broke while the role moved): the client may have
 // loaded the map anyway (seen live: maps loaded with the lua_mount active while instances_launch reported game_not_running).
 // Polls its status until it is not loading any more. Returns {map} when it sits on `map`, null when it does not, or when it ended.
@@ -1663,9 +1684,14 @@ json launch_tool(const json &args, const json &token) {
         STARTUPINFOW si{};
         si.cb = sizeof si;
         PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, 0, nullptr, wdir.c_str(), &si, &pi)) {
+        HANDLE job = keep ? nullptr : client_job();  // issue #8: ends with the bridge unless keep: true
+        if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
             for (auto &l : started) TerminateProcess(l.h, 0);
             return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(GetLastError()) + ") for " + exe);
+        }
+        if (job) {
+            AssignProcessToJobObject(job, pi.hProcess);  // a failure (a parent job that forbids nesting): the client just runs without the guard
+            ResumeThread(pi.hThread);
         }
         CloseHandle(pi.hThread);
         fp_gate.note_started();  // FP7137
