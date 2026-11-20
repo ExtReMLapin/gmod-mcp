@@ -20,7 +20,7 @@ std::string instructions() {
     s += "Realms: 'menu' (always present in client mode, survives map changes), 'client' and 'server' (only exist once a map is "
          "loaded, destroyed/recreated on every map change). On srcds, only 'server' exists.\n";
     s += "Typical order: status -> map_load -> lua_exec / ents_find / trace / screenshot... -> errors_since / console_read.\n";
-    s += "Pitfalls: (1) a missing realm returns the 'realm_unavailable' error: load a map; (2) everything is asynchronous on the game "
+    s += "Pitfalls: (1) a missing realm returns the 'realm_unavailable' error: load a map (on srcds there is no menu or client realm to wait for: use realm 'server'; tools that need the client side answer 'unsupported'); (2) everything is asynchronous on the game "
          "side (a console command or a spawn takes effect on the next frame): use wait_for(realm, condition) or wait_frames(n) "
          "instead of guessing; (3) the client realm is locked ('client_locked') if the game is connected to a non-loopback server; "
          "(4) if the game freezes (infinite loop), status reports it and game_terminate remains available; "
@@ -335,7 +335,7 @@ fields, all plain sentences for you, present only when they apply:
 - `next`: the call that goes on, as a sentence (`lua_job` start: poll with `lua_job_status`; `instances_list`: how to pick an instance).
 - `next_call`: the same kind of hint as data, `{tool, arguments?, after_s?}`: the call to make next (wait `after_s` seconds first).
   In an error it is `error.next_call`. It is a suggestion, always next to its prose: check it fits what you are doing. Given for
-  `realm_unavailable` (map_load), `main_thread_timeout` (status), `ambiguous_instance` (instances_list), `client_crashed` and
+  `realm_unavailable` (map_load; on srcds none for the menu and client realms, status for the server realm), `main_thread_timeout` (status), `ambiguous_instance` (instances_list), `client_crashed` and
   `instance_gone` (instances_launch), `instance_unreachable` (status, later), `budget_exceeded` (the code as a lua_job), a refused
   launch/map load (`launch_in_progress`, `map_load_in_progress`: the same call later with a larger timeout_s), an argument typo
   (`invalid_params`: the corrected call), a started `lua_job` (lua_job_status), cut values (the call without the limits) and a

@@ -43,6 +43,7 @@ static json map_load_tool(const json &args) {
 }
 
 static json disconnect_tool(const json &args) {
+    if (agent::config().mode != agent::Mode::Client) return agent::err("unsupported", "disconnect: client mode only (a dedicated server has no menu to return to)");
     std::unique_lock<std::mutex> lk(g_lifecycle, std::try_to_lock);
     if (!lk.owns_lock()) return agent::err("busy", "another map_load/disconnect is in progress");
     return disconnect_impl(args);
@@ -188,7 +189,7 @@ static json wait_for_tool(const json &args) {
     double timeout = args.value("timeout_s", 10.0);
     double interval = args.value("interval_s", 0.0);
     std::string code = args["condition"];
-    if (!agent::realm_present(r)) return agent::err("realm_unavailable", std::string("realm ") + realms::name(r) + " unavailable");
+    if (!agent::realm_present(r)) return agent::realm_unavailable_err(r);
     uint64_t gen0 = agent::generation(r);
     int polls = 0;
     for (;;) {
@@ -286,7 +287,7 @@ void register_session() {
                         json{{"destructiveHint", true}}, map_load_tool});
     mcp::set_task_support("map_load", "optional");
     mcp::register_tool({"disconnect", "Return to main menu", "Leaves the current map for the main menu (console `disconnect`) and waits until the client and server realms "
-                        "are gone; their Lua states are destroyed. Client mode only (unsupported on srcds). Result: {disconnected, "
+                        "are gone; their Lua states are destroyed. Client only (unsupported on srcds). Result: {disconnected, "
                         "was_in_game, duration_s, realms}. Errors: busy (a map_load runs), timeout.",
                         json{{"properties", {{"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 120}, {"description", "Default 30."}}}}}},
                         json{{"destructiveHint", true}, {"idempotentHint", true}}, disconnect_tool});

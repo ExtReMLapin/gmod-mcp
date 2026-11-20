@@ -25,6 +25,8 @@ json realm_prop(const std::string &desc, bool with_menu) {
     return json{{"type", "string"}, {"enum", e}, {"description", desc}};
 }
 
+int default_host_realm() { return agent::config().mode == agent::Mode::Client ? realms::MENU : realms::SERVER; }
+
 int realm_of(const json &args, const char *key, int def) {
     if (!args.contains(key)) return def;
     return realms::parse(args[key].get<std::string>());
@@ -303,7 +305,7 @@ static double exec_timeout(const json &args) {
 }
 
 static json lua_exec_tool(const json &args) {
-    return project_values(rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec"), exec_timeout(args)), args);
+    return project_values(rt_realm(args, "realm", default_host_realm(), "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec"), exec_timeout(args)), args);
 }
 
 static json lua_exec_file_tool(const json &args) {
@@ -311,7 +313,7 @@ static json lua_exec_file_tool(const json &args) {
     if (!resolve_lua_file(args["path"], abs, chunk, e)) return agent::err("not_found", e);
     std::string code;
     if (!plat::read_file(abs, code)) return agent::err("io_error", "cannot read: " + abs);
-    json r = rt_realm(args, "realm", realms::MENU, "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
+    json r = rt_realm(args, "realm", default_host_realm(), "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
     if (r.value("ok", false)) r["result"]["file"] = abs;
     return project_values(std::move(r), args);
 }
@@ -681,6 +683,12 @@ static json lua_reload_tool(const json &args) {
         for (const auto &n : args["realms"]) rs.push_back(realms::parse(n.get<std::string>()));
     } else {
         rs = default_realms(chunk);
+        if (agent::config().mode == agent::Mode::Dedicated) {
+            // A dedicated server has no client or menu realm: a shared file runs in the server realm only, a client file has nowhere to run.
+            rs.erase(std::remove_if(rs.begin(), rs.end(), [](int r) { return r != realms::SERVER; }), rs.end());
+            if (rs.empty())
+                return agent::err("unsupported", "this file runs in the client or menu realm, which a dedicated server (srcds) does not have");
+        }
     }
     bool all_ok = true;
     json per = run_file_in_realms(abs, args, rs, all_ok, chunk);
@@ -734,17 +742,17 @@ static json lua_check_tool(const json &args) {
         }
     }
     json p{{"items", std::move(items)}, {"globals", args.value("globals", true)}, {"limit", args.value("limit", 200)}};
-    json r = rt_realm(args, "realm", realms::MENU, "lua_check", p, 30.0);
+    json r = rt_realm(args, "realm", default_host_realm(), "lua_check", p, 30.0);
     if (has_path && r.value("ok", false)) r["result"]["path"] = abs;
     return r;
 }
 
 static json lua_inspect_tool(const json &args) {
     json p{{"expr", args["expr"]}, {"depth", args.value("depth", 1)}, {"limit", args.value("limit", 100)}};
-    json r = rt_realm(args, "realm", realms::MENU, "lua_inspect", p);
+    json r = rt_realm(args, "realm", default_host_realm(), "lua_inspect", p);
     // A function: where its code came from (Issue #9). The runtime gave `source`; the module knows about the mount.
     if (r.value("ok", false) && r["result"].is_object() && r["result"].value("type", "") == "function" && r["result"].contains("source")) {
-        json pv = source_provenance(realm_of(args, "realm", realms::MENU), r["result"]["source"].get<std::string>());
+        json pv = source_provenance(realm_of(args, "realm", default_host_realm()), r["result"]["source"].get<std::string>());
         for (auto it = pv.begin(); it != pv.end(); ++it) r["result"][it.key()] = it.value();
     }
     return r;
@@ -761,7 +769,7 @@ static std::string decode_dump(const json &r) {
 // Is the function running in the game the code of the file on disk? Compares the function's bytecode with the file
 // compiled again from disk, in the same realm (same parser), debug info aside.
 static json lua_function_source_tool(const json &args) {
-    int realm = realm_of(args, "realm", realms::MENU);
+    int realm = realm_of(args, "realm", default_host_realm());
     if (realm < 0) return agent::err("invalid_params", "unknown realm");
     json a = agent::rt(realm, "function_dump", json{{"expr", args["expr"]}});
     if (!a.value("ok", false)) return a;
@@ -855,9 +863,9 @@ static json file_delete(const json &args) {
 
 void register_core() {
     json RO = {{"readOnlyHint", true}};
-    json realm_exec = realm_prop("Lua state to run in. Default: menu (client mode), which has no game libraries (ents, "
+    json realm_exec = realm_prop("Lua state to run in. Default: menu in client mode, which has no game libraries (ents, "
                                  "util.TraceLine, players...): pass 'server' or 'client' for game code; they exist only once a map "
-                                 "is loaded (map_load). On srcds only 'server' exists.");
+                                 "is loaded (map_load). On srcds: server (the default; no menu or client realm).");
 
     mcp::register_tool({"status", "Instance status",
                         "GMod version, branch, platform, map, gamemode, maxplayers, available realms (and injection generation), "
@@ -987,7 +995,7 @@ void register_core() {
          "truncated? (lists cut at limit), notes?}. Errors: "
          "realm_unavailable, not_found. Example: {\"realm\": \"server\", \"path\": \"addons/my_addon/lua\"}.",
          json{{"properties",
-               {{"realm", realm_prop("Lua state whose parser and globals are used: 'menu' (default, always present), 'client' or 'server'.")},
+               {{"realm", realm_prop("Lua state whose parser and globals are used: 'menu' (default in client mode, always present), 'client' or 'server' (default on srcds, which has only that one).")},
                 {"code", {{"type", "string"}, {"description", "Lua code to check (instead of path)."}}},
                 {"path", {{"type", "string"}, {"description", "File or folder to check (instead of code): absolute, or relative (looked up in lua/mcpagent_tmp/, the mounted Lua folder if any, the game folder "
                                                            "e.g. 'addons/my_addon/lua', then lua/, gamemodes/, addons/*/lua/)."}}},
@@ -1014,7 +1022,7 @@ void register_core() {
                         "Tells where a function was defined and whether the game runs the current code of that file: its "
                         "bytecode is compared with the file compiled again from disk, in the same realm. Use it before "
                         "trusting a test result after an edit (a map that was not reloaded, a file the client got from the "
-                        "server, another copy of the addon). Pick the realm the function lives in (default menu: addon code is "
+                        "server, another copy of the addon). Pick the realm the function lives in (default menu in client mode, server on srcds: addon code is "
                         "usually in 'server' or 'client'). The file is found like the engine does (mounted Lua folder first, then "
                         "lua/, gamemodes/, addons). Result: {source (\"@<path>\" as the engine names it), linedefined, "
                         "lastlinedefined, file/disk (absolute; the copy this realm ran), from_mount (true: it came from the mounted Lua folder, "
