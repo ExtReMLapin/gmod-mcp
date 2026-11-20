@@ -320,6 +320,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
             sc = srv.exec_answer(args)
             return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc,
                                         "isError": "error" in sc}))
+        if name == "status" and srv.status_answer:  # chaos tests (issues #6/#8): instances_launch polls a client whose map_load answer was lost
+            sc = srv.status_answer(args)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": False}))
         if name == "lua_mount" and srv.lua_mount_answer:
             with srv.lock: srv.lua_mount_calls.append(args)
             sc = srv.lua_mount_answer(args)
@@ -349,6 +352,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
         self.changing, self.terminate_hook, self.instances_answer = 0, None, None  # Issue #6
         self.map_load_hook = None
+        self.status_answer = None  # chaos tests: what `status` says ({map, loading}), a function of the arguments
         self.exec_answer, self.exec_calls, self.order = None, [], []  # Issue #10: console_exec answers and the order of console_exec / map_load calls
         self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
         self.extra_instances = []  # FP7137 tests (issue #7): games the bridge never started, as instances_list shows them (with "loading")
@@ -2885,8 +2889,81 @@ def case_chaos_memory():
         S["close"]()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "fuzz"]
+def live_cluster(member_pid, coordinator_pid=1):
+    """What a fake coordinator answers to instances_list: two games, one of them the coordinator. `member_pid` should be a
+    process that really lives (or does not, to play a member that died): the bridge checks it before it waits for a hand-over."""
+    return lambda: {"instances": [{"id": "client-1", "pid": coordinator_pid, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True},
+                                  {"id": "client-2", "pid": member_pid, "port": 27082, "mode": "client", "state": "running", "role": "member"}],
+                    "coordinator_id": "client-1"}
+
+
+def case_chaos_relay():
+    """Issue #6 (chaos test of the hand-over, live 2026-11-20), BUG-1: a call in flight when the coordinator dies is not
+    "game_not_running": the target game lives and the call may have run (relay_lost, maybe_executed). instances_launch polls
+    the client before it reports a map failure (a map_load whose answer was lost, the map loaded)."""
+    print("== CHAOS_RELAY: a call lost in flight during a hand-over", flush=True)
+    env0 = isolated_config(with_token=True)
+    env0["GMOD_MCP_HANDOVER_WAIT_S"] = "4"
+    env0["GMOD_MCP_FP7137_WORKAROUND"] = "0"
+    me = os.getpid()
+    # 1. Another game lives (seen in instances_list): the connection breaks mid-call (the answer never comes).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.map_load_hook = lambda a: time.sleep(1.0)
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "map_load", "arguments": {"instance": "client-2", "map": "gm_construct"}}, 30)
+    res = (r or {}).get("result", {}); sc = res.get("structuredContent", {}); e = sc.get("error", {}); d = e.get("details", {})
+    check("CHAOS_RELAY a call lost in flight while another game lives: relay_lost, isError, not game_not_running",
+          res.get("isError") and e.get("code") == "relay_lost", r)
+    check("CHAOS_RELAY ... retry_after_s and maybe_executed: true in details, and the message says the call may have run",
+          d.get("maybe_executed") is True and d.get("retry_after_s", 0) > 0 and "may have" in e.get("message", "") and "Start the game" not in e.get("message", ""), e)
+    check("CHAOS_RELAY ... answered at once (no wait for a hand-over: it would repeat a call that may have run)", time.time() - t0 < 3.5, time.time() - t0)
+    check("CHAOS_RELAY ... the text twin is the same JSON", json_equal(res["content"][0]["text"], sc), res)
+    srv.stop(); b.close()
+    # 2. No other game known to live: the same cut is a closed game (unchanged).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    b = Bridge(port, env0)
+    srv.map_load_hook = lambda a: time.sleep(1.0)
+    r = b.req("tools/call", {"name": "map_load", "arguments": {"map": "gm_construct"}}, 30)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("CHAOS_RELAY nothing else known to live: a connection cut mid-call is still game_not_running", sc.get("error", {}).get("code") == "game_not_running", r)
+    srv.stop(); b.close()
+    if os.name != "nt":
+        print("   (the launch scenarios are Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_RELAY stand-in game built next to the bridge", False)
+        return
+    # 3. instances_launch {map}: the client's map_load answer is lost, the map loaded (status says it, after a loading phase).
+    S = chaos_session()
+    S["srv"].map_load_hook = lambda a: time.sleep(1.0)
+    polls = {"n": 0}
+    def status(a):
+        polls["n"] += 1
+        return {"map": "gm_construct" if polls["n"] >= 3 else "", "loading": polls["n"] < 3}
+    S["srv"].status_answer = status
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "d1", "timeout_s": 60, "game_dir": S["game"], "map": "gm_construct"})
+    inst = (sc.get("instances") or [{}])[0]
+    check("CHAOS_RELAY instances_launch: a map_load answer lost while the client loaded the map: reported as loaded (status polled until loading ended)",
+          err is not True and inst.get("map") == "gm_construct" and "map_error" not in inst and polls["n"] >= 3, {"polls": polls["n"], "sc": sc})
+    S["close"]()
+    # 4. The client did not load it (not loading, another map): the failure is reported, as relay_lost.
+    S = chaos_session()
+    S["srv"].map_load_hook = lambda a: time.sleep(1.0)
+    S["srv"].status_answer = lambda a: {"map": "gm_other", "loading": False}
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "d1", "timeout_s": 60, "game_dir": S["game"], "map": "gm_construct"})
+    inst = (sc.get("instances") or [{}])[0]
+    me_err = inst.get("map_error", {})
+    check("CHAOS_RELAY instances_launch: the client reports another map and is not loading: map_error relay_lost (maybe_executed), map null",
+          err is True and inst.get("map") is None and me_err.get("code") == "relay_lost" and me_err.get("details", {}).get("maybe_executed") is True, sc)
+    S["close"]()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

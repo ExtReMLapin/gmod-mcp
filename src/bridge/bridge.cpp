@@ -261,6 +261,7 @@ bool is_modern(const json &msg) {
 struct Relay {
     bool reached = false;  // false: game unreachable (why in g_why)
     bool refused = false;  // unreachable because the connection was never made (refused, or no answer to the connect): nothing was sent
+    bool lost = false;     // issue #6: the connection was made, then broke before a complete answer: the game may have run the call
     int status = 0;
     json response;         // final JSON-RPC response (null for notifications)
     bool aborted = false;  // issue #8: cut because the launched client the call waited on died (reached is true: the game itself is fine)
@@ -439,6 +440,7 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
         }
         auto e = res.error();
         r.refused = e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout;
+        r.lost = e == httplib::Error::Read || e == httplib::Error::Write;  // issue #6
         if (e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout)
             set_down("nothing listening: the game is closed or was started without -mcp");
         else
@@ -1244,6 +1246,20 @@ Relay ride_out_handover(Relay r, const std::function<Relay()> &again, const std:
     for (;;) {
         double retry = 1.0;
         bool wait = false;
+        if (!r.reached && r.lost && !r.refused && handover_expected()) {
+            // Issue #6: the call was in flight when the coordinator went away while other games live. The target game may well
+            // have run it (a map load, a Lua job): repeating it here could run it twice, and game_not_running would be a lie.
+            json e{{"error", {{"code", "relay_lost"},
+                              {"message", "the connection to the coordinator (the game on port " + std::to_string(g_port) + ") broke while this call was in flight, "
+                                          "and other games are running: the coordinator role is moving. The call MAY HAVE BEEN EXECUTED by its target game (a map "
+                                          "load or a Lua job may have started or finished): check the game's state (status, instances_list, lua_job_status) before "
+                                          "repeating a call that is not idempotent. The game itself is not closed; calls work again within a few seconds."},
+                              {"details", {{"retry_after_s", 3.0}, {"maybe_executed", true}}}}}};
+            r.reached = true;
+            r.status = 200;
+            r.response = rpc_result(id, tool_text(e, true));
+            return r;
+        }
         if (!r.reached) wait = r.refused && handover_expected();
         else if (r.response.is_object() && r.response.contains("result")) wait = coordinator_changing_result(r.response["result"], &retry);
         if (!wait) return r;
@@ -1448,6 +1464,32 @@ std::set<uint32_t> game_process_pids(const std::string &exe) {
     }
     CloseHandle(snap);
     return out;
+}
+#endif
+
+#ifdef _WIN32
+// Issue #6: a map_load whose answer never came (the connection to the coordinator broke while the role moved): the client may have
+// loaded the map anyway (seen live: maps loaded with the lua_mount active while instances_launch reported game_not_running).
+// Polls its status until it is not loading any more. Returns {map} when it sits on `map`, null when it does not, or when it ended.
+json recover_lost_map_load(const Launched &l, const std::string &map, double budget_s) {
+    auto t0 = std::chrono::steady_clock::now();
+    int idle = 0;  // consecutive readings that say "not loading, another map"
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < budget_s) {
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) return json();
+        json st = game_call("status", json{{"instance", l.id}}, 10);
+        if (!st.is_object() || st.contains("error")) {
+            idle = 0;  // the answer itself may be lost again: look again
+        } else if (st.value("loading", false)) {
+            idle = 0;
+        } else if (st.contains("map") && st["map"].is_string() && st["map"].get<std::string>() == map) {
+            return json{{"map", map},
+                        {"note", "the answer to map_load was lost (the coordinator role moved while it ran); the client reports the map loaded"}};
+        } else if (++idle >= 2) {
+            return json();
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return json();
 }
 #endif
 
@@ -1758,9 +1800,15 @@ json launch_tool(const json &args, const json &token) {
             if (map_res[i].contains("error") && mount_ok[i]) {
                 std::string code = map_res[i]["error"].is_object() ? map_res[i]["error"].value("code", "") : "";
                 bool broken = code == "game_not_running" || code == "port_conflict" || code == "instance_gone" || code == "instance_unreachable" ||
-                              code == "coordinator_changing" || code == "relay_error" || code == "rpc_error";
+                              code == "coordinator_changing" || code == "relay_error" || code == "rpc_error" || code == "relay_lost";
                 json ce = launched_crash_error(started[i], broken ? 2500 : 0);
-                if (!ce.is_null()) map_res[i] = json{{"error", ce}};
+                if (!ce.is_null()) {
+                    map_res[i] = json{{"error", ce}};
+                } else if (broken && !started[i].id.empty()) {
+                    // Issue #6: the answer was lost (the coordinator moved while the load ran), the load may have gone through: ask the client.
+                    json ok = recover_lost_map_load(started[i], map, std::max(10.0, timeout - elapsed()));
+                    if (!ok.is_null()) map_res[i] = ok;
+                }
             }
         // With the map loaded the engine's server Lua paths exist: look again, for the base Lua (a mounted folder that hides
         // the game's own lua/ makes a client unusable).
@@ -1798,6 +1846,7 @@ json launch_tool(const json &args, const json &token) {
             e["map"] = ok ? json(map) : json(nullptr);
             if (!ok) e["map_error"] = map_res[i]["error"];
             if (map_res[i].contains("fp7137_waited")) e.update(map_res[i]["fp7137_waited"]);  // FP7137
+            if (ok && map_res[i].contains("note")) e["map_note"] = map_res[i]["note"];  // issue #6: the answer was lost, the client has the map
         }
         results.push_back(e);
     }

@@ -144,6 +144,12 @@
   only delays its own calls). Everything is tagged `FP7137` and obeys `GMOD_MCP_FP7137_WORKAROUND=0` (see
   `docs/FP7137.md`); the agent-facing texts (server instructions, `instances_launch` / `map_load` descriptions, guide,
   skill, README) say so.
+- **A call lost in flight while the coordinator moves is `relay_lost`, not `game_not_running`** (issue #6, live chaos test).
+  When the coordinator died with a call in flight and other games were running, the call answered `game_not_running`
+  ("Start the game with -mcp") although its target game lived and the action had happened (a map load completed, a Lua job
+  kept running). It now answers the retryable `relay_lost` (`details.retry_after_s`, `details.maybe_executed: true`): the call
+  may have run, check the state before repeating one that is not idempotent. `instances_launch {map}` asks the client for its
+  `status` after a lost `map_load` answer and reports the map loaded (`map_note`) when it sits on it, instead of `map: null`.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for
