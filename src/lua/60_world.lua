@@ -53,7 +53,15 @@ function H.ents_find(args)
 		end
 	end
 	if near then table.sort(out, function(a, b) return a.distance < b.distance end) end
-	return { entities = out, count = total, truncated = total > #out }
+	local res = { entities = out, count = total, truncated = total > #out }
+	for _, s in ipairs(out) do
+		if s.id == -1 then
+			-- Issue #3: ClientsideModel and friends have no entity index: ent_info/ent_fire/ent_remove cannot address them.
+			res.note = "entities with id -1 are clientside-only (ClientsideModel, ClientsideRagdoll...): they have no index, so ent_info, ent_fire and ent_remove cannot address them; inspect them with lua_exec in the client realm (ents.GetAll(), then match on class/model/pos)."
+			break
+		end
+	end
+	return res
 end
 
 function H.ent_info(args)

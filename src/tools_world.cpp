@@ -111,7 +111,7 @@ void register_world() {
                         "\"*door*\", \"models/props_c17/*\"). near + radius keep the entities whose position is within radius "
                         "of near (ents.FindInSphere), sorted nearest first, each with `distance`. Result: {entities: [{id, class, "
                         "model, name (targetname, if any), nick (players), pos [x,y,z], ang [p,y,r], distance?}], count (all "
-                        "matches), truncated (count > limit)}. id is the entity index: pass it to ent_info, ent_fire, ent_remove. "
+                        "matches), truncated (count > limit)}. id is the entity index: pass it to ent_info, ent_fire, ent_remove (a clientside-only entity, ClientsideModel and the like, has id -1: no tool can address it, see `note`; use lua_exec in the client realm). A number the game cannot hold (NaN, infinity) reads null. "
                         "Server realm by default; the client realm only sees networked entities (and no targetnames). Example: "
                         "{\"class\": \"func_door*\", \"near\": [0, 0, 64], \"radius\": 1024, \"limit\": 10}.") + kNeedsMap,
                         json{{"properties", {{"class", {{"type", "string"}, {"description", "Class glob, case-insensitive, e.g. prop_physics or prop_*."}}},
@@ -257,9 +257,10 @@ void register_render() {
                         json{{"properties", from}, {"required", {"pos", "ang"}}}, json{{"readOnlyHint", true}}, screenshot_from_tool});
     json prim = {{"type", "object"},
                  {"properties",
-                  {{"type", {{"type", "string"}, {"enum", {"line", "box", "sphere", "text"}}}},
-                   {"from", vec_schema("line: start point.")},
-                   {"to", vec_schema("line: end point.")},
+                  {{"type", {{"type", "string"}, {"enum", {"line", "arrow", "box", "sphere", "text"}}}},
+                   {"from", vec_schema("line / arrow: start point.")},
+                   {"to", vec_schema("line / arrow: end point (the arrow head).")},
+                   {"head", {{"type", "number"}, {"minimum", 0}, {"description", "arrow: head length in units (default a quarter of the length, at most 16)."}}},
                    {"pos", vec_schema("box: origin of mins/maxs; sphere: center; text: position.")},
                    {"ang", vec_schema("box: rotation [p,y,r] (default 0,0,0).")},
                    {"mins", vec_schema("box: corner relative to pos (default [-8,-8,-8]).")},
@@ -274,7 +275,7 @@ void register_render() {
                  {"required", {"type"}},
                  {"additionalProperties", false}};
     mcp::register_tool({"debug_draw", "Draw debug primitives",
-                        "Draws 3D lines, wireframe boxes, wireframe spheres and text in the game world, in the client realm (a map "
+                        "Draws 3D lines, arrows (a line with a head at `to`), wireframe boxes, wireframe spheres and text in the game world, in the client realm (a map "
                         "must be loaded), visible on screen and in screenshot/screenshot_from. They add up across calls and expire "
                         "after `duration` seconds of game time (0 = until debug_clear or the next map). Nothing changes in the "
                         "game itself. Result: {added, active, expire_in_s}. Example: {\"primitives\": [{\"type\": \"line\", "

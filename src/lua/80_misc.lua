@@ -122,7 +122,7 @@ local HT = A.http
 function H.http_get(args)
 	local url = tostring(args.url or "")
 	if string.sub(url, 1, #WIKI_PREFIX) ~= WIKI_PREFIX then A.fail("forbidden", "only " .. WIKI_PREFIX .. "* URLs are allowed") end
-	if not HTTP then A.fail("unsupported", "HTTP function unavailable in this realm") end
+	if not HTTP then A.fail("unsupported", "HTTP function unavailable in the " .. tostring(A.realm) .. " realm") end
 	HT.next_id = HT.next_id + 1
 	local id = HT.next_id
 	HT.req[id] = { done = false }
