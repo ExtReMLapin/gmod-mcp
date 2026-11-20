@@ -121,6 +121,36 @@ def json_equal(text, value):
     except (ValueError, TypeError): return False
 
 
+# Issue #3 (Code Mode): Claude Code turns an isError result into a thrown McpToolError whose `message` is the text blocks joined
+# with a newline and whose `detail` is JSON.parse(message) only when the whole message starts with `{`. So the text of EVERY error
+# result the bridge sends must be exactly one JSON object {"error": {"code", "message", ...}}. Every Bridge of every case feeds
+# this audit; main() turns the tally into one check per case (so each error path a case drives is covered).
+ERROR_AUDIT = {"seen": 0, "bad": [], "codes": set()}
+
+
+def error_text_problem(res):
+    """None when the isError result `res` is what code mode needs, else what is wrong."""
+    texts = [c.get("text", "") for c in res.get("content", []) if isinstance(c, dict) and c.get("type") == "text"]
+    if len(texts) != 1: return "%d text blocks (want exactly 1): %r" % (len(texts), texts)
+    if not texts[0].startswith("{"): return "text does not start with '{': %r" % texts[0][:120]
+    try: obj = json.loads(texts[0])
+    except ValueError as e: return "text is not JSON (%s): %r" % (e, texts[0][:120])
+    e = obj.get("error") if isinstance(obj, dict) else None
+    if not (isinstance(e, dict) and isinstance(e.get("code"), str) and isinstance(e.get("message"), str)):
+        return "no error.code / error.message: %r" % texts[0][:200]
+    return None
+
+
+def audit_error_result(m):
+    res = m.get("result") if isinstance(m, dict) else None
+    if not isinstance(res, dict) or res.get("isError") is not True: return
+    ERROR_AUDIT["seen"] += 1
+    problem = error_text_problem(res)
+    code = ((res.get("structuredContent") or {}).get("error") or {}).get("code")
+    if code: ERROR_AUDIT["codes"].add(code)
+    if problem: ERROR_AUDIT["bad"].append(problem + " | " + json.dumps(res)[-700:])
+
+
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
@@ -150,6 +180,7 @@ class Bridge:
     def _read(self):
         for line in self.p.stdout:
             m = json.loads(line)
+            audit_error_result(m)
             with self.cv:
                 self.order.append(m)
                 if "id" in m and "method" not in m: self.by_id[json.dumps(m["id"])] = m
@@ -312,6 +343,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if name == "instances_list" and srv.instances_answer:  # Issue #6: the test decides what the directory says
             sc = srv.instances_answer()
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "jsonerr":  # Issue #3: an error result with no structuredContent whose text is the JSON error (e.g. a cancelled task)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps({"error": {"code": "fake_error", "message": "fails on purpose", "details": {"n": 1}}})}], "isError": True}))
         if name == "echo":
             h = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("mcp")}
             sc = {"args": args, "headers": h}  # like the module: the text is the JSON of structuredContent
@@ -2324,6 +2357,17 @@ def case_version():
     # structuredContent (code-mode hosts parse it), with the warning as its first key so it is read first.
     check("VERSION (issue 3) one text block, the JSON of structuredContent, version_warning first, with what to do",
           len(texts) == 1 and first.startswith('{"version_warning":"') and json_equal(first, sc) and "0.0.1" in first and "skill" in first, texts)
+    # Issue #3 (Code Mode): an error result WITHOUT structuredContent whose text is the JSON error: the warning goes into that JSON,
+    # no prose block in front of it (Claude Code only sets e.detail when the whole message starts with `{`).
+    r = b.req("tools/call", {"name": "jsonerr", "arguments": {}})
+    res = (r or {}).get("result", {})
+    texts_e = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    try: obj_e = json.loads(texts_e[0])
+    except (ValueError, IndexError): obj_e = None
+    check("VERSION (issue 3 code mode) an error without structuredContent: one text block, still a JSON object starting with `{`, error intact, version_warning inside",
+          res.get("isError") is True and len(texts_e) == 1 and texts_e[0].startswith("{") and isinstance(obj_e, dict) and
+          obj_e.get("error") == {"code": "fake_error", "message": "fails on purpose", "details": {"n": 1}} and
+          "0.0.1" in obj_e.get("version_warning", "") and error_text_problem(res) is None, res)
     check("VERSION the tool's own answer is still there", sc.get("args") == {} and "args" in first, res)
     # The bridge's own tools too (seen in a real update, 2026-11-14: "launch an instance" went through instances_launch
     # and the agent never saw the warning).
@@ -3469,6 +3513,9 @@ if args[:1] == ["--serial"] or len(args) == 1:
     for c in [a for a in args if a != "--serial"] or DEFAULT:
         t_case = time.time()
         CASES[c]()
+        if ERROR_AUDIT["seen"]:
+            check("CODEMODE (issue 3) [%s] every isError result (%d seen: %s) is exactly one JSON object {error:{code,message}} (e.detail works)" %
+                  (c, ERROR_AUDIT["seen"], ", ".join(sorted(ERROR_AUDIT["codes"]))), not ERROR_AUDIT["bad"], ERROR_AUDIT["bad"][:3])
         cleanup_made()
         print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
 else:

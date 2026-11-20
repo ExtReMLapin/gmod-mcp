@@ -134,6 +134,13 @@
   bridge then does not forward the Tasks extension to the game) or for the game (the module reads it too). A client that asks for a
   task itself (the 2025-11-25 form) still gets one.
 
+- **Every error text is one JSON object, so `e.detail` works in Code Mode** (Issue #3). Claude Code throws the text of an error
+  result and gives the script `e.detail` (the parsed JSON) only when that whole text starts with `{`. The version-mismatch warning
+  was a prose block in front of an error without `structuredContent` (it is now a field `version_warning` inside the JSON), and two
+  results of the bridge were `isError` with no `error` object: `instances_close` when nothing was closed (now `error.code:
+  "refused"`) and `instances_launch` when the clients started but a map, a startup command or the `lua_mount` failed (now
+  `error.code: "launch_incomplete"`; the whole result is still there). Checked on every error path the bridge tests drive.
+
 - **A test client no longer keeps the user's foreground** (live, x86-64 branch). Every client `instances_launch` started became the foreground
   window and kept it, so the user's terminal lost the focus at each launch. The bridge now starts the client with a window shown without
   activation (`STARTF_USESHOWWINDOW`, `SW_SHOWNOACTIVATE`: three launches in a row and a launch of two, 0 of 1,216 samples taken during the

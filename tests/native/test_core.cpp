@@ -2287,6 +2287,28 @@ static void test_installer_roundtrip() {
     fs::remove_all(base, ec);
 }
 
+// Issue #3 (Code Mode): Claude Code throws the text of an isError result and sets `e.detail` only when the whole text starts with
+// `{`. So the text of every error of the module is exactly one JSON object {"error": {"code", "message"}} and nothing else (the
+// bridge's own errors are walked by tests/bridge/test_bridge.py, check "CODEMODE").
+static void check_error_text(const json &r) {
+    CHECK(r.value("isError", false));
+    CHECK(r.contains("content") && r["content"].is_array() && r["content"].size() == 1);
+    std::string text = r["content"][0].value("text", "");
+    CHECK(!text.empty() && text[0] == '{');
+    json j = json::parse(text, nullptr, false);
+    CHECK(j.is_object() && j.contains("error") && j["error"].is_object() && j["error"].value("code", "").size() > 0 &&
+          j["error"].value("message", "").size() > 0);
+    CHECK(j == r["structuredContent"]);
+}
+static void test_error_text_is_json() {
+    if (mcp::tools().empty()) tools::register_all();
+    check_error_text(mcp::call_tool("no_such_tool", json::object()));
+    for (const auto &t : mcp::tools()) {
+        check_error_text(mcp::call_tool(t.name, json{{"__no_such_argument", 1}}));  // refused by the input schema, before the handler
+        if (!t.local_only) check_error_text(mcp::call_tool(t.name, json{{"instance", "no-such-instance"}}));  // unknown instance / no coordinator
+    }
+}
+
 // Issue #3: the guide documents where the hints of a result live (the model of some clients reads structuredContent on
 // success and only the text on an error), so the conventions are written down and cannot silently drift.
 static void test_guide_result_conventions() {
@@ -3242,6 +3264,7 @@ int main(int argc, char **argv) {
     test_map_load_call_flag();  // first: later tests (map loads, server states) leave the load flag on for the rest of the run
     test_installer_roundtrip();
     test_guide_result_conventions();
+    test_error_text_is_json();
     test_output_schemas();
     test_output_schemas_nonfinite();
     test_wiki_http_realms();
