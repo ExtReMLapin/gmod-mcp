@@ -7,6 +7,10 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
 
 - `src/*.cpp|h` — the module. Entry point `module.cpp` (`gmod13_open/close`), MCP layer `mcp.cpp`, tools `tools_*.cpp`,
   engine access `realms.cpp` / `netaddr.cpp` / `luaapi.cpp`, OS-specific code only in `src/platform/`.
+- `src/windowshot.*` — `screenshot` without a client realm, the pure part (source decision, client-area crop, image size);
+  `src/platform/window_capture_win.cpp` — the Windows Graphics Capture side (C++/WinRT, WIC encoder), linked into the module and
+  the test executables only (`CAPTURE_SOURCES`), never the bridge. Keep the process's MTA alive (`CoIncrementMTAUsage`): COM
+  unloading `Windows.Graphics.Capture` under a running capture crashes.
 - `src/lua/*.lua` — Lua runtime injected into each realm, embedded into the DLL at build time
   (`cmake/embed_lua.cmake`, alphabetical order).
 - `src/installer.cpp` — the main-menu loader block the module writes into `garrysmod/lua/menu/menu.lua`.
