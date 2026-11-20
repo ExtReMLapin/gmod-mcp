@@ -4,6 +4,29 @@
 
 ### Fixes
 
+- **`map_load` with no game answers as fast as `status`**. It answered `game_not_running` after 2-3 s instead of 1 s: before the call itself,
+  the bridge asked the directory which other games were loading (to report them), a second refused connection. It no longer asks
+  once a call has found nothing listening.
+- **A crash answer says where the dump's exception happened** (issue #8, live verification). `client_crashed` / `server_crashed` named
+  the minidump and nothing else. The module now reads it (exception record, the faulting thread's stack pointer and stack memory, the
+  module list) and `details` and the `instances_list` crash entry carry `fault` (e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up
+  to 8 stack words that point into a module, from the stack pointer up). The guide adds that a crash only on test clients may be
+  timing (`fps_max` 20 runs several server ticks per frame): retry with `fps_max: 300` to tell.
+- **`instances_launch` under a foreign-held base port** (issue #5, live verification). Every call already answered `port_conflict` when a
+  program that is not gmod-mcp holds the base port, but `instances_launch` started its clients (which take the next free port, where the
+  bridge never looks) and waited its whole budget to fail `timeout` "gmod-mcp did not load in them". It now refuses up front with
+  `port_conflict` (the fix, `GMOD_MCP_PORT`, and the gmod-mcp found on the next port when there is one) and starts nothing; when the port
+  is taken while a launch waits, it gives up after 10 s and the `timeout` error names the conflict.
+- **A frozen but live instance keeps answering `instance_hung`** (issue #8, live chaos test). The first call to a member that stopped
+  heartbeating (frozen as a whole) answered `instance_hung`, every later one `instance_gone` in 0.2 s although the process still
+  ran: the member had been dropped from the directory and the tombstone assumed it was gone. `instance_gone` now means the process
+  ended; a live silent one answers `instance_hung` (details `pid`, `silent_s`) with how to close it.
+- **A stuck loading screen is not a load** (issue #8, live check I-C1). After `map gm_flatgrass` then `disconnect` within a second the
+  engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
+  300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no
+  connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
+  false, `status` and `instances_list` say `loading_stuck: true` with the way out (`map_load` or `disconnect` clears it). A real load,
+  even a minute-long one with its realm present, is never cut.
 - **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
   the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
   do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;

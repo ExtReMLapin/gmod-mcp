@@ -62,6 +62,19 @@ static void loading_note_server_state(bool present) {
     }
     if (changed) coordinator::wake();
 }
+// Issue #8 (live check I-C1): what is going on behind the menu's loading screen, fed with every menu poll (see loadflag.h).
+static void loading_note_menu_context(bool engaged) {
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lk(g_loading_mu);
+        changed = g_loading.note_menu_context(engaged, mono_s());
+    }
+    if (changed) coordinator::wake();
+}
+bool map_loading_stuck() {
+    std::lock_guard<std::mutex> lk(g_loading_mu);
+    return g_loading.menu_stuck(mono_s());
+}
 bool map_loading(double *since_s) {  // FP7137
     std::lock_guard<std::mutex> lk(g_loading_mu);  // FP7137
     double now = mono_s();  // FP7137
@@ -597,7 +610,11 @@ void pump(lua_State *host) {
     // even when it was started from the console.
     if (g_cfg.mode == Mode::Client && fc % 5 == 0 && realms::state(realms::MENU)) {  // FP7137
         json idle = call_runtime(realms::MENU, "menu_idle", json::object());  // FP7137
-        if (idle.value("ok", false)) loading_set(loadflag::Tracker::Menu, idle["result"].value("loading", false));  // FP7137
+        if (idle.value("ok", false)) {  // FP7137
+            loading_set(loadflag::Tracker::Menu, idle["result"].value("loading", false));  // FP7137
+            // Issue #8: a loading screen with no realm, not connected and no load starting is the engine's stuck state, not a load.
+            loading_note_menu_context(realms::state(realms::SERVER) || realms::state(realms::CLIENT) || idle["result"].value("in_game", false));
+        }
     }  // FP7137
     if (fc % 30 == 0) deliver_notice();
     tick_lua_jobs();

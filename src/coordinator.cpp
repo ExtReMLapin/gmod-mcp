@@ -164,6 +164,7 @@ static json self_info() {
     // Issue #8 (G3): who launched it (instances_launch {owner}) and whether it is one of our test clients (-mcp_test_client), so that
     // instances_list names the owner of every instance and a later bridge session can close keep:true test clients by owner.
     info["test_client"] = c.test_client;
+    if (agent::map_loading_stuck()) info["loading_stuck"] = true;  // issue #8 (I-C1): the engine's loading screen is stuck, not a load
     if (!c.owner.empty()) info["owner"] = c.owner;
     return info;  // game_dir is read by the coordinator (where the crash dumps are), not shown by instances_list
 }
@@ -202,6 +203,7 @@ static bool finalize_locked(Tracked &t) {
     std::vector<crashinfo::Dump> dumps;
     if (!f.requested && !f.goodbye) dumps = crashinfo::list_dumps(crashinfo::dump_dirs(t.game_dir));
     t.ending.verdict = crashinfo::judge(f, dumps, g_claimed_dumps);
+    crashinfo::read_dump_facts(crashinfo::dump_dirs(t.game_dir), t.ending.verdict);  // issue #8: the faulting module and the stack's callers
     if (!t.ending.verdict.dump.empty()) {
         if (g_claimed_dumps.size() > 500) g_claimed_dumps.clear();
         g_claimed_dumps.insert(t.ending.verdict.dump);
@@ -451,6 +453,7 @@ static json ended_error(Tracked &t) {
     const crashinfo::Verdict &v = t.ending.verdict;
     if (v.cause == crashinfo::Cause::Crashed) {
         json details{{"instance", t.id}, {"pid", t.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)}, {"evidence", v.evidence}};
+        crashinfo::add_fault_details(details, v);  // issue #8: fault, stack_candidates
         if (t.ending.exit_known) details["exit_code"] = t.ending.exit_code;
         std::string message = crashinfo::crash_message(t.mode, t.id, t.pid, ago, v, t.ending.exit_known, t.ending.exit_code);
         lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low
@@ -483,7 +486,15 @@ static json relay(const std::string &instance, const std::string &tool, const js
                                         " s (nothing was sent to it)",
                                     json{{"retry_after_s", kHandoverRetryS}, {"instance", instance}});
                 double ago = std::chrono::duration<double>(Clock::now() - g->second.when).count();
-                return wrap_err("instance_gone", gone_message(instance, gt.pid, ago, true));
+                // Issue #8 (live chaos test): its process still runs (finalize_locked says it did not end), so it did not "go": it is frozen
+                // and was dropped from the directory for want of heartbeats. instance_gone is for a process that ended; the first call to a
+                // frozen member said instance_hung, every later one said instance_gone.
+                return wrap_err("instance_hung",
+                                "instance " + instance + (gt.pid ? " (pid " + std::to_string(gt.pid) + ")" : "") + " sent no heartbeat for " + std::to_string((int)ago) +
+                                    " s but its process is still running: it is frozen as a whole (infinite loop, crash dialog, debugger, hung driver or a very long load) and will "
+                                    "not answer; nothing was sent to it. Check it with instances_list; close it with game_terminate {instance} or instances_close {pids:[" +
+                                    std::to_string(gt.pid) + "]} and relaunch a client with instances_launch.",
+                                json{{"instance", instance}, {"pid", gt.pid}, {"silent_s", round1(ago)}});
             }
             if (in_handover())
                 return wrap_err("coordinator_changing",

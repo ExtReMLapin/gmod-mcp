@@ -107,7 +107,7 @@ add_custom_command(
   COMMENT "Building the bridge's offline snapshot")
 
 # --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
-add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/lowmem.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/launch_opts.cpp src/cmdline.cpp src/next_call.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/lowmem.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/launch_opts.cpp src/cmdline.cpp src/next_call.cpp src/mdmp.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
   src/bridge/fp7137.cpp)  # FP7137: the launch/map_load lock, see docs/FP7137.md
 target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)
@@ -122,7 +122,8 @@ endif()
 
 # --- Native unit tests (no game): run by the CI ---
 add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES}
-  tests/native/test_fp7137.cpp src/bridge/fp7137.cpp)  # FP7137: its tests and the code they test
+  tests/native/test_fp7137.cpp src/bridge/fp7137.cpp
+  tests/native/test_mdmp.cpp src/mdmp.cpp)  # FP7137: its tests and the code they test; mdmp: the minidump reader
 target_include_directories(gmod-mcp-unittests PRIVATE src)
 target_link_libraries(gmod-mcp-unittests PRIVATE nlohmann_json::nlohmann_json)  # FP7137: fp7137.h includes nlohmann/json
 if(MSVC)

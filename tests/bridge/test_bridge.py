@@ -1256,6 +1256,28 @@ def case_launch_options():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def synthetic_minidump():
+    """Issue #8: a minidump built by hand (x64 layouts, as tests/native/mdmp_builder.h): an access violation in engine.dll+0x2069e0, a stack
+    with client.dll+0x1234 and lua_shared.dll+0x5555 on it. Returns the bytes."""
+    import struct
+    eng, cli, lua, stack = 0x7ff800000000, 0x7ff900000000, 0x7ffa00000000, 0x7f00000000
+    b = bytearray(0x1600)
+    def put(fmt, off, *v): struct.pack_into(fmt, b, off, *v)
+    put("<IIII", 0, 0x504d444d, 0xa793, 4, 32)
+    for i, (t, sz, rva) in enumerate(((3, 52, 0x100), (4, 328, 0x200), (5, 20, 0x700), (6, 168, 0x400))): put("<III", 32 + 12 * i, t, sz, rva)
+    put("<I", 0x100, 1); put("<I", 0x104, 7); put("<QII", 0x104 + 24, stack, 0x400, 0x1200)       # thread list: the faulting thread and its stack
+    put("<I", 0x200, 3)
+    for i, (base, name) in enumerate(((eng, "C:" + chr(92) + "x" + chr(92) + "bin" + chr(92) + "engine.dll"), (cli, "client.dll"), (lua, "lua_shared.dll"))):
+        o = 0x204 + 108 * i
+        put("<QI", o, base, 0x400000); put("<I", o + 20, 0x800 + 0x100 * i)
+        raw = name.encode("utf-16-le"); put("<I", 0x800 + 0x100 * i, len(raw)); b[0x804 + 0x100 * i:0x804 + 0x100 * i + len(raw)] = raw
+    put("<I", 0x400, 7); put("<I", 0x408, 0xC0000005); put("<Q", 0x408 + 16, eng + 0x2069e0); put("<II", 0x400 + 160, 0x4D0, 0x600)
+    put("<Q", 0x600 + 0x98, stack + 0x20)
+    put("<I", 0x700, 1); put("<QII", 0x704, 0x6000000000, 16, 0x1100)
+    put("<QQQ", 0x1200 + 0x20, 0, cli + 0x1234, lua + 0x5555)
+    return bytes(b)
+
+
 def case_crash():
     """Crash report (B6): a client this session launched that crashed is reported as client_crashed (dump name, exit code),
     shown by instances_list as crashed, and told apart from a clean exit. The stand-in game ends on a trigger file with a
@@ -1270,7 +1292,7 @@ def case_crash():
         return
     import shutil
 
-    def run(tag, exit_code, dump, old_dump=False, map_name=None, cut_first=False, inflight=False):
+    def run(tag, exit_code, dump, old_dump=False, map_name=None, cut_first=False, inflight=False, dump_src=None):
         game = tempfile.mkdtemp(prefix="gmcp-crash-game-")
         shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
         os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
@@ -1282,6 +1304,8 @@ def case_crash():
         env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes,
                    GMCP_FAKE_EXIT=str(exit_code), GMCP_FAKE_DUMP="1" if dump else "0")
         if cut_first: env["GMCP_FAKE_EXIT_DELAY_MS"] = "800"  # Issue #8: the connection breaks, the process object is signalled later
+        if dump_src:  # Issue #8: the stand-in writes this file's bytes as its dump
+            src = os.path.join(work, "dump_src.mdmp"); open(src, "wb").write(dump_src); env["GMCP_FAKE_DUMP_SRC"] = src
         srv = FakeServer(port, version=bridge_version()); srv.pid_file = pid_file
         b = Bridge(port, env)
         out = {"game": game}
@@ -1337,9 +1361,13 @@ def case_crash():
 
     DUMP = "gmod_win64_20261114_120000_1_accessviolation.mdmp"
     # 1. an access violation with a dump written just before.
-    o = run("c1", 0xC0000005, True)
+    o = run("c1", 0xC0000005, True, dump_src=synthetic_minidump())
     e = o["status"].get("error", {})
     check("CRASH access violation with a dump: client_crashed", e.get("code") == "client_crashed", o["status"])
+    # Issue #8 (live verification of 0.3.7): the answer says where the exception happened and the callers on the stack, read from the dump.
+    check("CRASH details.fault names the faulting module and offset read from the dump, the message says it too",
+          e.get("details", {}).get("fault") == "engine.dll+0x2069e0" and "engine.dll+0x2069e0" in e.get("message", ""), e)
+    check("CRASH details.stack_candidates lists the module+offset words of the faulting thread's stack", e.get("details", {}).get("stack_candidates") == ["client.dll+0x1234", "lua_shared.dll+0x5555"], e)
     check("CRASH the answer names the dump file, the exit code, the pid and says to relaunch",
           DUMP in e.get("message", "") and "0xC0000005" in e.get("message", "") and str(o["pid"]) in e.get("message", "") and "instances_launch" in e.get("message", ""), e)
     check("CRASH details: instance, pid, dump, exit_code, evidence", e.get("details", {}).get("dump") == DUMP and e["details"].get("exit_code") == 0xC0000005
@@ -1348,12 +1376,14 @@ def case_crash():
     check("CRASH instances_list shows it as crashed with the dump, the owner and the pid",
           len(crashed) == 1 and crashed[0].get("pid") == o["pid"] and crashed[0].get("crash", {}).get("dump") == DUMP and crashed[0].get("owner") == "c1"
           and crashed[0]["crash"].get("exit_code") == 0xC0000005, o["list"])
+    check("CRASH the instances_list entry carries the fault and the stack candidates too", crashed and crashed[0]["crash"].get("fault") == "engine.dll+0x2069e0" and crashed[0]["crash"].get("stack_candidates") == ["client.dll+0x1234", "lua_shared.dll+0x5555"], o["list"])
     check("CRASH it is no longer 'launched_not_answering'", not o["list"].get("launched_not_answering"), o["list"])
     # 2. a crash that wrote no dump, with an old dump of another game in the folder: the old one is not taken.
     o = run("c2", 0xC0000005, False, old_dump=True)
     e = o["status"].get("error", {})
     check("CRASH access violation without a dump (an hour-old dump in the folder): client_crashed, dump null",
           e.get("code") == "client_crashed" and e.get("details", {}).get("dump") is None and "No crash dump" in e.get("message", "") and "gmod_win64_2020" not in e.get("message", ""), e)
+    check("CRASH without a dump there is no fault and no stack in the details", "fault" not in e.get("details", {}) and "stack_candidates" not in e.get("details", {}), e)
     # 3. abnormal exit without any dump.
     o = run("c3", 1, False)
     e = o["status"].get("error", {})
@@ -2828,6 +2858,106 @@ def case_chaos_launch():
     import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
+def case_chaos_final():
+    """Issue #5 (last findings of the live verification of 0.3.7): instances_launch while a program that is not gmod-mcp holds the
+    base port. The bridge knew (every other call said port_conflict) but the launch waited its whole budget and failed `timeout`
+    "gmod-mcp did not load in them" while the client was up on the next port."""
+    print("== CHAOS_FINAL: instances_launch under a foreign-held base port", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_FINAL stand-in game built next to the bridge", False)
+        return
+    import shutil
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    def session(next_game, foreign_after=None):
+        game = tempfile.mkdtemp(prefix="gmcp-final-game-")
+        shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        os.makedirs(os.path.join(game, "garrysmod"))
+        work = tempfile.mkdtemp(prefix="gmcp-final-"); pid_dir = os.path.join(work, "pids"); os.makedirs(pid_dir)
+        port, env = two_free_ports(), isolated_config(with_token=True)
+        env.update(GMCP_FAKE_PID_DIR=pid_dir, GMOD_MCP_FP7137_WORKAROUND="0", GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+        S = {"port": port, "game": game, "work": work, "pid_dir": pid_dir, "foreign": None, "srv": None, "next": None}
+        if foreign_after is None: S["foreign"] = Foreign(port)
+        else: S["srv"] = FakeServer(port, version=bridge_version())  # a game answers at first (nothing registered), a foreign program takes the port later
+        if next_game: S["next"] = FakeServer(port + 1, version=bridge_version())
+        S["b"] = Bridge(port, env)
+        S["b"].req("initialize", INIT)
+        def call(tool, args, timeout=90):
+            r = S["b"].req("tools/call", {"name": tool, "arguments": args}, timeout)
+            res = (r or {}).get("result", {})
+            return res.get("structuredContent", {}), res.get("isError")
+        S["call"] = call
+        S["started"] = lambda: [int(open(os.path.join(pid_dir, f)).read() or 0) for f in os.listdir(pid_dir)]
+        def close():
+            S["b"].close()
+            for k in ("foreign", "srv", "next"):
+                if S[k]:
+                    try: S[k].stop()
+                    except Exception: pass
+            for p in S["started"]():
+                try: os.kill(p, 9)
+                except Exception: pass
+            shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+        S["close"] = close
+        return S
+    # 1. A foreign program on the base port, no game anywhere: refused up front, nothing started, the fix is named.
+    S = session(False)
+    S["call"]("status", {})  # the bridge learns of the conflict, as it does from any first call
+    t0 = time.time()
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 20, "game_dir": S["game"]}, 40)
+    took = time.time() - t0
+    e = sc.get("error", {})
+    check("CHAOS_FINAL foreign base port: instances_launch answers port_conflict at once (not `timeout` after the budget)", e.get("code") == "port_conflict" and err is True and took < 12, [took, sc])
+    check("CHAOS_FINAL the message names GMOD_MCP_PORT, the port, and says nothing was started", "GMOD_MCP_PORT" in e.get("message", "") and str(S["port"]) in e.get("message", "") and "nothing was started" in e.get("message", "").lower(), e)
+    check("CHAOS_FINAL no client was started", S["started"]() == [], S["started"]())
+    S["close"]()
+    # 2. The same with a game already up on the next port (what the live run had): the message names it.
+    S = session(True)
+    S["call"]("status", {})
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 20, "game_dir": S["game"]}, 40)
+    e = sc.get("error", {})
+    check("CHAOS_FINAL a gmod-mcp on the next port: port_conflict names GMOD_MCP_PORT=%d" % (S["port"] + 1), e.get("code") == "port_conflict" and "GMOD_MCP_PORT=%d" % (S["port"] + 1) in e.get("message", ""), sc)
+    check("CHAOS_FINAL ... and still starts nothing", S["started"]() == [], S["started"]())
+    S["close"]()
+    # 3. The port is taken by a foreign program while the launch waits (the clients start, they cannot be reached): the launch gives up
+    # after a few seconds instead of waiting its whole budget, and the error names the conflict and the next port.
+    S = session(True, foreign_after=1)
+    def swap():
+        time.sleep(1.5)
+        S["srv"].stop(); S["srv"] = None
+        S["foreign"] = Foreign(S["port"])
+    threading.Thread(target=swap, daemon=True).start()
+    t0 = time.time()
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 40, "game_dir": S["game"]}, 60)
+    took = time.time() - t0
+    e = sc.get("error", {})
+    check("CHAOS_FINAL the port taken mid-launch: gives up within ~20 s (not the 40 s budget) with a `timeout` that names the port conflict", e.get("code") == "timeout" and "port_conflict" in e.get("message", "") and "GMOD_MCP_PORT" in e.get("message", "") and took < 25, [took, sc])
+    check("CHAOS_FINAL ... and the message says where the gmod-mcp on the next port is", "GMOD_MCP_PORT=%d" % (S["port"] + 1) in e.get("message", ""), e)
+    check("CHAOS_FINAL ... the clients that were started are named (silent_pids) so they can be closed", len(sc.get("silent_pids") or []) == 1, sc)
+    S["close"]()
+
+
+def case_chaos_nogame():
+    """Live verification of 0.3.7: `map_load` with no game answered game_not_running after about 3 s, `status` after 1 s. Before it reaches the
+    game, map_load asks the directory which other games are loading (to report them), which is a second refused connection (about 1 s each
+    on Windows) when nothing listens. With no game that is already known, nothing is asked."""
+    print("== CHAOS_NOGAME: map_load with no game is as quick as status", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env); b.req("initialize", INIT)
+    def timed(tool, args):
+        t0 = time.time()
+        r = b.req("tools/call", {"name": tool, "arguments": args}, 30)
+        return time.time() - t0, (r or {}).get("result", {}).get("structuredContent", {}).get("error", {}).get("code")
+    ts, cs = timed("status", {})
+    tm, cm = timed("map_load", {"map": "gm_flatgrass"})
+    tm2, cm2 = timed("map_load", {"map": "gm_flatgrass"})
+    check("CHAOS_NOGAME status and map_load both answer game_not_running", cs == "game_not_running" and cm == "game_not_running" and cm2 == "game_not_running", [cs, cm, cm2])
+    check("CHAOS_NOGAME map_load with no game answers about as fast as status (one refused connection, not two)", tm < ts + 0.6 and tm2 < ts + 0.6, [round(ts, 2), round(tm, 2), round(tm2, 2)])
+    b.close()
+
+
 def case_chaos_owner():
     """Issue #8 (chaos test G3): the owner label survives the bridge session that launched the client. instances_launch passes it
     on the command line (-mcp_owner, encoded), the module sends it in its heartbeat (instances_list shows `owner` for every
@@ -3216,8 +3346,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

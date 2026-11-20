@@ -230,6 +230,10 @@ static json status_tool(const json &args) {
            {"tmp_dir", c.tmp_dir},
            {"game_dir", c.game_dir},
            {"pending_jobs", jobs::pending()}};
+    if (agent::map_loading_stuck()) {  // issue #8 (I-C1)
+        s["loading_stuck"] = true;
+        s["loading_stuck_note"] = agent::loading_stuck_note();
+    }
     if (stalled) {
         s["warning"] = "the main thread has not run for " + std::to_string((int)since) +
                        " s (long load, freeze or infinite loop). game_terminate remains available.";
