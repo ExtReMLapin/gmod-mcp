@@ -1452,6 +1452,30 @@ static void test_loading_stuck_wording() {
     }
 }
 
+// Live verification of 0.3.7: a bridge-started map_load first waits for the menu (up to 15 s on a client whose loading screen is stuck) and
+// 30 frames before the engine starts the load; `status` said loading false meanwhile. agent::MapLoadCall marks that span: status and the
+// instances_list entry of this instance say loading true while it lives, and the flag falls back when it ends.
+static void test_map_load_call_flag() {
+    if (mcp::tools().empty()) tools::register_all();
+    auto self_loading = [] {
+        for (const auto &e : coordinator::instances())
+            if (e.value("self", false)) return e.value("loading", false);
+        return false;
+    };
+    CHECK(!agent::map_loading());  // nothing has started a load yet in this run
+    {
+        agent::MapLoadCall call;
+        CHECK(agent::map_loading());
+        json st = mcp::call_tool("status", json::object()).value("structuredContent", json::object());
+        CHECK(st.value("loading", false) == true);
+        CHECK(self_loading());
+        CHECK(!agent::map_loading_stuck());
+    }
+    CHECK(!agent::map_loading() && !self_loading());
+    json st = mcp::call_tool("status", json::object()).value("structuredContent", json::object());
+    CHECK(st.value("loading", true) == false);
+}
+
 // Issue #8 (chaos test B2): `status.loading` and the `loading` of this instance in `instances_list` come from the same flag (the
 // list said true for minutes while status said false: status read only the menu's IsInLoading).
 static void test_status_loading_agrees() {
@@ -2985,6 +3009,7 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures stay visible even if a test crashes the process (CI pipes stdout)
+    test_map_load_call_flag();  // first: later tests (map loads, server states) leave the load flag on for the rest of the run
     test_installer_roundtrip();
     test_guide_result_conventions();
     test_output_schemas();

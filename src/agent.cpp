@@ -82,6 +82,9 @@ bool map_loading(double *since_s) {  // FP7137
     return g_loading.active(now);  // FP7137
 }  // FP7137
 
+MapLoadCall::MapLoadCall() { loading_set(loadflag::Tracker::Call, true); }
+MapLoadCall::~MapLoadCall() { loading_set(loadflag::Tracker::Call, false); }
+
 static std::atomic<uint64_t> g_map_load_seq{0};
 static std::map<uint64_t, std::string> g_load_maps;  // map load -> map name (filled once map_loaded knows it)
 void note_map_load_start(const std::string &map) {

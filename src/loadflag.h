@@ -4,7 +4,9 @@
 //
 // Two sources, each on from the moment the module learns of a load until it learns that it ended:
 //   Server: a new server Lua state appeared (a map load starts) -> map_loaded was published;
-//   Menu:   the menu state's IsInLoading() (the loading screen is up), polled by the pump.
+//   Menu:   the menu state's IsInLoading() (the loading screen is up), polled by the pump;
+//   Call:   a map_load that this module is executing (live verification of 0.3.7: it first waits for the menu to be idle, up to 15 s on a
+//           stuck client, then 30 frames, and only then does the engine start the load: neither source above is on meanwhile).
 // A source that never reports its end (a load that failed, a frozen game) stops counting after kMaxLoadS, so the flag
 // can never block launches for ever. Pure logic, unit tested (tests/native/test_fp7137.cpp).
 #pragma once
@@ -21,7 +23,7 @@ constexpr double kStateGoneGraceS = 1.0;  // issue #8: the server source is drop
 
 class Tracker {
   public:
-    enum Source { Server = 0, Menu = 1, kSources = 2 };
+    enum Source { Server = 0, Menu = 1, Call = 2, kSources = 3 };
 
     // Sets a source on or off at time now_s. A source that is already on keeps its start time (a poll saying "still
     // loading" must not hide a stuck load), unless restart is true (a new load has begun). Returns true when the
@@ -93,7 +95,7 @@ class Tracker {
     // The loading screen is up but nothing is behind it any more (see note_menu_context): the engine's state is stuck.
     bool menu_stuck(double now_s) const {
         (void)now_s;
-        return on_[Menu] && quiet_ > kMenuStuckS;
+        return on_[Menu] && quiet_ > kMenuStuckS && !on_[Call];  // a map_load in flight is a load: not "stuck, nothing is loading"
     }
     bool active(double now_s) const {
         for (int i = 0; i < kSources; ++i)
@@ -119,8 +121,8 @@ class Tracker {
         if (i == Server && menu_polled_ && menu_off_since_ >= 0 && menu_last_off_ - std::max(since_[Server], menu_off_since_) > kServerOnlyMaxS) return false;
         return true;
     }
-    bool on_[kSources] = {false, false};
-    double since_[kSources] = {0, 0};
+    bool on_[kSources] = {false, false, false};
+    double since_[kSources] = {0, 0, 0};
     bool menu_polled_ = false;     // issue #8
     double menu_off_since_ = -1;   // issue #8: -1 = the menu says loading, or was never polled
     double menu_last_off_ = -1;    // issue #8: the last poll that said "not loading"

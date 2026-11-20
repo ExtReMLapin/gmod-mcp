@@ -73,6 +73,14 @@ std::string map_of_load(uint64_t seq);
 // FP7137 (issue #7): is a map load in progress, whatever started it (console, Lua, map_load)? Readable from any thread.
 // since_s (optional) gets the seconds since the oldest load that still counts. Stops counting a load after 300 s.
 bool map_loading(double *since_s = nullptr);
+// Live verification of 0.3.7: a map_load this module executes counts as a load from its first moment (it waits up to 15 s for the menu,
+// then 30 frames, before the engine starts the load, and `loading` said false meanwhile). RAII in the map_load tool.
+struct MapLoadCall {
+    MapLoadCall();
+    ~MapLoadCall();
+    MapLoadCall(const MapLoadCall &) = delete;
+    MapLoadCall &operator=(const MapLoadCall &) = delete;
+};
 // Issue #8 (live check I-C1): the engine reports a loading screen with nothing behind it (no realm, not connected, no load starting) for
 // longer than a few seconds: its state is stuck; that screen no longer counts as a load. A map_load clears it; `disconnect` does not (checked live).
 bool map_loading_stuck();

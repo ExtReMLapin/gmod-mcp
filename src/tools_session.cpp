@@ -57,6 +57,9 @@ static json map_load_impl(const json &args) {
     if (!ex["result"].value("exists", false)) return agent::err("not_found", "map not found: maps/" + map + ".bsp");
     if (args.contains("maxplayers") && agent::config().mode == agent::Mode::Dedicated)
         return agent::err("invalid_params", "maxplayers cannot be changed at runtime on srcds (launch parameter)");
+    // From here to the answer this map_load is a load in progress for status and instances_list (`loading`), even while it waits for
+    // the menu: the engine has not started the load yet and nothing else says so (live verification of 0.3.7: ~18 s of loading false).
+    agent::MapLoadCall in_flight;
     // Changing maxplayers mid-game: full disconnect first (the engine refuses otherwise).
     if (args.contains("maxplayers") && agent::realm_present(realms::SERVER)) {
         json sv = agent::rt(realms::SERVER, "status", json::object(), 5.0);

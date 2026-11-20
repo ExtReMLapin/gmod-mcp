@@ -96,6 +96,11 @@
 
 ### Fixes
 
+- **`loading` is true while a `map_load` is waiting to start the load** (live verification of 0.3.7). `map_load` first waits for the
+  menu to be idle (up to 15 s on a client whose loading screen is stuck) and 30 frames before the engine starts the load; `status` and
+  `instances_list` said `loading: false` for those ~18 s, so a launch or another `map_load` was not held back. The call itself now
+  counts as a load from its first moment to its answer, whatever the engine does (and a stuck loading screen is not reported as
+  `loading_stuck` while it runs).
 - **`map_load` with no game answers as fast as `status`**. It answered `game_not_running` after 2-3 s instead of 1 s: before the call itself,
   the bridge asked the directory which other games were loading (to report them), a second refused connection. It no longer asks
   once a call has found nothing listening.
