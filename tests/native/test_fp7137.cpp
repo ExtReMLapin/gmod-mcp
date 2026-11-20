@@ -90,9 +90,19 @@ static void test_pure() {
     launches.last_start_ms = 999;
     CHECK(!launch_verdict(launches, 1000).wait);
 
-    // map_load waits while a launch runs and until settle after the last start; other map loads do not block it.
+    // map_load waits while a launch runs and until settle after the last start; one other map load does not block it. Issue #7
+    // follow-up: at most kMaxParallelMaps loads run at once across every bridge, so a third waits (the live M entries are counted).
     CHECK(!map_load_verdict(none, 1000, 15000).wait);
-    CHECK(!map_load_verdict(maps, 1000, 15000).wait);
+    State one_map;
+    one_map.entries = {entry('M', 1, 99999, "map:a")};
+    CHECK(!map_load_verdict(one_map, 1000, 15000).wait);
+    Verdict full = map_load_verdict(maps, 1000, 15000);  // two maps loading: the cap
+    CHECK(full.wait && full.code == "map_load_in_progress" && full.ready_at_ms == 0 && full.reason.find("map:a") != std::string::npos &&
+          full.reason.find("map:b") != std::string::npos && full.reason.find("2") != std::string::npos);
+    State three;
+    three.entries = {entry('M', 1, 99999, "map:a"), entry('M', 2, 99999, "map:b"), entry('M', 3, 99999, "map:c")};
+    CHECK(map_load_verdict(three, 1000, 15000).wait);
+    CHECK(map_load_verdict(maps, 1000, 15000, 1).wait && !map_load_verdict(one_map, 1000, 15000, 2).wait);  // the limit is a parameter
     Verdict l = map_load_verdict(launches, 1000, 15000);
     CHECK(l.wait && l.code == "launch_in_progress" && l.ready_at_ms == 0);
     State started;
@@ -137,13 +147,29 @@ static void test_gate() {
     }
     CHECK(parse_state(state_file(dir)).entries.empty());
 
-    // Two map loads do not wait for each other.
+    // Two map loads do not wait for each other; a third waits for one of them to end (the global cap, issue #7 follow-up), and says
+    // so; once the budget runs out it fails with map_load_in_progress; the kill switch lifts the cap.
     {
         Gate a, b;
         a.enter(Kind::MapLoad, "map:a", 5, 30, &no, nullptr);
         auto t0 = Clock::now();
         b.enter(Kind::MapLoad, "map:b", 5, 30, &no, nullptr);
         CHECK(b.ok() && since(t0) < 0.3 && b.waited_s() == 0);
+        Gate c;
+        c.enter(Kind::MapLoad, "map:c", 0.5, 30, &no, nullptr);
+        CHECK(!c.ok() && c.code() == "map_load_in_progress" && c.reason().find("map:a") != std::string::npos);
+        std::thread rel([&] { sleep_ms(400); a.release(); });
+        Gate d;
+        d.enter(Kind::MapLoad, "map:d", 5, 30, &no, nullptr);
+        rel.join();
+        CHECK(d.ok() && d.waited_s() >= 0.3 && d.waited_s() < 3);
+        put_env("GMOD_MCP_FP7137_WORKAROUND", "0");
+        Gate e1, e2, e3;
+        e1.enter(Kind::MapLoad, "map:e1", 1, 30, &no, nullptr);
+        e2.enter(Kind::MapLoad, "map:e2", 1, 30, &no, nullptr);
+        e3.enter(Kind::MapLoad, "map:e3", 1, 30, &no, nullptr);
+        CHECK(e3.ok() && e3.waited_s() == 0);  // workaround off: nothing is registered, nothing waits
+        put_env("GMOD_MCP_FP7137_WORKAROUND", nullptr);
     }
 
     // A launch waits for a running map load (and says why, through the notify callback too).
@@ -309,6 +335,7 @@ static void test_stale_and_switch() {
     CHECK(enabled());
 
     // annotate: the wait is reported in the structured result and in its text twin; no wait, no noise.
+    plat::write_file(dir + "/fp7137.state", serialize_state(State()));  // the "busy" map load above still counts toward the cap of 2
     put_env("GMOD_MCP_FP7137_SETTLE_MS", "400");
     {
         Gate l;

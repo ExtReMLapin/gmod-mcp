@@ -225,7 +225,7 @@ Verdict launch_verdict(const State &s, int64_t now_ms, const std::vector<std::st
     return v;
 }
 
-Verdict map_load_verdict(const State &s, int64_t now_ms, int64_t settle) {
+Verdict map_load_verdict(const State &s, int64_t now_ms, int64_t settle, size_t max_parallel) {
     Verdict v;
     for (const auto &e : s.entries)
         if (e.kind == 'L') {
@@ -246,6 +246,21 @@ Verdict map_load_verdict(const State &s, int64_t now_ms, int64_t settle) {
                    "and a map load ending meanwhile can crash (Garry's Mod issue 7137); waiting " + std::to_string(settle / 1000) +
                    " s after the last start";
         v.ready_at_ms = ready;
+        return v;
+    }
+    // At most max_parallel map loads at once across every bridge (kMaxParallelMaps was per call: two launches and a map_load had 5
+    // games loading together). The loads in the state are the live ones: expired and dead owners were pruned.
+    std::string what;
+    size_t n = 0;
+    for (const auto &e : s.entries)
+        if (e.kind == 'M') {
+            what += (n++ ? ", " : "") + e.tag;
+        }
+    if (max_parallel > 0 && n >= max_parallel) {
+        v.wait = true;
+        v.code = "map_load_in_progress";
+        v.reason = std::to_string(n) + " maps are already loading (" + what + "): at most " + std::to_string(max_parallel) +
+                   " map loads run at the same time across every session (staggered loads are part of the Garry's Mod issue 7137 workaround)";
     }
     return v;
 }

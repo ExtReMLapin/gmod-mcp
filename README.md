@@ -394,7 +394,7 @@ Starting a game makes every other running Garry's Mod release its GPU resources 
 that window crashes that game (engine bug, [Facepunch garrysmod-issues#7137](https://github.com/Facepunch/garrysmod-issues/issues/7137)).
 The bridge therefore makes `instances_launch` and `map_load` wait for each other (every session of the user shares the
 lock; `waited_s` / `waited_reason` in the result, errors `map_load_in_progress` / `launch_in_progress` when the wait would
-exceed `timeout_s`), and `instances_launch {map}` loads 2 maps at a time after a 15 s settle delay. It also sees map
+exceed `timeout_s`), and `instances_launch {map}` loads its maps after a 15 s settle delay; at most 2 maps load at a time across all sessions (a third `map_load` or launch load waits, `map_load_in_progress` at the timeout). It also sees map
 loads it did not start (console `map`, Lua, a script talking to the game: every game reports `loading` in `instances_list`),
 `instances_launch` waits for them too and `map_load` lists them (`other_games_loading`). It cannot hold back a game you
 start by hand, nor a console or Lua map load started while a launch is creating its processes: do not do those while

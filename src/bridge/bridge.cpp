@@ -1024,7 +1024,7 @@ json bridge_tools() {
          "Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load that "
          "ends in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). So the bridge serialises "
          "the launches and map loads that go through it, from any session: this call first waits while any game loads a "
-         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time. \"Any game\" includes loads the bridge did "
+         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time across every session (a map_load of another session counts). \"Any game\" includes loads the bridge did "
          "not start (console `map`, changelevel, Lua RunConsoleCommand, a script talking to the game): every game reports "
          "when it is loading a map (instances_list `loading`), and waited_reason then starts with map_load_outside_bridge. "
          "A call that waited reports waited_s and "
@@ -1810,7 +1810,7 @@ json launch_tool(const json &args, const json &token) {
         for (const auto &arr : cmd_res)
             for (const auto &e : arr) commands_ok = commands_ok && e.value("ok", false);
     }
-    // Maps: at most 2 at a time, after the settle delay (FP7137: was all at once).
+    // Maps: at most 2 at a time (per call here, and across every bridge through the gate), after the settle delay (FP7137: was all at once).
     json results = json::array();
     std::vector<json> map_res(started.size());
     if (!map.empty()) {

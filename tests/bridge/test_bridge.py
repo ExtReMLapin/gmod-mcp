@@ -3042,8 +3042,51 @@ def case_chaos_relay():
     S["close"]()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "fuzz"]
+def case_chaos_maps():
+    """Issue #7 follow-up (live chaos test 2026-11-20): "at most 2 maps at a time" was per call. Two launches of 2 clients each, plus a
+    map_load, had 5 games loading at once. The cap is now global: every map load of every bridge (instances_launch {map} and map_load)
+    registers in the shared FP7137 state and waits while 2 others are registered (fake game server counting concurrent loads,
+    stand-in games, Windows)."""
+    print("== CHAOS_MAPS: at most 2 maps load at a time across every bridge", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("CHAOS_MAPS stand-in game built next to the bridge", False)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    launch_args = lambda **kw: dict({"count": 2, "owner": "maps", "timeout_s": 120, "game_dir": game, "map": "gm_x"}, **kw)
+    for off in (False, True):
+        port, env, srv = fp_setup(settle_ms=1500, workaround="0" if off else None, hold={"*": 1.5})
+        env.update(GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+        a, b, c = Bridge(port, env), Bridge(port, env), Bridge(port, env)
+        rid_a = fp_call(a, "instances_launch", launch_args(), 120)
+        rid_b = fp_call(b, "instances_launch", launch_args(), 120)
+        end = time.time() + 60
+        while not srv.map_log and time.time() < end: time.sleep(0.05)
+        rid_c = fp_call(c, "map_load", {"map": "gm_y", "timeout_s": 120}, 120)
+        res_a, sc_a = fp_result(a, rid_a, 120)
+        res_b, sc_b = fp_result(b, rid_b, 120)
+        res_c, sc_c = fp_result(c, rid_c, 60)
+        tag = "CHAOS_MAPS kill switch off: " if off else "CHAOS_MAPS "
+        check(tag + "every call succeeded (2 + 2 + 1 loads)", not res_a.get("isError") and not res_b.get("isError") and not res_c.get("isError") and len(srv.map_log) == 5,
+              {"a": sc_a.get("error"), "b": sc_b.get("error"), "c": sc_c.get("error"), "loads": len(srv.map_log)})
+        if off:
+            check(tag + "the loads overlap beyond 2 (no cap)", srv.map_max >= 3, srv.map_max)
+        else:
+            check(tag + "never more than 2 maps loading at the same time (two launches and a map_load, three bridges)", srv.map_max == 2, srv.map_max)
+        for x in (a, b):
+            x.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 30)
+        for x in (a, b, c): x.close()
+        srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

@@ -166,6 +166,10 @@
   coordinator included); the member that takes the base port over keeps a tombstone for every instance it does not hear from,
   and a call for one whose process ended answers `instance_gone` / `client_crashed` at once, with the same reasons as always
   (exit code, dump). A crashed old coordinator is now listed as `crashed` like any other crashed instance.
+- **At most 2 maps load at a time across every bridge** (issue #7, live chaos test). The limit of 2 was per call: two
+  `instances_launch {count: 2, map}` plus a `map_load` had 5 games loading at once. Every map load of every bridge now
+  registers in the shared FP7137 state and waits while 2 others are registered (`map_load_in_progress` at the timeout; the
+  kill switch lifts it).
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for
