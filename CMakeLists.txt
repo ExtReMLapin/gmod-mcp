@@ -62,8 +62,13 @@ add_compile_definitions(GMOD_MCP_VERSION="${PROJECT_VERSION}")
     COMMAND ${CMAKE_COMMAND} -DOUT=${EMBED_OUT} -DSRC_DIR=${CMAKE_SOURCE_DIR}/src/lua -P ${CMAKE_SOURCE_DIR}/cmake/embed_lua.cmake
     DEPENDS ${LUA_RUNTIME_FILES} ${CMAKE_SOURCE_DIR}/cmake/embed_lua.cmake
     COMMENT "Embedding the Lua runtime")
+  # One target owns the generated header: four targets use it, and with the output listed in each of them a parallel build
+  # (Visual Studio, --parallel) ran the rule in several projects at once and two of them wrote the file together
+  # ("Permission denied", CI run 44802275839). The users depend on this target instead and do not list the header.
+  add_custom_target(mcpagent-embed-lua DEPENDS ${EMBED_OUT})
   file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
-  add_library(mcpagent SHARED ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+  add_library(mcpagent SHARED ${CORE_SOURCES} ${PLATFORM_SOURCES})
+  add_dependencies(mcpagent mcpagent-embed-lua)
   target_include_directories(mcpagent PRIVATE ${CMAKE_BINARY_DIR}/generated)
   target_link_libraries(mcpagent PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 
@@ -87,7 +92,8 @@ endif()
 
 # --- Offline snapshot: tools, prompts, resources and instructions built from the module's sources without the game,
 # embedded into the bridge (served while the game has never answered). The generator is a build tool, not shipped.
-add_executable(gmod-mcp-snapshot src/snapshot/snapshot_main.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+add_executable(gmod-mcp-snapshot src/snapshot/snapshot_main.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES})
+add_dependencies(gmod-mcp-snapshot mcpagent-embed-lua)
 target_include_directories(gmod-mcp-snapshot PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-snapshot PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 if(MSVC)
@@ -146,7 +152,8 @@ endif()
 add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
 
 # Module helpers that need no game (links the module's sources like the snapshot generator).
-add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES})
+add_dependencies(gmod-mcp-coretests mcpagent-embed-lua)
 target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 target_compile_definitions(gmod-mcp-coretests PRIVATE GMOD_MCP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")  # tests/schema/results.json
@@ -163,7 +170,8 @@ endif()
 # fixtures live in this executable and nowhere else (never in the DLL, the bridge or a release package).
 add_executable(gmod-mcp-conformance-host
   tests/conformance/conformance_host.cpp tests/conformance/fixtures.cpp tests/conformance/relay.cpp
-  ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+  ${CORE_SOURCES} ${PLATFORM_SOURCES})
+add_dependencies(gmod-mcp-conformance-host mcpagent-embed-lua)
 target_include_directories(gmod-mcp-conformance-host PRIVATE src tests/conformance ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-conformance-host PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 if(MSVC)
