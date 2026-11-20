@@ -121,6 +121,32 @@ void test_iluashared_decision() {
     CHECK(IluaShared{}.ok());  // not applicable (nothing checked): nothing is gated
 }
 
+// SL-3: IFileSystem: the layout from slots 7/8/11/12 of the two real filesystem_stdio builds, confirmed by what lua_shared itself calls.
+void test_filesystem_decision() {
+    using namespace layout;
+    const auto &o = slotfx::filesystem_old;
+    const auto &n = slotfx::filesystem_new;
+    FsLayout r = decide_filesystem(code(o, 7), code(o, 8), code(o, 11), code(o, 12), -1, -1);
+    CHECK(r.ok() && r.first_slot == 5);
+    r = decide_filesystem(code(n, 7), code(n, 8), code(n, 11), code(n, 12), -1, -1);
+    CHECK(r.ok() && r.first_slot == 9);
+    // lua_shared of the same build agrees (UnMountLua -> slot first+5, MountLuaAdd -> first+6).
+    CHECK(decide_filesystem(code(o, 7), code(o, 8), code(o, 11), code(o, 12), 10, 11).first_slot == 5);
+    CHECK(decide_filesystem(code(n, 7), code(n, 8), code(n, 11), code(n, 12), 14, 15).first_slot == 9);
+    // A lua_shared of the other build disagrees: refused, with the two slots named.
+    r = decide_filesystem(code(n, 7), code(n, 8), code(n, 11), code(n, 12), 10, 11);
+    CHECK(!r.ok() && r.first_slot == -1 && r.why.find("10") != std::string::npos && r.why.find("14") != std::string::npos);
+    r = decide_filesystem(code(o, 7), code(o, 8), code(o, 11), code(o, 12), 10, 15);
+    CHECK(!r.ok() && r.why.find("15") != std::string::npos);
+    // Unrecognized code: refused with a reason.
+    r = decide_filesystem(code(n, 9), code(n, 10), code(n, 9), code(n, 10), -1, -1);
+    CHECK(!r.ok() && !r.why.empty());
+    CHECK(!decide_filesystem(Bytes{}, code(n, 8), code(n, 11), code(n, 12), -1, -1).ok());
+    // The real code: slot 7/8 of the new build are trivial, the old build's are not.
+    CHECK(lua_mount::is_constant_return(code(n, 7)) && lua_mount::is_constant_return(code(n, 8)));
+    CHECK(!lua_mount::is_constant_return(code(o, 7)) && !lua_mount::is_constant_return(code(o, 8)));
+}
+
 // SL-5: the verdicts for status.
 void test_report() {
     using namespace layout;
@@ -258,6 +284,7 @@ void test_realms_glue() {
 void run_slotcheck_tests(int *pass, int *fail) {
     test_iluashared_shapes();
     test_iluashared_decision();
+    test_filesystem_decision();
     test_report();
 #ifdef _WIN32
     test_iluashared_glue();

@@ -103,10 +103,20 @@ static std::vector<uint8_t> slot_code(void *obj, int i) {
     return code;
 }
 
-static int read_fs_slot_base() {
-    int base = fs_slot_base(slot_code(g_fs, 7), slot_code(g_fs, 8), slot_code(g_fs, 11), slot_code(g_fs, 12));
-    logx::info("Lua mount: IFileSystem slots start at %d%s", base, base < 0 ? " (layout not recognized)" : "");
-    return base;
+// The IFileSystem layout from the code at slots 7, 8, 11, 12, confirmed by what lua_shared itself calls through the same object (the
+// IFileSystem slots its UnMountLua and MountLuaAdd tail-call, layout.h). Published for `status` (layout_check.ifilesystem).
+static std::string g_fs_why;  // why the layout was refused ("" if it was not)
+static int read_fs_slot_base(const layout::IluaShared &ls) {
+    int remove_slot = ls.unmount_lua.ok ? ls.unmount_lua.slot : -1, mark_slot = ls.mount_lua_add.ok ? ls.mount_lua_add.slot : -1;
+    layout::FsLayout l = layout::decide_filesystem(slot_code(g_fs, 7), slot_code(g_fs, 8), slot_code(g_fs, 11), slot_code(g_fs, 12), remove_slot, mark_slot);
+    g_fs_why = l.why;
+    if (l.ok())
+        layout::publish("ifilesystem", layout::State::Verified, "",
+                        json{{"first_slot", l.first_slot}, {"lua_shared_agrees", remove_slot >= 0 && mark_slot >= 0}});
+    else
+        layout::publish("ifilesystem", layout::State::Refused, l.why, json{{"first_slot", -1}});
+    logx::info("Lua mount: IFileSystem slots start at %d%s", l.first_slot, l.ok() ? "" : " (layout not recognized)");
+    return l.ok() ? l.first_slot : -1;
 }
 
 // Why the mount (or the cache emptying) is refused when ILuaShared's slots are not recognized: each failed slot with what did not match.
@@ -138,15 +148,15 @@ static bool ensure(std::string &err, bool need_layout = true) {
     else if (!g_ls) err = "ILuaShared (" GMOD_LUASHARED_INTERFACE ") not found in lua_shared";
     if (!g_fs || !g_ls) return false;
     const layout::IluaShared &ls = layout::iluashared(g_ls);
-    if (g_fs_base == 0) g_fs_base = read_fs_slot_base();
+    if (g_fs_base == 0) g_fs_base = read_fs_slot_base(ls);
     if (need_layout) {
         if (!ls.mount_ok()) {
             err = ilua_refusal(ls, false);
             return false;
         }
         if (g_fs_base < 0) {
-            err = "this game build's IFileSystem (VFileSystem022) layout is not recognized: the Lua mount is refused rather "
-                  "than calling an unknown slot (docs/REVERSE.md, \"Lua mount: search paths\")";
+            err = "this game build's IFileSystem (VFileSystem022) layout is not recognized (" + g_fs_why +
+                  "): the Lua mount is refused rather than calling an unknown slot (docs/REVERSE.md, \"Lua mount: search paths\")";
             return false;
         }
     } else if (!ls.cache_ok()) {

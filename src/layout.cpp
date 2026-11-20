@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "log.h"
+#include "lua_mount.h"
 #include "platform/platform.h"
 
 namespace layout {
@@ -185,6 +186,29 @@ Check lua_top_shape(const Bytes &c, int state_offset) {
     if (state_offset < 0 || state_offset > 127) return fail("state offset out of the one-byte form");
     if (at(c, 0) == 0x48 && at(c, 1) == 0x8b && at(c, 2) == 0x49 && at(c, 3) == state_offset && at(c, 4) == 0xe9) return pass();
     return fail("ILuaBase::Top does not load the lua_State from this + " + std::to_string(state_offset));
+}
+
+// ---- IFileSystem ----
+
+FsLayout decide_filesystem(const Bytes &s7, const Bytes &s8, const Bytes &s11, const Bytes &s12, int unmount_slot, int mark_slot) {
+    FsLayout r;
+    int base = lua_mount::fs_slot_base(s7, s8, s11, s12);
+    if (base < 0) {
+        r.why = "the code at slots 7, 8, 11 and 12 matches neither the 5-slot nor the 9-slot IAppSystem layout";
+        return r;
+    }
+    if (unmount_slot >= 0 && unmount_slot != base + 5) {
+        r.why = "lua_shared removes search paths through slot " + std::to_string(unmount_slot) + ", this layout puts RemoveSearchPaths at " +
+                std::to_string(base + 5);
+        return r;
+    }
+    if (mark_slot >= 0 && mark_slot != base + 6) {
+        r.why = "lua_shared marks path IDs through slot " + std::to_string(mark_slot) + ", this layout puts MarkPathIDByRequestOnly at " +
+                std::to_string(base + 6);
+        return r;
+    }
+    r.first_slot = base;
+    return r;
 }
 
 // ---- Verdicts ----

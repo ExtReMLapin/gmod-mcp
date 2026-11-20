@@ -66,6 +66,18 @@ IluaShared decide_iluashared(const Bytes &s6, const Bytes &s9, const StrAt &str9
 // ILuaInterface slot 0 (ILuaBase::Top): `mov rcx,[rcx+state_offset]; jmp lua_gettop`: the lua_State* offset.
 Check lua_top_shape(const Bytes &code, int state_offset);
 
+// ---- IFileSystem (VFileSystem022) ----
+struct FsLayout {
+    int first_slot = -1;  // first IFileSystem slot after IAppSystem's: 5 or 9, -1 unknown
+    std::string why;
+    bool ok() const { return first_slot > 0; }
+};
+// Pure: the layout from the code of slots 7, 8, 11, 12 (lua_mount::fs_slot_base), then checked against what lua_shared itself
+// calls through the same object: UnMountLua tail-calls RemoveSearchPaths (first_slot + 5) and MountLuaAdd tail-calls
+// MarkPathIDByRequestOnly (first_slot + 6); `unmount_slot` / `mark_slot` are those slots as read from lua_shared (-1 = unknown,
+// not compared). A disagreement is refused: one of the two readings is wrong.
+FsLayout decide_filesystem(const Bytes &s7, const Bytes &s8, const Bytes &s11, const Bytes &s12, int unmount_slot, int mark_slot);
+
 // ---- Verdicts for `status` ----
 enum class State { Pending, Verified, Refused, NotApplicable };
 // Publishes the verdict of one interface ("ifilesystem", "iluashared", "ivengineclient", "inetchannelinfo", "lua_offsets"):
