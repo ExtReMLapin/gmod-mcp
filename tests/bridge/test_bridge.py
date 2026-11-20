@@ -23,6 +23,8 @@ Cases (default: a f):
   close_coordinator Issue #6: instances_close of the coordinator says the role moved and to whom; instances_list warns beforehand
   chaos_health Issue #8 (chaos tests G1): instances_launch refuses (peer_unhealthy) while a running client is unresponsive or
          hung, unless ignore_unhealthy, and names the unhealthy peers when it times out (fake server, stand-in game)
+  chaos_launch Issue #8 (chaos test G2): a launched client dies at startup while its sibling keeps running: the error names
+         the survivor and warns it is not closed (stand-in game, fake game server)
   lowmem instances_launch refuses under low free memory (low_memory), ignore_low_memory, free memory in a crash report
   crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
@@ -2722,8 +2724,38 @@ def case_chaos_health():
     S["close"]()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "fuzz"]
+def case_chaos_launch():
+    """Issue #8 (chaos test G2): instances_launch {count: 2} where the first process dies ~1 s after it was spawned (before it
+    registered) while the second keeps starting: the error must name the sibling that still runs (pid, instance if known) and
+    carry a warning, so the caller does not leak it (stand-in game with GMCP_FAKE_DIE_ONCE)."""
+    print("== CHAOS_LAUNCH: a client dies during startup while its sibling keeps running", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_LAUNCH stand-in game built next to the bridge", False)
+        return
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-once-")
+    S = chaos_session(extra_env={"GMCP_FAKE_DIE_ONCE": os.path.join(work, "claimed"), "GMCP_FAKE_EXIT": "3221225477"})
+    sc, err = S["call"]("instances_launch", {"count": 2, "owner": "g2", "timeout_s": 40, "game_dir": S["game"]})
+    e = sc.get("error", {})
+    alive_pids = [p for p in S["started"]() if alive(p)]
+    check("CHAOS_LAUNCH the dead first client is reported (client_crashed, isError)", e.get("code") == "client_crashed" and err is True, sc)
+    sib = (e.get("details") or {}).get("still_running") or []
+    check("CHAOS_LAUNCH details.still_running names the sibling that keeps running (pid, state, instance when it answered)",
+          len(alive_pids) == 1 and [x.get("pid") for x in sib] == alive_pids and all(x.get("state") in ("answering", "still starting") for x in sib)
+          and (sib[0].get("state") != "answering" or sib[0].get("instance") == "fake-%d" % alive_pids[0]), {"alive": alive_pids, "sc": sc})
+    w = sc.get("warning", "")
+    check("CHAOS_LAUNCH a warning says the sibling is NOT closed and how (pid, instances_close)",
+          bool(alive_pids) and str(alive_pids[0]) in w and "instances_close" in w and "g2" in w and "not closed" in w.lower(), sc)
+    sc2, _ = S["call"]("instances_close", {"owner": "g2"}, 30)
+    check("CHAOS_LAUNCH the sibling is still closable by owner", bool(alive_pids) and alive_pids[0] in [c.get("pid") for c in sc2.get("closed", [])], sc2)
+    S["close"]()
+    import shutil; shutil.rmtree(work, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

@@ -17,6 +17,30 @@
 #endif
 
 int main(int argc, char **argv) {
+    // GMCP_FAKE_DIE_ONCE names a file: the first process to create it is "the one that dies" (issue #8: a client that exits ~1 s
+    // after the bridge started it, while its sibling keeps starting). It registers nowhere, writes a dump into
+    // GMCP_FAKE_CRASH_DIR (when set) after GMCP_FAKE_DIE_AFTER_MS (default 1000) and ends with GMCP_FAKE_EXIT (default 0xC0000005).
+    const char *once = std::getenv("GMCP_FAKE_DIE_ONCE");
+    if (once && *once) {
+#ifdef _WIN32
+        HANDLE h = CreateFileA(once, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+            const char *after = std::getenv("GMCP_FAKE_DIE_AFTER_MS");
+            std::this_thread::sleep_for(std::chrono::milliseconds(after && *after ? std::atoi(after) : 1000));
+            const char *dir = std::getenv("GMCP_FAKE_CRASH_DIR");
+            if (dir && *dir) {
+                std::string p = std::string(dir) + "/gmod_win64_20261114_120000_1_accessviolation.mdmp";
+                if (FILE *d = std::fopen(p.c_str(), "wb")) {
+                    std::fputs("MDMP", d);
+                    std::fclose(d);
+                }
+            }
+            const char *code = std::getenv("GMCP_FAKE_EXIT");
+            ExitProcess(code && *code ? (UINT)std::strtoul(code, nullptr, 10) : 0xC0000005u);
+        }
+#endif
+    }
     const char *out = std::getenv("GMCP_FAKE_ARGV");
     if (out && *out) {
         if (FILE *f = std::fopen(out, "ab")) {

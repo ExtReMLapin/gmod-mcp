@@ -965,7 +965,10 @@ json bridge_tools() {
          "keep, fps_max, fps_max_nofocus, fps_note, launch_args?, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
          "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. A client that "
          "crashed during startup or its map load is reported as client_crashed (startup: the whole call's error; map load: that "
-         "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. Example: "
+         "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. "
+         "With count > 1 the other clients of the call are not closed when one dies at startup: the error lists the ones still "
+         "running in details.still_running [{pid, state: answering or still starting, instance?}] and a top-level warning; "
+         "close them (instances_close) or use them. Example: "
          "{\"count\": 2, \"map\": \"gm_construct\", \"owner\": \"fork-a\"}, then pass each returned instance id as "
          "`instance`.\n"
          // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
@@ -1572,9 +1575,31 @@ json launch_tool(const json &args, const json &token) {
                 }
         for (auto &l : started)
             if (WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0 && !found.contains(std::to_string(l.pid))) {
+                // Issue #8 (chaos test G2): the siblings of this call that still run are not closed: name them, so the caller does not leak them.
+                json alive_sibs = json::array();
+                std::string sib_text;
+                for (auto &o : started) {
+                    if (&o == &l || WaitForSingleObject(o.h, 0) != WAIT_TIMEOUT) continue;
+                    bool answered = found.contains(std::to_string(o.pid));
+                    json x{{"pid", o.pid}, {"state", answered ? "answering" : "still starting"}};
+                    std::string iid = answered ? found[std::to_string(o.pid)].value("id", "") : o.id;
+                    if (!iid.empty()) x["instance"] = iid;
+                    alive_sibs.push_back(x);
+                    sib_text += (sib_text.empty() ? "" : ", ") + std::string("pid ") + std::to_string(o.pid) + (iid.empty() ? "" : " (" + iid + ")") + " " + x["state"].get<std::string>();
+                }
                 json ce = launched_crash_error(l);
-                if (!ce.is_null()) return tool_text(json{{"error", ce}}, true);
-                return tool_error("launch_failed", "client pid " + std::to_string(l.pid) + " exited during startup (Steam not running? see garrysmod/console.log)");
+                if (ce.is_null())
+                    ce = json{{"code", "launch_failed"}, {"message", "client pid " + std::to_string(l.pid) + " exited during startup (Steam not running? see garrysmod/console.log)"}};
+                json res_err{{"error", ce}};
+                if (!alive_sibs.empty()) {
+                    if (!ce.contains("details") || !ce["details"].is_object()) ce["details"] = json::object();
+                    ce["details"]["still_running"] = alive_sibs;
+                    res_err["error"] = ce;
+                    res_err["warning"] = "the other client(s) of this call are NOT closed and keep running: " + sib_text +
+                                         ". Close them with instances_close {pids: [...]}" + (owner.empty() ? "" : " or instances_close {owner: \"" + owner + "\"}") +
+                                         " (or use them), or they leak.";
+                }
+                return tool_text(res_err, true);
             }
         if ((int)found.size() < count) std::this_thread::sleep_for(std::chrono::seconds(1));
     }
