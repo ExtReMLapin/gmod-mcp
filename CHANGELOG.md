@@ -160,6 +160,12 @@
   30 s. The bridge now remembers which processes could take the coordinator role over (the members of the last list that
   showed several games) and answers `game_not_running` at once when none lives any more, or when a later list shows a single
   game.
+- **A game killed together with the coordinator is reported as gone, not `unknown_instance`** (issue #6, live chaos test).
+  The new coordinator had never heard from a member that died with the old one: calls for it blocked 7-8 s on
+  `coordinator_changing`, then answered `unknown_instance`. Heartbeat answers now carry the directory of instances (the
+  coordinator included); the member that takes the base port over keeps a tombstone for every instance it does not hear from,
+  and a call for one whose process ended answers `instance_gone` / `client_crashed` at once, with the same reasons as always
+  (exit code, dump). A crashed old coordinator is now listed as `crashed` like any other crashed instance.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for

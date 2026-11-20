@@ -2203,6 +2203,15 @@ static std::set<std::string> cluster_ids(const json &list) {
     return ids;
 }
 
+// The instances that live (a crashed coordinator stays listed for an hour, state "crashed": not one of them).
+static std::set<std::string> cluster_running_ids(const json &list) {
+    std::set<std::string> ids;
+    if (list.is_object())
+        for (const auto &e : list.value("instances", json::array()))
+            if (e.value("state", "running") == "running") ids.insert(e.value("id", ""));
+    return ids;
+}
+
 static void test_coordinator_handover_cluster() {
     int base = 39800 + (int)(GetCurrentProcessId() % 100) * 16;
     Node a, b, c;
@@ -2264,13 +2273,60 @@ static void test_coordinator_handover_cluster() {
             who = e.value("id", "");
         }
     CHECK(coords == 1 && (who == "node-b" || who == "node-c") && now.value("coordinator_id", "") == who);
-    CHECK(cluster_ids(now) == survivors);
+    CHECK(cluster_running_ids(now) == survivors);  // issue #6: the dead coordinator may be listed as crashed (the survivors knew it)
     // A member relays through the new coordinator to the other survivor.
     std::string other = who == "node-b" ? "node-c" : "node-b";
     json st = cluster_call(base, "lua_exec", json{{"instance", other}, {"code", "return 1"}, {"realm", "menu"}, {"timeout_s", 1}});
     if (st.value("relayed_by", "") != who) std::printf("  relay answer: %s\n", st.dump().c_str());
     CHECK(st.value("relayed_by", "") == who && st.value("error", json::object()).value("code", "") != "unknown_instance");
     b.kill();
+    c.kill();
+}
+
+// Issue #6 (live chaos test, "double" and "dual" kills): the coordinator AND a member die together. The new coordinator never
+// heard from that member, so for 8 s it answered coordinator_changing and then unknown_instance for an instance that had simply
+// ended (callers blocked 7-8 s for nothing). Every heartbeat answer now carries the directory (the coordinator included), the
+// members keep it, and the one that takes the role over remembers who vanished: the call for a dead instance answers
+// instance_gone (or client_crashed) at once, never unknown_instance.
+static void test_coordinator_tombstone_cluster() {
+    int base = 39800 + ((int)(GetCurrentProcessId() % 100) + 50) % 100 * 16;
+    Node a, b, c;
+    CHECK(a.start(base, "node-a"));
+    auto until = [](auto pred, double max_s) {
+        auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < max_s) {
+            if (pred()) return true;
+            plat::sleep_ms(50);
+        }
+        return pred();
+    };
+    CHECK(until([&] { return cluster_call(base, "instances_list", json::object()).is_object(); }, 15));
+    CHECK(b.start(base, "node-b"));
+    CHECK(c.start(base, "node-c"));
+    std::set<std::string> all{"node-a", "node-b", "node-c"};
+    CHECK(until([&] { return cluster_ids(cluster_call(base, "instances_list", json::object())) == all; }, 20));
+    plat::sleep_ms(4500);  // node-c's heartbeat answers carry the directory, node-b included
+    auto t0 = std::chrono::steady_clock::now();
+    a.kill();
+    b.kill();
+    // The first answer on the base port is the new coordinator's (node-c).
+    CHECK(until([&] { return cluster_call(base, "instances_list", json::object()).is_object(); }, 15));
+    auto code_of = [&](const std::string &id) {
+        json r = cluster_call(base, "lua_exec", json{{"instance", id}, {"code", "return 1"}, {"realm", "menu"}, {"timeout_s", 1}});
+        return r.value("error", json::object()).value("code", "");
+    };
+    std::string code_b = code_of("node-b"), code_a = code_of("node-a");
+    double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("  tombstone: node-b answers '%s', node-a '%s' (%.1f s after the kill)\n", code_b.c_str(), code_a.c_str(), took);
+    CHECK(code_b == "instance_gone" || code_b == "client_crashed");  // was coordinator_changing, then unknown_instance after 8 s
+    CHECK(code_a == "instance_gone" || code_a == "client_crashed");  // the coordinator that ended too
+    CHECK(took < 8.0);
+    // Left alone it stays so after the grace period (no unknown_instance later either), and the survivor is not listed as gone.
+    plat::sleep_ms(9000);
+    std::string later = code_of("node-b");
+    CHECK(later == "instance_gone" || later == "client_crashed");
+    json now = cluster_call(base, "instances_list", json::object());
+    CHECK(cluster_running_ids(now) == std::set<std::string>{"node-c"});
     c.kill();
 }
 #endif
@@ -2316,6 +2372,7 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     test_crash_report_coordinator();
     test_coordinator_handover_cluster();  // Issue #6
+    test_coordinator_tombstone_cluster();  // Issue #6
 #endif
     test_status_loading_agrees();  // Issue #8: sets the load flag (it stays on): keep it after the tests that read the flag
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
