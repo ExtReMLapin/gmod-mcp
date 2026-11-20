@@ -1429,8 +1429,8 @@ json launch_tool(const json &args, const json &token) {
                                                 (given.empty() ? "" : "; " + gamedir::missing_exe_message(given)));
     }
     if (!mount_root.empty()) {
-        std::string inside = lua_mount::refuse_inside_game(mount_root, root + "/garrysmod");
-        if (!inside.empty()) return tool_error("invalid_params", "lua_mount: " + inside);
+        std::string code, inside = lua_mount::refuse_mount(mount_root, root + "/garrysmod", false, &code);
+        if (!inside.empty()) return tool_error(code, "lua_mount: " + inside);
     }
     // Issue #8: memory first. A machine out of commit crashes every game on it (11 clients, 1.8 GB free: all died, no dump).
     {

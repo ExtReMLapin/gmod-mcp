@@ -541,6 +541,46 @@ static void test_lua_mount_paths() {
     CHECK(r.value("isError", false) && r.dump().find("lua") != std::string::npos);
 }
 
+// Issue #9 (chaos testing 2026-11-20, F1): paths the engine's file system accepts into its search paths but loads nothing
+// from. A UNC share, an extended-length (\\?\) or device (\\.\) path and a root so long that a file under it passes MAX_PATH
+// were all reported mounted and active while no file loaded. They are refused up front, each with its way out.
+static void test_issue9_unloadable_paths() {
+    std::string root, err;
+    auto refused = [&](const std::string &in, const char *word) {
+        root.clear();
+        err.clear();
+        bool r = lua_mount::normalize_root(in, root, err);
+        if (r || !root.empty() || err.find(word) == std::string::npos)
+            std::printf("not refused as expected: %s -> %s\n", in.c_str(), err.c_str());
+        return !r && root.empty() && err.find(word) != std::string::npos;
+    };
+    CHECK(refused(R"(\\localhost\D$\dev\wt)", "UNC"));      // Issue #9
+    CHECK(refused("//localhost/D$/dev/wt", "UNC"));         // Issue #9: forward slashes name the same share
+    CHECK(refused(R"(\\server\share\wt\lua)", "UNC"));      // Issue #9
+    CHECK(refused(R"(\\?\D:\dev\wt)", "extended-length"));  // Issue #9
+    CHECK(refused(R"(\\.\D:\dev\wt)", "extended-length"));  // Issue #9: device namespace
+    CHECK(refused("//?/D:/dev/wt", "extended-length"));     // Issue #9
+    // A root path that long cannot hold any file under MAX_PATH: refused without looking at the disk.
+    CHECK(refused("D:\\" + std::string(250, 'a'), "too long"));  // Issue #9
+    // The files decide: the longest mounted file path (root + separator + its root-relative name) must fit under MAX_PATH.
+    fs::path t = fs::temp_directory_path() / "gmod-mcp-coretests-longmount";
+    std::error_code ec;
+    fs::remove_all(t, ec);
+    touch(t / "wt" / "lua" / "a.lua");
+    touch(t / "wt" / "lua" / "deep" / "er" / "name_that_is_rather_long.lua");
+    std::string wt = fs::path(t / "wt").make_preferred().u8string();
+    CHECK(lua_mount::refuse_too_long(wt).empty());  // Issue #9: the real limit is far away
+    size_t longest = wt.size() + 1 + std::string("lua/deep/er/name_that_is_rather_long.lua").size();
+    CHECK(lua_mount::refuse_too_long(wt, longest).empty());         // Issue #9: exactly at the limit still fits
+    std::string why = lua_mount::refuse_too_long(wt, longest - 1);  // Issue #9: one character over
+    CHECK(!why.empty() && why.find("name_that_is_rather_long.lua") != std::string::npos && why.find("MAX_PATH") != std::string::npos);
+    // refuse_mount is the one check the tool, the bridge and the module run.
+    std::string code;
+    CHECK(lua_mount::refuse_mount(wt, "", false, &code).empty());  // Issue #9
+    CHECK(!lua_mount::refuse_mount(wt, t.u8string(), false, &code).empty() && code == "invalid_params");  // Issue #9: inside the game folder
+    fs::remove_all(t, ec);
+}
+
 // Issue #9: the GMod x86-64 build of 2026-11-19 grew IAppSystem from 5 to 9 slots, so every IFileSystem slot moved by
 // 4: slot 7 (AddSearchPath before) became a bare `ret 0` and slot 13 (GetSearchPath before) RemoveAllSearchPaths. The
 // module now reads the layout from the code of slots 7, 8, 11 and 12. Bytes copied from both filesystem_stdio.dll
@@ -2141,6 +2181,7 @@ int main(int argc, char **argv) {
     test_lua_mount_paths();
     test_fs_vtable_layout();
     test_issue9_mount_reload();
+    test_issue9_unloadable_paths();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();

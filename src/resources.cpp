@@ -163,7 +163,11 @@ Example. The worktree `D:/dev/my-addon-wt` is a copy of the addon installed as `
 
 Refused paths: a relative path, a folder without `lua/` (e.g. `D:/dev`, or a folder holding several addons), a folder
 inside the game folder (`garrysmod/` or an installed addon: the engine already searches it), a path with `"`, `;` or a
-line break.
+line break, a path with non-ASCII characters, a UNC path (`\\server\share`, also `\\localhost\D$`), an extended-length or
+device path (`\\?\D:\x`, `\\.\D:\x`) and a folder holding a file whose full path would pass Windows' 259
+characters (MAX_PATH). The engine accepts all of these into its search paths and then loads nothing from them, so the
+mount would report `active` while the game ran the installed code. For the non-ASCII, UNC and long cases a junction on a
+short local path (`mklink /J C:\gmod-wt "<your folder>"`) is the way out.
 
 When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
 set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it

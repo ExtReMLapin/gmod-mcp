@@ -999,6 +999,13 @@ def case_lua_mount():
     pids = sc.get("silent_pids", [])
     check("LUA_MOUNT non-ASCII folder refused before launching, with the way out",
           res.get("isError") and "ASCII" in json.dumps(sc) and "mklink" in json.dumps(sc) and not os.path.exists(argv_file), sc)
+    # Issue #9 (chaos testing 2026-11-20): a UNC share, an extended-length path and a root passing MAX_PATH were accepted and
+    # reported active while no file loaded. Refused before anything starts, with the reason.
+    for bad, word in ((r"\\localhost" + "\\" + wt.replace(":", "$", 1), "UNC"), (r"\\?" + "\\" + wt, "extended-length"), ("D:\\" + "a" * 250, "too long")):
+        if os.path.exists(argv_file): os.remove(argv_file)
+        res = launch(bad)
+        sc = res.get("structuredContent", {})
+        check("LUA_MOUNT Issue #9 refused before launching: " + word, res.get("isError") and word in json.dumps(sc) and not os.path.exists(argv_file), sc)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     b.close()
     shutil.rmtree(game, ignore_errors=True)

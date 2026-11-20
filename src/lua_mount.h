@@ -28,6 +28,15 @@ bool normalize_root(const std::string &in, std::string &root, std::string &err);
 // reorder the game's own paths.
 std::string refuse_inside_game(const std::string &root, const std::string &game_dir);
 
+// Pure: "" if every .lua file under <root>/lua and <root>/gamemodes has a full path (root, separator, root-relative name)
+// of at most `max_path` characters (Windows MAX_PATH leaves 259), else why not. The engine accepts a root whose files pass
+// it into its search paths but cannot open any of them: the mount would report active and load nothing.
+std::string refuse_too_long(const std::string &root, size_t max_path = 259);
+// Pure: the one check run before a folder is mounted (lua_mount tool, instances_launch, -mcp_lua_mount): "" if it may be,
+// else why not, with the error `code` ("invalid_params", or "shadows_base_lua"). `game_dir` is the garrysmod folder
+// ("" = unknown: only the other checks run).
+std::string refuse_mount(const std::string &root, const std::string &game_dir, bool allow_shadow, std::string *code = nullptr);
+
 // Pure: whether `code` (the first bytes of a function) only returns a constant: `ret`, `ret n`, or one
 // `xor`/`mov` into al/eax/rax then `ret`. A jump thunk is not followed (not constant).
 bool is_constant_return(const std::vector<uint8_t> &code);
