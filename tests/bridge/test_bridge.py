@@ -1085,6 +1085,20 @@ def case_lua_mount_verify():
     check("LUA_MOUNT_VERIFY base Lua missing: isError and warning", res.get("isError") and m.get("base_lua_mounted") is False and "base" in sc.get("warning", "").lower(), sc)
     check("LUA_MOUNT_VERIFY (issue 3) base Lua missing: next_call removes the mount (path null) from that client",
           sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": None, "instance": ((sc.get("instances") or [{}])[0]).get("instance")}}, sc.get("next_call"))
+    # Issue #9 (chaos testing 2026-11-20): the engine lists the folder but its file system serves none of the files (a path it
+    # cannot read): the mount is not effective, whatever the module's bookkeeping says.
+    answers["now"] = lambda a: {"lua_mount": wt, "base_lua_mounted": True, "engine_serves_folder": False, "engine_serves": {"server": False}}
+    res, sc = launch(wt)
+    inst = (sc.get("instances") or [{}])[0]
+    m = inst.get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY Issue #9 engine_serves_folder false: not active, mount_not_effective, isError, warning",
+          res.get("isError") and m.get("active") is False and m.get("error_code") == "mount_not_effective" and "mount_not_effective" in m.get("error", "")
+          and m.get("engine_serves_folder") is False and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    for served in (True, None):
+        answers["now"] = lambda a, served=served: {"lua_mount": wt, "base_lua_mounted": True, "engine_serves_folder": served}
+        res, sc = launch(wt)
+        m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+        check("LUA_MOUNT_VERIFY Issue #9 engine_serves_folder %s: still active" % served, not res.get("isError") and m.get("active") is True and "warning" not in sc, sc)
     # 6. no mount requested: the game is not asked.
     n = len(srv.lua_mount_calls)
     answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}

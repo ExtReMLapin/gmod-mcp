@@ -581,6 +581,82 @@ static void test_issue9_unloadable_paths() {
     fs::remove_all(t, ec);
 }
 
+// Issue #9 (chaos testing 2026-11-20, F1b): the module reported a mount active and "loaded with the mount" from its own
+// bookkeeping while the engine loaded nothing from the folder. It now asks each realm's file system for a few files of the
+// folder (file.Exists and file.Time with "LUA", which see the mounted folder) and reports engine_serves_folder.
+static void test_issue9_engine_serves() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-serves", ov = base / "wt";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    for (const char *f : {"lua/pba/a.lua", "lua/pba/b.lua", "lua/zz/c.lua", "lua/d.lua", "lua/e/f/g.lua", "gamemodes/ovgm/gamemode/init.lua"}) touch(ov / f);
+    const int SV = realms::SERVER, CL = realms::CLIENT;
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+    auto files = lua_mount::scan_files(ov.u8string());
+
+    // Probes: Lua path names as file.Exists takes them (no lua/ or gamemodes/ prefix), lua/ files first, spread over the folder.
+    auto probes = lua_mount::pick_probes(files, 3);
+    CHECK(probes.size() == 3);  // Issue #9
+    for (const auto &p : probes)
+        CHECK(p.name.rfind("lua/", 0) != 0 && p.name.rfind("gamemodes/", 0) != 0 && p.name != "ovgm/gamemode/init.lua" && p.name.size() > 4);  // Issue #9
+    CHECK(probes[0].name != probes[1].name && probes[1].name != probes[2].name);  // Issue #9: distinct files
+    lua_mount::Files gm_only;
+    gm_only["gamemodes/ovgm/gamemode/init.lua"] = files["gamemodes/ovgm/gamemode/init.lua"];
+    auto gp = lua_mount::pick_probes(gm_only, 3);
+    CHECK(gp.size() == 1 && gp[0].name == "ovgm/gamemode/init.lua");  // Issue #9: a gamemode file is named from gamemodes/
+    CHECK(lua_mount::pick_probes({}, 3).empty());  // Issue #9: nothing to ask about
+    // The expected file time is in Unix seconds, as file.Time answers.
+    long long now = (long long)std::time(nullptr);
+    CHECK(std::llabs(probes[0].unix_time - now) <= 5);  // Issue #9
+    CHECK(lua_mount::unix_seconds_of(-1) == -1);  // Issue #9: unknown stays unknown
+
+    // The verdict: some probe found in the folder (right time) = served; found but another time = another copy;
+    // not found = not served; no usable answer = unknown.
+    long long t0 = probes[0].unix_time;
+    auto ans = [](bool e, long long t) { return json{{"exists", e}, {"time", t}}; };
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0), ans(false, 0), ans(true, 5)})) == json(true));  // Issue #9: one is enough
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0 + 2), ans(false, 0), ans(false, 0)})) == json(true));  // Issue #9: 2 s of slack
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0 + 100), ans(true, t0 - 100), ans(true, t0 + 3600)})) == json(false));  // Issue #9: another copy
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(false, 0), ans(false, 0), ans(false, 0)})) == json(false));  // Issue #9: nothing found
+    CHECK(lua_mount::probes_verdict(probes, json(nullptr)).is_null());  // Issue #9
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0)})).is_null());  // Issue #9: a short answer is no answer
+    CHECK(lua_mount::probes_verdict({}, json::array()).is_null());  // Issue #9
+    CHECK(lua_mount::probes_verdict({{"pba/a.lua", -1}}, json::array({ans(true, 12345)})) == json(true));  // Issue #9: unknown time: existence only
+
+    // status.lua_mount / map_load: both realms loaded with the folder in front, the engine is asked per realm.
+    lua_mount::note_load_start(SV, ov.u8string(), files);
+    lua_mount::note_load_start(CL, ov.u8string(), files);
+    lua_mount::note_realm_loaded(SV);
+    lua_mount::note_realm_loaded(CL);
+    std::map<int, int> asked;
+    json sv_exists = true, cl_exists = true;
+    tools::set_mount_probe_for_tests([&](int realm, const std::vector<lua_mount::Probe> &ps) -> json {
+        asked[realm]++;
+        bool e = realm == realms::SERVER ? sv_exists.get<bool>() : cl_exists.get<bool>();
+        json a = json::array();
+        for (const auto &p : ps) a.push_back(ans(e, e ? p.unix_time : 0));
+        return a;
+    });
+    json st = tools::mount_state({SV, CL});
+    CHECK(asked[SV] == 1 && asked[CL] == 1);  // Issue #9: once per realm
+    CHECK(st["engine_serves_folder"] == true && st["engine_serves"]["server"] == true && st["engine_serves"]["client"] == true);  // Issue #9
+    CHECK(!st.contains("warning"));  // Issue #9: a healthy mount says nothing
+    sv_exists = false;
+    st = tools::mount_state({SV, CL});
+    CHECK(st["engine_serves_folder"] == false && st["engine_serves"]["server"] == false && st["engine_serves"]["client"] == true);  // Issue #9
+    std::string w = st.value("warning", "");
+    CHECK(w.find("server") != std::string::npos && w.find("file system") != std::string::npos && w.find("installed") != std::string::npos);  // Issue #9
+    CHECK(w.find("lua_mount") != std::string::npos);  // Issue #9: the way out is named
+    // A realm that cannot be asked (no runtime): unknown, not a failure.
+    tools::set_mount_probe_for_tests([](int, const std::vector<lua_mount::Probe> &) -> json { return nullptr; });
+    st = tools::mount_state({SV, CL});
+    CHECK(st["engine_serves_folder"].is_null() && !st.contains("warning"));  // Issue #9
+    tools::set_mount_probe_for_tests(nullptr);
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
 // Issue #9: the GMod x86-64 build of 2026-11-19 grew IAppSystem from 5 to 9 slots, so every IFileSystem slot moved by
 // 4: slot 7 (AddSearchPath before) became a bare `ret 0` and slot 13 (GetSearchPath before) RemoveAllSearchPaths. The
 // module now reads the layout from the code of slots 7, 8, 11 and 12. Bytes copied from both filesystem_stdio.dll
@@ -2182,6 +2258,7 @@ int main(int argc, char **argv) {
     test_fs_vtable_layout();
     test_issue9_mount_reload();
     test_issue9_unloadable_paths();
+    test_issue9_engine_serves();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();

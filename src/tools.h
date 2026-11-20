@@ -1,11 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "lua_mount.h"
 
 namespace tools {
 
@@ -52,10 +55,16 @@ json source_provenance(int realm, const std::string &source);
 // status.lua_mount: {path, loaded_with_mount, realms_without_mount, stale_files:[{file, disk, reason, realms}], warning?}
 // for the given realms; null when no folder is mounted.
 json mount_state(const std::vector<int> &realms);
+// {engine_serves: {realm: bool}, engine_serves_folder: true|false|null} (Issue #9): whether each realm's file system really finds
+// the mounted folder's files (null: nobody could be asked, e.g. before a map is loaded).
+json mount_engine_serves(const std::vector<int> &realms);
 // One sentence for map_load / status when mounted files changed since they were loaded; "" when all is current.
 std::string mount_warning(const json &state);
 // {reload:[{file, disk, realms, reason}], skipped:[{file, why}]}: what lua_reload {mounted_changed} would run.
 json plan_mount_reload(const json &state);
+// Tests only: replaces what asks a realm's file system about the mounted folder's files (answers [{exists, time?}] one per
+// probe, or null when it cannot be asked); an empty function restores the real one (the realm's mount_probe).
+void set_mount_probe_for_tests(std::function<json(int, const std::vector<lua_mount::Probe> &)> fn);
 // The realms where the mounted folder matters now (server, client) that are up with the runtime.
 std::vector<int> mount_realms();
 // Non-negotiable network rule: "" if the console line may run, else why it is refused (connect/redirect/retry to a

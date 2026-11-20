@@ -242,6 +242,14 @@ start by hand with `-w`/`-h` does: add `-dxlevel 95` to it.
 
 If `base_lua_mounted` is false, the game's own `lua/` is missing from the server paths: remove the folder at once.
 
+`engine_serves_folder` (in `lua_mount {}` and `status.lua_mount`, once a map is loaded; per realm in `engine_serves`) is the
+engine's own answer, not the module's bookkeeping: the module asks each realm's file system (`file.Exists` and `file.Time`
+with `"LUA"`) for up to three files of the folder and compares the file time with the folder's. `false` means the engine lists
+the folder but serves none of its files: the game runs the installed code, whatever `active` or `loaded_with_mount` say. A
+`warning` says so, `map_load` repeats it, and `instances_launch {lua_mount}` reports that client's mount as `active: false`
+with `error_code: "mount_not_effective"`. `null`: nobody could be asked (no map loaded yet). Remove the folder
+(`lua_mount {path: null}`) and mount a plain local path.
+
 ## Reporting frictions
 The maintainers want to hear about every friction agents meet with gmod-mcp, without making work for the user.
 

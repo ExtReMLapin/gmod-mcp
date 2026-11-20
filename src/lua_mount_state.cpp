@@ -13,6 +13,7 @@
 namespace lua_mount {
 
 namespace fs = std::filesystem;
+using nlohmann::json;
 
 namespace {
 
@@ -164,6 +165,70 @@ std::vector<Change> changed_files(int realm) {
             if (!rec.files.count(kv.first)) out.push_back({kv.second.rel, "added"});
     std::sort(out.begin(), out.end(), [](const Change &a, const Change &b) { return a.rel < b.rel; });
     return out;
+}
+
+std::vector<Probe> pick_probes(const Files &files, size_t n) {
+    std::vector<std::string> lua, gm;  // names as file.Exists takes them, in key order
+    std::vector<long long> lua_t, gm_t;
+    for (const auto &kv : files) {
+        const std::string &rel = kv.second.rel;
+        if (rel.rfind("lua/", 0) == 0) {
+            lua.push_back(rel.substr(4));
+            lua_t.push_back(kv.second.mtime);
+        } else if (rel.rfind("gamemodes/", 0) == 0) {
+            gm.push_back(rel.substr(10));
+            gm_t.push_back(kv.second.mtime);
+        }
+    }
+    std::vector<Probe> out;
+    auto take = [&](const std::vector<std::string> &names, const std::vector<long long> &times, size_t want) {
+        if (names.empty() || want == 0) return;
+        want = std::min(want, names.size());
+        // spread over the sorted names: first, middle, last, ...
+        for (size_t i = 0; i < want; ++i) {
+            size_t idx = want == 1 ? 0 : i * (names.size() - 1) / (want - 1);
+            out.push_back(Probe{names[idx], unix_seconds_of(times[idx])});
+        }
+    };
+    take(lua, lua_t, n);
+    if (out.size() < n) take(gm, gm_t, n - out.size());
+    return out;
+}
+
+long long unix_seconds_of(long long ticks) {
+    if (ticks < 0) return -1;
+    // The file system clock has its own epoch: measure the offset against the system clock instead of assuming it.
+    using namespace std::chrono;
+    auto fnow = fs::file_time_type::clock::now();
+    auto snow = system_clock::now();
+    auto delta = fs::file_time_type(fs::file_time_type::duration(ticks)) - fnow;
+    return duration_cast<seconds>(snow.time_since_epoch()).count() + duration_cast<seconds>(delta).count();
+}
+
+json probes_verdict(const std::vector<Probe> &probes, const json &answers) {
+    if (probes.empty() || !answers.is_array() || answers.size() != probes.size()) return nullptr;
+    bool any = false;
+    for (size_t i = 0; i < probes.size(); ++i) {
+        const json &a = answers[i];
+        if (!a.is_object() || !a.value("exists", false)) continue;
+        if (probes[i].unix_time < 0 || !a.contains("time") || !a["time"].is_number()) {
+            any = true;
+            continue;
+        }
+        long long t = a["time"].get<long long>(), want = probes[i].unix_time;
+        if (t >= want - 2 && t <= want + 2) any = true;
+    }
+    return any;
+}
+
+Files probe_sample(int realm) {
+    std::string cur = current();
+    if (cur.empty()) return {};
+    if (valid_realm(realm)) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_cur[realm].full && same_root(g_cur[realm].root, cur)) return g_cur[realm].files;
+    }
+    return scan_files(cur);
 }
 
 void forget_loads_for_tests() {

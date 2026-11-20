@@ -419,6 +419,36 @@ std::vector<int> mount_realms() {
     return rs;
 }
 
+static std::function<json(int, const std::vector<lua_mount::Probe> &)> g_mount_probe;
+
+void set_mount_probe_for_tests(std::function<json(int, const std::vector<lua_mount::Probe> &)> fn) { g_mount_probe = std::move(fn); }
+
+// Asks one realm's file system about a few files of the mounted folder (Issue #9): answers [{exists, time?}] or null.
+static json ask_engine(int realm, const std::vector<lua_mount::Probe> &probes) {
+    if (g_mount_probe) return g_mount_probe(realm, probes);
+    if (!agent::realm_present(realm) || !agent::realm_injected(realm)) return nullptr;
+    json files = json::array();
+    for (const auto &p : probes) files.push_back({{"name", p.name}});
+    json r = agent::rt(realm, "mount_probe", json{{"files", files}}, 5.0);
+    if (!r.value("ok", false) || !r["result"].is_object() || !r["result"].contains("answers")) return nullptr;
+    return r["result"]["answers"];
+}
+
+// {engine_serves: {realm: bool}, engine_serves_folder: true|false|null}: what the realms' file systems say about the folder.
+json mount_engine_serves(const std::vector<int> &rs) {
+    json serves = json::object();
+    bool any_true = false, any_false = false;
+    for (int r : rs) {
+        auto probes = lua_mount::pick_probes(lua_mount::probe_sample(r));
+        if (probes.empty()) continue;
+        json v = lua_mount::probes_verdict(probes, ask_engine(r, probes));
+        if (v.is_null()) continue;
+        serves[realm_name_of(r)] = v;
+        (v.get<bool>() ? any_true : any_false) = true;
+    }
+    return json{{"engine_serves", serves}, {"engine_serves_folder", any_false ? json(false) : any_true ? json(true) : json(nullptr)}};
+}
+
 // status.lua_mount and the map_load check. null when no folder is mounted.
 json mount_state(const std::vector<int> &rs) {
     std::string root = lua_mount::current();
@@ -445,6 +475,10 @@ json mount_state(const std::vector<int> &rs) {
     st["loaded_with_mount"] = with;
     st["realms_without_mount"] = without;
     st["stale_files"] = stale;
+    // Issue #9: the engine, not the module's bookkeeping, has the last word: does each realm's file system serve the folder?
+    json es = mount_engine_serves(rs);
+    st["engine_serves"] = es["engine_serves"];
+    st["engine_serves_folder"] = es["engine_serves_folder"];
     std::string w = mount_warning(st);
     if (!w.empty()) st["warning"] = w;
     return st;
@@ -453,9 +487,21 @@ json mount_state(const std::vector<int> &rs) {
 std::string mount_warning(const json &st) {
     if (!st.is_object()) return "";
     std::string out;
+    if (st.contains("engine_serves_folder") && st["engine_serves_folder"] == json(false)) {
+        out = "The game's file system does not serve this folder's files";
+        std::string which;
+        if (st.contains("engine_serves") && st["engine_serves"].is_object())
+            for (auto it = st["engine_serves"].begin(); it != st["engine_serves"].end(); ++it)
+                if (it.value() == json(false)) which += (which.empty() ? "" : "/") + it.key();
+        if (!which.empty()) out += " (the " + which + " realm finds none of the files it was asked for)";
+        out += ": the game runs the installed code, whatever the module reports as mounted. The path is probably one the engine cannot "
+               "read (UNC, junction, over-long or non-ASCII path, a folder moved or deleted). Remove it with lua_mount {path: null}, "
+               "mount a plain local path, then map_load.";
+    }
     const json &stale = st.contains("stale_files") ? st["stale_files"] : json::array();
     if (stale.is_array() && !stale.empty()) {
-        out = std::to_string(stale.size()) + " file(s) of the mounted folder changed since the game loaded them, so the game still runs the old code: ";
+        if (!out.empty()) out += " ";
+        out += std::to_string(stale.size()) + " file(s) of the mounted folder changed since the game loaded them, so the game still runs the old code: ";
         size_t n = 0;
         for (const auto &f : stale) {
             if (n++) out += ", ";

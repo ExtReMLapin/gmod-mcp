@@ -98,6 +98,24 @@ struct Change {
 };
 // Files of the mounted folder that are not what the realm loaded (empty if the realm has no record).
 std::vector<Change> changed_files(int realm);
+// ---- Does the engine really serve the folder? (Issue #9, chaos testing 2026-11-20) ----
+// The bookkeeping above is the module's own: a path the engine accepts but cannot read (UNC, junction, too long...) is
+// recorded as loaded and loads nothing. So each realm's file system is asked for a few files of the folder.
+struct Probe {
+    std::string name;         // the Lua path as file.Exists takes it: "pba/x.lua" (no lua/ or gamemodes/ prefix)
+    long long unix_time = -1; // the folder file's time in Unix seconds as file.Time answers, -1 unknown
+};
+// A few files to ask about, spread over the snapshot, lua/ files first (a gamemodes/ file only when there are too few).
+std::vector<Probe> pick_probes(const Files &files, size_t n = 3);
+// File system clock ticks (mtime_of) to Unix seconds; -1 stays -1.
+long long unix_seconds_of(long long ticks);
+// The realm's answers ([{exists, time?}], one per probe) as a verdict: true when some probe is served from the folder (it
+// exists and its time is the folder file's, give or take 2 s; existence alone when the time is unknown), false when none
+// is, null when there is no usable answer.
+nlohmann::json probes_verdict(const std::vector<Probe> &probes, const nlohmann::json &answers);
+// The files to probe for a realm: its load-time snapshot, else the folder as it is now.
+Files probe_sample(int realm);
+
 // Tests only: forget every record.
 void forget_loads_for_tests();
 

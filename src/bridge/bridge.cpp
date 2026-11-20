@@ -1363,6 +1363,17 @@ std::wstring utf8_to_wide(const std::string &s) {
     json engine = answer.value("lua_mount", json());
     if (engine.is_string() && same(engine.get<std::string>(), requested)) {
         v["active"] = true;
+        // Issue #9: the engine lists the folder, but its file system may not be able to read it (UNC, junction, long path...):
+        // the game then asks the module's own bookkeeping, not the file system, and runs the installed code.
+        if (answer.contains("engine_serves_folder") && answer["engine_serves_folder"].is_boolean()) {
+            v["engine_serves_folder"] = answer["engine_serves_folder"];
+            if (answer["engine_serves_folder"] == json(false)) {
+                v["active"] = false;
+                v["error_code"] = "mount_not_effective";
+                v["error"] = "mount_not_effective: the engine lists the folder but its file system serves none of the files it was asked "
+                             "for (a path it cannot read: UNC, junction, over-long or non-ASCII), so the game runs the installed addon's code";
+            }
+        }
     } else {
         v["engine_lua_mount"] = engine.is_string() ? engine : json(nullptr);
         v["error"] = engine.is_string() ? "the engine has another folder mounted: " + engine.get<std::string>()

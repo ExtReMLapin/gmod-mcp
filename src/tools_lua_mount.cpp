@@ -25,6 +25,16 @@ static json lua_mount_tool(const json &args) {
     if (jobs::is_timeout(r))
         return agent::err("main_thread_timeout", "the main thread did not respond in time (map loading, freeze or infinite loop?)");
     if (r.is_object() && r.contains("__error")) return agent::err("internal", r["__error"].get<std::string>());
+    // Issue #9: with a map loaded, ask each realm's file system whether it really serves the folder (the engine takes paths
+    // it cannot read into its search paths without a word).
+    if (r.is_object() && r.value("ok", false) && r["result"].is_object() && r["result"].value("lua_mount", json()).is_string()) {
+        json es = mount_engine_serves(mount_realms());
+        r["result"].update(es);
+        if (es["engine_serves_folder"] == json(false)) {
+            std::string w = mount_warning(json{{"engine_serves", es["engine_serves"]}, {"engine_serves_folder", false}});
+            r["result"]["warning"] = r["result"].contains("warning") ? r["result"]["warning"].get<std::string>() + " " + w : w;
+        }
+    }
     return r;
 }
 
@@ -48,7 +58,9 @@ void register_lua_mount() {
          "\"@lua/my_addon/x.lua\", not \"@addons/my_addon/lua/my_addon/x.lua\"). Only Lua (not materials, sounds, "
          "data/). `path`: the addon's root or its lua/ folder, absolute; null removes it (from the next map load); "
          "omitted: the current folder and the engine's Lua search paths (lsv = server, lcl = client). If the result "
-         "says base_lua_mounted: false, remove the folder at once. A test client can start with one: instances_launch "
+         "says base_lua_mounted: false, remove the folder at once. engine_serves_folder (with a map loaded) is what the game's own "
+         "file system says: false means it lists the folder but finds none of its files (a path it cannot read), so the game runs "
+         "the installed code whatever else says mounted: a warning names the way out. A test client can start with one: instances_launch "
          "{lua_mount}. empty_cache (default true) empties the engine's Lua file cache. Windows game clients only "
          "(unsupported_platform on Linux; refused on a dedicated server). Full guide: resource mcpagent://guide, "
          "section \"Mounted Lua folder\".",

@@ -80,7 +80,8 @@ json build(const std::string &tool) {
                            {"main_thread_stalled", B}, {"perf", Obj}, {"realms", Obj}, {"client_lock", Obj},
                            {"console_capture", S}, {"tmp_dir", S}, {"game_dir", S}, {"menu", Obj}, {"server", Obj}, {"client", Obj},
                            {"host_error", Obj}, {"map", NS}, {"gamemode", ANY}, {"maxplayers", ANY}, {"loading", B},
-                           {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS}});
+                           {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS},
+                           {"lua_mount", Obj}});
         // --- Lua execution
         json exec = obj({{"values", ANYS}, {"n", N}, {"output", S}, {"duration_ms", N}, {"chunk_bytes", N}, {"chunkname", S},
                          {"budget_s", N}, {"generation", N}, {"truncated", N}, {"projected", STRS}, {"fields_note", S}, {"file", S},
@@ -105,7 +106,8 @@ json build(const std::string &tool) {
         s["lua_file_list"] = obj({{"dir", S}, {"files", STRS}}, {"dir", "files"});
         s["lua_file_delete"] = obj({{"deleted", S}}, {"deleted"});
         s["lua_mount"] = obj({{"lua_mount", NS}, {"base_lua_mounted", ANY}, {"mount_hook", B}, {"hook_calls", N}, {"search_paths", Obj},
-                              {"previous", NS}, {"cache_emptied", B}});
+                              {"previous", NS}, {"cache_emptied", B}, {"hook_path_ids", Obj}, {"removed", Obj}, {"fs_first_slot", N},
+                              {"engine_serves_folder", nullable("boolean")}, {"engine_serves", Obj}});
         // --- jobs
         s["lua_job"] = obj({{"job_id", S}, {"state", S}, {"realm", S}, {"generation", N}, {"concurrent_jobs", ANYS}, {"values", ANYS},
                             {"n", N}, {"reports", ANYS}, {"output", S}, {"frames", N}, {"resumes", N}, {"cpu_ms", N}, {"elapsed_s", N},
@@ -118,7 +120,8 @@ json build(const std::string &tool) {
         // --- session
         s["map_list"] = obj({{"maps", STRS}, {"count", N}, {"truncated", B}, {"filter", S}}, {"maps", "count", "truncated"});
         s["map_load"] = obj({{"map", S}, {"gamemode", ANY}, {"maxplayers", ANY}, {"requested_map", S}, {"duration_s", N},
-                             {"server_generation", N}, {"client_generation", N}}, {"requested_map", "duration_s"});
+                             {"server_generation", N}, {"client_generation", N}, {"lua_mount", Obj}, {"lua_cache_emptied", B}},
+                            {"requested_map", "duration_s"});
         s["disconnect"] = obj({{"disconnected", B}, {"was_in_game", B}, {"duration_s", N}, {"realms", Obj}},
                               {"disconnected", "was_in_game", "duration_s", "realms"});
         s["game_quit"] = obj({{"quitting", B}}, {"quitting"});
