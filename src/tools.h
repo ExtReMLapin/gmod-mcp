@@ -32,9 +32,12 @@ void register_instances();
 
 // Shared helpers.
 // What the `screenshot` tool does: the render capture of the client realm's frame (render hook + poll) when that realm exists,
-// else the game window through Windows Graphics Capture; `a` is the tool's arguments ({source, format, quality, w, h}).
+// else the engine's own `jpeg` command (src/enginejpeg.h); `a` is the tool's arguments ({source, format, quality, w, h}).
 // {ok, result, image} or an error (ui_click / ui_key use it for screenshot_after).
 json take_screenshot(const json &a);
+// Test seam (native tests only): replaces what sends the `jpeg` command (the menu state's engine_cmd). The sender returns "" when
+// it sent it, else the reason with the error code in its argument. An empty function restores the real one.
+void set_engine_jpeg_sender_for_tests(std::function<std::string(std::string &code)> fn);
 json ok(json result);
 json realm_prop(const std::string &desc, bool with_menu = true);
 int realm_of(const json &args, const char *key, int def);  // -1 if invalid

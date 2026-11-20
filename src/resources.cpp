@@ -78,7 +78,7 @@ static std::string guide() {
 |---|---|---|
 | menu | always (client mode) | loading maps, console, wiki/HTTP, error capture (OnLuaError) |
 | server | map loaded (singleplayer/listen or srcds) | entities, players, traces, sounds, game logic |
-| client | map loaded and lock allowed | rendering, screenshots (the main menu and dialogs too: window capture), debug_draw, local player state |
+| client | map loaded and lock allowed | rendering, screenshots (the main menu and dialogs too: the engine's jpeg command), debug_draw, local player state |
 
 The client and server states are destroyed and recreated on every map change: keep no references across maps.
 The agent runtime (global table `__mcpagent`) is re-injected automatically.
@@ -437,18 +437,20 @@ types text (Unicode included). Click a text field first, then type. `screenshot_
   details `code_page` and `characters`) unless `allow_lossy: true`; set it from Lua instead (`lua_exec` in the realm that owns the
   panel: `entry:SetText("...")` on a DTextEntry; `SetValue` does nothing while the entry has the focus a click gave it). A letter,
   a digit or space as `key` is typed as a character (`WM_CHAR`), not pressed.
-- `screenshot` works at the main menu, in a dialog and on a loading screen too (no client realm): it captures the game window
-  through Windows Graphics Capture (`source: "window_capture"`, chosen by itself when no map is loaded), at the size ui_click's
-  coordinates are read on, so read the point on that image and click. `screenshot_after` does the same. See "Screenshots".
+- `screenshot` works at the main menu, in a dialog and on a loading screen too (no client realm): it uses the engine's own
+  `jpeg` command (`source: "engine_jpeg"`, chosen by itself when no map is loaded), at the size ui_click's coordinates are read
+  on, so read the point on that image and click. `screenshot_after` does the same. See "Screenshots".
 
 ## Screenshots
 `screenshot` has two sources (`source`, default `auto`; the result says which one it used). `render`: the engine's capture of
-what the player sees; needs a loaded map (client realm), takes `w`/`h` to render the view again at another size. `window_capture`:
-the game's own window through Windows Graphics Capture; the only way to see the main menu, a VGUI2 dialog ("Disconnected by the
-server") or a loading screen. Windows only. It is the client area (no title bar), at the backbuffer's size so that ui_click
-coordinates match (a window larger than the backbuffer, DPI scaling, is scaled down: `scaled`, `native_w`, `native_h`), and it
-works while other windows cover the game. It takes no focus, does not raise the window, writes no file, and captures only the game's
-own window. A minimized window gives `window_unavailable` (Windows captures nothing from it); no frame within 2 s gives `capture_timeout`.
+what the player sees; needs a loaded map (client realm), takes `w`/`h` to render the view again at another size. `engine_jpeg`:
+the engine's own `jpeg` console command; the only way to see the main menu, a VGUI2 dialog ("Disconnected by the server") or a
+loading screen. The engine writes garrysmod/screenshots/<name>.jpg and prints its name in the console; the module reads exactly
+that file and deletes it, and nothing else (`file`, `file_deleted`; a `warning` with the path if the delete failed). It is the
+engine's own capture, so it works while other windows cover the game, takes no focus and does not touch the window. The image is
+a JPEG at the game's screen size (the space ui_click coordinates are read on) and at the engine's own quality (convar
+jpeg_quality, left alone): `format`, `w`, `h` and `quality` are not applied and are listed in `ignored`. No `Wrote` line within
+4 s gives `capture_timeout` (game minimized or frozen); a file that cannot be taken gives `capture_failed` and is left in place.
 
 ## Limits
 - No connection to remote servers; the client realm is refused outside singleplayer/listen/srcds loopback.

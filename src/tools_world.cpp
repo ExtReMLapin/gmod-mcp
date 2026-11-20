@@ -3,14 +3,16 @@
 #include <cmath>
 
 #include "agent.h"
+#include "console.h"
+#include "enginejpeg.h"
 #include "jobs.h"
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
+#include "reqctx.h"
 #include "tasks.h"
 #include "tools.h"
 #include "util.h"
-#include "windowshot.h"
 
 namespace tools {
 
@@ -52,54 +54,70 @@ static json capture(int realm, const json &req) {
     }
 }
 
-// Screenshot without a client realm (main menu, a VGUI2 dialog, a loading screen): the game's own window through Windows Graphics
-// Capture, cropped to its client area and sized like the backbuffer (what the render capture returns at screen size, and what
-// ui_click's coordinates are read on). It needs neither the client realm nor the main thread's frame loop, only a visible window.
-static json window_capture_shot(const json &a) {
-    plat::WindowBitmap bmp;
-    std::string code, msg;
-    if (!plat::window_capture_bitmap(0, 2000, bmp, code, msg)) return agent::err(code, msg);
-    windowshot::SizeRequest sr;
-    sr.crop = {bmp.w, bmp.h};
-    sr.w = a.value("w", 0);
-    sr.h = a.value("h", 0);
-    // The backbuffer's size, from the menu state (ScrW/ScrH: the menu realm always exists). Short wait: a main thread stuck in a
-    // map load must not hold the screenshot back; the client area's size is the fallback.
-    json st = agent::rt(realms::MENU, "ui_state", json::object(), 2.0);
-    if (st.value("ok", false) && st.contains("result")) {
-        const json &r = st["result"];
-        if (r.contains("scr_w") && r["scr_w"].is_number() && r.contains("scr_h") && r["scr_h"].is_number()) {
-            sr.backbuffer.w = (int)r["scr_w"].get<double>();
-            sr.backbuffer.h = (int)r["scr_h"].get<double>();
-        }
+// Screenshot without a client realm (main menu, a VGUI2 dialog, a loading screen): the engine's own `jpeg` command (sent through the
+// menu state, like a console command blocked from Lua), then the file it names in its console line is read and deleted
+// (src/enginejpeg.cpp). The engine writes it at the backbuffer's size, which is the space ui_click's coordinates are read on. It
+// needs neither the client realm nor the render hook, and it works while other windows cover the game.
+static std::function<std::string(std::string &)> g_test_sender;
+void set_engine_jpeg_sender_for_tests(std::function<std::string(std::string &code)> fn) { g_test_sender = std::move(fn); }
+
+static json engine_jpeg_shot(const json &a) {
+    enginejpeg::Io io;
+    io.game_dir = agent::config().game_dir;
+    io.timeout_s = 4.0;
+    io.poll_ms = 15;
+    io.cursor_now = [] { return console::cursor_now(); };
+    io.read_lines = [](uint64_t &cursor) {
+        std::string err;
+        console::ReadResult r = console::read(cursor, 500, "", err);
+        std::vector<std::string> out;
+        for (const auto &l : r.lines) out.push_back(l.text);
+        cursor = r.next_cursor;
+        return out;
+    };
+    io.send = [](std::string &code) -> std::string {
+        json r = agent::rt(realms::MENU, "engine_cmd", json{{"cmd", "jpeg"}}, 3.0);
+        if (r.value("ok", false)) return "";
+        code = r.contains("error") ? r["error"].value("code", "capture_failed") : "capture_failed";
+        return r.contains("error") ? r["error"].value("message", "the jpeg command was not sent") : "the jpeg command was not sent";
+    };
+    if (g_test_sender) io.send = g_test_sender;
+    io.sleep_ms = [](int ms) { plat::sleep_ms(ms); };
+    io.cancelled = [] { return reqctx::cancelled(); };
+    enginejpeg::Capture c = enginejpeg::capture(io);
+    if (!c.ok) {
+        json details = json::object();
+        if (!c.file.empty()) details["file"] = c.file;
+        return agent::err(c.code, c.message, details.empty() ? json() : details);
     }
-    windowshot::Target t = windowshot::target_size(sr);
-    std::string format = a.value("format", "jpeg") == "png" ? "png" : "jpeg";
-    std::string data;
-    if (!plat::window_encode(bmp, t.scaled ? t.size.w : 0, t.scaled ? t.size.h : 0, format, a.value("quality", 90), data, msg))
-        return agent::err("capture_failed", msg);
-    json res = {{"format", format}, {"w", t.size.w}, {"h", t.size.h}, {"screen_w", t.screen.w}, {"screen_h", t.screen.h},
-                {"method", "wgc_client_area"}, {"bytes", data.size()}, {"scaled", t.scaled}, {"capture_ms", std::round(bmp.capture_ms)}};
-    if (t.scaled) {  // the client area is not the size of the image: DPI scaling, or w/h
-        res["native_w"] = bmp.w;
-        res["native_h"] = bmp.h;
+    json res = {{"format", "jpeg"}, {"w", c.w}, {"h", c.h}, {"screen_w", c.w}, {"screen_h", c.h}, {"method", "engine_jpeg"},
+                {"bytes", c.data.size()}, {"file", c.file}, {"file_deleted", c.deleted}, {"capture_ms", std::round(c.capture_ms)}};
+    // The engine's picture is returned as it is: its size, format and quality are its own.
+    json ignored = json::array();
+    if (a.value("format", "jpeg") != "jpeg") ignored.push_back("format");
+    if (a.contains("w")) ignored.push_back("w");
+    if (a.contains("h")) ignored.push_back("h");
+    if (a.contains("quality")) ignored.push_back("quality");
+    if (!ignored.empty()) {
+        res["ignored"] = ignored;
+        res["note"] = "source engine_jpeg returns the engine's own JPEG at the game's screen size and quality (jpeg_quality); these arguments were not applied";
     }
+    if (!c.warning.empty()) res["warning"] = c.warning;
     json out = {{"ok", true}, {"result", res}};
-    out["image"] = json{{"data", util::base64_encode(data)}, {"mimeType", format == "png" ? "image/png" : "image/jpeg"}};
+    out["image"] = json{{"data", util::base64_encode(c.data)}, {"mimeType", "image/jpeg"}};
     return out;
 }
 
 json take_screenshot(const json &a) {
-    windowshot::SourceFacts f;
+    enginejpeg::SourceFacts f;
     f.requested = a.value("source", "auto");
     f.client_mode = agent::config().mode == agent::Mode::Client;
-    f.windows = plat::window_capture_supported();
     f.client_realm_present = agent::realm_present(realms::CLIENT);
     f.client_allowed = agent::lock_status().value("client_allowed", false);
-    windowshot::SourceChoice c = windowshot::choose_source(f);
+    enginejpeg::SourceChoice c = enginejpeg::choose_source(f);
     if (!c.code.empty()) return agent::err(c.code, c.message);
-    json r = c.source == windowshot::Source::Render ? capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality"})) : window_capture_shot(a);
-    if (r.value("ok", false)) r["result"]["source"] = windowshot::source_name(c.source);
+    json r = c.source == enginejpeg::Source::Render ? capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality"})) : engine_jpeg_shot(a);
+    if (r.value("ok", false)) r["result"]["source"] = enginejpeg::source_name(c.source);
     return r;
 }
 
@@ -283,27 +301,29 @@ void register_render() {
                 {"w", {{"type", "integer"}, {"minimum", 16}, {"maximum", 3840}, {"description", "Width in pixels (default: the game window's)."}}},
                 {"h", {{"type", "integer"}, {"minimum", 16}, {"maximum", 2160}, {"description", "Height in pixels (default: the game window's)."}}}};
     json shot_args = img;
-    shot_args["source"] = {{"type", "string"}, {"enum", {"auto", "render", "window_capture"}},
-                           {"description", "auto (default): the render capture when a map is loaded, the window capture otherwise. render: the engine's "
-                                           "render capture (client realm only). window_capture: the game window through Windows Graphics Capture, with or "
-                                           "without a map."}};
+    shot_args["source"] = {{"type", "string"}, {"enum", {"auto", "render", "engine_jpeg"}},
+                           {"description", "auto (default): the render capture when a map is loaded, the engine's jpeg command otherwise. render: the "
+                                           "engine's render capture (client realm only). engine_jpeg: the engine's own `jpeg` console command, with or "
+                                           "without a map (format, w, h and quality do not apply to it)."}};
     mcp::register_tool({"screenshot", "Take a screenshot",
                         "Captures what the game shows and returns it as an MCP image (plus {source, format, w, h, screen_w, screen_h, "
                         "method, bytes}). Two sources, chosen by `source` (auto by default). render: what the local player sees, "
                         "drawn by the engine; needs a loaded map (client realm); without w/h it is the game window as it is, HUD "
                         "included (method backbuffer), with w/h the player's view rendered again at that size, without HUD or view "
                         "model (method render_target); debug_draw primitives are visible; a minimized or frozen game gives timeout "
-                        "after 10 s. window_capture: the game's own window through Windows Graphics Capture, the only way to see the "
-                        "main menu, a VGUI2 dialog (\"Disconnected by the server\") or a loading screen, when there is no client realm; "
-                        "Windows only. It is the window's client area (title bar and borders excluded), at the backbuffer's size so "
-                        "that ui_click coordinates match (method wgc_client_area; if DPI scaling makes the window larger, the image "
-                        "is scaled down and the result says scaled, native_w, native_h); w/h resize it instead (the view is not "
-                        "rendered again, no HUD choice). It works while other windows cover the game, never takes the focus or "
-                        "raises the window, writes no file, and captures nothing but the game's own window. Errors: realm_unavailable "
-                        "(source render without a map), unsupported (srcds, or a platform without window capture), client_locked, "
-                        "window_unavailable (window minimized or not found: restore it, Windows captures nothing from a minimized "
-                        "window), capture_timeout (no frame within 2 s), capture_failed. Example: {\"w\": 1280, \"h\": 720, "
-                        "\"format\": \"png\"}, or {\"source\": \"window_capture\"} at the main menu.",
+                        "after 10 s. engine_jpeg: the engine's own `jpeg` console command, the only way to see the main menu, a VGUI2 "
+                        "dialog (\"Disconnected by the server\") or a loading screen, when there is no client realm. It is the engine's own "
+                        "capture, so it works while other windows cover the game, takes no focus and does not touch the window. The "
+                        "engine writes the picture to garrysmod/screenshots/<name>.jpg and prints the name in its console; the module "
+                        "reads exactly that file and deletes it (and nothing else; result file, file_deleted, and a warning with the "
+                        "path if the file could not be deleted). The image is the game's screen size (the space ui_click coordinates "
+                        "are read on) as a JPEG at the engine's own quality (convar jpeg_quality, not changed): format, w, h and quality "
+                        "are not applied and, when given, are listed in `ignored`. A picture the user takes with their own jpeg command "
+                        "in the same instant can be mistaken for it. One capture at a time. Errors: realm_unavailable (source render "
+                        "without a map), unsupported (srcds), client_locked, capture_timeout (no `Wrote` line from the engine within "
+                        "4 s: game minimized or frozen, or the console capture is off), capture_failed (the file named by the engine "
+                        "could not be taken; it is left in place and named). Example: {\"w\": 1280, \"h\": 720, \"format\": \"png\"} with a "
+                        "map, or {\"source\": \"engine_jpeg\"} at the main menu.",
                         json{{"properties", shot_args}}, json{{"readOnlyHint", true}}, screenshot_tool});
     json from = img;
     from["pos"] = vec_schema("Camera position, " + std::string(VEC) + ".");

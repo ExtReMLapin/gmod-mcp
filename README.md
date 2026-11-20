@@ -530,9 +530,10 @@ tracebacks then point at the real file.
 - Tested on Windows x64 (game and dedicated server) and in a Linux x64 dedicated server. The Linux client game has not
   been tested. `instances_launch` is Windows only.
 - The very first start needs one map load (to install the main-menu loader).
-- Without a loaded map, `screenshot` captures the game window through Windows Graphics Capture (Windows 10 version 1803 or later),
-  so there is no HUD choice and no `w`/`h` re-render; it works while other windows cover the game, but not while the game is
-  minimized. `screenshot_from` and the `render` source need a loaded map.
+- Without a loaded map, `screenshot` runs the engine's own `jpeg` command: the engine writes a file in `garrysmod/screenshots/`,
+  the module reads exactly the file the engine names in its console and deletes it (nothing else is touched). It works while other
+  windows cover the game, but not while the game is minimized or frozen (`capture_timeout`). The image is the engine's JPEG at the
+  game's screen size and quality: no HUD choice, no `w`/`h`, no PNG. `screenshot_from` and the `render` source need a loaded map.
 - `hook_trace` adds a temporary hook: if another hook returns a value first, that call is not seen.
 - The Garry's Mod dedicated server ignores packets from `127.0.0.1`: to join a local dedicated server, connect to this
   machine's LAN address (the client lock recognizes it as local).
