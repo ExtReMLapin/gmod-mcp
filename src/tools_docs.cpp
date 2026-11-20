@@ -19,22 +19,26 @@ static const char *kWikiBase = "https://wiki.facepunch.com/gmod/";  // only outb
 static const int64_t kPagelistTtl = 24 * 3600;
 static const int64_t kPageTtl = 7 * 24 * 3600;
 
-static int host_realm() { return agent::config().mode == agent::Mode::Client ? realms::MENU : realms::SERVER; }
 static std::string cache_dir() { return agent::config().data_dir + "/wiki"; }
 static int64_t now_s() { return (int64_t)std::time(nullptr); }
 
-// Engine HTTP GET (http_get + polling). Returns {"ok":true,"code":..,"body":..} or an error.
-static json http_get(const std::string &url, double timeout_s) {
-    // Test switch: simulate a network outage (cache fallback scenarios) without touching the firewall.
-    const char *off = std::getenv("MCPAGENT_WIKI_OFFLINE");
-    if (off && std::string(off) == "1") return agent::err("network_error", "network disabled by MCPAGENT_WIKI_OFFLINE=1");
-    json r = agent::rt(host_realm(), "http_get", json{{"url", url}}, 5.0);
+// Realms the GET may run in, in order. Issue #3: the menu realm of a game build can lack the HTTP function ("HTTP function
+// unavailable in this realm" for every uncached page), so the client and server realms (when a map is loaded) are tried next.
+// The Lua side applies the same hard-coded wiki allowlist in every realm.
+std::vector<int> wiki_http_realms(bool client_mode) {
+    if (client_mode) return {realms::MENU, realms::CLIENT, realms::SERVER};
+    return {realms::SERVER};
+}
+
+// One GET in one realm (http_get + polling). Returns {"ok":true,"code":..,"body":..} or an error.
+static json http_get_in(int realm, const std::string &url, double timeout_s) {
+    json r = agent::rt(realm, "http_get", json{{"url", url}}, 5.0);
     if (!r.value("ok", false)) return r;
     int id = r["result"]["id"];
     auto t0 = std::chrono::steady_clock::now();
     for (;;) {
         plat::sleep_ms(50);
-        json p = agent::rt(host_realm(), "http_poll", json{{"id", id}}, 5.0);
+        json p = agent::rt(realm, "http_poll", json{{"id", id}}, 5.0);
         if (!p.value("ok", false)) return p;
         if (p["result"].value("done", false)) {
             if (p["result"].contains("error")) return agent::err("network_error", p["result"]["error"].get<std::string>());
@@ -46,6 +50,30 @@ static json http_get(const std::string &url, double timeout_s) {
         if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > timeout_s)
             return agent::err("timeout", "no HTTP response within " + std::to_string((int)timeout_s) + " s");
     }
+}
+
+// Engine HTTP GET: the first realm that has the HTTP function (see wiki_http_realms).
+static json http_get(const std::string &url, double timeout_s) {
+    // Test switch: simulate a network outage (cache fallback scenarios) without touching the firewall.
+    const char *off = std::getenv("MCPAGENT_WIKI_OFFLINE");
+    if (off && std::string(off) == "1") return agent::err("network_error", "network disabled by MCPAGENT_WIKI_OFFLINE=1");
+    json first_err;
+    std::string tried;
+    for (int realm : wiki_http_realms(agent::config().mode == agent::Mode::Client)) {
+        json r = http_get_in(realm, url, timeout_s);
+        if (r.value("ok", false)) return r;
+        std::string code = r.contains("error") && r["error"].is_object() ? r["error"].value("code", "") : "";
+        // Only "this realm cannot do HTTP" moves on to the next one; a real network answer is final.
+        if (code != "unsupported" && code != "realm_unavailable" && code != "client_locked") return r;
+        if (first_err.is_null()) first_err = r;
+        tried += std::string(tried.empty() ? "" : ", ") + realms::name(realm) + " (" + code + ")";
+    }
+    if (!first_err.is_null() && first_err["error"].value("code", "") == "unsupported") {
+        // Nothing carries HTTP: say so, and what to try.
+        return agent::err("unsupported", "no realm of this game can do the wiki GET (tried " + tried + "): the HTTP function is missing. "
+                                         "Pages already cached still answer; load a map so the client/server realms exist, or read the page in a browser.");
+    }
+    return first_err;
 }
 
 // Cache file: first line = unix timestamp, rest = body.

@@ -1645,6 +1645,80 @@ static void test_output_schemas() {
     }
 }
 
+// Issue #3: a number the game cannot represent (NaN, infinity, an overflowing coordinate) is written as JSON null, and the
+// MCP SDK in Claude Code fails a success result whose field is null where the schema says `number`. Policy: every number
+// of every outputSchema accepts null, so no field can fail this way. This walks every declared schema and rejects a bare
+// "number" or "integer" type anywhere (properties, items, nested objects, next_call).
+static void walk_bare_numbers(const json &node, const std::string &where, int &bad) {
+    if (node.is_object()) {
+        auto t = node.find("type");
+        if (t != node.end()) {
+            bool null_ok = false, num = false;
+            auto look = [&](const json &x) {
+                if (x.is_string() && (x == "number" || x == "integer")) num = true;
+                if (x.is_string() && x == "null") null_ok = true;
+            };
+            if (t->is_array()) for (const auto &x : *t) look(x); else look(*t);
+            if (num && !null_ok) {
+                std::printf("bare number type at %s\n", where.c_str());
+                bad++;
+            }
+        }
+        for (auto it = node.begin(); it != node.end(); ++it) walk_bare_numbers(it.value(), where + "/" + it.key(), bad);
+    } else if (node.is_array()) {
+        for (size_t i = 0; i < node.size(); i++) walk_bare_numbers(node[i], where + "/" + std::to_string(i), bad);
+    }
+}
+static void test_output_schemas_nonfinite() {
+    if (mcp::tools().empty()) tools::register_all();
+    int bad = 0;
+    for (const auto &t : mcp::tools()) walk_bare_numbers(t.output_schema, t.name, bad);
+    CHECK(bad == 0);
+    // The guide tells the reader that a number the game cannot hold reads null.
+    json g = resources::read("mcpagent://guide");
+    std::string gt = g.is_object() && g.contains("text") ? g["text"].get<std::string>() : "";
+    CHECK(gt.find("non-finite") != std::string::npos && gt.find("null") != std::string::npos);
+    // The four live mismatches of the chaos fuzz: huge coordinates, an overflowing eye angle, a NaN origin, "1e999".
+    auto matches = [&](const char *tool, const json &r) {
+        const mcp::Tool *t = mcp::find_tool(tool);
+        if (!t) return false;
+        nlohmann::json_schema::json_validator v;
+        v.set_root_schema(t->output_schema);
+        try { v.validate(r); } catch (const std::exception &) { return false; }
+        return true;
+    };
+    json nul = nullptr;
+    CHECK(matches("trace", json{{"hit", false}, {"pos", json::array({nul, nul, nul})}, {"fraction", 1}, {"distance", nul}}));
+    CHECK(matches("trace_through", json{{"surfaces", json::array()}, {"count", 0}, {"total_thickness", 0}, {"distance", nul}, {"truncated", false}}));
+    CHECK(matches("player_set", json{{"id", 1}, {"eye_ang", json::array({nul, 0, 0})}}));
+    CHECK(matches("players_list", json{{"players", json::array({json{{"eye_ang", json::array({nul, 0, 0})}}})}, {"count", 1}}));
+    CHECK(matches("ents_find", json{{"entities", json::array({json{{"id", -1}, {"pos", json::array({nul, nul, nul})}, {"ang", json::array({nul, 0, 0})}}})}, {"count", 1}, {"truncated", false}}));
+    CHECK(matches("convar_get", json{{"name", "x"}, {"flags", 0}, {"flag_names", json::array()}, {"number", nul}}));
+    CHECK(matches("convar_set", json{{"name", "x"}, {"flags", 0}, {"flag_names", json::array()}, {"number", nul}}));
+    // Still strict about the type: a string is not a number.
+    CHECK(!matches("trace", json{{"hit", false}, {"pos", json::array({"1", 2, 3})}, {"fraction", 1}, {"distance", 1}}));
+}
+
+// Issue #3 (live fuzz): wiki_page answered `unsupported "HTTP function unavailable in this realm"` for every uncached page
+// when the menu realm of the game build has no HTTP function. The GET is tried in the menu realm first, then in the client
+// and server realms (same hard-coded wiki allowlist in the Lua side); on srcds only the server realm exists.
+static void test_wiki_http_realms() {
+    if (mcp::tools().empty()) tools::register_all();
+    auto cm = tools::wiki_http_realms(true);
+    CHECK(cm.size() == 3 && cm[0] == realms::MENU && cm[1] == realms::CLIENT && cm[2] == realms::SERVER);
+    auto sv = tools::wiki_http_realms(false);
+    CHECK(sv.size() == 1 && sv[0] == realms::SERVER);
+    // debug_draw accepts the "arrow" primitive (issue #3 live fuzz: it was rejected).
+    const mcp::Tool *dd = mcp::find_tool("debug_draw");
+    CHECK(dd != nullptr);
+    if (dd) {
+        json e = dd->input_schema["properties"]["primitives"]["items"]["properties"]["type"]["enum"];
+        bool arrow = false;
+        for (const auto &x : e) arrow = arrow || x == "arrow";
+        CHECK(arrow);
+    }
+}
+
 // Issue #3: the hints that name a next call also give it as data (`next_call`), next to the prose. Each case is a result
 // as the module builds it; the expected next_call is what the eval in tests/eval/hint_eval.py showed the model.
 static json call_result(json sc, bool is_error) {
@@ -2119,6 +2193,8 @@ int main(int argc, char **argv) {
     test_installer_roundtrip();
     test_guide_result_conventions();
     test_output_schemas();
+    test_output_schemas_nonfinite();
+    test_wiki_http_realms();
     test_next_call();
     test_cmdline();
     test_crash_report();

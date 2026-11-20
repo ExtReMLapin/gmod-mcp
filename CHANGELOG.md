@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixes
+
+- **A success result never fails an outputSchema because of a non-finite number** (issue #3, live fuzz). `trace` and
+  `trace_through` with a huge end point, `players_list` / `player_set` after an overflowing or NaN eye angle, `ents_find` with a
+  NaN origin and `convar_get` / `convar_set` with "1e999" answered `null` where the schema said `number`, which the MCP SDK in
+  Claude Code rejects as a whole. Every number of every outputSchema now accepts `null` (a test walks all schemas), and the guide
+  says a non-finite number reads `null`.
+- **`instance_select` refuses an unknown id** (`unknown_instance`, with the known ids; the default stays). When the list of
+  instances cannot be read the id is accepted with a warning.
+- **`ents_find` explains id -1** (clientside-only entities have no index: no tool can address them) in a `note`.
+- **`wiki_page` / `wiki_search` try the client and server realms** when the menu realm has no HTTP function, and say which
+  realms were tried when none has.
+- **`debug_draw` accepts `{type: "arrow", from, to, head?}`**.
+
 ### Features
 
 - **`lua_job {wait: false}` is suggested as `async`** (issue #11). The unknown-argument message answered "did you mean

@@ -570,5 +570,59 @@ IsConCommandBlocked = nil
 r = call("lua_exec", { code = "RunConsoleCommand('fps_max', '30') return 1" })
 check(r.ok and r.result.blocked_console_commands == nil, "without IsConCommandBlocked (older game) nothing is claimed")
 
+-- Issue #3 (live fuzz): debug_draw had no "arrow" primitive. A.arrow_segments(from, to) is the shaft plus two head wings
+-- as plain {x,y,z} pairs (the render hook turns them into lines): the shaft ends at the tip, the wings start at the tip
+-- and lie behind it, a zero-length arrow has no head, and a vertical arrow still gets wings.
+do
+	local segs = A.arrow_segments({ x = 0, y = 0, z = 0 }, { x = 100, y = 0, z = 0 })
+	check(type(segs) == "table" and #segs == 3, "arrow: shaft and two wings")
+	local s0 = segs[1]
+	check(s0.a.x == 0 and s0.b.x == 100 and s0.b.y == 0, "arrow: the shaft goes from the start to the tip")
+	local w1, w2 = segs[2], segs[3]
+	check(w1.a.x == 100 and w2.a.x == 100 and w1.b.x < 100 and w2.b.x < 100, "arrow: wings start at the tip and lie behind it")
+	check(w1.b.y == -w2.b.y and w1.b.y ~= 0, "arrow: wings are symmetric around the shaft")
+	local v = A.arrow_segments({ x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 100 })
+	check(#v == 3 and (v[2].b.x ~= 0 or v[2].b.y ~= 0), "arrow: a vertical arrow still has a head")
+	local z = A.arrow_segments({ x = 5, y = 5, z = 5 }, { x = 5, y = 5, z = 5 })
+	check(#z == 1, "arrow: zero length has no head")
+	local nan = A.arrow_segments({ x = 0, y = 0, z = 0 }, { x = 0 / 0, y = 0, z = 0 })
+	check(#nan == 1, "arrow: a non-finite tip draws the shaft only")
+end
+
+-- Issue #3 (live fuzz): a clientside-only entity (ClientsideModel) has EntIndex -1 in ents_find, and ent_info refuses ids
+-- below 0, so the agent had no handle: ents_find now says so in `note`. A non-finite number is written as JSON null.
+do
+	local fake_ents = {
+		{ EntIndex = 5, class = "prop_physics" },
+		{ EntIndex = -1, class = "class C_PhysPropClientside" },
+	}
+	local function mk(d)
+		local e = { d = d }
+		function e:EntIndex() return d.EntIndex end
+		function e:GetClass() return d.class end
+		function e:GetPos() return { x = 1, y = 2, z = 3 } end
+		function e:GetAngles() return { p = 0, y = 0, r = 0 } end
+		function e:GetModel() return "models/props_c17/oildrum001.mdl" end
+		function e:IsPlayer() return false end
+		function e:IsValid() return true end
+		return e
+	end
+	IsValid = function(e) return e ~= nil end
+	local list = {}
+	for i, d in ipairs(fake_ents) do list[i] = mk(d) end
+	ents = { GetAll = function() return list end }
+	local f = assert(loadfile(dir .. "/60_world.lua"))
+	f()
+	r = call("ents_find", {})
+	check(r.ok and r.result.count == 2 and r.result.entities[2].id == -1, "ents_find: a clientside entity has id -1")
+	check(type(r.result.note) == "string" and r.result.note:find("clientside", 1, true) and r.result.note:find("-1", 1, true)
+		and r.result.note:find("lua_exec", 1, true), "ents_find: id -1 is explained in a note (no ent_info handle)")
+	r = call("ents_find", { class = "prop_physics" })
+	check(r.ok and r.result.count == 1 and r.result.note == nil, "ents_find: no note when every entity has an index")
+	-- A NaN or infinite number is written as null (the output schemas accept null for every number).
+	local enc = J.encode({ pos = J.array({ 0 / 0, 1, math.huge, -math.huge }) })
+	check(enc:find("null", 1, true) and not enc:find("nan", 1, true) and not enc:find("inf", 1, true), "non-finite numbers are written as null: " .. enc)
+end
+
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

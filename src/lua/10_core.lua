@@ -43,6 +43,28 @@ function A.to_angle(t, name)
 	return Angle(p, y, r)
 end
 function A.vec_out(v) return J.array({ v.x, v.y, v.z }) end
+
+-- debug_draw "arrow": the shaft and two head wings as {a = {x,y,z}, b = {x,y,z}} segments (plain numbers; the render hook
+-- draws them as lines). The head is a quarter of the length, at most 16 units. Zero length or a non-finite end: the shaft only.
+function A.arrow_segments(from, to, head)
+	local segs = { { a = { x = from.x, y = from.y, z = from.z }, b = { x = to.x, y = to.y, z = to.z } } }
+	local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
+	local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+	if not (len > 0 and len < math.huge) then return segs end
+	dx, dy, dz = dx / len, dy / len, dz / len
+	-- side = d x up (or d x forward when d is nearly vertical)
+	local ux, uy, uz = 0, 0, 1
+	if math.abs(dz) > 0.99 then ux, uy, uz = 1, 0, 0 end
+	local sx, sy, sz = dy * uz - dz * uy, dz * ux - dx * uz, dx * uy - dy * ux
+	local sl = math.sqrt(sx * sx + sy * sy + sz * sz)
+	sx, sy, sz = sx / sl, sy / sl, sz / sl
+	local h = head or math.min(len * 0.25, 16)
+	for _, k in ipairs({ 1, -1 }) do
+		segs[#segs + 1] = { a = { x = to.x, y = to.y, z = to.z },
+			b = { x = to.x - dx * h + sx * h * 0.5 * k, y = to.y - dy * h + sy * h * 0.5 * k, z = to.z - dz * h + sz * h * 0.5 * k } }
+	end
+	return segs
+end
 function A.ang_out(a) return J.array({ a.p, a.y, a.r }) end
 
 -- Serializer: any Lua value -> JSON-encodable value.

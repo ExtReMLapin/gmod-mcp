@@ -816,6 +816,24 @@ def case_session():
     r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": None}})
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     check("SESSION null clears the default", r and "instance" not in r["result"]["structuredContent"]["args"], r)
+    # Issue #3 (live fuzz): instance_select {instance: "nosuch"} was accepted silently and every later call failed. When the
+    # directory answers, an id it does not list is refused (unknown_instance) and the default stays as it was; a listed
+    # id is accepted; when the directory cannot be read the id is accepted with a warning.
+    srv.instances_answer = lambda: {"instances": [{"id": "client-1", "state": "running", "mode": "client"}]}
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": "nosuch"}})
+    res = (r or {}).get("result", {})
+    check("SESSION instance_select with an unknown id -> unknown_instance, listing the known ones",
+          res.get("isError") and res["structuredContent"]["error"]["code"] == "unknown_instance" and "client-1" in json.dumps(res["structuredContent"]), r)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("SESSION a refused instance_select leaves no default", r and "instance" not in r["result"]["structuredContent"]["args"], r)
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": "client-1"}})
+    check("SESSION instance_select with a listed id is accepted", r and not r["result"].get("isError") and r["result"]["structuredContent"].get("default_instance") == "client-1", r)
+    b.req("tools/call", {"name": "instance_select", "arguments": {"instance": None}})
+    srv.instances_answer = None
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": "client-9"}})
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("SESSION instance_select when the directory cannot be read: accepted, with a warning", sc.get("default_instance") == "client-9" and "not checked" in sc.get("warning", ""), r)
+    b.req("tools/call", {"name": "instance_select", "arguments": {"instance": None}})
     r = b.req("tools/call", {"name": "instances_close", "arguments": {"instances": ["client-1234"]}})
     check("SESSION instances_close refuses an instance this session did not start", r and r["result"].get("isError") and "client-1234" in json.dumps(r["result"]["structuredContent"].get("refused")), r)
     r = b.req("tools/call", {"name": "instances_close", "arguments": {}})

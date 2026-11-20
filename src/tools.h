@@ -76,5 +76,8 @@ std::string job_reset_message(const JobId &id, uint64_t current_generation);
 // Wiki helpers shared with resources and completion.
 json wiki_page_tool(const json &args);  // {name, format?, refresh?} -> tool result
 std::set<std::string> pagelist_from_cache();  // never hits the network
+// Realms the wiki GET may run in, in order: the host realm (menu in client mode, server on srcds), then the others that can
+// carry HTTP. Issue #3: the menu realm of a game build can lack the HTTP function; wiki_page then tries the next one.
+std::vector<int> wiki_http_realms(bool client_mode);
 
 }  // namespace tools

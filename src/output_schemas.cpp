@@ -7,7 +7,8 @@
 // match its schema:
 //   - `required` only for fields that every success path of the tool sets (including a `fields` projection, a result
 //     relayed from another instance, and the bridge's own answer while the game is closed: no `answered_by` there);
-//   - numbers are `number`, never `integer` (a Lua or C++ double that is whole may be written 3.0);
+//   - numbers are `number`, never `integer` (a Lua or C++ double that is whole may be written 3.0), and EVERY number
+//     accepts null (`N`): a non-finite value (NaN, infinity, a coordinate that overflows a double) is written as null;
 //   - a value that can be NaN (written as null), nil-in-a-nullable-place, or that is a serialized Lua value (an empty
 //     table is written `{}`) is `nullable` or untyped;
 //   - every object accepts additional properties.
@@ -29,13 +30,17 @@ using Props = std::initializer_list<std::pair<const char *, json>>;
 
 json T(const char *t) { return json{{"type", t}}; }
 json nullable(const char *t) { return json{{"type", json::array({t, "null"})}}; }
-const json S = T("string"), N = T("number"), B = T("boolean"), Obj = T("object");
+const json S = T("string"), B = T("boolean"), Obj = T("object");
+// Every number accepts null: the game can hold a number JSON cannot carry (NaN, infinity, an overflowing coordinate or
+// "1e999"), it is written as null, and a client that validates results fails the whole call on a null where the schema
+// says `number`. There is no bare `number` anywhere (test_output_schemas_nonfinite walks every schema).
+const json N = nullable("number");
 const json ANY = json::object();  // any JSON value (a serialized Lua value)
-const json NS = nullable("string"), NN = nullable("number");
+const json NS = nullable("string"), NN = N;
 
 // next_call (next_call.h): the call a hint suggests, as data.
 const json NextCall = json{{"type", "object"},
-                           {"properties", {{"tool", T("string")}, {"arguments", T("object")}, {"after_s", T("number")}}},
+                           {"properties", {{"tool", T("string")}, {"arguments", T("object")}, {"after_s", N}}},
                            {"required", json::array({"tool"})}};
 
 json arr(json items) { return json{{"type", "array"}, {"items", std::move(items)}}; }

@@ -141,6 +141,8 @@ if A.realm == "client" then
 				local z = not p.ignore_z
 				if p.type == "line" then
 					render.DrawLine(p.from, p.to, p.color, z)
+				elseif p.type == "arrow" then
+					for _, sg in ipairs(p.segs) do render.DrawLine(sg.a, sg.b, p.color, z) end
 				elseif p.type == "box" then
 					render.DrawWireframeBox(p.pos, p.ang, p.mins, p.maxs, p.color, z)
 				elseif p.type == "sphere" then
@@ -173,6 +175,14 @@ function H.debug_draw(args)
 		local o = { type = p.type, color = col(p.color), ignore_z = p.ignore_z ~= false, expire = expire }
 		if p.type == "line" then
 			o.from, o.to = A.to_vector(p.from, "from"), A.to_vector(p.to, "to")
+		elseif p.type == "arrow" then
+			-- Issue #3: shaft + head, stored as Vector pairs the hook draws as lines.
+			local from, to = A.to_vector(p.from, "from"), A.to_vector(p.to, "to")
+			if not from or not to then A.fail("invalid_params", "primitive " .. i .. ": arrow needs from and to") end
+			o.segs = {}
+			for k, sg in ipairs(A.arrow_segments(from, to, p.head)) do
+				o.segs[k] = { a = Vector(sg.a.x, sg.a.y, sg.a.z), b = Vector(sg.b.x, sg.b.y, sg.b.z) }
+			end
 		elseif p.type == "box" then
 			if p.min and p.max then
 				local mn, mx = A.to_vector(p.min, "min"), A.to_vector(p.max, "max")
@@ -188,7 +198,7 @@ function H.debug_draw(args)
 		elseif p.type == "text" then
 			o.pos, o.text, o.scale = A.to_vector(p.pos, "pos"), tostring(p.text or ""), p.scale or 0.25
 		else
-			A.fail("invalid_params", "primitive " .. i .. ": unknown type " .. tostring(p.type) .. " (line, box, sphere, text)")
+			A.fail("invalid_params", "primitive " .. i .. ": unknown type " .. tostring(p.type) .. " (line, arrow, box, sphere, text)")
 		end
 		dd[#dd + 1] = o
 		n = n + 1
