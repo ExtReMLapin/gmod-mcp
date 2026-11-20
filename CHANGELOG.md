@@ -4,6 +4,9 @@
 
 ### Fixes
 
+- **`lua_mount` file times on libstdc++ < 13** (Linux, GCC 11/12). The file system clock of those libraries counts from the year 2174, so every
+  current file time is a negative tick count, and `unix_seconds_of` took negative as unknown: the engine-serves probes then expected no
+  time and a copy with another time was reported as served. Unknown is now an explicit marker (`kUnknownTime`), not a sign.
 - **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
   the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
   do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;

@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -84,16 +85,19 @@ bool empty_cache();
 // cannot see each file load. It records what it can know for certain: when the MountLua hook put the folder in front
 // for a realm (right before that realm's Lua loads), the folder's files and their times at that moment. A file of the
 // snapshot is what the realm loaded from the mount; a file that is no longer what the snapshot says changed since.
+// "The file time could not be read". A sentinel that no real tick count takes: libstdc++ before 13 counts file times from the
+// year 2174, so every current file time is a negative number there and -1 cannot mean unknown.
+constexpr long long kUnknownTime = std::numeric_limits<long long>::min();
 struct FileStamp {
     std::string rel;       // root-relative, '/' separators, as the engine names it: "lua/pba/x.lua", "gamemodes/g/init.lua"
-    long long mtime = 0;   // file time (ticks of the file system clock); -1 never stored
+    long long mtime = 0;   // file time (ticks of the file system clock; negative on libstdc++ < 13), kUnknownTime if unreadable
 };
 using Files = std::map<std::string, FileStamp>;  // key: lower-case rel
 // Every .lua under <root>/lua and <root>/gamemodes.
 Files scan_files(const std::string &root);
 // How many times scan_files ran (a scan stats every file of the folder: tests count them).
 uint64_t scan_count();
-// File time in ticks of the file system clock, -1 if the file cannot be read.
+// File time in ticks of the file system clock, kUnknownTime if the file cannot be read.
 long long mtime_of(const std::string &abs);
 // "lua/x.lua" if `abs` is inside the current mount root, else "".
 std::string rel_in_mount(const std::string &abs);
@@ -140,7 +144,7 @@ struct Probe {
 };
 // A few files to ask about, spread over the snapshot, lua/ files first (a gamemodes/ file only when there are too few).
 std::vector<Probe> pick_probes(const Files &files, size_t n = 3);
-// File system clock ticks (mtime_of) to Unix seconds; -1 stays -1.
+// File system clock ticks (mtime_of) to Unix seconds, whatever the clock's epoch; kUnknownTime gives -1.
 long long unix_seconds_of(long long ticks);
 // The realm's answers ([{exists, time?}], one per probe) as a verdict: true when some probe is served from the folder (it
 // exists and its time is the folder file's, give or take 2 s; existence alone when the time is unknown), false when none

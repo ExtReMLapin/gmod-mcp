@@ -650,7 +650,25 @@ static void test_issue9_engine_serves() {
     // The expected file time is in Unix seconds, as file.Time answers.
     long long now = (long long)std::time(nullptr);
     CHECK(std::llabs(probes[0].unix_time - now) <= 5);  // Issue #9
-    CHECK(lua_mount::unix_seconds_of(-1) == -1);  // Issue #9: unknown stays unknown
+    CHECK(lua_mount::unix_seconds_of(lua_mount::kUnknownTime) == -1);  // Issue #9: unknown stays unknown
+    // Linux finding L-3: libstdc++ before 13 counts file times from the year 2174, so a current time is a NEGATIVE tick
+    // count there. Only the explicit unknown marker means unknown; every other tick count converts, whatever its sign.
+    CHECK(lua_mount::mtime_of((ov / "lua/d.lua").u8string()) != lua_mount::kUnknownTime);
+    CHECK(lua_mount::mtime_of((ov / "lua/missing.lua").u8string()) == lua_mount::kUnknownTime);
+    {
+        fs::path hour = ov / "lua/hour.lua";
+        touch(hour);
+        fs::last_write_time(hour, fs::file_time_type::clock::now() - std::chrono::hours(1));
+        long long u = lua_mount::unix_seconds_of(lua_mount::mtime_of(hour.u8string()));
+        CHECK(std::llabs(u - (now - 3600)) <= 5);
+        fs::remove(hour, ec);
+    }
+    {
+        // The same conversion with ticks built from a known offset of the file system clock, negative or not.
+        auto ft = fs::file_time_type::clock::now() - std::chrono::hours(48);
+        long long ticks = (long long)ft.time_since_epoch().count();
+        CHECK(std::llabs(lua_mount::unix_seconds_of(ticks) - (now - 48 * 3600)) <= 5);
+    }
 
     // The verdict: some probe found in the folder (right time) = served; found but another time = another copy;
     // not found = not served; no usable answer = unknown.

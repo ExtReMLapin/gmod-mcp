@@ -64,7 +64,7 @@ void scan_dir(const fs::path &dir, const std::string &prefix, Files &out) {
         // The directory entry already holds the file's time (the listing returned it): no second stat per file.
         std::error_code e3;
         auto lt = it->last_write_time(e3);
-        long long mt = e3 ? -1 : (long long)lt.time_since_epoch().count();
+        long long mt = e3 ? kUnknownTime : (long long)lt.time_since_epoch().count();
         out[util::to_lower(rel)] = FileStamp{rel, mt};
     }
 }
@@ -74,7 +74,7 @@ void scan_dir(const fs::path &dir, const std::string &prefix, Files &out) {
 long long mtime_of(const std::string &abs) {
     std::error_code ec;
     auto t = fs::last_write_time(fs::u8path(abs), ec);
-    if (ec) return -1;
+    if (ec) return kUnknownTime;
     return (long long)t.time_since_epoch().count();
 }
 
@@ -258,7 +258,7 @@ std::vector<Probe> pick_probes(const Files &files, size_t n) {
 }
 
 long long unix_seconds_of(long long ticks) {
-    if (ticks < 0) return -1;
+    if (ticks == kUnknownTime) return -1;
     // The file system clock has its own epoch: measure the offset against the system clock instead of assuming it.
     using namespace std::chrono;
     auto fnow = fs::file_time_type::clock::now();
