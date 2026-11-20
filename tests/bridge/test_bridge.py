@@ -2965,6 +2965,10 @@ class DyingListener:
 
     def stop(self):
         self.run = False
+        # On Linux close() alone does not wake a thread blocked in accept(), and the listening socket (so the port) stays
+        # open until it returns: shutdown() first (the accept then fails and the loop ends).
+        try: self.s.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
         try: self.s.close()
         except OSError: pass
 
