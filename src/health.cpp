@@ -33,6 +33,7 @@ Assessment assess(double last_tick_age_s, double heartbeat_age_s, bool loading, 
     // is that much older than the figure it carried.
     if (last_tick_age_s >= kStalledShownS || heartbeat_age_s > kHeartbeatMissedS || silent) a.stalled_s = last_tick_age_s + heartbeat_age_s;
     a.hung = a.stalled_s >= a.hung_after_s;
+    a.stale = silent || heartbeat_age_s > kHeartbeatMissedS;
     return a;
 }
 

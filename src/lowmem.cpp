@@ -61,12 +61,14 @@ Memory current() {
     return m;
 }
 
-Verdict check_launch(const Memory &m, int count, int running_clients, bool ignore) {
+Verdict check_launch(const Memory &m, int count, int running_clients, bool ignore, int registered_clients, int game_processes) {
     Verdict v;
     if (count < 1) count = 1;
     uint64_t need_commit = (uint64_t)count * kPerClientCommitMb + kReserveCommitMb, need_ram = (uint64_t)count * kPerClientRamMb;
     v.details = json{{"free_commit_mb", m.free_commit_mb}, {"free_ram_mb", m.free_ram_mb}, {"running_clients", running_clients},
                      {"per_client_mb", kPerClientCommitMb}, {"count", count}, {"needed_commit_mb", need_commit}, {"needed_ram_mb", need_ram}};
+    if (registered_clients >= 0) v.details["registered_clients"] = registered_clients;  // issue #8 (G4)
+    if (game_processes >= 0) v.details["game_processes"] = game_processes;
     if (!m.known || ignore) return v;
     bool commit_low = m.free_commit_mb < need_commit, ram_low = m.free_ram_mb < need_ram;
     if (!commit_low && !ram_low) return v;
@@ -74,7 +76,11 @@ Verdict check_launch(const Memory &m, int count, int running_clients, bool ignor
     std::ostringstream o;
     o << "not enough memory to start " << count << " client" << (count > 1 ? "s" : "") << ": " << m.free_commit_mb << " MB of commit (virtual memory) and "
       << m.free_ram_mb << " MB of RAM are free, " << running_clients << " client" << (running_clients == 1 ? "" : "s") << " already run" << (running_clients == 1 ? "s" : "")
-      << " on this machine (all sessions). A client holds about " << kPerClientCommitMb << " MB of commit and " << kPerClientRamMb
+      << " on this machine (all sessions"
+      << (registered_clients >= 0 && game_processes >= 0
+              ? ": " + std::to_string(registered_clients) + " registered, " + std::to_string(game_processes) + " game processes of this game folder, some of them still starting"
+              : std::string())
+      << "). A client holds about " << kPerClientCommitMb << " MB of commit and " << kPerClientRamMb
       << " MB of RAM; " << need_commit << " MB of commit (the clients plus " << kReserveCommitMb << " MB for the rest of the machine) and " << need_ram
       << " MB of RAM are needed. A machine out of commit makes every game crash (0xC000041D, no dump): close clients you no longer use "
          "(instances_close), start fewer, or pass ignore_low_memory: true to start anyway. Nothing was started.";

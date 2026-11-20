@@ -90,6 +90,21 @@
 
 ### Fixes
 
+- **Health reporting found wrong by live chaos tests** (issue #8). (1) A client frozen as a whole kept the figures of its last
+  heartbeat in `instances_list` (`fps 19`, main thread ticking, `last_tick_age_s 0.05`) for the whole freeze: while the heartbeat
+  is stale the entry reads `fps 0`, `main_thread_stalled true` and `last_tick_age_s` as old as the silence, and the last raw
+  figures stay under `last_heartbeat`. (2) `map x` then `disconnect` at once left `loading: true` for minutes (every
+  `instances_launch` then failed with `map_load_in_progress`) while `status` said false: the server Lua state had opened and
+  closed between two pump runs, so nothing switched the load flag off. The pump now drops the flag once no server state
+  exists, the server source alone counts 30 s at most once the loading screen is down (it was 300), and `status.loading` is the
+  same flag as the list. (3) `instances_launch` refuses with `peer_unhealthy` while a running client is `unresponsive` or `hung`
+  (a frozen client keeps a new one from registering, so the launch timed out with `0 of 1 clients answered`), unless
+  `ignore_unhealthy: true`, and a timeout names the stuck peers. (4) With `count > 1`, a client that dies at startup no longer
+  leaves its siblings unmentioned: the error lists those still running and warns they are not closed. (5) The `owner` label
+  now travels with the game (`-mcp_owner`, heartbeat): `instances_list` shows it on every instance and
+  `instances_close {owner}` closes `keep: true` test clients of an earlier bridge session (never a game that is not a test
+  client, never one without the tag). (6) `low_memory` counts the game's processes, not only registered instances, and reports
+  `registered_clients` and `game_processes`.
 - **`lua_mount` works again on the x86-64 build of Garry's Mod of 2026-11-19** (issue #9). That build added four slots to
   the engine's `IAppSystem` interface, so every `IFileSystem` slot moved by four: the module's `AddSearchPath` and
   `RemoveSearchPath` calls landed on two functions that do nothing, and the mounted folder was silently never searched

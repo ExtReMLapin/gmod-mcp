@@ -34,10 +34,13 @@ Memory current();
 struct Verdict {
     bool refuse = false;
     std::string message;
-    nlohmann::json details;  // {free_commit_mb, free_ram_mb, running_clients, per_client_mb, count, needed_commit_mb, needed_ram_mb}
+    nlohmann::json details;  // {free_commit_mb, free_ram_mb, running_clients, registered_clients?, game_processes?, per_client_mb, count, needed_commit_mb, needed_ram_mb}
 };
 // May `count` more clients start while `running_clients` run? Never refuses when the memory is unknown or `ignore` is set.
-Verdict check_launch(const Memory &m, int count, int running_clients, bool ignore);
+// Issue #8 (chaos test G4): `running_clients` is every client known to run (registered with the directory, started by this bridge, or
+// a game process of this game folder that has not registered yet: another session's client still starting); `registered_clients`
+// and `game_processes`, when >= 0, are the two counts it was made of, reported next to it in the details.
+Verdict check_launch(const Memory &m, int count, int running_clients, bool ignore, int registered_clients = -1, int game_processes = -1);
 
 // {free_commit_mb, free_ram_mb} for a crash report, null when unknown.
 nlohmann::json memory_json(const Memory &m);

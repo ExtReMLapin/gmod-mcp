@@ -21,6 +21,14 @@ Cases (default: a f):
   launch_mount_first Issue #6: instances_launch checks (and re-applies) the lua_mount before any map loads, no map for a client
          without it, coordinator_changing waited out (fake server, stand-in game)
   close_coordinator Issue #6: instances_close of the coordinator says the role moved and to whom; instances_list warns beforehand
+  chaos_health Issue #8 (chaos tests G1): instances_launch refuses (peer_unhealthy) while a running client is unresponsive or
+         hung, unless ignore_unhealthy, and names the unhealthy peers when it times out (fake server, stand-in game)
+  chaos_launch Issue #8 (chaos test G2): a launched client dies at startup while its sibling keeps running: the error names
+         the survivor and warns it is not closed (stand-in game, fake game server)
+  chaos_owner Issue #8 (chaos test G3): the owner label rides on the command line and in the heartbeat; instances_close {owner}
+         closes keep:true test clients of another session that carry it (never a non-test client or an untagged one)
+  chaos_memory Issue #8 (chaos test G4): low_memory counts the game processes of the game folder, registered or not, and reports
+         both numbers (stand-in game processes started outside the bridge)
   lowmem instances_launch refuses under low free memory (low_memory), ignore_low_memory, free memory in a crash report
   crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
@@ -2653,8 +2661,226 @@ def case_close_coordinator():
     shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "fuzz"]
+# --- Issue #8 (chaos tests): instances_launch and instances_close around unhealthy, crashed and foreign clients. ---
+def chaos_session(extra_env=None, extra_instances=None, with_pid_dir=True):
+    """A bridge, a fake game server and a temporary game folder holding the stand-in game. Returns a dict with call(tool, args)."""
+    import shutil
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    game = tempfile.mkdtemp(prefix="gmcp-chaos-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-"); pid_dir = os.path.join(work, "pids"); os.makedirs(pid_dir)
+    port, env = free_port(), isolated_config(with_token=True)
+    env.update(GMCP_FAKE_CRASH_DIR=crashes, GMCP_FAKE_ARGV=os.path.join(work, "argv.txt"), GMOD_MCP_FP7137_WORKAROUND="0",
+               GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+    if with_pid_dir: env["GMCP_FAKE_PID_DIR"] = pid_dir
+    env.update(extra_env or {})
+    srv = FakeServer(port, version=bridge_version()); srv.pid_dir = pid_dir
+    srv.extra_instances = [dict(e) for e in (extra_instances or [])]
+    b = Bridge(port, env)
+    S = {"game": game, "work": work, "pid_dir": pid_dir, "srv": srv, "b": b, "crashes": crashes}
+    def call(tool, args, timeout=90):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), res.get("isError")
+    S["call"] = call
+    def started(): return [int(open(os.path.join(pid_dir, f)).read() or 0) for f in os.listdir(pid_dir)]
+    S["started"] = started
+    def close():
+        try: call("instances_close", {"all": True}, 30)
+        except Exception: pass
+        b.close(); srv.stop()
+        shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+    S["close"] = close
+    return S
+
+
+def case_chaos_health():
+    """Issue #8 (chaos test G1): a launch while a running client is frozen (unresponsive or hung) would time out with `0 of 1
+    clients answered` (a frozen client blocks a new one from registering, FP7137 handshake): it is refused up front with
+    peer_unhealthy unless ignore_unhealthy, and a timeout names the unhealthy peers seen meanwhile."""
+    print("== CHAOS_HEALTH: peer_unhealthy before a launch, unhealthy peers named at a timeout", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_HEALTH stand-in game built next to the bridge", False)
+        return
+    me = os.getpid()
+    # 1. A frozen client (unresponsive) is running: the launch is refused, nothing started, the error names it and the way out.
+    S = chaos_session(extra_instances=[{"id": "frozen-1", "pid": me, "port": 1, "mode": "client", "state": "unresponsive", "stalled_s": 25.0}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    e, d = sc.get("error", {}), sc.get("error", {}).get("details", {})
+    check("CHAOS_HEALTH an unresponsive client running: peer_unhealthy, isError, nothing started", e.get("code") == "peer_unhealthy" and err is True and S["started"]() == [], sc)
+    check("CHAOS_HEALTH the message names the instance, its pid and state, and the way out (instances_close, game_terminate, ignore_unhealthy)",
+          all(w in e.get("message", "") for w in ("frozen-1", str(me), "unresponsive", "instances_close", "game_terminate", "ignore_unhealthy")), e)
+    check("CHAOS_HEALTH details.unhealthy lists {instance, pid, state}", d.get("unhealthy") == [{"instance": "frozen-1", "pid": me, "state": "unresponsive"}], d)
+    # 2. ignore_unhealthy: true starts anyway.
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"], "ignore_unhealthy": True})
+    check("CHAOS_HEALTH ignore_unhealthy: the client starts and answers", len(S["started"]()) == 1 and not sc.get("error"), sc)
+    S["close"]()
+    # 3. A hung client counts too; a healthy one (running) and a crashed one do not.
+    S = chaos_session(extra_instances=[{"id": "hung-1", "pid": me, "port": 1, "mode": "client", "state": "hung", "stalled_s": 100.0},
+                                       {"id": "ok-1", "pid": me + 1, "port": 1, "mode": "client", "state": "running"},
+                                       {"id": "dead-1", "pid": me + 2, "port": 1, "mode": "client", "state": "crashed"}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    d = sc.get("error", {}).get("details", {})
+    check("CHAOS_HEALTH a hung client is refused too; only it is named (not the running or the crashed one)", sc.get("error", {}).get("code") == "peer_unhealthy" and [u["instance"] for u in d.get("unhealthy", [])] == ["hung-1"], sc)
+    S["close"]()
+    S = chaos_session(extra_instances=[{"id": "ok-1", "pid": me + 1, "port": 1, "mode": "client", "state": "running"},
+                                       {"id": "dead-1", "pid": me + 2, "port": 1, "mode": "client", "state": "crashed"}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    check("CHAOS_HEALTH only healthy and crashed peers: the launch goes ahead", len(S["started"]()) == 1 and not sc.get("error"), sc)
+    S["close"]()
+    # 4. A peer freezes while the launch waits for its client (which never answers): the timeout names it.
+    S = chaos_session(extra_instances=[{"id": "soon-frozen", "pid": me, "port": 1, "mode": "client", "state": "running"}], with_pid_dir=False)
+    def freeze():
+        time.sleep(3)
+        S["srv"].extra_instances[0].update(state="unresponsive", stalled_s=12.0)
+    threading.Thread(target=freeze, daemon=True).start()
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 10, "game_dir": S["game"]}, 60)
+    e = sc.get("error", {})
+    check("CHAOS_HEALTH timeout: 0 of 1 clients answered, and the unhealthy peer seen meanwhile is named in details and message",
+          e.get("code") == "timeout" and e.get("details", {}).get("unhealthy_peers") == [{"instance": "soon-frozen", "pid": me, "state": "unresponsive"}]
+          and "soon-frozen" in e.get("message", "") and "unresponsive" in e.get("message", ""), sc)
+    S["close"]()
+
+
+def case_chaos_launch():
+    """Issue #8 (chaos test G2): instances_launch {count: 2} where the first process dies ~1 s after it was spawned (before it
+    registered) while the second keeps starting: the error must name the sibling that still runs (pid, instance if known) and
+    carry a warning, so the caller does not leak it (stand-in game with GMCP_FAKE_DIE_ONCE)."""
+    print("== CHAOS_LAUNCH: a client dies during startup while its sibling keeps running", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_LAUNCH stand-in game built next to the bridge", False)
+        return
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-once-")
+    S = chaos_session(extra_env={"GMCP_FAKE_DIE_ONCE": os.path.join(work, "claimed"), "GMCP_FAKE_EXIT": "3221225477"})
+    sc, err = S["call"]("instances_launch", {"count": 2, "owner": "g2", "timeout_s": 40, "game_dir": S["game"]})
+    e = sc.get("error", {})
+    alive_pids = [p for p in S["started"]() if alive(p)]
+    check("CHAOS_LAUNCH the dead first client is reported (client_crashed, isError)", e.get("code") == "client_crashed" and err is True, sc)
+    sib = (e.get("details") or {}).get("still_running") or []
+    check("CHAOS_LAUNCH details.still_running names the sibling that keeps running (pid, state, instance when it answered)",
+          len(alive_pids) == 1 and [x.get("pid") for x in sib] == alive_pids and all(x.get("state") in ("answering", "still starting") for x in sib)
+          and (sib[0].get("state") != "answering" or sib[0].get("instance") == "fake-%d" % alive_pids[0]), {"alive": alive_pids, "sc": sc})
+    w = sc.get("warning", "")
+    check("CHAOS_LAUNCH a warning says the sibling is NOT closed and how (pid, instances_close)",
+          bool(alive_pids) and str(alive_pids[0]) in w and "instances_close" in w and "g2" in w and "not closed" in w.lower(), sc)
+    sc2, _ = S["call"]("instances_close", {"owner": "g2"}, 30)
+    check("CHAOS_LAUNCH the sibling is still closable by owner", bool(alive_pids) and alive_pids[0] in [c.get("pid") for c in sc2.get("closed", [])], sc2)
+    S["close"]()
+    import shutil; shutil.rmtree(work, ignore_errors=True)
+
+
+def case_chaos_owner():
+    """Issue #8 (chaos test G3): the owner label survives the bridge session that launched the client. instances_launch passes it
+    on the command line (-mcp_owner, encoded), the module sends it in its heartbeat (instances_list shows `owner` for every
+    instance), and instances_close {owner} closes keep:true TEST clients of another session carrying that tag, never a game that
+    is not a test client, never one without the tag (fake game server, stand-in game, Windows)."""
+    print("== CHAOS_OWNER: owner on the command line, in instances_list, closing foreign test clients by owner", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_OWNER stand-in game built next to the bridge", False)
+        return
+    S = chaos_session()
+    def argv_lines():
+        try: return open(os.path.join(S["work"], "argv.txt"), encoding="utf-8").read().splitlines()
+        except OSError: return []
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "fork-a", "timeout_s": 30, "game_dir": S["game"]})
+    import re
+    check("CHAOS_OWNER the owner label is on the client's command line (-mcp_owner fork-a)", any(re.search(r" -mcp_owner fork-a(\s|$)", l) for l in argv_lines()), argv_lines())
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "my task; \"x\"", "timeout_s": 30, "game_dir": S["game"]})
+    check("CHAOS_OWNER a label with spaces and quotes is encoded (no space, quote or ';' reaches the command line)",
+          any("-mcp_owner my%20task%3B%20%22x%22" in l for l in argv_lines()), argv_lines())
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 30, "game_dir": S["game"]})
+    check("CHAOS_OWNER no owner: no -mcp_owner option", sum("-mcp_owner" in l for l in argv_lines()) == 2, argv_lines())
+    S["close"]()
+
+    # A keep:true client of an earlier bridge session: not in this bridge's table. Its module says owner and test_client.
+    import subprocess as sp
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    procs = [sp.Popen([fake], stdout=sp.DEVNULL, stderr=sp.DEVNULL) for _ in range(6)]
+    keep1, user1, other2, notag, crashed, local_pid = [p.pid for p in procs]
+    try:
+        S = chaos_session(extra_instances=[
+            {"id": "keep-1", "pid": keep1, "port": 1, "mode": "client", "state": "running", "owner": "fork-a", "test_client": True},
+            {"id": "user-1", "pid": user1, "port": 1, "mode": "client", "state": "running", "owner": "fork-a", "test_client": False},
+            {"id": "other-2", "pid": other2, "port": 1, "mode": "client", "state": "running", "owner": "fork-b", "test_client": True},
+            {"id": "notag-1", "pid": notag, "port": 1, "mode": "client", "state": "running", "test_client": True},
+            {"id": "dead-1", "pid": crashed, "port": 1, "mode": "client", "state": "crashed", "owner": "fork-a", "test_client": True}])
+        sc, _ = S["call"]("instances_list", {"owner": "fork-a"}, 20)
+        ids = sorted(e.get("id") for e in sc.get("instances", []))
+        check("CHAOS_OWNER instances_list shows the owner of instances another session launched, and the owner filter finds them",
+              ids == ["dead-1", "keep-1", "user-1"] and all(e.get("owner") == "fork-a" for e in sc.get("instances", [])), sc)
+        sc, err = S["call"]("instances_close", {"owner": "fork-a"}, 40)
+        closed = sc.get("closed", [])
+        check("CHAOS_OWNER instances_close {owner} closes the keep:true test client of another session (pid, instance, owner, launched_by_other_session)",
+              [(c.get("pid"), c.get("instance"), c.get("owner")) for c in closed] == [(keep1, "keep-1", "fork-a")] and closed[0].get("launched_by_other_session") is True, sc)
+        time.sleep(0.5)
+        check("CHAOS_OWNER that process ended; the game that is not a test client (same owner), the other owner, the untagged one and the crashed one are untouched",
+              not alive(keep1) and all(alive(p) for p in (user1, other2, notag, crashed)), {"alive": [alive(p) for p in (keep1, user1, other2, notag, crashed)]})
+        check("CHAOS_OWNER the refusal says which instance is not a test client and why", "user-1" in json.dumps(sc.get("refused", [])) and "test client" in sc.get("why_refused", ""), sc)
+        sc, err = S["call"]("instances_close", {"pids": [notag], "instances": ["notag-1", "other-2"]}, 30)
+        check("CHAOS_OWNER an instance of another session without this owner tag is still refused (by pid and by id), and stays alive",
+              err is True and sc.get("closed") == [] and alive(notag) and alive(other2), sc)
+        sc, err = S["call"]("instances_close", {"owner": "nobody"}, 30)
+        check("CHAOS_OWNER an owner nobody carries: refused, error", err is True and "owner:nobody" in sc.get("refused", []), sc)
+        sc, err = S["call"]("instances_close", {"all": True}, 30)
+        check("CHAOS_OWNER all: true never reaches another session's clients", sc.get("closed") == [] and alive(other2) and alive(notag), sc)
+        S["close"]()
+    finally:
+        for p in procs:
+            try: p.kill()
+            except OSError: pass
+
+
+def case_chaos_memory():
+    """Issue #8 (chaos test G4): low_memory counts the game processes of this game folder, not only the registered instances and
+    this bridge's own clients: clients another session started that have not registered yet are running too. Both numbers are
+    reported (stand-in game processes started outside the bridge, fake game server)."""
+    print("== CHAOS_MEMORY: low_memory counts unregistered game processes", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_MEMORY stand-in game built next to the bridge", False)
+        return
+    import subprocess as sp
+    S = chaos_session(extra_env={"GMOD_MCP_FAKE_FREE_COMMIT_MB": "1780", "GMOD_MCP_FAKE_FREE_RAM_MB": "6000"})
+    exe = os.path.join(S["game"], "gmod_win64.exe")
+    procs = []
+    try:
+        # Nothing runs: running_clients 0, game_processes 0.
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
+        d = sc.get("error", {}).get("details", {})
+        check("CHAOS_MEMORY nothing runs: low_memory with running_clients 0, registered_clients 0, game_processes 0",
+              sc.get("error", {}).get("code") == "low_memory" and d.get("running_clients") == 0 and d.get("registered_clients") == 0 and d.get("game_processes") == 0, sc)
+        # Three game processes started by other sessions, not registered (still starting); one of them is registered after all, plus a registered fake.
+        procs = [sp.Popen([exe], stdout=sp.DEVNULL, stderr=sp.DEVNULL) for _ in range(3)]
+        time.sleep(0.5)
+        S["srv"].extra_instances = [{"id": "reg-1", "pid": procs[0].pid, "port": 1, "mode": "client", "state": "running"},
+                                    {"id": "reg-2", "pid": 4000001, "port": 1, "mode": "client", "state": "running"}]
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
+        e = sc.get("error", {}); d = e.get("details", {})
+        check("CHAOS_MEMORY 3 unregistered-or-not game processes + 1 fake registered one: running_clients 4 (union), registered_clients 2, game_processes 3",
+              e.get("code") == "low_memory" and d.get("running_clients") == 4 and d.get("registered_clients") == 2 and d.get("game_processes") == 3, sc)
+        check("CHAOS_MEMORY the message gives both numbers", "2 registered" in e.get("message", "") and "3 game processes" in e.get("message", ""), e)
+        check("CHAOS_MEMORY nothing started", S["started"]() == [], S["started"]())
+    finally:
+        for p in procs:
+            try: p.kill()
+            except OSError: pass
+        S["close"]()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

@@ -442,6 +442,41 @@ static void test_launch_options() {
     CHECK(parsed == std::vector<std::string>({"cl_showfps", "fps_max", "mat_vsync"}));
     CHECK(launchopts::parse_restore_list("").empty());
     CHECK(launchopts::join_list({"a", "b"}) == "a,b" && launchopts::join_list({}).empty());
+    // Issue #8 (chaos test G3): the owner label on the command line, read back by the module.
+    using launchopts::decode_owner;
+    using launchopts::encode_owner;
+    CHECK(encode_owner("fork-a") == "fork-a" && decode_owner("fork-a") == "fork-a");
+    CHECK(encode_owner("A_b.c-9") == "A_b.c-9");
+    CHECK(encode_owner("my task; \"x\"") == "my%20task%3B%20%22x%22");                  // spaces, ';' and quotes never reach the command line
+    CHECK(decode_owner(encode_owner("my task; \"x\"")) == "my task; \"x\"");
+    CHECK(decode_owner(encode_owner("t\xC3\xA2" "che 100%")) == "t\xC3\xA2" "che 100%");  // non-ASCII (UTF-8 bytes) and '%' itself round-trip
+    CHECK(encode_owner("t\xC3\xA2") == "t%C3%A2");
+    CHECK(encode_owner("").empty() && decode_owner("").empty());
+    CHECK(decode_owner("bad%2") .empty() && decode_owner("bad%zz").empty() && decode_owner("a%00b").empty() && decode_owner("a%0Ab").empty());  // malformed or control
+    CHECK(encode_owner(std::string(64, 'a')) == std::string(64, 'a') && !decode_owner(std::string(64, 'a')).empty());
+    CHECK(decode_owner(std::string(65, 'a')).empty());                                  // longer than the 64 characters instances_launch accepts
+}
+
+// Issue #8 (chaos test G3): the owner label and the test-client mark ride in this instance's entry of instances_list (the
+// heartbeat), so every instance shows its owner whatever bridge session launched it.
+static void test_owner_in_list() {
+    auto &cfg = agent::config();
+    std::string old_owner = cfg.owner;
+    bool old_tc = cfg.test_client;
+    cfg.owner = "fork-a";
+    cfg.test_client = true;
+    json mine;
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(mine.value("owner", "") == "fork-a" && mine.value("test_client", false) == true);
+    cfg.owner = "";
+    cfg.test_client = false;
+    mine = json();
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(!mine.contains("owner") && mine.value("test_client", true) == false);  // the user's own game: no owner, not a test client
+    cfg.owner = old_owner;
+    cfg.test_client = old_tc;
 }
 
 // Issue #4: the current x86-64 install has bin/win64/gmod.exe and no gmod_win64.exe (its root gmod.exe is 32-bit).
@@ -890,6 +925,10 @@ static void test_health() {
     CHECK(h.stalled_s == 0 && !h.hung);
     h = assess(70.0, 1.0, false, 100.0);                           // explicit limit (tests)
     CHECK(!h.hung && h.hung_after_s == 100.0);
+    // Issue #8 (B1): `stale` = the heartbeat itself is old (missed), so the figures it carried are not current.
+    CHECK(!assess(0.02, 1.0, false).stale && !assess(0.02, health::kHeartbeatMissedS, false).stale);
+    CHECK(assess(0.02, health::kHeartbeatMissedS + 0.1, false).stale && assess(0.02, 0.0, false, 0, true).stale);
+    CHECK(!assess(30.0, 1.0, false).stale);                        // blocked main thread, heartbeats arrive: the figures are current
 
     // FpsWatch: the time the rate stayed under 10 fps.
     health::FpsWatch w;
@@ -914,6 +953,19 @@ static void test_health() {
     CHECK(w5.low_s(30) == 0);
 }
 
+// Issue #8 (chaos test B2): `status.loading` and the `loading` of this instance in `instances_list` come from the same flag (the
+// list said true for minutes while status said false: status read only the menu's IsInLoading).
+static void test_status_loading_agrees() {
+    agent::on_server_state_open();  // a server Lua state appeared: a map load begins (the server source of the flag)
+    json st = mcp::call_tool("status", json::object()).value("structuredContent", json::object());
+    CHECK(st.contains("loading") && st["loading"] == true);
+    json mine;
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(mine.is_object() && mine.value("loading", false) == true);
+    CHECK(agent::map_loading());
+}
+
 // Issue #8: the memory check before instances_launch, and the memory facts of a crash report.
 static void test_lowmem() {
     using lowmem::Memory;
@@ -929,6 +981,13 @@ static void test_lowmem() {
     // Plenty: no refusal.
     auto v = lowmem::check_launch(mem(60000, 20000), 4, 2, false);
     CHECK(!v.refuse);
+    // Issue #8 (chaos test G4): clients other sessions started that have not registered yet are game processes too: the two counts
+    // (registered, processes) are reported next to the merged running_clients, and the message gives both.
+    v = lowmem::check_launch(mem(1780, 4000), 1, 11, false, 3, 11);
+    CHECK(v.refuse && v.details.value("running_clients", -1) == 11 && v.details.value("registered_clients", -1) == 3 && v.details.value("game_processes", -1) == 11);
+    CHECK(v.message.find("3 registered") != std::string::npos && v.message.find("11 game processes") != std::string::npos);
+    v = lowmem::check_launch(mem(1780, 4000), 1, 11, false);
+    CHECK(!v.details.contains("registered_clients") && !v.details.contains("game_processes"));  // not measured: not invented
     // The report of the issue: 11 clients running, free commit 1.8 GB, one more client wanted.
     v = lowmem::check_launch(mem(1780, 4000), 1, 11, false);
     CHECK(v.refuse);
@@ -1491,6 +1550,39 @@ static void test_crash_report_coordinator() {
         c.end(1);
         fake.stop();
         srv.join();
+        coordinator::set_timing_for_tests(-1, -1, -1, -1);
+    }
+
+    // 17. Issue #8 (B1): a client frozen as a whole (NtSuspendProcess) keeps its last heartbeat figures; while the heartbeat is
+    // stale they are not the truth: fps reads 0, the main thread is stalled and last_tick_age_s is as old as the heartbeat.
+    {
+        coordinator::set_timing_for_tests(1.0, 3.0, 0, 0);
+        auto entry_of = [&](const std::string &id) {
+            for (const auto &x : coordinator::instances())
+                if (x.value("id", "") == id) return x;
+            return json();
+        };
+        Child c;
+        CHECK(c.start());
+        CHECK(heartbeat("frozen-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.05}, {"main_thread_stalled", false}, {"fps", 19}, {"loading", false}}));
+        json e = entry_of("frozen-1");
+        CHECK(e.value("fps", -1) == 19 && e.value("main_thread_stalled", true) == false);  // fresh heartbeat: its figures stand
+        plat::sleep_ms(1600);
+        e = entry_of("frozen-1");
+        CHECK(e.value("state", "") == "unresponsive");
+        CHECK(e.value("fps", -1) == 0);
+        CHECK(e.value("main_thread_stalled", false) == true);
+        CHECK(e.value("last_tick_age_s", 0.0) >= 1.5);
+        CHECK(e.contains("last_heartbeat") && e["last_heartbeat"].value("fps", -1) == 19 && e["last_heartbeat"].value("last_tick_age_s", -1.0) == 0.05);
+        plat::sleep_ms(2500);
+        e = entry_of("frozen-1");
+        CHECK(e.value("state", "") == "hung" && e.value("fps", -1) == 0 && e.value("main_thread_stalled", false) == true && e.value("last_tick_age_s", 0.0) >= 4.0);
+        CHECK(heartbeat("frozen-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.02}, {"main_thread_stalled", false}, {"fps", 20}, {"loading", false}}));  // thawed
+        e = entry_of("frozen-1");
+        CHECK(e.value("state", "") == "running" && e.value("fps", -1) == 20 && e.value("main_thread_stalled", true) == false && !e.contains("last_heartbeat"));
+        CHECK(heartbeat("frozen-1", "client", c.pi.dwProcessId, true));
+        plat::sleep_ms(300);
+        c.end(0);
         coordinator::set_timing_for_tests(-1, -1, -1, -1);
     }
 
@@ -2220,10 +2312,12 @@ int main(int argc, char **argv) {
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();
+    test_owner_in_list();
 #ifdef _WIN32
     test_crash_report_coordinator();
     test_coordinator_handover_cluster();  // Issue #6
 #endif
+    test_status_loading_agrees();  // Issue #8: sets the load flag (it stays on): keep it after the tests that read the flag
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;
     fs::remove_all(root.parent_path(), ec);

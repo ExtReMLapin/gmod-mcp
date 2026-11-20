@@ -30,6 +30,7 @@ struct Assessment {
     double stalled_s = 0;   // seconds the main thread has been blocked (0 = it ticks)
     bool hung = false;
     double hung_after_s = 0;  // the limit that applied
+    bool stale = false;       // the heartbeat itself is old (missed, or the caller knows it stopped): the figures it carried are not current
 };
 // `last_tick_age_s`: the game's own measure at the time of its last heartbeat (seconds since its main thread last ran);
 // `heartbeat_age_s`: how old that heartbeat is. When the heartbeats stopped altogether (the whole process is frozen) the

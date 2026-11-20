@@ -149,13 +149,18 @@ static json self_info() {
     // Health at a glance (sent with every heartbeat): agents pick a usable instance without one status call each.
     json fps = jobs::frame_stats()["fps"];
     double since = jobs::seconds_since_last_frame();
-    return json{{"id", c.instance_id}, {"mode", agent::mode_name()}, {"port", c.port}, {"pid", plat::process_id()},
+    json info = json{{"id", c.instance_id}, {"mode", agent::mode_name()}, {"port", c.port}, {"pid", plat::process_id()},
                 {"map", agent::current_map()}, {"realms", realms_j}, {"agent_version", c.version},
                 {"uptime_s", (int64_t)console::uptime()}, {"fps", fps.is_number() ? json((int)(fps.get<double>() + 0.5)) : json(nullptr)},
                 {"main_thread_stalled", since > 5.0}, {"last_tick_age_s", since < 0 ? 0.0 : std::round(since * 100) / 100},  // issue #8
                 {"lua_errors", console::errors_cursor()},
                 {"loading", agent::map_loading()},  // FP7137 (issue #7): a map load is in progress, whatever started it
-                {"game_dir", c.game_dir}};  // read by the coordinator (where the crash dumps are), not shown by instances_list
+                {"game_dir", c.game_dir}};
+    // Issue #8 (G3): who launched it (instances_launch {owner}) and whether it is one of our test clients (-mcp_test_client), so that
+    // instances_list names the owner of every instance and a later bridge session can close keep:true test clients by owner.
+    info["test_client"] = c.test_client;
+    if (!c.owner.empty()) info["owner"] = c.owner;
+    return info;  // game_dir is read by the coordinator (where the crash dumps are), not shown by instances_list
 }
 
 // Members recently removed (process gone, or no heartbeat): so that a later call gets a useful answer, and a crash stays
@@ -247,6 +252,17 @@ static void add_health(json &e, double last_tick_age_s, double hb_age_s, bool lo
     health::Assessment a = health::assess(last_tick_age_s, hb_age_s, loading, g_hung_after_s, silent);
     e["stalled_s"] = round1(a.stalled_s);
     e["fps_low_s"] = round1(fps_low_s);
+    if (a.stale) {
+        // Issue #8: the heartbeat is old (a client frozen as a whole): its last figures (fps 19, main thread ticking) are not
+        // the truth any more. Report what is known now and keep the raw last ones apart.
+        json last = json::object();
+        for (const char *k : {"fps", "main_thread_stalled", "last_tick_age_s"})
+            if (e.contains(k)) last[k] = e[k];
+        if (!last.empty()) e["last_heartbeat"] = last;
+        e["fps"] = 0;
+        e["main_thread_stalled"] = true;
+        e["last_tick_age_s"] = std::round(a.stalled_s * 100) / 100;
+    }
     if (a.hung) {
         e["state"] = "hung";
         e["note"] = hung_note(pid, a.stalled_s, a.hung_after_s, silent && last_tick_age_s < health::kStalledShownS);

@@ -222,6 +222,7 @@ static json status_tool(const json &args) {
            {"frames", jobs::frame_count()},
            {"last_tick_age_s", since},
            {"main_thread_stalled", stalled},
+           {"loading", agent::map_loading()},  // issue #8: the flag instances_list reports (menu.loading is the raw IsInLoading)
            {"perf", jobs::frame_stats()},
            {"realms", realms_j},
            {"client_lock", agent::lock_status()},
@@ -269,7 +270,6 @@ static json status_tool(const json &args) {
         s["gmod_version"] = s["menu"].value("version", json());
         s["gmod_version_str"] = s["menu"].value("version_str", json());
         s["branch"] = s["menu"].value("branch", json());
-        s["loading"] = s["menu"].value("loading", false);
     }
     // Frame cap and time scale (a light test client runs at 20 fps: per-frame behaviour differs from a normal game).
     json hostj = s.contains("menu") ? s["menu"] : (s.contains("server") ? s["server"] : json());
@@ -745,7 +745,7 @@ void register_core() {
     mcp::register_tool({"status", "Instance status",
                         "GMod version, branch, platform, map, gamemode, maxplayers, available realms (and injection generation), "
                         "client lock, fps/frametime (perf), fps_max (the frame cap: 20 on a light test client) and host_timescale, "
-                        "loading (a map load in progress), uptime, age of the main thread's last tick (main_thread_stalled if > 5 s), "
+                        "loading (a map load in progress: the same flag as instances_list; menu.loading is the loading screen alone), uptime, age of the main thread's last tick (main_thread_stalled if > 5 s), "
                         "Lua temporary directory (tmp_dir, absolute path), and with a mounted Lua folder (lua_mount) `lua_mount`: {path, "
                         "loaded_with_mount, realms_without_mount, stale_files: [{file, disk, reason, realms}], warning?} (the folder's files that "
                         "changed since each realm loaded them). Call this first. Works even if the game is frozen. "

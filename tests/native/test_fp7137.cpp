@@ -482,6 +482,67 @@ static void test_loadflag() {
     Tracker w;
     w.set(Tracker::Menu, true, 0);
     CHECK(!w.active(1000) && !w.set(Tracker::Menu, false, 1000));
+
+    // Issue #8 (chaos test B2): `map x` then `disconnect` 0.2 s later. The server state opened (source on) and closed within
+    // two pump runs, so the pump never saw it present nor absent: nothing ever switched the source off, and instances_list said
+    // `loading: true` for minutes (every launch then failed with map_load_in_progress) while status said false.
+    // (a) A server state that is gone ends the load, after a short grace (a state seen absent for a frame is not a verdict).
+    Tracker g;
+    g.set(Tracker::Menu, false, 0);                    // the menu polls "not loading"
+    CHECK(g.set(Tracker::Server, true, 10));
+    CHECK(!g.note_server_state(true, 10.5) && g.active(10.6));   // the state exists: still loading
+    CHECK(!g.note_server_state(false, 11.0));          // gone for the first time: within the grace
+    CHECK(g.active(11.2));
+    CHECK(g.note_server_state(false, 11.0 + loadflag::kStateGoneGraceS + 0.1) && !g.active(12.2));   // gone for good: the load is over
+    // A state that comes back within the grace keeps the load.
+    Tracker g2;
+    g2.set(Tracker::Server, true, 10);
+    g2.note_server_state(false, 11.0);
+    g2.note_server_state(true, 11.5);
+    CHECK(!g2.note_server_state(false, 12.0) && !g2.note_server_state(false, 12.9) && g2.active(12.9));  // the clock restarted at 12.0
+    CHECK(g2.note_server_state(false, 12.0 + loadflag::kStateGoneGraceS + 0.1));
+    // The menu loading screen still counts when no server state exists yet.
+    Tracker g3;
+    g3.set(Tracker::Menu, true, 0);
+    g3.note_server_state(false, 1.0);
+    g3.note_server_state(false, 5.0);
+    CHECK(g3.active(5.0));
+    // (b) The server source alone (the menu says "not loading": the loading screen is down) is bounded well under the 300 s cap.
+    // The pump polls the menu every few frames: `poll` feeds those polls (a blocked main thread feeds none).
+    auto poll = [](Tracker &t, double from, double to) {
+        for (double x = from; x <= to; x += 0.5) t.set(Tracker::Menu, false, x);
+    };
+    Tracker b;
+    b.set(Tracker::Menu, false, 0);
+    CHECK(b.set(Tracker::Server, true, 100));
+    poll(b, 100.5, 100 + loadflag::kServerOnlyMaxS - 1);
+    CHECK(b.active(100 + loadflag::kServerOnlyMaxS - 1));
+    poll(b, 100 + loadflag::kServerOnlyMaxS - 0.5, 100 + loadflag::kServerOnlyMaxS + 1);
+    CHECK(!b.active(100 + loadflag::kServerOnlyMaxS + 1) && loadflag::kServerOnlyMaxS < loadflag::kMaxLoadS);
+    // A blocked main thread (a big map loading for minutes) polls nothing: the load is not cut meanwhile.
+    Tracker blocked;
+    blocked.set(Tracker::Menu, false, 0);
+    blocked.set(Tracker::Server, true, 100);
+    blocked.set(Tracker::Menu, false, 100.5);
+    CHECK(blocked.active(100 + 200));
+    // The loading screen going down starts the clock: a long load (screen up for 120 s) is not cut, the 30 s run after it.
+    Tracker b2;
+    b2.set(Tracker::Server, true, 0);
+    b2.set(Tracker::Menu, true, 1);
+    CHECK(b2.active(121));
+    poll(b2, 121, 121 + loadflag::kServerOnlyMaxS - 1);
+    CHECK(b2.active(121 + loadflag::kServerOnlyMaxS - 1));
+    poll(b2, 121 + loadflag::kServerOnlyMaxS - 0.5, 121 + loadflag::kServerOnlyMaxS + 1);
+    CHECK(!b2.active(121 + loadflag::kServerOnlyMaxS + 1));
+    // A new server state (restart) re-arms it, with the menu still polled "not loading" at that moment.
+    b2.set(Tracker::Server, true, 500, true);
+    CHECK(b2.active(501));
+    poll(b2, 500.5, 500 + loadflag::kServerOnlyMaxS + 1);
+    CHECK(!b2.active(500 + loadflag::kServerOnlyMaxS + 1));
+    // srcds has no menu to poll: only the 300 s cap applies.
+    Tracker d;
+    d.set(Tracker::Server, true, 0);
+    CHECK(d.active(250) && !d.active(loadflag::kMaxLoadS + 1));
 }
 
 void test_fp7137() {
