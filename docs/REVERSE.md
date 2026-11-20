@@ -76,6 +76,18 @@ So the mounted folder adds its root near the end of `MOD` (addType 23: MOUNTCFG,
 so a root at the head made the engine mount that folder's `lua/` instead of `garrysmod/lua` (seen live 2026-11-14:
 no base Lua, Lua errors everywhere, black sky). It is not added to `GAME` either. Not analysed: how `client.dll` mounts `lcl` (live check), the Linux layouts.
 
+**What the engine accepts but does not read** (chaos testing 2026-11-20, issue #9). `AddSearchPath` takes any string and
+the module's records cannot tell whether the engine can open files under it, so the mount verdict comes from the engine: each
+realm's `file.Exists(name, "LUA")` and `file.Time(name, "LUA")` (the module's `mount_probe` runtime op) for a few of the
+folder's files, compared with the folder's file time (`lua_mount::probes_verdict`). Seen live: a UNC path (also
+`\\localhost\D$\...`), an extended-length path (`\\?\D:\...`) and a root of about 236 characters (a file under it passes
+MAX_PATH 260) were all accepted into `lsv`/`lcl`/`MOD` and loaded nothing; they are refused up front (`normalize_root`,
+`refuse_too_long`). A folder with `lua/includes/init.lua` makes `file.Exists("includes/init.lua", "LUA")` true through the
+shadow, so the base-Lua check stays true while the client hangs in its load: refused by comparing file names with the game's own
+`lua/` and `gamemodes/base` (`shadowed_base_files`). The `MountLua` hook's folder scan is paid on the main thread inside the load:
+one scan serves the server's and the client's hook of a load (`record_load_start`), and a missing folder or `lua/` records nothing.
+
+
 ### `CLuaInterface` (implements `ILuaInterface : ILuaBase`)
 - 0x9B0-byte allocation; vptr at +0x0.
 - **`lua_State*` at +0x8**: vtable slot 0 (`ILuaBase::Top`) is `mov rcx,[rcx+8]; jmp lua_gettop`.
