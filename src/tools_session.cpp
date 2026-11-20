@@ -292,6 +292,7 @@ void register_session() {
                         "too: before quitting, the module gives the archived convars their command line changed (fps_max, "
                         "fps_max_nofocus, snd_mute_losefocus, and those named by instances_launch commands or launch_args) the user's values from cfg/config.cfg, or their defaults when the file "
                         "has no line. "
+                        "On a dedicated server the console `quit` is blocked from server Lua: on Linux the module then ends the process itself with SIGTERM (the server's own clean shutdown, half a second after the answer); where that is not possible (Windows srcds) the error is `blocked` and nothing quits. "
                         "Result: {quitting: true}; on the coordinator while other instances live, also coordinator_moved: true, remaining_instances and a warning (they elect a new coordinator).",
                         json::object(), json{{"destructiveHint", true}}, quit_tool});
     mcp::register_tool({"game_terminate", "Kill the game immediately",

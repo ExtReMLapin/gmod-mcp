@@ -1,4 +1,4 @@
-// Platform layer (src/platform/): finding a module the game loaded by full path.
+// Platform layer (src/platform/): finding a module the game loaded by full path, and asking the process to quit.
 #include <string>
 #include <vector>
 
@@ -7,6 +7,8 @@
 
 #ifndef _WIN32
 #include <dlfcn.h>
+#include <sys/wait.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -56,10 +58,34 @@ static void test_find_module_by_full_path() {
     if (c) dlclose(c);
 }
 
+// Linux finding LF-1: game_quit on srcds answered quitting:true and nothing quit (the console `quit` is blocked from server
+// Lua). request_quit ends the process through SIGTERM, which srcds handles as a clean shutdown.
+static void test_request_quit() {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    pid_t pid = fork();
+    if (pid == 0) {
+        struct sigaction sa = {};
+        sa.sa_handler = [](int) { _exit(42); };
+        sigaction(SIGTERM, &sa, nullptr);
+        if (!plat::request_quit(50)) _exit(7);
+        // The caller keeps running until the signal comes (the answer of the tool goes out meanwhile).
+        for (int i = 0; i < 100; ++i) usleep(100000);
+        _exit(9);
+    }
+    close(fds[0]);
+    close(fds[1]);
+    int st = 0;
+    CHECK(pid > 0 && waitpid(pid, &st, 0) == pid);
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 42);
+}
 #endif
 
 void test_platform() {
 #ifndef _WIN32
     test_find_module_by_full_path();
+    test_request_quit();
+#else
+    CHECK(!plat::request_quit(0));  // no clean quit path for a dedicated server on Windows: the tool must say so
 #endif
 }

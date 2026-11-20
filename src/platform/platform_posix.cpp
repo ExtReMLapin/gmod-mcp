@@ -22,6 +22,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <chrono>
+#include <thread>
 
 namespace plat {
 
@@ -104,6 +106,17 @@ std::string process_exe_name() {
 std::string current_directory() {
     char buf[4096] = {0};
     return getcwd(buf, sizeof buf) ? buf : "";
+}
+
+bool request_quit(int delay_ms) {
+    // srcds shuts down cleanly on SIGTERM (its own handler runs the normal exit path). A thread, not a direct call: the tool's
+    // answer must reach the caller first.
+    pid_t pid = getpid();
+    std::thread([pid, delay_ms] {
+        if (delay_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        kill(pid, SIGTERM);
+    }).detach();
+    return true;
 }
 
 void terminate_process(int code) {

@@ -470,6 +470,32 @@ do
 	RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand = old_rcc, old_gci, old_cmd
 end
 
+-- Linux finding LF-1: on srcds game.ConsoleCommand("quit") is blocked from server Lua (the engine's own blacklist), so
+-- game_quit answered quitting:true and nothing quit. When the engine says `quit` is blocked, the runtime asks the module to
+-- end the process (native.request_quit), and answers an error when there is no way to quit: never "requested" for nothing.
+do
+	local log = {}
+	local old_cmd, old_blocked, old_req = game.ConsoleCommand, IsConCommandBlocked, __mcpagent_native.request_quit
+	game.ConsoleCommand = function(c) log[#log + 1] = "GAME:" .. c end
+	IsConCommandBlocked = function(c) return c == "quit" or c == "exit" end
+	__mcpagent_native.request_quit = nil
+	local q = call("quit", {})
+	check(not q.ok and q.error.code == "blocked" and #log == 0, "quit blocked, no native way: an error, nothing sent: " .. J.encode(q))
+	__mcpagent_native.request_quit = function(ms) log[#log + 1] = "SIG:" .. tostring(ms) return true end
+	q = call("quit", {})
+	check(q.ok and q.result.requested == true and q.result.via == "signal" and #log == 1 and log[1]:find("^SIG:") ~= nil,
+		"quit blocked: the module ends the process: " .. J.encode(q) .. table.concat(log, "|"))
+	log = {}
+	__mcpagent_native.request_quit = function() log[#log + 1] = "SIG" return false end
+	q = call("quit", {})
+	check(not q.ok and q.error.code == "blocked" and #log == 1, "the module cannot quit: an error, not requested:true: " .. J.encode(q))
+	log = {}
+	IsConCommandBlocked = function() return false end
+	q = call("quit", {})
+	check(q.ok and q.result.via == "server" and #log == 1 and log[1] == "GAME:quit\n", "quit not blocked: console command as before")
+	game.ConsoleCommand, IsConCommandBlocked, __mcpagent_native.request_quit = old_cmd, old_blocked, old_req
+end
+
 -- Issue #10: instances_launch {commands, launch_args, fps_max} can change any archived convar, not only the four the launch
 -- itself sets. The bridge lists the names on the command line (-mcp_restore_convars a,b); the module hands the list to the
 -- runtime as native.restore_convars and the restore covers them too.

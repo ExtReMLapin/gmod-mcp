@@ -4,6 +4,11 @@
 
 ### Fixes
 
+- **`game_quit` on a dedicated server really quits (Linux) or says it cannot.** On srcds the console `quit` is blocked from server Lua
+  (the engine's own blacklist), so `game_quit` answered `{quitting: true}` and the server kept running. The runtime now checks
+  `IsConCommandBlocked("quit")`: when blocked, the module ends the process itself with SIGTERM half a second after the answer (the
+  server's own clean shutdown, `via: "signal"`); where it cannot (Windows srcds) the answer is the error `blocked`, never
+  `quitting: true` for nothing. `game_terminate` was already working on Linux (checked live).
 - **The Linux module loads on the dev-branch server.** `plat::find_loaded_module` only tried `dlopen(bare name, RTLD_NOLOAD)`, but the
   dev branch loads `lua_shared_srv.so` by full path from `garrysmod/bin/linux64` (no SONAME, not on `LD_LIBRARY_PATH`), so the module
   never found the Lua library and stayed inactive. It now also walks the loaded objects (`dl_iterate_phdr`) for one with a matching
