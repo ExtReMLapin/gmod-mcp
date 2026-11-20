@@ -22,7 +22,7 @@ jobs:
             platform: linux64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Asks CMake for its code model (File API, codemodel-v2) at configure time, on both generators: the fixture check
       # reads it to prove that nothing under tests/conformance/ is a source of any target but the conformance host.
@@ -117,7 +117,7 @@ jobs:
       # The official MCP conformance suite against the module's real MCP server code (no game): the host executable
       # tests/conformance builds with the other test programs serves the suite's fixtures; run.py compares the results
       # with tests/conformance/expected-failures.json and writes build/conformance-summary.json.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -164,21 +164,21 @@ jobs:
           cp build/logs/*.log badge-data/ 2>/dev/null || true
           cp build/conformance-summary.json badge-data/ 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           name: badge-data-${{ matrix.platform }}
           path: badge-data/
           if-no-files-found: ignore
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: gmod-mcp-${{ matrix.platform }}
           path: |
             dist/*.zip
             dist/*.sha256
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin-part-${{ matrix.platform }}
           path: plugin-part/
@@ -188,8 +188,8 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: plugin-part-*
           path: parts
@@ -218,7 +218,7 @@ jobs:
           PY
           (cd dist/plugin && zip -qr ../gmod-mcp-plugin.zip .)
           (cd dist && sha256sum gmod-mcp-plugin.zip > gmod-mcp-plugin.zip.sha256)
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: gmod-mcp-plugin
           path: |
@@ -232,10 +232,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -261,10 +261,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: main
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: gmod-mcp-plugin
           path: dist
@@ -308,8 +308,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: badge-data-*
