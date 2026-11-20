@@ -211,6 +211,61 @@ FsLayout decide_filesystem(const Bytes &s7, const Bytes &s8, const Bytes &s11, c
     return r;
 }
 
+// ---- IVEngineClient / INetChannelInfo ----
+
+Check client_cmd_shape(const Bytes &c) {
+    size_t n = fn_len(c);
+    if (n < 0x10 || n > 0x80) return fail("not the size of ClientCmd");
+    // The text (rdx) is kept in a callee-saved register R, later passed as the first argument (mov rcx,R) of a tail jump.
+    static const int kSaved[] = {3, 5, 6, 7};  // rbx, rbp, rsi, rdi
+    for (int R : kSaved) {
+        size_t keep = n;
+        for (size_t i = 0; i + 3 <= n && i < 0x20; ++i) {
+            bool a = c[i] == 0x48 && c[i + 1] == 0x8b && c[i + 2] == (0xc0 | (R << 3) | 2);  // mov R,rdx
+            bool b = c[i] == 0x48 && c[i + 1] == 0x89 && c[i + 2] == (0xc0 | (2 << 3) | R);  // mov R,rdx (store form)
+            if (a || b) {
+                keep = i;
+                break;
+            }
+        }
+        if (keep == n) continue;
+        for (size_t i = keep + 3; i + 3 <= n; ++i) {
+            bool a = c[i] == 0x48 && c[i + 1] == 0x8b && c[i + 2] == (0xc0 | (1 << 3) | R);  // mov rcx,R
+            bool b = c[i] == 0x48 && c[i + 1] == 0x89 && c[i + 2] == (0xc0 | (R << 3) | 1);  // mov rcx,R (store form)
+            if (!(a || b)) continue;
+            for (size_t j = i + 3; j + 5 <= n && j < i + 3 + 12; ++j)
+                if (c[j] == 0xe9) return pass();  // the tail jump into the command buffer
+        }
+    }
+    return fail("does not hand its text to a tail call");
+}
+
+Check get_net_channel_info_shape(const Bytes &c) {
+    // mov rax,[rip+disp32] ; ret
+    if (at(c, 0) == 0x48 && at(c, 1) == 0x8b && at(c, 2) == 0x05 && at(c, 7) == 0xc3) return pass();
+    return fail("does not return a global pointer");
+}
+
+Check get_address_shape(const Bytes &c) {
+    // add rcx,off (48 81 c1 imm32 | 48 83 c1 imm8) or lea rcx,[rcx+off] (48 8d 89 imm32 | 48 8d 49 imm8)
+    size_t i = 0;
+    if (at(c, 0) == 0x48 && at(c, 1) == 0x81 && at(c, 2) == 0xc1) i = 7;
+    else if (at(c, 0) == 0x48 && at(c, 1) == 0x83 && at(c, 2) == 0xc1) i = 4;
+    else if (at(c, 0) == 0x48 && at(c, 1) == 0x8d && at(c, 2) == 0x89) i = 7;
+    else if (at(c, 0) == 0x48 && at(c, 1) == 0x8d && at(c, 2) == 0x49) i = 4;
+    else return fail("does not take the address of a member of this");
+    if (!((at(c, i) == 0x33 || at(c, i) == 0x31) && at(c, i + 1) == 0xd2)) return fail("does not pass false as the second argument");  // xor edx,edx
+    if (at(c, i + 2) != 0xe9) return fail("does not tail-jump to the formatter");
+    return pass();
+}
+
+bool address_text_plausible(const std::string &s) {
+    if (s.empty() || s.size() > 63) return false;
+    for (unsigned char ch : s)
+        if (ch < 0x20 || ch > 0x7e) return false;
+    return true;
+}
+
 // ---- Verdicts ----
 
 namespace {

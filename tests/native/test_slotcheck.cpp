@@ -17,6 +17,7 @@
 #include "check.h"
 #include "layout.h"
 #include "lua_mount.h"
+#include "netaddr.h"
 #include "realms.h"
 #include "slot_fixtures.h"
 
@@ -147,6 +148,34 @@ void test_filesystem_decision() {
     CHECK(!lua_mount::is_constant_return(code(o, 7)) && !lua_mount::is_constant_return(code(o, 8)));
 }
 
+// SL-4: the engine slots, real bytes of two engine.dll builds.
+void test_engine_shapes() {
+    using namespace layout;
+    for (const slotfx::Slots *e : {&slotfx::engineclient_a, &slotfx::engineclient_b}) {
+        CHECK(client_cmd_shape(code(*e, 7)).ok);
+        CHECK(accepted(*e, 79, client_cmd_shape) == std::set<int>{7});
+        CHECK(get_net_channel_info_shape(code(*e, 72)).ok);
+        // "Returns a global pointer" is not unique to slot 72 (slot 42 is another getter of that shape): the net channel it returns is
+        // what settles it (its GetAddress must be recognized too: SL-8).
+        CHECK(accepted(*e, 79, get_net_channel_info_shape) == (std::set<int>{42, 72}));
+    }
+    for (const slotfx::Slots *n : {&slotfx::netchan_a, &slotfx::netchan_b}) {
+        CHECK(get_address_shape(code(*n, 1)).ok);
+        CHECK(accepted(*n, 11, get_address_shape) == std::set<int>{1});
+    }
+    // Same text, other registers (a recompile): still the shape. Different behavior: refused.
+    CHECK(client_cmd_shape(Bytes{0x56, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf2, 0x48, 0x8b, 0xce, 0x48, 0x83, 0xc4, 0x20, 0x5e, 0xe9, 0, 0, 0, 0, 0xcc}).ok);
+    CHECK(!client_cmd_shape(Bytes{0x48, 0x8b, 0xca, 0xe9, 0, 0, 0, 0, 0xcc}).ok);                  // a thunk with no saved text
+    CHECK(!client_cmd_shape(Bytes{0xc3}).ok);
+    CHECK(!get_net_channel_info_shape(Bytes{0x48, 0x8b, 0x05, 1, 0, 0, 0, 0x90}).ok);               // no ret
+    CHECK(!get_address_shape(Bytes{0x48, 0x81, 0xc1, 0xc4, 0, 0, 0, 0xe9, 0, 0, 0, 0}).ok);       // no xor edx,edx
+    CHECK(!get_address_shape(Bytes{}).ok);
+    // What GetAddress returned.
+    CHECK(layout::address_text_plausible("loopback") && layout::address_text_plausible("127.0.0.1:27015") && layout::address_text_plausible("0.0.0.0:0"));
+    CHECK(!layout::address_text_plausible("") && !layout::address_text_plausible(std::string(64, 'a')) && layout::address_text_plausible(std::string(63, 'a')));
+    CHECK(!layout::address_text_plausible(std::string("ab\x01" "cd")) && !layout::address_text_plausible("caf\xc3\xa9"));
+}
+
 // SL-5: the verdicts for status.
 void test_report() {
     using namespace layout;
@@ -180,6 +209,28 @@ struct ExecPage {
     void put(size_t off, const Bytes &b) { std::memcpy(p + off, b.data(), b.size()); }
     void put64(size_t off, uint64_t v) { std::memcpy(p + off, &v, 8); }
 };
+Bytes cat(std::initializer_list<Bytes> l) {
+    Bytes o;
+    for (const auto &b : l) o.insert(o.end(), b.begin(), b.end());
+    return o;
+}
+Bytes rel32(int32_t v) { return Bytes{(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)}; }
+
+// mov rax,imm64 ; jmp rax
+Bytes jump_to(const void *fn) {
+    Bytes b{0x48, 0xb8};
+    uint64_t v = (uint64_t)fn;
+    for (int i = 0; i < 8; ++i) b.push_back((uint8_t)(v >> (8 * i)));
+    b.push_back(0xff);
+    b.push_back(0xe0);
+    return b;
+}
+
+std::string g_cmd_seen;
+void recorder(const char *s) { g_cmd_seen = s ? s : "(null)"; }
+const char *g_addr_to_return = "loopback";
+const char *addr_source() { return g_addr_to_return; }
+
 // An object whose vtable holds `slots` (pointers), 0x100 bytes of its own after the vptr.
 struct FakeObj {
     std::vector<void *> vt;
@@ -277,6 +328,96 @@ void test_realms_glue() {
     reset_for_tests();
 }
 
+// SL-8: netaddr: ClientCmd, GetNetChannelInfo and GetAddress run only after their code was recognized.
+void test_netaddr_glue() {
+    using namespace layout;
+    reset_for_tests();
+    ExecPage page;
+    // The trampolines at +0x100 (the command buffer: a function taking the text) and +0x180 (the address formatter: returns a text).
+    page.put(0x100, jump_to(reinterpret_cast<const void *>(&recorder)));
+    {
+        Bytes fmt{0x48, 0x83, 0xec, 0x28, 0x48, 0xb8};  // sub rsp,0x28 ; mov rax,imm64
+        uint64_t v = (uint64_t)(&addr_source);
+        for (int i = 0; i < 8; ++i) fmt.push_back((uint8_t)(v >> (8 * i)));
+        fmt.insert(fmt.end(), {0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0xc3});  // call rax ; add rsp,0x28 ; ret
+        page.put(0x180, fmt);
+    }
+    // ClientCmd stub with the real shape: push rbx; sub rsp,0x20; mov rbx,rdx; mov rcx,rbx; add rsp,0x20; pop rbx; jmp recorder.
+    Bytes cc{0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x89, 0xd3, 0x48, 0x89, 0xd9, 0x48, 0x83, 0xc4, 0x20, 0x5b, 0xe9};
+    int32_t rel = (int32_t)(0x100 - (0x20 + (int)cc.size() + 4));
+    page.put(0x20, cat({cc, rel32(rel)}));
+    // GetNetChannelInfo stub with the real shape: mov rax,[rip+disp] ; ret, the global at +0x300 holds the net channel.
+    page.put(0x60, cat({Bytes{0x48, 0x8b, 0x05}, rel32(0x300 - (0x60 + 7)), Bytes{0xc3}}));
+    // GetAddress stub: add rcx,0xc4 ; xor edx,edx ; jmp formatter.
+    Bytes ga{0x48, 0x81, 0xc1, 0xc4, 0, 0, 0, 0x33, 0xd2, 0xe9};
+    page.put(0x80, cat({ga, rel32(0x180 - (0x80 + (int)ga.size() + 4))}));
+
+    FakeObj eng(80), nci(12);
+    std::vector<uint8_t> wrong_code = code(slotfx::engineclient_a, 8);  // not executable heap bytes: a call would crash the test
+    wrong_code.resize(0x100);
+    for (auto &p : eng.vt) p = wrong_code.data();
+    for (auto &p : nci.vt) p = wrong_code.data();
+    eng.vt[7] = page.p + 0x20;
+    eng.vt[72] = page.p + 0x60;
+    nci.vt[1] = page.p + 0x80;
+    void *ncip = nci.obj();
+    page.put64(0x300, (uint64_t)ncip);
+
+    netaddr::set_engine_for_tests(eng.obj());
+    std::string err;
+    g_cmd_seen.clear();
+    CHECK(netaddr::client_cmd("killserver", err));
+    CHECK(g_cmd_seen == "killserver\n");
+    CHECK(report()["ivengineclient"]["state"] == "verified" && report()["ivengineclient"]["client_cmd"] == true);
+    g_addr_to_return = "loopback";
+    netaddr::Result a = netaddr::current_server_address();
+    CHECK(a.ok && a.address == "loopback");
+    json inc = report()["inetchannelinfo"];
+    CHECK(inc["state"] == "verified" && inc["ok"] == true);
+    g_addr_to_return = "127.0.0.1:27015";
+    a = netaddr::current_server_address();
+    CHECK(a.ok && a.address == "127.0.0.1:27015");
+    // GetAddress returns something that is not text: the slot is not what it is believed to be.
+    g_addr_to_return = "ab\x01\x02";
+    a = netaddr::current_server_address();
+    CHECK(!a.ok && !a.error.empty());
+    CHECK(report()["inetchannelinfo"]["ok"] == false && report()["inetchannelinfo"]["state"] == "refused");
+    // No net channel yet: the layout is checked when there is one to read; not an error of the layout.
+    reset_for_tests();
+    page.put64(0x300, 0);
+    netaddr::set_engine_for_tests(eng.obj());
+    a = netaddr::current_server_address();
+    CHECK(!a.ok && a.error.find("no net channel") != std::string::npos);
+    CHECK(report()["inetchannelinfo"]["state"] == "pending" && report()["inetchannelinfo"]["ok"] == true);
+    CHECK(report()["ivengineclient"]["get_net_channel_info"] == true);
+    // GetAddress is another function: never called, fail safe (no address, so the client realm stays locked).
+    reset_for_tests();
+    page.put64(0x300, (uint64_t)ncip);
+    nci.vt[1] = wrong_code.data();
+    netaddr::set_engine_for_tests(eng.obj());
+    a = netaddr::current_server_address();
+    CHECK(!a.ok && a.address.empty() && a.error.find("GetAddress") != std::string::npos);
+    CHECK(report()["inetchannelinfo"]["state"] == "refused" && report()["inetchannelinfo"]["ok"] == false);
+    // GetNetChannelInfo is another function: never called either.
+    reset_for_tests();
+    eng.vt[72] = wrong_code.data();
+    netaddr::set_engine_for_tests(eng.obj());
+    a = netaddr::current_server_address();
+    CHECK(!a.ok && a.error.find("GetNetChannelInfo") != std::string::npos);
+    CHECK(report()["ivengineclient"]["get_net_channel_info"] == false && report()["ivengineclient"]["ok"] == false);
+    // ClientCmd is another function: refused with a reason, never called.
+    eng.vt[7] = wrong_code.data();
+    reset_for_tests();
+    netaddr::set_engine_for_tests(eng.obj());
+    g_cmd_seen.clear();
+    err.clear();
+    CHECK(!netaddr::client_cmd("killserver", err));
+    CHECK(err.find("ClientCmd") != std::string::npos && err.find("recognized") != std::string::npos && g_cmd_seen.empty());
+    CHECK(report()["ivengineclient"]["client_cmd"] == false && report()["ivengineclient"]["state"] == "refused");
+    netaddr::set_engine_for_tests(nullptr);
+    reset_for_tests();
+}
+
 #endif  // _WIN32
 
 }  // namespace
@@ -285,10 +426,12 @@ void run_slotcheck_tests(int *pass, int *fail) {
     test_iluashared_shapes();
     test_iluashared_decision();
     test_filesystem_decision();
+    test_engine_shapes();
     test_report();
 #ifdef _WIN32
     test_iluashared_glue();
     test_realms_glue();
+    test_netaddr_glue();
 #endif
     *pass = g_pass;
     *fail = g_fail;

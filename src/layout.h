@@ -78,6 +78,17 @@ struct FsLayout {
 // not compared). A disagreement is refused: one of the two readings is wrong.
 FsLayout decide_filesystem(const Bytes &s7, const Bytes &s8, const Bytes &s11, const Bytes &s12, int unmount_slot, int mark_slot);
 
+// ---- IVEngineClient (VEngineClient015) and INetChannelInfo ----
+// ClientCmd (slot 7): `void(this, const char *cmd)`: keeps the text, ends by handing it to the command buffer with a tail jump.
+Check client_cmd_shape(const Bytes &code);
+// GetNetChannelInfo (slot 72): returns a global pointer: `mov rax,[rip+disp]; ret`.
+Check get_net_channel_info_shape(const Bytes &code);
+// INetChannelInfo::GetAddress (slot 1): `return remote_address.ToString(false)`: `add rcx,off; xor edx,edx; jmp ToString`.
+Check get_address_shape(const Bytes &code);
+// What GetAddress returned, as text: 1..63 printable ASCII characters ("loopback", "127.0.0.1:27015"). Anything else (binary, a
+// string that does not end) means the slot did not return what is believed.
+bool address_text_plausible(const std::string &s);
+
 // ---- Verdicts for `status` ----
 enum class State { Pending, Verified, Refused, NotApplicable };
 // Publishes the verdict of one interface ("ifilesystem", "iluashared", "ivengineclient", "inetchannelinfo", "lua_offsets"):
