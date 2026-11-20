@@ -2504,6 +2504,48 @@ static void test_ui_tools() {
     CHECK(gtext.find("## UI input") != std::string::npos && gtext.find("ui_click") != std::string::npos && gtext.find("cursor_hidden") != std::string::npos);
 }
 
+#ifdef _WIN32
+// A visible plain window of this process (the "game window" of the screenshot tool test), on a thread of its own with a message
+// loop, DPI-unaware like the game: its client area is larger in physical pixels on a scaled screen.
+namespace {
+struct TestGameWindow {
+    std::atomic<HWND> hwnd{nullptr};
+    std::atomic<bool> quit{false};
+    std::thread th;
+    void start() {
+        th = std::thread([this] {
+            WNDCLASSW c{};
+            c.lpfnWndProc = DefWindowProcW;
+            c.hInstance = GetModuleHandleW(nullptr);
+            c.lpszClassName = L"gmcp_core_test_game";
+            c.hbrBackground = CreateSolidBrush(RGB(30, 160, 220));
+            RegisterClassW(&c);
+            DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+            RECT rc{0, 0, 320, 200};
+            AdjustWindowRectEx(&rc, style, FALSE, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+            HWND w = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, c.lpszClassName, L"gmod-mcp screenshot test", style, 150, 150, rc.right - rc.left,
+                                     rc.bottom - rc.top, nullptr, nullptr, c.hInstance, nullptr);
+            ShowWindow(w, SW_SHOWNOACTIVATE);
+            UpdateWindow(w);
+            hwnd = w;
+            MSG m;
+            while (!quit) {
+                while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&m);
+                MsgWaitForMultipleObjects(0, nullptr, FALSE, 20, QS_ALLINPUT);
+            }
+            DestroyWindow(w);
+        });
+        while (!hwnd) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));  // first paint
+    }
+    void stop() {
+        quit = true;
+        if (th.joinable()) th.join();
+    }
+};
+}  // namespace
+#endif
+
 // screenshot without a client realm: window capture (no game: the decision, the arguments, the refusals before any capture,
 // the declared shape and the docs).
 static void test_screenshot_window_capture() {
@@ -2532,6 +2574,80 @@ static void test_screenshot_window_capture() {
     CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "window_capture"}, {"format", "png"}, {"w", 640}, {"h", 360}})) == "window_unavailable");
 #else
     CHECK(err_code(def) == "realm_unavailable");
+#endif
+#ifdef _WIN32
+    if (plat::window_capture_supported()) {
+        // With a visible window in the process (the game's, here a plain window) and no client realm: the whole tool path. The
+        // menu realm does not answer here (no game, no main loop), so the size falls back to the client area's physical pixels.
+        TestGameWindow gw;
+        gw.start();
+        plat::UiWindow uw;
+        CHECK(plat::ui_window(uw) && uw.found);
+        auto image_of = [](const json &res) {
+            for (const json &c : res["content"])
+                if (c.value("type", "") == "image") return c;
+            return json::object();
+        };
+        auto decode_size = [&](const json &res, unsigned &w, unsigned &h) {
+            // PNG: IHDR holds the size; JPEG: the first SOF marker does.
+            std::string raw = util::base64_decode(image_of(res).value("data", ""));
+            w = h = 0;
+            if (raw.size() > 24 && raw.compare(1, 3, "PNG") == 0) {
+                auto be = [&](size_t o) { return ((unsigned char)raw[o] << 24) | ((unsigned char)raw[o + 1] << 16) | ((unsigned char)raw[o + 2] << 8) | (unsigned char)raw[o + 3]; };
+                w = be(16);
+                h = be(20);
+                return std::string("png");
+            }
+            if (raw.size() > 4 && (unsigned char)raw[0] == 0xFF && (unsigned char)raw[1] == 0xD8) {
+                for (size_t o = 2; o + 9 < raw.size();) {
+                    if ((unsigned char)raw[o] != 0xFF) break;
+                    unsigned char mk = (unsigned char)raw[o + 1];
+                    size_t len = ((unsigned char)raw[o + 2] << 8) | (unsigned char)raw[o + 3];
+                    if (mk == 0xC0 || mk == 0xC2) {
+                        h = ((unsigned char)raw[o + 5] << 8) | (unsigned char)raw[o + 6];
+                        w = ((unsigned char)raw[o + 7] << 8) | (unsigned char)raw[o + 8];
+                        break;
+                    }
+                    o += 2 + len;
+                }
+                return std::string("jpeg");
+            }
+            return std::string();
+        };
+        json r = mcp::call_tool("screenshot", json::object());
+        CHECK(!r.value("isError", false));
+        if (!r.value("isError", false)) {
+            const json &sc = r["structuredContent"];
+            unsigned w = 0, h = 0;
+            CHECK(decode_size(r, w, h) == "jpeg");
+            CHECK(sc.value("source", "") == "window_capture" && sc.value("method", "") == "wgc_client_area" && sc.value("format", "") == "jpeg");
+            CHECK(w > 0 && h > 0 && sc.value("w", 0) == (int)w && sc.value("h", 0) == (int)h);
+            CHECK(sc.value("screen_w", 0) == sc.value("w", -1) && sc.value("screen_h", 0) == sc.value("h", -1) && !sc.value("scaled", true));
+            CHECK(sc.value("bytes", 0) > 100 && sc.value("capture_ms", -1.0) >= 0);
+            CHECK(!sc.contains("native_w"));
+            // The client area, in physical pixels (>= the logical 320x200 on a scaled screen).
+            CHECK(sc.value("w", 0) >= 320 && sc.value("h", 0) >= 200);
+        }
+        // w/h and png: that size, and the window's own size is reported.
+        json p = mcp::call_tool("screenshot", json{{"source", "window_capture"}, {"format", "png"}, {"w", 160}, {"h", 100}});
+        CHECK(!p.value("isError", false));
+        if (!p.value("isError", false)) {
+            const json &sc = p["structuredContent"];
+            unsigned w = 0, h = 0;
+            CHECK(decode_size(p, w, h) == "png" && w == 160 && h == 100);
+            CHECK(sc.value("w", 0) == 160 && sc.value("h", 0) == 100 && sc.value("scaled", false) && sc.value("native_w", 0) >= 320 && sc.value("native_h", 0) >= 200);
+            CHECK(sc.value("source", "") == "window_capture" && image_of(p).value("mimeType", "") == "image/png");
+        }
+        // A minimized game window is refused, nothing is restored.
+        ShowWindow(gw.hwnd.load(), SW_SHOWMINNOACTIVE);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        json mn = mcp::call_tool("screenshot", json::object());
+        CHECK(err_code(mn) == "window_unavailable" && err_of_r(mn).value("message", "").find("minimized") != std::string::npos);
+        CHECK(IsIconic(gw.hwnd.load()) != 0);
+        // A forced render is still refused without a client realm, window or not.
+        CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "render"}})) == "realm_unavailable");
+        gw.stop();
+    }
 #endif
     cfg.mode = mode;
 
