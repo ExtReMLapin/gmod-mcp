@@ -2451,6 +2451,31 @@ static void test_next_call() {
     json r2 = mcp::call_tool("console_exec", json{{"comand", "echo hi"}, {"realm", "nowhere"}});
     CHECK(r2["structuredContent"]["error"].value("next_call", json()).is_null());
 
+    // Live verification of 0.3.7: console_exec {timeout_s} was refused with a message whose first words were the validator's ("invalid
+    // arguments ... validation fa...": the display cut the rest, so the unknown argument's name never showed). The unknown (or missing)
+    // argument comes first, then the accepted list, the validator's own words last; console_exec explains that it has no wait budget
+    // (timeout_s is a substring of connect_timeout_s: no "did you mean" and no corrected call for it, that would be another meaning).
+    {
+        json t = mcp::call_tool("console_exec", json{{"cmd", "echo hi"}, {"timeout_s", 5}});
+        json te = t["structuredContent"]["error"];
+        std::string tm = te.value("message", "");
+        CHECK(t.value("isError", false) && te.value("code", "") == "invalid_params");
+        CHECK(tm.rfind("invalid arguments: Unknown argument 'timeout_s'", 0) == 0);
+        CHECK(tm.find("wait_frames") != std::string::npos && tm.find("connect_timeout_s") != std::string::npos && tm.find("console_wait") != std::string::npos);
+        CHECK(tm.find("did you mean") == std::string::npos && te.value("next_call", json()).is_null());
+        CHECK(tm.find("Accepted arguments: cmd (string)") != std::string::npos);
+        size_t acc = tm.find("Accepted arguments:"), unk = tm.find("Unknown argument");
+        CHECK(unk != std::string::npos && acc != std::string::npos && unk < acc);
+        // A typo of another tool keeps its suggestion, first in the message.
+        json t2 = mcp::call_tool("console_exec", json{{"command", "echo hi"}});
+        std::string m2 = t2["structuredContent"]["error"].value("message", "");
+        CHECK(m2.rfind("invalid arguments: Unknown argument 'command' (did you mean 'cmd'?)", 0) == 0);
+        // A wrong type has no unknown argument: the validator's words stay first, then the accepted list.
+        json t3 = mcp::call_tool("console_exec", json{{"cmd", "echo hi"}, {"wait_frames", "many"}});
+        std::string m3 = t3["structuredContent"]["error"].value("message", "");
+        CHECK(m3.rfind("invalid arguments: ", 0) == 0 && m3.find("Unknown argument") == std::string::npos && m3.find("Accepted arguments:") != std::string::npos);
+    }
+
     // Issue #11: lua_job {wait: false} used to be answered "did you mean 'jit'?" (the closest spelling). A wait-like key means
     // `async`; since `wait` and `async` are opposites, the corrected call inverts a boolean.
     auto err_of = [](const json &res) { return res["structuredContent"]["error"]; };

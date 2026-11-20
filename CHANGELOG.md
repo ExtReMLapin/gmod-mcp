@@ -96,6 +96,12 @@
 
 ### Fixes
 
+- **An unknown argument is named at the start of the `invalid_params` message** (live verification of 0.3.7). `console_exec {cmd,
+  timeout_s}` was refused with a message that began with the validator's own words (`At  of {...} - validation failed...`), so a client
+  that showed or cut the start of it never saw the name. The message now starts with `invalid arguments: Unknown argument '...'` (and
+  `Missing required argument`), then the accepted list, the validator's words last; a wrong type keeps the validator's words first.
+  `console_exec` has no wait budget (it waits `wait_frames` frames; `connect_timeout_s` is the wait of `connect` alone): `timeout_s`
+  says so and points to `console_wait`, `wait_for` and `events_wait`, instead of suggesting `connect_timeout_s`.
 - **Whatever the compiler answers that is not a function is a `lua_syntax_error`** (live verification of 0.3.7: `lua_exec` code with a
   `"\u0041"` escape, invalid in LuaJIT 2.1 which only knows `"\u{41}"`, came back as an empty result once). `A.compile` now
   returns a function or `nil` and a message in every case: a compiler that gives the message as its first value (as `CompileString`
