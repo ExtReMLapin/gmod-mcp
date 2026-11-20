@@ -247,6 +247,17 @@ static void add_health(json &e, double last_tick_age_s, double hb_age_s, bool lo
     health::Assessment a = health::assess(last_tick_age_s, hb_age_s, loading, g_hung_after_s, silent);
     e["stalled_s"] = round1(a.stalled_s);
     e["fps_low_s"] = round1(fps_low_s);
+    if (a.stale) {
+        // Issue #8: the heartbeat is old (a client frozen as a whole): its last figures (fps 19, main thread ticking) are not
+        // the truth any more. Report what is known now and keep the raw last ones apart.
+        json last = json::object();
+        for (const char *k : {"fps", "main_thread_stalled", "last_tick_age_s"})
+            if (e.contains(k)) last[k] = e[k];
+        if (!last.empty()) e["last_heartbeat"] = last;
+        e["fps"] = 0;
+        e["main_thread_stalled"] = true;
+        e["last_tick_age_s"] = std::round(a.stalled_s * 100) / 100;
+    }
     if (a.hung) {
         e["state"] = "hung";
         e["note"] = hung_note(pid, a.stalled_s, a.hung_after_s, silent && last_tick_age_s < health::kStalledShownS);

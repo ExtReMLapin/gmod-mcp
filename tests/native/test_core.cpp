@@ -890,6 +890,10 @@ static void test_health() {
     CHECK(h.stalled_s == 0 && !h.hung);
     h = assess(70.0, 1.0, false, 100.0);                           // explicit limit (tests)
     CHECK(!h.hung && h.hung_after_s == 100.0);
+    // Issue #8 (B1): `stale` = the heartbeat itself is old (missed), so the figures it carried are not current.
+    CHECK(!assess(0.02, 1.0, false).stale && !assess(0.02, health::kHeartbeatMissedS, false).stale);
+    CHECK(assess(0.02, health::kHeartbeatMissedS + 0.1, false).stale && assess(0.02, 0.0, false, 0, true).stale);
+    CHECK(!assess(30.0, 1.0, false).stale);                        // blocked main thread, heartbeats arrive: the figures are current
 
     // FpsWatch: the time the rate stayed under 10 fps.
     health::FpsWatch w;
@@ -1491,6 +1495,39 @@ static void test_crash_report_coordinator() {
         c.end(1);
         fake.stop();
         srv.join();
+        coordinator::set_timing_for_tests(-1, -1, -1, -1);
+    }
+
+    // 17. Issue #8 (B1): a client frozen as a whole (NtSuspendProcess) keeps its last heartbeat figures; while the heartbeat is
+    // stale they are not the truth: fps reads 0, the main thread is stalled and last_tick_age_s is as old as the heartbeat.
+    {
+        coordinator::set_timing_for_tests(1.0, 3.0, 0, 0);
+        auto entry_of = [&](const std::string &id) {
+            for (const auto &x : coordinator::instances())
+                if (x.value("id", "") == id) return x;
+            return json();
+        };
+        Child c;
+        CHECK(c.start());
+        CHECK(heartbeat("frozen-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.05}, {"main_thread_stalled", false}, {"fps", 19}, {"loading", false}}));
+        json e = entry_of("frozen-1");
+        CHECK(e.value("fps", -1) == 19 && e.value("main_thread_stalled", true) == false);  // fresh heartbeat: its figures stand
+        plat::sleep_ms(1600);
+        e = entry_of("frozen-1");
+        CHECK(e.value("state", "") == "unresponsive");
+        CHECK(e.value("fps", -1) == 0);
+        CHECK(e.value("main_thread_stalled", false) == true);
+        CHECK(e.value("last_tick_age_s", 0.0) >= 1.5);
+        CHECK(e.contains("last_heartbeat") && e["last_heartbeat"].value("fps", -1) == 19 && e["last_heartbeat"].value("last_tick_age_s", -1.0) == 0.05);
+        plat::sleep_ms(2500);
+        e = entry_of("frozen-1");
+        CHECK(e.value("state", "") == "hung" && e.value("fps", -1) == 0 && e.value("main_thread_stalled", false) == true && e.value("last_tick_age_s", 0.0) >= 4.0);
+        CHECK(heartbeat("frozen-1", "client", c.pi.dwProcessId, false, json{{"last_tick_age_s", 0.02}, {"main_thread_stalled", false}, {"fps", 20}, {"loading", false}}));  // thawed
+        e = entry_of("frozen-1");
+        CHECK(e.value("state", "") == "running" && e.value("fps", -1) == 20 && e.value("main_thread_stalled", true) == false && !e.contains("last_heartbeat"));
+        CHECK(heartbeat("frozen-1", "client", c.pi.dwProcessId, true));
+        plat::sleep_ms(300);
+        c.end(0);
         coordinator::set_timing_for_tests(-1, -1, -1, -1);
     }
 
