@@ -131,6 +131,11 @@ Windows) so a first call never sends the model into a loop.
   1.55 GB of commit); `ignore_low_memory: true` overrides it. A crash report carries `details.memory` and a hint when memory is low.
 
 ### Fixes
+- **A closed game no longer makes the next calls wait 10 s** (issue #6, measured live). A successful call that named its game with
+  `instance` counted as "several games live", even when that game was the only one (the coordinator itself). Agents always pass
+  `instance`: after closing that game, every call waited 10 s for a coordinator hand-over that could not happen
+  (`coordinator_changing`), and the next `instances_launch` started its game 10 s late (13.7 s instead of 3.6 s). Only an answer
+  relayed to another game (`relayed_by`) counts now.
 
 - **A model's first call on a dedicated server (srcds) is no longer sent in a loop** (issue #3, live on a Linux srcds). The client and
   menu realms never exist on srcds, yet every `realm_unavailable` answered `next_call: map_load`, a dead end (a map never gives a

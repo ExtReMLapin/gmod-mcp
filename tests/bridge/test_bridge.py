@@ -2691,6 +2691,20 @@ def case_handover():
     check("HANDOVER the only game closed: game_not_running at once, no wait",
           r and "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
     b.close()
+    # 1b. Issue #6 (live, 10 s lost per call): a call that names the only game itself (`instance` = the coordinator, answered
+    # without `relayed_by`) is not a sign of other games. Agents always pass `instance`: after closing that game, every call
+    # waited 10 s for a hand-over that could not happen (coordinator_changing), and the next instances_launch started 10 s late.
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    b = Bridge(port, env0)
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-1"}})
+    check("HANDOVER a call naming the only game is answered", r and not r["result"].get("isError"), r)
+    srv.stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {}}, 20)
+    check("HANDOVER the only game, named by `instance`, closed: game_not_running at once, no wait",
+          r and "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
     # 2. Several instances live (the bridge saw them in instances_list): the coordinator ends, another takes the port 2 s later.
     port = free_port()
     srv = FakeServer(port, version=bridge_version()); srv.instances_answer = cluster

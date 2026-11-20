@@ -2594,10 +2594,15 @@ void handle_request(const json &msg) {
                 add_bridge_tools(r.response["result"]);
             }
         }
-        if (!tool.empty()) {  // issue #6: a call for another instance that was answered: several games live
+        if (!tool.empty()) {  // issue #6: a call relayed to another instance was answered: several games live
+            // Only a relayed answer counts (`relayed_by`, set by the coordinator when the target is another game). A call
+            // that names the coordinator itself is not a sign of other games: counting it made every call wait 10 s for a
+            // hand-over after the only game closed (agents always pass `instance`).
             const json &fa = params_of(fwd).value("arguments", json::object());
-            if (fa.is_object() && fa.contains("instance") && fa["instance"].is_string() && r.response.contains("result") &&
-                !r.response["result"].value("isError", false))
+            const json &res = r.response.contains("result") ? r.response["result"] : json();
+            const json &sc = res.is_object() && res.contains("structuredContent") ? res["structuredContent"] : json();
+            if (fa.is_object() && fa.contains("instance") && fa["instance"].is_string() && res.is_object() &&
+                !res.value("isError", false) && sc.is_object() && sc.contains("relayed_by"))
                 g_multi_seen_ms = steady_ms();
         }
         if (tool == "instances_list" && r.response.contains("result") && !r.response["result"].value("isError", false)) {
