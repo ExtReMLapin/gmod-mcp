@@ -311,6 +311,10 @@ fields, all plain sentences for you, present only when they apply:
 - `output_note`: the console lines in `output` are shared with the game; `fps_note`: a test client runs at most 20 fps.
 - `version_warning`: the module in the game and the Claude Code plugin have different versions; tell the user.
 - `waited_s` / `waited_reason`: the call waited for another launch or map load (see "Launches and map loads").
+A number the game cannot hold is `null`, never a string: JSON has no NaN or infinity, so a non-finite value (NaN, +-infinity,
+a coordinate or a "1e999" that overflows a double) reads `null` where a number is expected (`distance`, `pos`, `eye_ang`,
+`number` of a convar...). Every number of every `outputSchema` accepts `null` for that reason: treat a null number as
+"not a finite number", not as an error of the call.
 An error is `{"error": {"code", "message", "details"}}`: branch on `code`, read `message` for what to do, `details` holds
 the numbers. When the game is not running the plugin itself answers `game_not_running` in that same shape (`details`: `host`,
 `port`, `reason`); start the game with `-mcp` and call again.
