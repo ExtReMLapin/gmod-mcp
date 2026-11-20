@@ -198,6 +198,11 @@ bool lookup_key(const std::string &name_in, KeyInfo &out) {
 }
 
 std::vector<Step> key_steps(const KeyInfo &k, const ScanFn &scan) {
+    // A key that types a character (letter, digit, space): only the WM_CHAR, like `text`. The game's message loop runs
+    // TranslateMessage on a posted WM_KEYDOWN and makes its own WM_CHAR from the real keyboard layout, next to ours: the character
+    // came twice ("aa"), and on AZERTY the digit key typed "5(" (live, 0.3.7). The control keys (enter, tab, backspace, escape) are
+    // not doubled: the engine reads them from the key messages.
+    if (k.ch >= 0x20) return {one(make(kWmChar, k.ch, 1))};
     long long scancode = scan ? (long long)(scan(k.vk) & 0xFF) : 0;
     long long base = 1 | (scancode << 16) | (k.extended ? (1LL << 24) : 0);
     std::vector<Step> out;

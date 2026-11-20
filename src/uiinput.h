@@ -83,14 +83,16 @@ ClickPlan plan_click(const ClickRequest &req, const Geometry &g);
 struct KeyInfo {
     unsigned vk = 0;
     bool extended = false;  // extended-key flag (arrows, home, end...)
-    unsigned ch = 0;        // the WM_CHAR a real key press also sends (enter 13, escape 27, letters...), 0 = none
+    unsigned ch = 0;        // the character the key types (letters, digits, space) or the WM_CHAR of enter 13, tab 9, backspace 8, escape 27; 0 = none
     std::string name;       // canonical name
 };
 // Case-insensitive; aliases (return, esc, pgup, pgdn...). False for an unknown name.
 bool lookup_key(const std::string &name, KeyInfo &out);
 // Scan code of a virtual key (MapVirtualKey on Windows); null = 0.
 using ScanFn = std::function<unsigned(unsigned vk)>;
-// Key down (+ WM_CHAR when the key types something), then key up one step later.
+// A key that types a character (ch >= 0x20: letters, digits, space) is one WM_CHAR, nothing else: a posted WM_KEYDOWN would make the
+// game's own message loop (TranslateMessage) add a second character, from the real keyboard layout. Any other key: key down (+ the
+// WM_CHAR of enter, tab, backspace, escape), then key up one step later.
 std::vector<Step> key_steps(const KeyInfo &k, const ScanFn &scan = nullptr);
 
 constexpr size_t kMaxTextChars = 256;

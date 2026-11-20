@@ -247,10 +247,35 @@ static void test_keys() {
     s = key_steps(k, scan);
     CHECK(s.size() == 2 && s[0].msgs.size() == 1 && s[0].msgs[0].msg == kWmKeyDown && (s[0].msgs[0].lparam & (1 << 24)) &&
           ((s[0].msgs[0].lparam >> 16) & 0xFF) == 0x4B && (s[1].msgs[0].lparam & (1 << 24)));
-    // Without a scan function the scan code is 0.
+    // A key that types a character (letter, digit, space) is one WM_CHAR and no key message: the game's message loop turns a posted
+    // WM_KEYDOWN into its own WM_CHAR (real keyboard layout), so key down + char typed "aa", a space twice and "5(" on AZERTY (live,
+    // 0.3.7 verification). Same message as `text` sends for that character.
+    for (const char *n : {"a", "z", "5", "0", "space"}) {
+        lookup_key(n, k);
+        s = key_steps(k, scan);
+        bool ok = s.size() == 1 && s[0].msgs.size() == 1 && s[0].msgs[0].msg == kWmChar && s[0].msgs[0].wparam == k.ch;
+        if (!ok) std::printf("char key %s: %zu steps\n", n, s.size());
+        CHECK(ok);
+    }
     lookup_key("a", k);
     s = key_steps(k);
-    CHECK(s.size() == 2 && s[0].msgs[0].lparam == 1 && s[0].msgs[1].msg == kWmChar && s[0].msgs[1].wparam == 'a');
+    CHECK(s.size() == 1 && s[0].msgs.size() == 1 && s[0].msgs[0].msg == kWmChar && s[0].msgs[0].wparam == 'a');
+    CHECK(text_steps(u"a").size() == 1 && text_steps(u"a")[0].msgs[0].msg == s[0].msgs[0].msg && text_steps(u"a")[0].msgs[0].wparam == s[0].msgs[0].wparam);
+    // The control keys keep their key messages (and the WM_CHAR they need); backspace, tab, enter were not doubled live.
+    for (const char *n : {"enter", "tab", "backspace", "escape"}) {
+        lookup_key(n, k);
+        s = key_steps(k, scan);
+        bool ok = s.size() == 2 && s[0].msgs.size() == 2 && s[0].msgs[0].msg == kWmKeyDown && s[0].msgs[1].msg == kWmChar &&
+                  s[1].msgs.size() == 1 && s[1].msgs[0].msg == kWmKeyUp;
+        if (!ok) std::printf("control key %s\n", n);
+        CHECK(ok);
+    }
+    // Non-printing keys without a character: key down, key up.
+    for (const char *n : {"f5", "up", "delete", "home"}) {
+        lookup_key(n, k);
+        s = key_steps(k, scan);
+        CHECK(s.size() == 2 && s[0].msgs.size() == 1 && s[0].msgs[0].msg == kWmKeyDown && s[1].msgs[0].msg == kWmKeyUp);
+    }
 }
 
 static void test_text() {

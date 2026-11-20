@@ -319,7 +319,7 @@ void register_ui() {
         {"ui_key", "Press a key or type text in the game UI",
          "Presses a key and/or types text into the focused part of the game UI (a text entry of a dialog, a Derma TextEntry, an HTML "
          "input): key is a named key (enter, escape, tab, backspace, space, up, down, left, right, home, end, pageup, pagedown, "
-         "insert, delete, f1..f12, a letter or a digit), text is typed character by character as WM_CHAR, Unicode included "
+         "insert, delete, f1..f12, a letter, a digit or space: those type the character, as WM_CHAR like `text`, they are not pressed as keys), text is typed character by character as WM_CHAR, Unicode included "
          "(accents, up to 256 characters; no control characters: use key). With both, the text is typed first, then the key is "
          "pressed (text \"hello\" + key enter). Click the field first with ui_click. Result: {sent: [messages], key?, text_units?, "
          "frames_waited, window, screen, cursor_via, screenshot?}." + common +

@@ -8,7 +8,9 @@
   "Disconnected by the server", a Derma panel, a button of the menu's HTML. `ui_click {x, y, button?, double?, wheel?, coords?,
   screenshot_size?, wait_frames?, screenshot_after?}` posts `WM_MOUSEMOVE`, then the button down and up (double: down, up,
   double-click, up) a frame apart, or one `WM_MOUSEWHEEL`; `ui_key {key?, text?, wait_frames?, screenshot_after?}` posts a key
-  (named keys, f1..f12, letters, digits; down, `WM_CHAR` when the key types, up) and/or `text` as `WM_CHAR` (Unicode, accents
+  (named keys, f1..f12; enter, tab, backspace and escape as key down, `WM_CHAR`, key up; a letter, a digit or space as the one
+  `WM_CHAR` of the character, like `text`: the game's message loop turns a posted key down into its own `WM_CHAR` from the real
+  keyboard layout, so key down plus `WM_CHAR` typed "aa" and "5(" on AZERTY) and/or `text` as `WM_CHAR` (Unicode, accents
   included, 256 characters at most). Coordinates are pixels of the `screenshot` image by default (`screenshot_size` converts from
   an image of another size, `coords: "window"` gives client-area pixels); the title bar is never part of them, and a client
   area that differs from the backbuffer the engine renders (DPI scaling) is scaled. The messages go to the game's own main window with
