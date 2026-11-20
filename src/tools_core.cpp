@@ -893,10 +893,6 @@ void register_core() {
                        {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600},
                                       {"description", "How long to wait for the game's answer (default 60, or budget + 10). Past "
                                                       "it the call fails with main_thread_timeout; the code may still be running."}}},
-                       {"jit", {{"type", "boolean"},
-                                {"description", "Obsolete. gmod-mcp no longer turns the LuaJIT compiler off, neither for this code "
-                                                "nor for the functions it defines (hooks and timers run at real speed, timings "
-                                                "are real). jit: true now only ignores `budget`."}}},
                        {"chunkname", {{"type", "string"}, {"maxLength", 260},
                                       {"description", "Chunk name: the source shown by debug.getinfo, errors and tracebacks, e.g. "
                                                       "'@addons/my_addon/lua/my_addon/core.lua' for code that identifies its "
@@ -1016,7 +1012,9 @@ void register_core() {
                                {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 8}, {"description", "Depth (default 1)."}}},
                                {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}, {"description", "Max number of keys (default 100)."}}}}},
                              {"required", {"expr"}}},
-                        RO, lua_inspect_tool});
+                        // Not read-only: `expr` is Lua, and arbitrary Lua can modify the game (the 2 s limit and "keep it side-effect
+                        // free" are advice the module cannot enforce). Destructive for the same reason as lua_exec.
+                        json{{"readOnlyHint", false}, {"destructiveHint", true}}, lua_inspect_tool});
 
     mcp::register_tool({"lua_function_source", "Is this function the code on disk?",
                         "Tells where a function was defined and whether the game runs the current code of that file: its "
@@ -1034,7 +1032,8 @@ void register_core() {
                               {{"realm", realm_exec},
                                {"expr", {{"type", "string"}, {"description", "Lua expression giving the function, e.g. 'MyAddon.Update' or 'hook.GetTable().Think.MyHook'."}}}}},
                              {"required", {"expr"}}},
-                        RO, lua_function_source_tool});
+                        // `expr` is Lua too (evaluated to find the function): same reasoning as lua_inspect.
+                        json{{"readOnlyHint", false}, {"destructiveHint", true}}, lua_function_source_tool});
 
     json name_prop = {{"type", "string"}, {"description", "Name relative to the lua/mcpagent_tmp/ directory (e.g. 'scan.lua', 'lib/util.lua')."}};
     mcp::register_tool({"lua_file_write", "Write a temporary Lua file",
@@ -1043,7 +1042,8 @@ void register_core() {
                         "game code it is include(\"mcpagent_tmp/<name>\"). Result: {path (absolute), bytes, exec_path}.",
                         json{{"properties", {{"name", name_prop}, {"content", {{"type", "string"}, {"description", "File content."}}}}},
                              {"required", {"name", "content"}}},
-                        json{{"destructiveHint", false}, {"idempotentHint", true}}, file_write});
+                        // Overwrites an existing file's content: destructive (idempotent: the same call leaves the same file).
+                        json{{"destructiveHint", true}, {"idempotentHint", true}}, file_write});
     mcp::register_tool({"lua_file_read", "Read a temporary Lua file",
                         "Reads a file of the game's lua/mcpagent_tmp/ folder. Result: {path, content}. Error not_found.",
                         json{{"properties", {{"name", name_prop}}}, {"required", {"name"}}}, RO, file_read});

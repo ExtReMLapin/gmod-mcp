@@ -336,7 +336,8 @@ void register_ui() {
                 {"screenshot_after", shot_after},
                 {"allow_user_game", allow}}},
                {"required", {"x", "y"}}},
-         json{{"destructiveHint", false}, {"openWorldHint", false}}, ui_click_tool});
+         // A click can press any button of the game UI ("Quit", a delete or reset button of the menu): destructive.
+         json{{"destructiveHint", true}, {"openWorldHint", false}}, ui_click_tool});
 
     mcp::register_tool(
         {"ui_key", "Press a key or type text in the game UI",
@@ -359,7 +360,8 @@ void register_ui() {
                 {"wait_frames", wait_frames},
                 {"screenshot_after", shot_after},
                 {"allow_user_game", allow}}}},
-         json{{"destructiveHint", false}, {"openWorldHint", false}}, ui_key_tool});
+         // Same as ui_click: a key (enter, escape...) can confirm any dialog of the game UI.
+         json{{"destructiveHint", true}, {"openWorldHint", false}}, ui_key_tool});
 }
 
 }  // namespace tools

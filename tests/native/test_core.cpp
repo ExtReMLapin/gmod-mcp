@@ -2480,6 +2480,75 @@ static void test_output_schemas_nonfinite() {
     CHECK(!matches("trace", json{{"hit", false}, {"pos", json::array({"1", 2, 3})}, {"fraction", 1}, {"distance", 1}}));
 }
 
+// Tool-description quality audit (TDQS): annotations that agree with what the code does, a description on every input
+// property, and the obsolete `jit` argument no longer advertised (but still accepted, so an old client keeps working).
+static void test_tool_annotations_and_descriptions() {
+    if (mcp::tools().empty()) tools::register_all();
+    auto ann = [&](const char *tool, const char *hint) -> json {
+        const mcp::Tool *t = mcp::find_tool(tool);
+        if (!t || !t->annotations.contains(hint)) return json();
+        return t->annotations[hint];
+    };
+    // lua_job_status hands over a finished job's result and forgets the job: it is not read-only, but it only drops its own
+    // bookkeeping, so it is not destructive (it was left at the default, true).
+    CHECK(ann("lua_job_status", "readOnlyHint") == json(false));
+    CHECK(ann("lua_job_status", "destructiveHint") == json(false));
+    // These evaluate caller-supplied Lua, which can do anything: not read-only, destructive like lua_exec.
+    for (const char *name : {"wait_for", "lua_inspect", "lua_function_source"}) {
+        CHECK(ann(name, "readOnlyHint") != json(true));
+        CHECK(ann(name, "destructiveHint") == json(true));
+    }
+    // Overwrites existing content; a click or a key press can reach any button of the game UI (Quit, Delete...).
+    for (const char *name : {"lua_file_write", "ui_click", "ui_key"}) CHECK(ann(name, "destructiveHint") == json(true));
+    // Left as they were: a mount is a switch the next call can flip back, nothing is lost.
+    CHECK(ann("lua_mount", "destructiveHint") == json(false));
+    // Every tool that is not read-only says explicitly whether it is destructive (the default is true).
+    for (const auto &t : mcp::tools()) {
+        bool ro = t.annotations.value("readOnlyHint", false);
+        if (!ro && !t.annotations.contains("destructiveHint")) std::printf("%s: not read-only, destructiveHint not set\n", t.name.c_str());
+        CHECK(ro || t.annotations.contains("destructiveHint"));
+    }
+    // Every input property of every tool has a non-empty description.
+    int missing = 0;
+    for (const auto &t : mcp::tools())
+        for (auto it = t.input_schema["properties"].begin(); it != t.input_schema["properties"].end(); ++it) {
+            std::string d = it.value().value("description", "");
+            if (d.empty()) {
+                std::printf("%s.%s has no description\n", t.name.c_str(), it.key().c_str());
+                ++missing;
+            }
+        }
+    CHECK(missing == 0);
+    // The six that had none say something factual.
+    for (auto tp : std::vector<std::pair<const char *, const char *>>{{"convar_get", "name"}, {"convar_set", "name"}, {"api_search", "pattern"},
+                                                                        {"wiki_search", "query"}, {"wiki_page", "name"}, {"console_buffer", "capacity"}}) {
+        const mcp::Tool *t = mcp::find_tool(tp.first);
+        CHECK(t != nullptr);
+        if (!t) continue;
+        std::string d = t->input_schema["properties"][tp.second].value("description", "");
+        CHECK(d.size() >= 20 && d.size() <= 400);
+    }
+    // `jit` is gone from the advertised schemas of the four tools that had it...
+    for (const char *name : {"lua_exec", "lua_exec_file", "lua_reload", "lua_job"}) {
+        const mcp::Tool *t = mcp::find_tool(name);
+        CHECK(t != nullptr);
+        if (!t) continue;
+        CHECK(!t->input_schema["properties"].contains("jit"));
+        CHECK(t->input_schema.dump().find("jit") == std::string::npos);
+        // ...but an old client that still sends it is not refused (the schema stays closed for anything else).
+        json args = std::string(name) == "lua_reload" || std::string(name) == "lua_exec_file" ? json{{"path", "x.lua"}, {"jit", true}}
+                                                                                              : json{{"code", "return 1"}, {"jit", true}};
+        json r = mcp::call_tool(name, args);
+        std::string code = r.value("structuredContent", json::object()).value("error", json::object()).value("code", "");
+        CHECK(code != "invalid_params");
+        json args2 = args;
+        args2.erase("jit");
+        args2["jitt"] = true;
+        json r2 = mcp::call_tool(name, args2);
+        CHECK(r2.value("structuredContent", json::object()).value("error", json::object()).value("code", "") == "invalid_params");
+    }
+}
+
 // Issue #3 (live fuzz): wiki_page answered `unsupported "HTTP function unavailable in this realm"` for every uncached page
 // when the menu realm of the game build has no HTTP function. The GET is tried in the menu realm first, then in the client
 // and server realms (same hard-coded wiki allowlist in the Lua side); on srcds only the server realm exists.
@@ -3490,6 +3559,7 @@ int main(int argc, char **argv) {
     test_error_text_is_json();
     test_output_schemas();
     test_output_schemas_nonfinite();
+    test_tool_annotations_and_descriptions();
     test_wiki_http_realms();
     test_next_call();
     test_ui_tools();

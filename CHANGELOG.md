@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Tool annotations match what the tools do.** `lua_job_status` no longer reads as destructive (it only forgets the job whose
+  result it hands over). `wait_for`, `lua_inspect` and `lua_function_source` run caller-supplied Lua, so they are no longer
+  read-only (destructive, like `lua_exec`). `lua_file_write`, `ui_click` and `ui_key` are marked destructive (overwrite a file;
+  a click or key can press any button).
+- **Every input parameter has a description.** Added to `convar_get.name`, `convar_set.name`, `api_search.pattern`,
+  `wiki_search.query`, `wiki_page.name` and `console_buffer.capacity`.
+- **The obsolete `jit` argument is no longer advertised** by `lua_exec`, `lua_exec_file`, `lua_reload` and `lua_job`. A client
+  that still sends it is not refused and gets the old behaviour (`jit: true` ignores `budget` / `resume_limit_s`).
+
 ## 0.3.7
 
 Works with the x86-64 build of Garry's Mod of 2026-11-19 (new install layout, moved engine interface slots, every
