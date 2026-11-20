@@ -150,6 +150,11 @@
   kept running). It now answers the retryable `relay_lost` (`details.retry_after_s`, `details.maybe_executed: true`): the call
   may have run, check the state before repeating one that is not idempotent. `instances_launch {map}` asks the client for its
   `status` after a lost `map_load` answer and reports the map loaded (`map_note`) when it sits on it, instead of `map: null`.
+- **A call made in the first moments after the coordinator died is ridden out** (issue #6, live chaos test). The dying
+  coordinator's listener still accepts a connection for a fraction of a second, then drops it; only a refused connect counted
+  as "coordinator gone", so such a call (and the first calls of bridges that had launched no client) answered
+  `game_not_running`. A connection that breaks within 0.5 s with nothing of an answer now counts as refused: with other
+  games known to live the bridge waits for the next coordinator like for any hand-over.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for

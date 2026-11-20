@@ -258,10 +258,13 @@ bool is_modern(const json &msg) {
            p["_meta"][kMetaVersion].is_string();
 }
 
+const double kFreshLossS = 0.5;  // issue #6: a connection that breaks sooner than this, with no answer, is a dying listener
+
 struct Relay {
     bool reached = false;  // false: game unreachable (why in g_why)
     bool refused = false;  // unreachable because the connection was never made (refused, or no answer to the connect): nothing was sent
     bool lost = false;     // issue #6: the connection was made, then broke before a complete answer: the game may have run the call
+    bool lost_fresh = false;  // ... within kFreshLossS of the send and with nothing of an answer: the listener that accepted it was dying
     int status = 0;
     json response;         // final JSON-RPC response (null for notifications)
     bool aborted = false;  // issue #8: cut because the launched client the call waited on died (reached is true: the game itself is fine)
@@ -402,6 +405,7 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
         return true;
     };
     std::string payload = msg.dump(-1, ' ', false, json::error_handler_t::replace);
+    const auto t_sent = std::chrono::steady_clock::now();
     if (cancel) {
         std::lock_guard<std::mutex> lk(cancel->mu);
         if (cancel->cancelled) {
@@ -441,6 +445,9 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
         auto e = res.error();
         r.refused = e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout;
         r.lost = e == httplib::Error::Read || e == httplib::Error::Write;  // issue #6
+        // Issue #6 (BUG-2): a coordinator that was just killed still accepts a connection for a moment, then drops it. When that
+        // happens at once and nothing came back, the call never ran: it counts as a refused connection (ridden out).
+        r.lost_fresh = r.lost && !decided && std::chrono::duration<double>(std::chrono::steady_clock::now() - t_sent).count() < kFreshLossS;
         if (e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout)
             set_down("nothing listening: the game is closed or was started without -mcp");
         else
@@ -1246,7 +1253,7 @@ Relay ride_out_handover(Relay r, const std::function<Relay()> &again, const std:
     for (;;) {
         double retry = 1.0;
         bool wait = false;
-        if (!r.reached && r.lost && !r.refused && handover_expected()) {
+        if (!r.reached && r.lost && !r.lost_fresh && !r.refused && handover_expected()) {
             // Issue #6: the call was in flight when the coordinator went away while other games live. The target game may well
             // have run it (a map load, a Lua job): repeating it here could run it twice, and game_not_running would be a lie.
             json e{{"error", {{"code", "relay_lost"},
@@ -1260,15 +1267,15 @@ Relay ride_out_handover(Relay r, const std::function<Relay()> &again, const std:
             r.response = rpc_result(id, tool_text(e, true));
             return r;
         }
-        if (!r.reached) wait = r.refused && handover_expected();
+        if (!r.reached) wait = (r.refused || r.lost_fresh) && handover_expected();
         else if (r.response.is_object() && r.response.contains("result")) wait = coordinator_changing_result(r.response["result"], &retry);
         if (!wait) return r;
         if (waited() >= g_handover_wait_s || (cancelled && cancelled->load())) {
             if (!r.reached) {
                 json e{{"error", {{"code", "coordinator_changing"},
                                   {"message", "the coordinator (the game on port " + std::to_string(g_port) + ") stopped answering while other instances "
-                                              "live, and none has taken the role over yet (waited " + std::to_string((int)waited()) + " s). Retry in a few seconds; "
-                                              "nothing was sent to the game."},
+                                              "live, and none has taken the role over yet (waited " + std::to_string((int)waited()) + " s). Retry in a few seconds; " +
+                                              (r.lost_fresh ? "the call was cut at once, before any answer: it most likely did not run." : "nothing was sent to the game.")},
                                   {"details", {{"retry_after_s", 3.0}, {"waited_s", std::round(waited() * 10) / 10}}}}}};
                 r.reached = true;
                 r.status = 200;

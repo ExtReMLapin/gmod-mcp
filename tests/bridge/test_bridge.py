@@ -52,7 +52,7 @@ Cases a, f and fslow use a temporary config folder: the user's token and cache a
 
 Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash lowmem fp7137 orphan portconflict unseen handover launch_mount_first close_coordinator fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
-import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
+import base64, http.server, json, os, queue, random, select, socket, socketserver, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
 
 # The bridges these tests start must not refuse a launch because THIS machine is short of memory at that moment (issue #8's
@@ -2897,6 +2897,33 @@ def live_cluster(member_pid, coordinator_pid=1):
                     "coordinator_id": "client-1"}
 
 
+class DyingListener:
+    """What a coordinator's listener does in its last moments (live 2026-11-20): it still accepts a connection, reads the request,
+    then drops it with no answer (a reset). Stands in for the base port between the process being killed and the port closing."""
+    def __init__(self, port):
+        self.s = socket.socket(); self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.s.bind(("127.0.0.1", port)); self.s.listen(16)
+        self.n, self.run = 0, True
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def loop(self):
+        while self.run:
+            try: c, _ = self.s.accept()
+            except OSError: return
+            self.n += 1
+            try: c.recv(65536)
+            except OSError: pass
+            try:
+                c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                c.close()
+            except OSError: pass
+
+    def stop(self):
+        self.run = False
+        try: self.s.close()
+        except OSError: pass
+
+
 def case_chaos_relay():
     """Issue #6 (chaos test of the hand-over, live 2026-11-20), BUG-1: a call in flight when the coordinator dies is not
     "game_not_running": the target game lives and the call may have run (relay_lost, maybe_executed). instances_launch polls
@@ -2931,6 +2958,36 @@ def case_chaos_relay():
     sc = (r or {}).get("result", {}).get("structuredContent", {})
     check("CHAOS_RELAY nothing else known to live: a connection cut mid-call is still game_not_running", sc.get("error", {}).get("code") == "game_not_running", r)
     srv.stop(); b.close()
+    # 5. Issue #6 (BUG-2): a FRESH call while the dying listener still accepts: the connection is made, then reset before any answer.
+    # Nothing ran: it is the same as a refused connection, ridden out until the next game takes the base port (here after 1.6 s).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop()
+    dying = DyingListener(port)
+    new = {}
+    def takeover():
+        time.sleep(1.6); dying.stop(); time.sleep(0.2)
+        new["srv"] = FakeServer(port, version=bridge_version())
+    threading.Thread(target=takeover, daemon=True).start()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    res = (r or {}).get("result", {})
+    check("CHAOS_RELAY BUG-2: a fresh call reset by the dying listener is ridden out and answered by the next coordinator",
+          dying.n >= 1 and not res.get("isError") and res.get("structuredContent", {}).get("args", {}).get("instance") == "client-2" and 1.4 < time.time() - t0 < 5,
+          {"hits": dying.n, "took": time.time() - t0, "r": r})
+    b.close()
+    if "srv" in new: new["srv"].stop()
+    # ... but a call that was already running for a while (not fresh) when the connection broke is relay_lost, not retried (case 1).
+    # 6. No other game known to live: a reset on a fresh call is a closed game, said at once (unchanged).
+    port = free_port()
+    dying = DyingListener(port)
+    b = Bridge(port, env0)
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {}}, 25)
+    check("CHAOS_RELAY BUG-2: a fresh call reset with no other game known: game_not_running at once", "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close(); dying.stop()
     if os.name != "nt":
         print("   (the launch scenarios are Windows only)", flush=True)
         return
