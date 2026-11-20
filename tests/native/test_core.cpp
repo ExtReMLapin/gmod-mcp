@@ -3050,6 +3050,7 @@ static int cluster_node(int base, const std::string &id) {
     cfg.game_dir = (fs::temp_directory_path() / "gmod-mcp-coretests-cluster" / id).u8string();
     tools::register_core();
     tools::register_instances();
+    tools::register_session();  // game_terminate: the closing-coordinator test ends a node the way instances_close does
     cfg.port = httpsrv::start(base, 16, cfg.token);
     if (!cfg.port) return 2;
     coordinator::start();
@@ -3230,6 +3231,76 @@ static void test_coordinator_tombstone_cluster() {
     CHECK(cluster_running_ids(now) == std::set<std::string>{"node-c"});
     c.kill();
 }
+
+// Issue #6 (live, 4 agents in parallel): instances_close on the client that was the coordinator ended it with game_terminate (exit
+// code 1). Nobody had been told it ends on purpose, so the member that took the role over seeded its tombstone as an unexplained
+// end, and the verdict was "crashed" (exit code 1, no dump): another agent's instances_list showed a crashed game and a call for it
+// answered client_crashed. An instance ended on purpose is gone (instance_gone, not listed); a coordinator that really crashes
+// is still reported crashed.
+static void cluster_closing_case(int base, bool on_purpose) {
+    Node a, b, c;
+    CHECK(a.start(base, "node-a"));
+    auto until = [](auto pred, double max_s) {
+        auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < max_s) {
+            if (pred()) return true;
+            plat::sleep_ms(50);
+        }
+        return pred();
+    };
+    CHECK(until([&] { return cluster_call(base, "instances_list", json::object()).is_object(); }, 15));
+    CHECK(b.start(base, "node-b"));
+    CHECK(c.start(base, "node-c"));
+    std::set<std::string> all{"node-a", "node-b", "node-c"};
+    CHECK(until([&] { return cluster_ids(cluster_call(base, "instances_list", json::object())) == all; }, 20));
+    plat::sleep_ms(4500);  // the members keep the directory the heartbeat answers carry (node-a included)
+    if (on_purpose) {
+        json r = cluster_call(base, "game_terminate", json{{"instance", "node-a"}, {"delay_ms", 100}});  // what instances_close sends to the coordinator itself
+        if (!r.value("terminating", false)) std::printf("  game_terminate answered: %s\n", r.dump().c_str());
+        CHECK(r.value("terminating", false));
+        DWORD exit_code = 0;
+        bool ended = WaitForSingleObject(a.pi.hProcess, 10000) == WAIT_OBJECT_0 && GetExitCodeProcess(a.pi.hProcess, &exit_code);
+        CHECK(ended && exit_code == 1);  // a terminated game exits with code 1
+        a.kill();  // reaps the handles (and does not leave a node behind when the check failed)
+    } else {
+        a.kill();  // exit code 0xC0000005, no notice
+    }
+    CHECK(until([&] { return cluster_call(base, "instances_list", json::object()).is_object(); }, 15));
+    auto code_of = [&](const std::string &id) {
+        json r = cluster_call(base, "lua_exec", json{{"instance", id}, {"code", "return 1"}, {"realm", "menu"}, {"timeout_s", 1}});
+        return r.value("error", json::object()).value("code", "");
+    };
+    auto crashed_listed = [&] {
+        json l = cluster_call(base, "instances_list", json::object());
+        for (const auto &e : l.value("instances", json::array()))
+            if (e.value("id", "") == "node-a" && e.value("state", "") == "crashed") return true;
+        return false;
+    };
+    std::string code_a = code_of("node-a");
+    bool listed_early = crashed_listed();
+    // A little later, once the successor has re-registered the others: the same answer (the tombstone is judged once).
+    plat::sleep_ms(3000);
+    std::string code_later = code_of("node-a");
+    bool listed_later = crashed_listed();
+    std::printf("  closing coordinator (%s): node-a answers '%s' then '%s', listed crashed: %d / %d\n", on_purpose ? "on purpose" : "real crash",
+                code_a.c_str(), code_later.c_str(), (int)listed_early, (int)listed_later);
+    if (on_purpose) {
+        CHECK(code_a == "instance_gone" && code_later == "instance_gone");
+        CHECK(!listed_early && !listed_later);
+    } else {
+        CHECK(code_a == "client_crashed" && code_later == "client_crashed");
+        CHECK(listed_later);
+    }
+    CHECK(cluster_running_ids(cluster_call(base, "instances_list", json::object())) == (std::set<std::string>{"node-b", "node-c"}));
+    b.kill();
+    c.kill();
+}
+
+static void test_coordinator_closed_cluster() {
+    int base = 39800 + ((int)(GetCurrentProcessId() % 100) + 25) % 100 * 16;
+    cluster_closing_case(base, true);
+    cluster_closing_case(39800 + ((int)(GetCurrentProcessId() % 100) + 75) % 100 * 16, false);
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -3285,6 +3356,7 @@ int main(int argc, char **argv) {
     test_crash_report_coordinator();
     test_coordinator_handover_cluster();  // Issue #6
     test_coordinator_tombstone_cluster();  // Issue #6
+    test_coordinator_closed_cluster();  // Issue #6
 #endif
     test_loading_stuck_wording();
     test_status_loading_agrees();  // Issue #8: sets the load flag (it stays on): keep it after the tests that read the flag

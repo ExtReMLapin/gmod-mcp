@@ -126,6 +126,17 @@
 
 ### Fixes
 
+- **A game closed on purpose is no longer reported as crashed when it was the coordinator** (issue #6, live with four agents in parallel).
+  `instances_close` ended the client that held the base port with `game_terminate` (exit code 1). Only a member that says goodbye, or
+  one the coordinator relayed `game_quit`/`game_terminate` to, is known to end on purpose; the coordinator itself told nobody. The
+  member that took the role over turned it into a tombstone from the directory it kept, with no reason for the end, and an exit
+  code of 1 without a dump is judged a crash: another agent's `instances_list` showed it `crashed` ("relaunch...") and a call for it
+  answered `client_crashed`. A coordinator that ends on purpose (`game_terminate`, or the game closing: `game_quit`, the menu's Quit)
+  now tells every member first (`/internal/leaving`, parallel, short timeouts); the members note it, and the tombstone made at the
+  take-over is a goodbye: the instance is simply gone (`instance_gone`, not listed). A notice that comes after the take-over marks the
+  tombstone and has it judged again. A coordinator that really crashes is still reported `crashed`. Tested with three real node
+  processes (`test_coordinator_closed_cluster`: red first, `client_crashed` and listed `crashed` after a `game_terminate` of the
+  coordinator).
 - **A test client no longer keeps the user's foreground** (live, x86-64 branch). Every client `instances_launch` started became the foreground
   window and kept it, so the user's terminal lost the focus at each launch. The bridge now starts the client with a window shown without
   activation (`STARTF_USESHOWWINDOW`, `SW_SHOWNOACTIVATE`: three launches in a row and a launch of two, 0 of 1,216 samples taken during the

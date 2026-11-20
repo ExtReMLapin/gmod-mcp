@@ -13,6 +13,9 @@ void start();
 void stop();
 // Member side, when the game shuts down cleanly: tells the coordinator, so that the process going away is not taken for a crash.
 void say_goodbye();
+// Coordinator side, when it ends on purpose (clean quit, game_terminate): tells the members, so that the one that takes the role
+// over does not report it as crashed (issue #6). Does nothing on a member. Blocks for at most about a second.
+void announce_leaving();
 bool is_coordinator();
 // FP7137 (issue #7): sends a heartbeat now instead of at the next 2 s tick (the "loading" flag just changed). Any thread.
 void wake();

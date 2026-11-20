@@ -100,6 +100,7 @@ struct Member {
 
 static std::mutex g_mu;
 static std::map<std::string, Member> g_members;
+static std::set<std::string> g_leaving;  // issue #6: instances (the old coordinator) that said they end on purpose; seeded tombstones start as goodbye (needs g_mu)
 static health::FpsWatch g_self_fps;  // this instance's own frame rate, fed by the loop (needs g_mu)
 static std::set<std::string> g_claimed_dumps;  // dumps already given to a dead instance (two crashes do not share one)
 static std::atomic<bool> g_run{false};
@@ -671,6 +672,7 @@ static void seed_from_directory() {
         plat::ProcInfo pi;
         if (t->watch && plat::process_watch_query(t->watch, pi, 0) && pi.start_unix > 0) t->start_unix = pi.start_unix;
         t->last_seen_unix = unix_now() - kHeartbeatS;
+        t->goodbye = g_leaving.count(id) > 0;  // the old coordinator said it ended on purpose (on_leaving)
         Gone g;
         g.t = t;
         g.when = Clock::now();
@@ -696,8 +698,53 @@ static void solicit_members() {
     for (auto &t : th) t.join();
 }
 
+// Coordinator side: this instance ends on purpose (game_terminate, instances_close, a clean quit). It is the only one that knows
+// the members and that nobody tells: when its process ends, the member that takes the base port over turns it into a tombstone
+// from the directory it kept, and a tombstone nobody vouches for is judged like a crash (exit code 1 from game_terminate, no
+// dump). Every member is told first, in parallel, with short timeouts (this runs while the process is about to end).
+void announce_leaving() {
+    if (!is_coordinator()) return;
+    std::vector<int> ports;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const auto &kv : g_members)
+            if (kv.second.info.contains("port") && kv.second.info["port"].is_number_integer()) ports.push_back(kv.second.info["port"].get<int>());
+    }
+    const std::string body = json{{"id", agent::config().instance_id}}.dump();
+    std::vector<std::thread> th;
+    for (int p : ports)
+        th.emplace_back([p, &body] {
+            auto cli = client(p, 1);
+            cli->set_connection_timeout(0, 500000);
+            cli->set_write_timeout(1, 0);
+            cli->Post("/internal/leaving", body, "application/json");
+        });
+    for (auto &t : th) t.join();
+}
+
+// Member side: the coordinator announced it ends on purpose. If this instance already took the role over and seeded its
+// tombstone (the notice came late), the tombstone is marked and, when it was already judged, judged again.
+static json on_leaving(const json &in) {
+    if (!in.contains("id") || !in["id"].is_string()) return json{{"ok", false}, {"error", "bad_request"}};
+    std::string id = in["id"].get<std::string>();
+    if (id == agent::config().instance_id) return json{{"ok", true}};
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_leaving.insert(id);
+    if (g_leaving.size() > 200) g_leaving.erase(g_leaving.begin());
+    auto gone = g_gone.find(id);
+    if (gone != g_gone.end()) {
+        Tracked &t = *gone->second.t;
+        t.goodbye = true;
+        if (t.ended && t.ending.verdict.cause == crashinfo::Cause::Crashed && t.ending.verdict.dump.empty()) t.ended = false;  // judged as a crash without a dump: judge again
+    }
+    return json{{"ok", true}};
+}
+
 void say_goodbye() {
-    if (is_coordinator()) return;
+    if (is_coordinator()) {
+        announce_leaving();  // issue #6
+        return;
+    }
     auto cli = client(agent::config().base_port, 1);
     cli->set_write_timeout(1, 0);
     json j{{"id", agent::config().instance_id}, {"port", agent::config().port}, {"closing", true}};
@@ -742,6 +789,7 @@ static void loop() {
 void start() {
     httpsrv::add_internal_route("heartbeat", on_heartbeat);
     httpsrv::add_internal_route("reregister", on_reregister);
+    httpsrv::add_internal_route("leaving", on_leaving);
     mcp::set_relay(relay);
     mcp::set_peers([] {
         std::vector<std::string> ids;
