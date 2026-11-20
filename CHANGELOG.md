@@ -4,6 +4,11 @@
 
 ### Fixes
 
+- **`instances_launch` under a foreign-held base port** (issue #5, live verification). Every call already answered `port_conflict` when a
+  program that is not gmod-mcp holds the base port, but `instances_launch` started its clients (which take the next free port, where the
+  bridge never looks) and waited its whole budget to fail `timeout` "gmod-mcp did not load in them". It now refuses up front with
+  `port_conflict` (the fix, `GMOD_MCP_PORT`, and the gmod-mcp found on the next port when there is one) and starts nothing; when the port
+  is taken while a launch waits, it gives up after 10 s and the `timeout` error names the conflict.
 - **A frozen but live instance keeps answering `instance_hung`** (issue #8, live chaos test). The first call to a member that stopped
   heartbeating (frozen as a whole) answered `instance_hung`, every later one `instance_gone` in 0.2 s although the process still
   ran: the member had been dropped from the directory and the tombstone assumed it was gone. `instance_gone` now means the process

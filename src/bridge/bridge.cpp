@@ -1039,6 +1039,8 @@ json bridge_tools() {
          "before starting anything this call refuses with peer_unhealthy {details.unhealthy: [{instance, pid, state}]}, naming "
          "the way out (instances_close {pids} for a client this session started, game_terminate {instance} for any), unless "
          "ignore_unhealthy: true; a timeout also names the stuck peers it saw meanwhile (details.unhealthy_peers).\n"
+         "When a program that is not gmod-mcp holds the base port (port_conflict, see status), the launch is refused up front with the fix "
+         "(GMOD_MCP_PORT) and nothing is started: the clients would register on the next port, where this bridge cannot see them.\n"
          "Right after a game starts, the other games can be unreachable for 15-18 s (instance_unreachable or timeouts): "
          "expected, wait and retry; it is not a dead game (client_crashed is the signal for a dead one).\n"
          "Order: launch all the clients you need in ONE call (with `map`, they load 2 at a time after the settle delay), "
@@ -1638,6 +1640,14 @@ json launch_tool(const json &args, const json &token) {
     json peers_list = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
     // Issue #8 (chaos test G1): a frozen client blocks a new one from registering: refuse up front, with the way out.
     if (!args.value("ignore_unhealthy", false)) {
+    // Issue #5 (live verification of 0.3.7): a program that is not gmod-mcp holds the base port. The module takes the next free port, which
+    // this bridge never looks at (every call goes through the base port): the clients would start, never be seen and the launch would fail
+    // `timeout` after its whole budget. Refused up front, nothing started, with the way out.
+    if (g_conflict && peers_list.is_object() && peers_list.value("error", json::object()).value("code", "") == "port_conflict") {
+        for (int i = 0; i < 25 && !g_found_port; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));  // the probe of the next ports runs in the background
+        return tool_error("port_conflict", "instances_launch refused: " + port_conflict_text() + " Nothing was started: a client launched now would register with whatever answers on that port, "
+                                                          "and this bridge could not see it.");
+    }
         json bad = unhealthy_peers(peers_list);
         if (!bad.empty()) {
             std::string pids;
@@ -1748,10 +1758,19 @@ json launch_tool(const json &args, const json &token) {
     auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
     json found = json::object();
     std::map<std::string, json> seen_unhealthy;  // issue #8 (G1): peers that were stuck while this launch waited
-    while ((int)found.size() < count && elapsed() < timeout) {
+    // Issue #5: the base port taken by a program that is not gmod-mcp while the clients start: they cannot be seen (the module took the next
+    // port), so waiting the whole budget is pointless: gives up after kConflictGiveUpS of conflict and names it in the timeout error.
+    const double kConflictGiveUpS = 10.0;
+    double conflict_since = -1;
+    while ((int)found.size() < count && elapsed() < timeout && !(conflict_since >= 0 && elapsed() - conflict_since > kConflictGiveUpS)) {
         json lst = game_call("instances_list", json::object(), 5);
         note_instances(lst);
         for (const auto &u : unhealthy_peers(lst)) seen_unhealthy[u.value("instance", std::string("?"))] = u;
+        if (g_conflict) {
+            if (conflict_since < 0) conflict_since = elapsed();
+        } else {
+            conflict_since = -1;
+        }
         for (const auto &in : lst.value("instances", json::array()))
             for (auto &l : started)
                 if (in.value("pid", 0u) == l.pid && in.value("state", "") != "crashed" && !found.contains(std::to_string(l.pid))) {
@@ -1806,10 +1825,11 @@ json launch_tool(const json &args, const json &token) {
                                                           " (a frozen client keeps a new one from registering, engine FP7137 handshake): close it with instances_close {pids} or game_terminate {instance}.";
         json terr{{"code", "timeout"},
                   {"message", std::to_string(found.size()) + " of " + std::to_string(count) +
-                                  " clients answered within " + std::to_string((int)timeout) +
+                                  " clients answered within " + std::to_string((int)std::min(timeout, elapsed() + 0.5)) +
                                   " s (still starting, or gmod-mcp did not load in them: see "
                                   "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
-                                  "the silent ones with instances_close {pids}." + stuck_note}};
+                                  "the silent ones with instances_close {pids}." + stuck_note +
+                                  (g_conflict ? " port_conflict: " + port_conflict_text() + " The silent clients may be running fine on another port; this bridge cannot see them until the port is sorted out." : "")}};
         if (!stuck.empty()) terr["details"] = json{{"unhealthy_peers", stuck}};
         return tool_text(json{{"error", terr},
                               {"silent_pids", silent}, {"answered", answered},

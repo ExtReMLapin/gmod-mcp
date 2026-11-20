@@ -2828,6 +2828,87 @@ def case_chaos_launch():
     import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
+def case_chaos_final():
+    """Issue #5 (last findings of the live verification of 0.3.7): instances_launch while a program that is not gmod-mcp holds the
+    base port. The bridge knew (every other call said port_conflict) but the launch waited its whole budget and failed `timeout`
+    "gmod-mcp did not load in them" while the client was up on the next port."""
+    print("== CHAOS_FINAL: instances_launch under a foreign-held base port", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_FINAL stand-in game built next to the bridge", False)
+        return
+    import shutil
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    def session(next_game, foreign_after=None):
+        game = tempfile.mkdtemp(prefix="gmcp-final-game-")
+        shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        os.makedirs(os.path.join(game, "garrysmod"))
+        work = tempfile.mkdtemp(prefix="gmcp-final-"); pid_dir = os.path.join(work, "pids"); os.makedirs(pid_dir)
+        port, env = two_free_ports(), isolated_config(with_token=True)
+        env.update(GMCP_FAKE_PID_DIR=pid_dir, GMOD_MCP_FP7137_WORKAROUND="0", GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+        S = {"port": port, "game": game, "work": work, "pid_dir": pid_dir, "foreign": None, "srv": None, "next": None}
+        if foreign_after is None: S["foreign"] = Foreign(port)
+        else: S["srv"] = FakeServer(port, version=bridge_version())  # a game answers at first (nothing registered), a foreign program takes the port later
+        if next_game: S["next"] = FakeServer(port + 1, version=bridge_version())
+        S["b"] = Bridge(port, env)
+        S["b"].req("initialize", INIT)
+        def call(tool, args, timeout=90):
+            r = S["b"].req("tools/call", {"name": tool, "arguments": args}, timeout)
+            res = (r or {}).get("result", {})
+            return res.get("structuredContent", {}), res.get("isError")
+        S["call"] = call
+        S["started"] = lambda: [int(open(os.path.join(pid_dir, f)).read() or 0) for f in os.listdir(pid_dir)]
+        def close():
+            S["b"].close()
+            for k in ("foreign", "srv", "next"):
+                if S[k]:
+                    try: S[k].stop()
+                    except Exception: pass
+            for p in S["started"]():
+                try: os.kill(p, 9)
+                except Exception: pass
+            shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+        S["close"] = close
+        return S
+    # 1. A foreign program on the base port, no game anywhere: refused up front, nothing started, the fix is named.
+    S = session(False)
+    S["call"]("status", {})  # the bridge learns of the conflict, as it does from any first call
+    t0 = time.time()
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 20, "game_dir": S["game"]}, 40)
+    took = time.time() - t0
+    e = sc.get("error", {})
+    check("CHAOS_FINAL foreign base port: instances_launch answers port_conflict at once (not `timeout` after the budget)", e.get("code") == "port_conflict" and err is True and took < 12, [took, sc])
+    check("CHAOS_FINAL the message names GMOD_MCP_PORT, the port, and says nothing was started", "GMOD_MCP_PORT" in e.get("message", "") and str(S["port"]) in e.get("message", "") and "nothing was started" in e.get("message", "").lower(), e)
+    check("CHAOS_FINAL no client was started", S["started"]() == [], S["started"]())
+    S["close"]()
+    # 2. The same with a game already up on the next port (what the live run had): the message names it.
+    S = session(True)
+    S["call"]("status", {})
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 20, "game_dir": S["game"]}, 40)
+    e = sc.get("error", {})
+    check("CHAOS_FINAL a gmod-mcp on the next port: port_conflict names GMOD_MCP_PORT=%d" % (S["port"] + 1), e.get("code") == "port_conflict" and "GMOD_MCP_PORT=%d" % (S["port"] + 1) in e.get("message", ""), sc)
+    check("CHAOS_FINAL ... and still starts nothing", S["started"]() == [], S["started"]())
+    S["close"]()
+    # 3. The port is taken by a foreign program while the launch waits (the clients start, they cannot be reached): the launch gives up
+    # after a few seconds instead of waiting its whole budget, and the error names the conflict and the next port.
+    S = session(True, foreign_after=1)
+    def swap():
+        time.sleep(1.5)
+        S["srv"].stop(); S["srv"] = None
+        S["foreign"] = Foreign(S["port"])
+    threading.Thread(target=swap, daemon=True).start()
+    t0 = time.time()
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 40, "game_dir": S["game"]}, 60)
+    took = time.time() - t0
+    e = sc.get("error", {})
+    check("CHAOS_FINAL the port taken mid-launch: gives up within ~20 s (not the 40 s budget) with a `timeout` that names the port conflict", e.get("code") == "timeout" and "port_conflict" in e.get("message", "") and "GMOD_MCP_PORT" in e.get("message", "") and took < 25, [took, sc])
+    check("CHAOS_FINAL ... and the message says where the gmod-mcp on the next port is", "GMOD_MCP_PORT=%d" % (S["port"] + 1) in e.get("message", ""), e)
+    check("CHAOS_FINAL ... the clients that were started are named (silent_pids) so they can be closed", len(sc.get("silent_pids") or []) == 1, sc)
+    S["close"]()
+
+
 def case_chaos_owner():
     """Issue #8 (chaos test G3): the owner label survives the bridge session that launched the client. instances_launch passes it
     on the command line (-mcp_owner, encoded), the module sends it in its heartbeat (instances_list shows `owner` for every
@@ -3216,8 +3297,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
