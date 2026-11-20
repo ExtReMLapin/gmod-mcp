@@ -258,6 +258,17 @@ bool ui_post(uint64_t, unsigned, unsigned long long, long long, std::string &err
 }
 unsigned ui_scan_code(unsigned) { return 0; }
 
+bool window_capture_supported() { return false; }
+bool window_capture_bitmap(uint64_t, int, WindowBitmap &, std::string &code, std::string &err) {
+    code = "unsupported";
+    err = "window capture needs Windows (Windows Graphics Capture)";
+    return false;
+}
+bool window_encode(const WindowBitmap &, int, int, const std::string &, int, std::string &, std::string &err) {
+    err = "window capture needs Windows";
+    return false;
+}
+
 bool patch_pointer(void **slot, void *value) {
     long page = sysconf(_SC_PAGESIZE);
     uintptr_t start = reinterpret_cast<uintptr_t>(slot) & ~static_cast<uintptr_t>(page - 1);

@@ -117,4 +117,23 @@ bool ui_window(UiWindow &out);  // false: no visible top-level window of this pr
 bool ui_post(uint64_t hwnd, unsigned msg, unsigned long long wparam, long long lparam, std::string &err);
 unsigned ui_scan_code(unsigned vk);  // MapVirtualKey; 0 elsewhere
 
+// Window capture (Windows only; src/windowshot.h is the pure part): the client area of this process's own window as pixels,
+// through Windows Graphics Capture. It works while other windows cover the window and never touches the focus, the cursor or
+// the z-order; nothing is written to disk. The capture runs on a helper thread of its own and waits at most `timeout_ms` for
+// the frame, so it can be called from any thread (never needs the game's main thread).
+struct WindowBitmap {
+    int w = 0, h = 0;              // the client area, in physical pixels
+    std::vector<uint8_t> bgra;     // w * h * 4, rows top to bottom, no padding
+    int frame_w = 0, frame_h = 0;  // the whole captured window (title bar and borders included)
+    bool clipped = false;          // the client area reached outside the frame (see windowshot::client_crop)
+    double capture_ms = 0;
+};
+bool window_capture_supported();
+// hwnd 0 = the game's main window; any other value must be a window of this process. False with `code` (unsupported,
+// window_unavailable, capture_timeout, capture_failed) and a message for a human.
+bool window_capture_bitmap(uint64_t hwnd, int timeout_ms, WindowBitmap &out, std::string &code, std::string &err);
+// Scales the bitmap to out_w x out_h (0 = as it is) and encodes it ("jpeg" with quality 1-100, or "png"), no alpha.
+bool window_encode(const WindowBitmap &bmp, int out_w, int out_h, const std::string &format, int quality, std::string &data,
+                   std::string &err);
+
 }  // namespace plat
