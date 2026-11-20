@@ -368,7 +368,8 @@
 
 ### Docs
 
-- **A "Code Mode" section in the README and the guide** (Issue #3): a result arrives as a JSON string (`JSON.parse` it), an error
+- **A "Code Mode" section in the README and the guide, and one line in the server instructions** (Issue #3; live, 2 of 4
+  Code Mode sessions first read a result as an object before reading the guide): a result arrives as a JSON string (`JSON.parse` it), an error
   throws with `e.detail` = `{error: {code, message, details, next_call?}}`, long calls are answered in place for a script, at most
   10 calls run in parallel, and map loads are still serialized by the FP7137 lock. `GMOD_MCP_TASKS` is in the README configuration.
 

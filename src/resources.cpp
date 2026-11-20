@@ -42,6 +42,10 @@ std::string instructions() {
          "Details: lua_job description, prompt write-lua-job.\n";
     s += "Documentation: api_search (ground truth: what actually exists in each realm), wiki_search / wiki_page "
          "(https://wiki.facepunch.com/gmod/). Full guide: resource mcpagent://guide.\n";
+    // Issue #3: live, Code Mode sessions first read a result as an object; the guide says it too, but only if it is read.
+    s += "Code Mode (calling these tools from a script): a call returns a JSON string, so JSON.parse it (accept an object too); "
+         "an error throws, and e.detail.error.code / e.detail.error.message say why; map_load and long waits return their "
+         "real result in the script (guide section \"Code Mode\").\n";
     s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator. "
          "client_crashed / server_crashed = that game crashed (details.dump names the minidump, for a human): relaunch it with "
          "instances_launch and rerun what it was doing; instance_gone = it ended normally; instance_hung = frozen with no sign of life "

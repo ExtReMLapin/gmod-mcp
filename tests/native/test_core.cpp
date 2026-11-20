@@ -2325,6 +2325,13 @@ static void test_code_mode_docs() {
             CHECK(sec.find(term) != std::string::npos);
     }
     CHECK(readme.find("GMOD_MCP_TASKS") != std::string::npos && readme.find("`off`") != std::string::npos);
+    // Issue #3: live, 2 of 4 Code Mode sessions first read a result as an object and failed (it is a JSON string). The
+    // server instructions, which the model always sees (the guide only if it reads it), say it in one line.
+    std::string ins = resources::instructions();
+    size_t at = ins.find("Code Mode");
+    CHECK(at != std::string::npos);
+    std::string line = at == std::string::npos ? "" : ins.substr(at, ins.find('\n', at) - at);
+    for (const char *term : {"JSON string", "JSON.parse", "e.detail", "error.code"}) CHECK(line.find(term) != std::string::npos);
 }
 
 // Issue #3: the guide documents where the hints of a result live (the model of some clients reads structuredContent on
