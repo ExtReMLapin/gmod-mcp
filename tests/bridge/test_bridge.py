@@ -52,8 +52,48 @@ Cases a, f and fslow use a temporary config folder: the user's token and cache a
 
 Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash lowmem fp7137 orphan portconflict unseen handover launch_mount_first close_coordinator fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
-import base64, http.server, json, os, queue, random, select, socket, socketserver, struct, subprocess, sys, tempfile, threading, time
+import atexit, base64, http.server, json, os, queue, random, select, shutil, socket, socketserver, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
+
+# Linux finding LF-5: the cases make a temporary folder per bridge / fake game / config (3356 gmcp-* folders were left in %TEMP%
+# by a few weeks of runs) and start stand-in processes. Every folder made through tempfile.mkdtemp and every process started
+# through subprocess.Popen is recorded here and removed when a case ends and again when this process exits, whatever the case
+# did (an exception, a check that failed before its own cleanup). Cases keep their own cleanup: this is the safety net.
+_made_dirs, _made_procs, _made_lock = [], [], threading.Lock()
+_real_mkdtemp, _RealPopen = tempfile.mkdtemp, subprocess.Popen
+
+
+def _tracked_mkdtemp(*a, **k):
+    d = _real_mkdtemp(*a, **k)
+    with _made_lock: _made_dirs.append(d)
+    return d
+
+
+class _TrackedPopen(_RealPopen):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        with _made_lock: _made_procs.append(self)
+
+
+def cleanup_made():
+    """Ends the stand-in processes still alive (with their children) and removes the recorded folders."""
+    with _made_lock: procs, dirs = list(_made_procs), list(_made_dirs); _made_procs.clear(); _made_dirs.clear()
+    for p in procs:
+        try:
+            if p.poll() is not None: continue
+            if os.name == "nt": _RealPopen(["taskkill", "/F", "/T", "/PID", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
+            else: p.kill()
+            p.wait(timeout=10)
+        except Exception: pass
+    for d in dirs:
+        for _ in range(20):  # a just-killed process may still hold a file for a moment (Windows)
+            shutil.rmtree(d, ignore_errors=True)
+            if not os.path.exists(d): break
+            time.sleep(0.25)
+
+
+tempfile.mkdtemp, subprocess.Popen = _tracked_mkdtemp, _TrackedPopen
+atexit.register(cleanup_made)
 
 # The bridges these tests start must not refuse a launch because THIS machine is short of memory at that moment (issue #8's
 # low_memory check measures the real machine): plenty of fake free memory by default. The cases about low memory set their
@@ -3095,6 +3135,10 @@ class DyingListener:
 
     def stop(self):
         self.run = False
+        # On Linux close() alone does not wake a thread blocked in accept(), and the listening socket (so the port) stays
+        # open until it returns: shutdown() first (the accept then fails and the loop ends).
+        try: self.s.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
         try: self.s.close()
         except OSError: pass
 
@@ -3354,6 +3398,7 @@ if args[:1] == ["--serial"] or len(args) == 1:
     for c in [a for a in args if a != "--serial"] or DEFAULT:
         t_case = time.time()
         CASES[c]()
+        cleanup_made()
         print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
 else:
     # Several cases: each in its own process, all at once (they use their own ports, configs and stand-in games), so

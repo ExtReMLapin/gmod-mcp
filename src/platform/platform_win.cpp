@@ -91,6 +91,9 @@ std::string current_directory() {
     return out;
 }
 
+// The console `quit` is blocked from server Lua and no other clean path to a Windows srcds is known: say so.
+bool request_quit(int) { return false; }
+
 void terminate_process(int code) {
     TerminateProcess(GetCurrentProcess(), (UINT)code);
     ExitProcess((UINT)code);

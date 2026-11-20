@@ -310,6 +310,17 @@ static int native_engine_cmd(lua_State *L) {
     return 2;
 }
 
+// native.request_quit(delay_ms) -> true | false  (srcds only, server state): game_quit on a dedicated server. The console
+// `quit` is blocked from server Lua there, so the module ends the process itself, delay_ms after the tool's answer went out.
+// False when the platform has no clean way (Windows).
+static int native_request_quit(lua_State *L) {
+    const auto &A = lua::api();
+    double ms = A.tonumber(L, 1);
+    int delay = ms >= 0 && ms <= 10000 ? (int)ms : 500;
+    A.pushboolean(L, g_cfg.mode == Mode::Dedicated && plat::request_quit(delay) ? 1 : 0);
+    return 1;
+}
+
 // native.report(channel, json)
 static int native_report(lua_State *L) {
     std::string ch = lua::tostring(L, 1);
@@ -370,6 +381,10 @@ static bool inject(int realm, lua_State *L, std::string &e) {
             A.pushcclosure(L, native_uninstall, 0);
             A.setfield(L, -2, "uninstall");
         }
+    }
+    if (realm == realms::SERVER && g_cfg.mode == Mode::Dedicated) {
+        A.pushcclosure(L, native_request_quit, 0);
+        A.setfield(L, -2, "request_quit");
     }
     if (realm == realms::MENU) {
         A.pushcclosure(L, native_engine_cmd, 0);

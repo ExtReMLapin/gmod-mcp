@@ -236,6 +236,12 @@ function H.quit(args)
 		RunGameUICommand("quit")
 		return { requested = true, via = "gameui", restored = restored }
 	end
+	-- srcds: the engine's own blacklist blocks `quit` from server Lua, so game.ConsoleCommand does nothing and the answer would be
+	-- a lie. The module then ends the process itself (SIGTERM: srcds's own clean shutdown); without that, an error.
+	if IsConCommandBlocked and IsConCommandBlocked("quit") then
+		if native.request_quit and native.request_quit(500) then return { requested = true, via = "signal", restored = restored } end
+		A.fail("blocked", "the console command quit is blocked from server Lua and this platform has no other clean way to end a dedicated server: stop it from its own console or with the system's tools (game_terminate ends the process at once, without a clean shutdown)")
+	end
 	game.ConsoleCommand("quit\n")
 	return { requested = true, via = "server", restored = restored }
 end

@@ -28,6 +28,10 @@ std::string process_exe_name();
 // Path of the current working directory.
 std::string current_directory();
 
+// Asks this process to end cleanly, callable from any thread: `delay_ms` later (so the answer of a tool goes out first) it
+// gets SIGTERM, which srcds handles as its own clean shutdown. False when the platform has no such path (nothing is scheduled).
+bool request_quit(int delay_ms);
+
 // Immediate process termination, callable from any thread.
 [[noreturn]] void terminate_process(int code);
 

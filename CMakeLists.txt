@@ -121,11 +121,17 @@ else()
 endif()
 
 # --- Native unit tests (no game): run by the CI ---
-add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES}
+add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/test_platform.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES}
   tests/native/test_fp7137.cpp src/bridge/fp7137.cpp
   tests/native/test_mdmp.cpp src/mdmp.cpp  # FP7137: its tests and the code they test; mdmp: the minidump reader
   tests/native/test_uiinput.cpp src/uiinput.cpp)  # ui_click / ui_key: the pure part
 target_include_directories(gmod-mcp-unittests PRIVATE src)
+if(NOT WIN32)
+  # A shared object without SONAME that the platform test loads by full path (see tests/native/test_platform.cpp).
+  add_library(gmod-mcp-testlib SHARED tests/native/testlib.cpp)
+  set_target_properties(gmod-mcp-testlib PROPERTIES NO_SONAME ON PREFIX "" OUTPUT_NAME gmcp_testlib)
+  add_dependencies(gmod-mcp-unittests gmod-mcp-testlib)
+endif()
 target_link_libraries(gmod-mcp-unittests PRIVATE nlohmann_json::nlohmann_json)  # FP7137: fp7137.h includes nlohmann/json
 if(MSVC)
   target_compile_options(gmod-mcp-unittests PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)

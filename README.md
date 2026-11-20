@@ -156,6 +156,19 @@ folder (the one that holds `garrysmod` and the server binary), and start the ser
 exists in that mode. The module is 64-bit: start `srcds_win64.exe` (Linux: `srcds_run_x64`). On Linux the default branch
 of the dedicated server has no 64-bit binary: install it with `+app_update 4020 -beta x86-64`.
 
+Linux server branches:
+
+- **`x86-64`** works on Ubuntu 22.04 (glibc 2.35, where it was tested) and newer.
+- **`dev`** (64-bit `srcds_linux64`) needs glibc 2.38 and `GLIBCXX_3.4.32` (Ubuntu 24.04 or newer): the server binary itself
+  does not start on older systems, with or without the module.
+- **The public (default) branch is 32-bit only.** The module is 64-bit and is not loaded there; the server starts normally,
+  without gmod-mcp and without a crash.
+
+`game_quit` on a dedicated server: the engine blocks the console `quit` from server Lua, so on Linux the module ends the
+process itself with `SIGTERM` (the server's own clean shutdown) half a second after it answered. On a Windows dedicated server
+there is no such path and `game_quit` answers the error `blocked` (stop the server from its console, or use
+`game_terminate`, which kills it at once). `game_terminate` works the same on both systems.
+
 `mcpagent_setup` works in the server console too. The plugin and the bridge reach a server running on your machine
 like a game: a server alone takes port 27080; next to a client game, use `instances_list` and pass `instance`
 (see [Several games at once](#several-games-at-once)). The plugin's skill can also set a server up for you.

@@ -27,6 +27,18 @@
   connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
   false, `status` and `instances_list` say `loading_stuck: true` with the way out (`map_load` or `disconnect` clears it). A real load,
   even a minute-long one with its realm present, is never cut.
+- **`game_quit` on a dedicated server really quits (Linux) or says it cannot.** On srcds the console `quit` is blocked from server Lua
+  (the engine's own blacklist), so `game_quit` answered `{quitting: true}` and the server kept running. The runtime now checks
+  `IsConCommandBlocked("quit")`: when blocked, the module ends the process itself with SIGTERM half a second after the answer (the
+  server's own clean shutdown, `via: "signal"`); where it cannot (Windows srcds) the answer is the error `blocked`, never
+  `quitting: true` for nothing. `game_terminate` was already working on Linux (checked live).
+- **The Linux module loads on the dev-branch server.** `plat::find_loaded_module` only tried `dlopen(bare name, RTLD_NOLOAD)`, but the
+  dev branch loads `lua_shared_srv.so` by full path from `garrysmod/bin/linux64` (no SONAME, not on `LD_LIBRARY_PATH`), so the module
+  never found the Lua library and stayed inactive. It now also walks the loaded objects (`dl_iterate_phdr`) for one with a matching
+  file name and takes a handle on it by its full path.
+- **`lua_mount` file times on libstdc++ < 13** (Linux, GCC 11/12). The file system clock of those libraries counts from the year 2174, so every
+  current file time is a negative tick count, and `unix_seconds_of` took negative as unknown: the engine-serves probes then expected no
+  time and a copy with another time was reported as served. Unknown is now an explicit marker (`kUnknownTime`), not a sign.
 - **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
   the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
   do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;
