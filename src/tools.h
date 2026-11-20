@@ -22,6 +22,7 @@ void register_session();
 void register_console();
 void register_world();
 void register_render();
+void register_ui();
 void register_docs();
 void register_reports();
 void register_lua_mount();
@@ -30,6 +31,8 @@ void register_jobs();
 void register_instances();
 
 // Shared helpers.
+// Screenshot of a realm's frame (render hook + poll): {ok, result, image} like the screenshot tool, or an error.
+json capture_screenshot(int realm, const json &req);
 json ok(json result);
 json realm_prop(const std::string &desc, bool with_menu = true);
 int realm_of(const json &args, const char *key, int def);  // -1 if invalid

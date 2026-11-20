@@ -642,5 +642,38 @@ file = nil
 r = call("mount_probe", { files = { { name = "pba/a.lua" } } })
 check(not r.ok, "mount_probe without a file library is an error, not a guess")
 
+-- ui_click / ui_key: the state the DLL reads before it posts input (menu: game UI, loading, backbuffer size; client: cursor).
+do
+	local realm_before = A.realm
+	local old = { gui = gui, vgui = vgui, ScrW = ScrW, ScrH = ScrH, IsInLoading = IsInLoading, IsInGame = IsInGame }
+	ScrW, ScrH = function() return 1280 end, function() return 720 end
+	gui = { IsGameUIVisible = function() return true end }
+	vgui = { CursorVisible = function() return false end }
+	IsInLoading, IsInGame = function() return false end, function() return true end
+	A.realm = "menu"
+	r = call("ui_state", {})
+	check(r.ok and r.result.realm == "menu" and r.result.game_ui == true and r.result.loading == false and r.result.in_game == true
+		and r.result.scr_w == 1280 and r.result.scr_h == 720 and r.result.cursor == nil, "ui_state (menu): game UI, loading, backbuffer size")
+	gui = { IsGameUIVisible = function() return nil end }
+	r = call("ui_state", {})
+	check(r.ok and r.result.game_ui == false, "ui_state (menu): a nil from IsGameUIVisible is false")
+	IsInLoading = function() return true end
+	check(call("ui_state", {}).result.loading == true, "ui_state (menu): loading screen")
+	A.realm = "client"
+	r = call("ui_state", {})
+	check(r.ok and r.result.cursor == false and r.result.game_ui == nil and r.result.scr_w == 1280, "ui_state (client): cursor hidden")
+	vgui = { CursorVisible = function() return true end }
+	check(call("ui_state", {}).result.cursor == true, "ui_state (client): cursor visible (a Derma popup is open)")
+	-- An older build without these functions: no field, no error.
+	gui, vgui, ScrW, ScrH, IsInLoading, IsInGame = nil, nil, nil, nil, nil, nil
+	r = call("ui_state", {})
+	check(r.ok and r.result.cursor == nil and r.result.scr_w == nil, "ui_state (client): missing APIs give no field")
+	A.realm = "menu"
+	r = call("ui_state", {})
+	check(r.ok and r.result.game_ui == nil and r.result.loading == false and r.result.in_game == false, "ui_state (menu): missing APIs give no field")
+	A.realm = realm_before
+	gui, vgui, ScrW, ScrH, IsInLoading, IsInGame = old.gui, old.vgui, old.ScrW, old.ScrH, old.IsInLoading, old.IsInGame
+end
+
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

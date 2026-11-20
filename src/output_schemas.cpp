@@ -198,6 +198,14 @@ json build(const std::string &tool) {
         json shot = obj({{"format", S}, {"w", N}, {"h", N}, {"bytes", N}, {"method", S}, {"camera_restored", B}}, {"bytes"});
         s["screenshot"] = shot;
         s["screenshot_from"] = shot;
+        // --- UI input (ui_click, ui_key): what was posted, where, and the window facts the point was converted with
+        s["ui_click"] = obj({{"sent", STRS}, {"at", obj({{"x", N}, {"y", N}}, {"x", "y"})}, {"coords", S}, {"button", S}, {"wheel", N},
+                             {"scale", Obj}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj}, {"cursor_via", S}, {"screenshot", Obj},
+                             {"screenshot_note", S}, {"screenshot_error", ANY}},
+                            {"sent", "at", "frames_waited"});
+        s["ui_key"] = obj({{"sent", STRS}, {"key", S}, {"text_units", N}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj},
+                           {"cursor_via", S}, {"screenshot", Obj}, {"screenshot_note", S}, {"screenshot_error", ANY}},
+                          {"sent", "frames_waited"});
         s["debug_draw"] = obj({{"added", N}, {"active", N}, {"expire_in_s", N}}, {"added", "active"});
         s["debug_clear"] = obj({{"cleared", N}}, {"cleared"});
         s["sound_emit"] = obj({{"emitted", S}, {"pos", NUMS}, {"ent", N}, {"level", N}, {"pitch", N}, {"volume", N}, {"dsp", N}}, {"emitted"});

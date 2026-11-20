@@ -46,6 +46,20 @@
 
 ### Features
 
+- **`ui_click` and `ui_key`: click and type into a test client's UI.** Some UI has no console command: a VGUI2 dialog such as
+  "Disconnected by the server", a Derma panel, a button of the menu's HTML. `ui_click {x, y, button?, double?, wheel?, coords?,
+  screenshot_size?, wait_frames?, screenshot_after?}` posts `WM_MOUSEMOVE`, then the button down and up (double: down, up,
+  double-click, up) a frame apart, or one `WM_MOUSEWHEEL`; `ui_key {key?, text?, wait_frames?, screenshot_after?}` posts a key
+  (named keys, f1..f12, letters, digits; down, `WM_CHAR` when the key types, up) and/or `text` as `WM_CHAR` (Unicode, accents
+  included, 256 characters at most). Coordinates are pixels of the `screenshot` image by default (`screenshot_size` converts from
+  an image of another size, `coords: "window"` gives client-area pixels); the title bar is never part of them, and a client
+  area that differs from the backbuffer the engine renders (DPI scaling) is scaled. The messages go to the game's own main window with
+  `PostMessage`: the user's real cursor does not move and no window takes the focus (never `SetCursorPos`, `SendInput` or
+  `SetForegroundWindow`). Each refusal has its own code: `unsupported` (srcds, not Windows), `not_a_test_client` (only games
+  started by `instances_launch` accept input; `allow_user_game: true` overrides it), `client_locked`, `loading`,
+  `window_unavailable` (minimized or not found), `cursor_hidden` (the game has the mouse: no menu, dialog or popup is open) and
+  `out_of_bounds`; `cursor_hidden` and `loading` carry a `next_call`. The result lists what was sent, the point in client pixels,
+  the window size, DPI and scale, and with `screenshot_after` the image like `screenshot`.
 - **`lua_job {wait: false}` is suggested as `async`** (issue #11). The unknown-argument message answered "did you mean
   'jit'?" for `wait` (the closest spelling). A small synonym table (`wait`, `await`, `sync`, `blocking`, `nowait`,
   `background`, `detach`...) now points to `async` when the tool has it. `wait` and `async` are opposites, so the message says

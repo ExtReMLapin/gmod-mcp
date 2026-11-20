@@ -208,6 +208,13 @@ bool memory_status(uint64_t &, uint64_t &) { return false; }
 int process_has_foreground() { return -1; }
 bool send_focus_lost() { return false; }
 bool install_close_guard(bool (*)(), int) { return false; }
+bool ui_supported() { return false; }
+bool ui_window(UiWindow &) { return false; }
+bool ui_post(uint64_t, unsigned, unsigned long long, long long, std::string &err) {
+    err = "window messages need Windows";
+    return false;
+}
+unsigned ui_scan_code(unsigned) { return 0; }
 
 bool patch_pointer(void **slot, void *value) {
     long page = sysconf(_SC_PAGESIZE);

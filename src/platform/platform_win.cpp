@@ -1,6 +1,8 @@
 #ifdef _WIN32
 #include "platform.h"
 
+#include "../uiinput.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -325,6 +327,74 @@ bool install_close_guard(bool (*before)(), int delay_ms) {
     g_guard_installed = g_orig_proc != nullptr;
     return g_guard_installed;
 }
+
+// --- UI input (ui_click, ui_key) ---
+static_assert(uiinput::kWmKeyDown == WM_KEYDOWN && uiinput::kWmKeyUp == WM_KEYUP && uiinput::kWmChar == WM_CHAR &&
+                  uiinput::kWmMouseMove == WM_MOUSEMOVE && uiinput::kWmLButtonDown == WM_LBUTTONDOWN &&
+                  uiinput::kWmLButtonUp == WM_LBUTTONUP && uiinput::kWmLButtonDblClk == WM_LBUTTONDBLCLK &&
+                  uiinput::kWmRButtonDown == WM_RBUTTONDOWN && uiinput::kWmRButtonUp == WM_RBUTTONUP &&
+                  uiinput::kWmRButtonDblClk == WM_RBUTTONDBLCLK && uiinput::kWmMButtonDown == WM_MBUTTONDOWN &&
+                  uiinput::kWmMButtonUp == WM_MBUTTONUP && uiinput::kWmMButtonDblClk == WM_MBUTTONDBLCLK &&
+                  uiinput::kWmMouseWheel == WM_MOUSEWHEEL,
+              "uiinput message numbers must be the Win32 ones");
+static_assert(uiinput::kMkLButton == MK_LBUTTON && uiinput::kMkRButton == MK_RBUTTON && uiinput::kMkMButton == MK_MBUTTON &&
+                  uiinput::kWheelDelta == WHEEL_DELTA,
+              "uiinput flags must be the Win32 ones");
+
+bool ui_supported() { return true; }
+
+bool ui_window(UiWindow &out) {
+    out = UiWindow{};
+    HWND w = nullptr;
+    EnumWindows(find_main_window, reinterpret_cast<LPARAM>(&w));
+    if (!w) return false;
+    out.found = true;
+    out.hwnd = reinterpret_cast<uint64_t>(w);
+    out.minimized = IsIconic(w) != 0;
+    out.unicode = IsWindowUnicode(w) != 0;
+    char cls[64] = {};
+    GetClassNameA(w, cls, sizeof cls);
+    out.window_class = cls;
+    RECT rc{};
+    if (!out.minimized && GetClientRect(w, &rc)) {
+        out.client_w = rc.right - rc.left;
+        out.client_h = rc.bottom - rc.top;
+    }
+    POINT origin{0, 0};
+    if (!out.minimized && ClientToScreen(w, &origin)) {
+        out.origin_x = origin.x;
+        out.origin_y = origin.y;
+    }
+    UINT dpi = GetDpiForWindow(w);
+    out.dpi = dpi ? (int)dpi : 96;
+    out.dpi_awareness = "unknown";
+    DPI_AWARENESS_CONTEXT ctx = GetWindowDpiAwarenessContext(w);
+    if (ctx) {
+        switch (GetAwarenessFromDpiAwarenessContext(ctx)) {
+            case DPI_AWARENESS_UNAWARE: out.dpi_awareness = "unaware"; break;
+            case DPI_AWARENESS_SYSTEM_AWARE: out.dpi_awareness = "system"; break;
+            case DPI_AWARENESS_PER_MONITOR_AWARE: out.dpi_awareness = "per_monitor"; break;
+            default: break;
+        }
+    }
+    return true;
+}
+
+bool ui_post(uint64_t hwnd, unsigned msg, unsigned long long wparam, long long lparam, std::string &err) {
+    HWND w = reinterpret_cast<HWND>(hwnd);
+    DWORD pid = 0;
+    if (!IsWindow(w) || !GetWindowThreadProcessId(w, &pid) || pid != GetCurrentProcessId()) {
+        err = "the game window is gone";
+        return false;
+    }
+    if (!PostMessageW(w, msg, (WPARAM)wparam, (LPARAM)lparam)) {
+        err = "PostMessage failed (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    return true;
+}
+
+unsigned ui_scan_code(unsigned vk) { return MapVirtualKeyW(vk, MAPVK_VK_TO_VSC); }
 
 }  // namespace plat
 #endif

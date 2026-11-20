@@ -418,6 +418,23 @@ Facepunch garrysmod-issues #7137).
 - **Order.** Launch every client you need in ONE `instances_launch` call (with `map` it loads 2 at a time after the
   settle delay), then work. Avoid interleaving launches with map loads, yours or another session's.
 
+## UI input (ui_click, ui_key)
+For what has no console command: the buttons of VGUI2 dialogs ("Disconnected by the server" > Close), Derma panels, the menu's
+HTML. `ui_click {x, y}` takes the pixel of a `screenshot` image (coordinates are those of the image; pass `screenshot_size`
+when it is not the game window's size, or `coords: "window"` for client-area pixels); `ui_key {key, text}` presses a key and
+types text (Unicode included). Click a text field first, then type. `screenshot_after: true` returns the result of the click.
+- The input is posted to the game's own window (PostMessage): the user's real mouse does not move and no window takes the
+  focus. Windows game client only.
+- Refusals, each its own error code: `unsupported` (srcds, not Windows), `not_a_test_client` (only games started by
+  `instances_launch` accept input; `allow_user_game: true` overrides it), `client_locked`, `loading` (a map is loading),
+  `window_unavailable` (minimized or not found), `cursor_hidden`, `out_of_bounds` (ui_click: outside the image or window).
+- `cursor_hidden`: the game has the mouse (no menu or popup is open), so a click would be game input. The cursor counts as
+  visible when the game menu is up (main menu, ESC menu, a dialog on it: `gui.IsGameUIVisible()`) or, in game, a Derma popup,
+  the context or spawn menu has it (`vgui.CursorVisible()` in the client realm). `console_exec {cmd: "gameui_activate"}`
+  opens the game menu.
+- `screenshot` needs a loaded map: at the main menu (no client realm) there is no image to read coordinates from, and
+  `screenshot_after` says so in `screenshot_note`. Use `coords: "window"` there.
+
 ## Limits
 - No connection to remote servers; the client realm is refused outside singleplayer/listen/srcds loopback.
 - The only outgoing network access is GET to wiki.facepunch.com (wiki_*).

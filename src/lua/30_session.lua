@@ -95,6 +95,27 @@ function H.menu_idle(args)
 	return { loading = (IsInLoading and IsInLoading()) or false, in_game = (IsInGame and IsInGame()) or false }
 end
 
+-- ui_click / ui_key (tools_ui.cpp): what the DLL needs to know before it posts input to the game window.
+--   menu realm:   game_ui = gui.IsGameUIVisible() (the main menu, the ESC menu or a GameUI dialog is up: its cursor is
+--                 always visible), loading, in_game, scr_w/scr_h (ScrW/ScrH: the size the engine renders, which is the size
+--                 of the screenshot image without w/h).
+--   client realm: cursor = vgui.CursorVisible() (a Derma popup, the context or spawn menu... has the cursor).
+-- Every field is optional: a missing API gives no field, never an error.
+function H.ui_state(args)
+	local out = { realm = A.realm }
+	if ScrW and ScrH then
+		out.scr_w, out.scr_h = ScrW(), ScrH()
+	end
+	if A.realm == "menu" then
+		if gui and gui.IsGameUIVisible then out.game_ui = gui.IsGameUIVisible() and true or false end
+		out.loading = (IsInLoading and IsInLoading()) or false
+		out.in_game = (IsInGame and IsInGame()) or false
+	elseif A.realm == "client" then
+		if vgui and vgui.CursorVisible then out.cursor = vgui.CursorVisible() and true or false end
+	end
+	return out
+end
+
 function H.disconnect(args)
 	if A.realm ~= "menu" then A.fail("wrong_realm", "disconnect: requires the menu realm") end
 	RunConsoleCommand("disconnect")
