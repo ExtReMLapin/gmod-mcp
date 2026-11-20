@@ -1342,18 +1342,7 @@ std::wstring utf8_to_wide(const std::string &s) {
 // answered (its structuredContent, or {"error"} when the call failed). The mount counts as active only when the
 // engine reports the requested folder; the answer's base_lua_mounted false means the client cannot run its base Lua.
 [[maybe_unused]] json lua_mount_verdict(const std::string &requested, const json &answer) {
-    auto same = [](std::string a, std::string b) {
-        auto norm = [](std::string &x) {
-            for (auto &c : x) {
-                if (c == '/') c = '\\';
-                else if ((unsigned char)c < 0x80) c = (char)std::tolower((unsigned char)c);
-            }
-            while (x.size() > 3 && x.back() == '\\') x.pop_back();
-        };
-        norm(a);
-        norm(b);
-        return !a.empty() && a == b;
-    };
+    auto same = [](const std::string &a, const std::string &b) { return lua_mount::same_path(a, b); };
     json v{{"requested", requested}, {"active", false}, {"base_lua_mounted", nullptr}};
     if (!answer.is_object() || answer.contains("error")) {
         json e = answer.is_object() && answer.contains("error") ? answer["error"] : json("no usable answer from the game");

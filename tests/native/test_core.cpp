@@ -657,6 +657,91 @@ static void test_issue9_engine_serves() {
     fs::remove_all(base, ec);
 }
 
+// Issue #9 (chaos testing 2026-11-20, F7): the small ones. Stored paths are compared the way Windows does (case, trailing
+// separators, dots and spaces); a junction that resolves into the game folder is refused; the paths removed at unmount do
+// not depend on what is on disk then; a failed file in lua_reload {mounted_changed} is an error result.
+static void test_issue9_small_fixes() {
+    // Paths that name the same folder compare equal; different folders do not; nothing equals nothing.
+    CHECK(lua_mount::same_path("D:/Dev/WT/", "d:\\dev\\wt"));  // Issue #9
+    CHECK(lua_mount::same_path("D:\\dev\\wt.", "D:/dev/wt"));  // Issue #9: Windows drops a trailing dot
+    CHECK(lua_mount::same_path("D:/dev/wt \\", "d:/dev/wt"));  // Issue #9: and a trailing space
+    CHECK(!lua_mount::same_path("D:/dev/wt", "D:/dev/wt2"));  // Issue #9
+    CHECK(!lua_mount::same_path("D:/dev/wt/lua", "D:/dev/wt"));  // Issue #9
+    CHECK(!lua_mount::same_path("", "") && !lua_mount::same_path("D:/x", ""));  // Issue #9
+
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-small", game = base / "garrysmod";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(base / "wt" / "lua" / "a.lua");
+    touch(game / "lua" / "base.lua");
+    touch(game / "addons" / "inst" / "lua" / "i.lua");
+#ifdef _WIN32
+    // Windows resolves a trailing dot or space; the stored root must not keep it (the engine and the comparisons would disagree).
+    std::string root, err;
+    CHECK(lua_mount::normalize_root(fs::path(base / "wt").u8string() + ".", root, err) && lua_mount::same_path(root, (base / "wt").u8string()) &&
+          root.back() != '.');  // Issue #9
+    CHECK(lua_mount::normalize_root(fs::path(base / "wt" / "lua").u8string() + ". ", root, err) && root.back() != '.' && root.back() != ' ');  // Issue #9
+#endif
+    // A junction (or symlink) into the game folder is refused: the engine searches the game folder already.
+    fs::path link = base / "linkinst";
+    bool linked = false;
+#ifdef _WIN32
+    linked = std::system(("cmd /c mklink /J \"" + link.make_preferred().string() + "\" \"" + fs::path(game / "addons" / "inst").make_preferred().string() + "\" >nul 2>nul").c_str()) == 0;
+#else
+    fs::create_directory_symlink(game / "addons" / "inst", link, ec);
+    linked = !ec;
+#endif
+    if (linked) {
+        std::string why = lua_mount::refuse_inside_game(link.u8string(), game.u8string());
+        CHECK(!why.empty() && why.find("inside the game folder") != std::string::npos);  // Issue #9
+        fs::path outside = base / "wt-link";
+#ifdef _WIN32
+        bool l2 = std::system(("cmd /c mklink /J \"" + outside.make_preferred().string() + "\" \"" + fs::path(base / "wt").make_preferred().string() + "\" >nul 2>nul").c_str()) == 0;
+#else
+        fs::create_directory_symlink(base / "wt", outside, ec);
+        bool l2 = !ec;
+#endif
+        if (l2) CHECK(lua_mount::refuse_inside_game(outside.u8string(), game.u8string()).empty());  // Issue #9: a junction to a folder outside is fine
+        fs::remove(outside, ec);
+        fs::remove(link, ec);
+    } else {
+        std::printf("  (junction not created here: the junction checks were skipped)\n");
+    }
+
+    // Unmount removes every path the mount added, whatever is on disk now (a deleted <root>\gamemodes left its paths in lsv/lcl).
+    auto sp = lua_mount::mount_search_paths("D:\\wt");
+    std::set<std::string> have;
+    for (const auto &p : sp) have.insert(p.id + ":" + p.path);
+    CHECK(sp.size() == 5);  // Issue #9
+    CHECK(have.count("MOD:D:\\wt") && have.count("lsv:D:\\wt\\lua") && have.count("lsv:D:\\wt\\gamemodes") && have.count("lcl:D:\\wt\\lua") &&
+          have.count("lcl:D:\\wt\\gamemodes"));  // Issue #9
+    CHECK(sp[0].id == "MOD" && sp[0].tail && !sp[1].tail);  // Issue #9: the root goes at the END of MOD, the Lua folders at the head
+
+    // lua_reload {mounted_changed}: a file that failed makes the result an error (isError), with everything in the details.
+    json st{{"path", "D:/dev/wt"}, {"realms_without_mount", json::array()}};
+    json plan{{"reload", json::array()}, {"skipped", json::array({json{{"file", "lua/entities/x/init.lua"}, {"why", "entity"}}})}};
+    json good = json::array({json{{"file", "lua/a.lua"}, {"chunkname", "@lua/a.lua"}, {"reason", "modified"}, {"realms", {{"server", {{"values", json::array()}}}}}}});
+    json r = tools::mounted_reload_result(st, plan, good, true);
+    CHECK(r.value("ok", false) && r["result"]["reloaded"].size() == 1 && r["result"]["ok"] == true);  // Issue #9: success unchanged
+    json bad = json::array({json{{"file", "lua/b.lua"}, {"chunkname", "@lua/b.lua"}, {"reason", "modified"},
+                                 {"realms", {{"server", {{"error", {{"code", "lua_syntax_error"}, {"message", "b.lua:3: unexpected symbol"}}}}}, {"client", {{"values", json::array()}}}}}}});
+    r = tools::mounted_reload_result(st, plan, bad, false);
+    CHECK(!r.value("ok", true) && r["error"]["code"] == "reload_failed");  // Issue #9: ok:false -> isError at the MCP layer
+    std::string msg = r["error"]["message"].get<std::string>();
+    CHECK(msg.find("lua/b.lua") != std::string::npos && msg.find("server") != std::string::npos && msg.find("unexpected symbol") != std::string::npos);  // Issue #9
+    CHECK(msg.find("client") == std::string::npos);  // Issue #9: only the realm that failed
+    const json &d = r["error"]["details"];
+    CHECK(d["mode"] == "mounted_changed" && d["reloaded"].size() == 1 && d["skipped"].size() == 1 && d["path"] == "D:/dev/wt" && d["ok"] == false);  // Issue #9: nothing lost
+    // The guide lists what is refused and what the stale-file check cannot see.
+    json gd = resources::read("mcpagent://guide");
+    std::string guide = gd.is_object() && gd.contains("text") ? gd["text"].get<std::string>() : "";
+    for (const char *w : {"non-ASCII", "UNC", "MAX_PATH", "leaves the file's time as it was"})
+        if (guide.find(w) == std::string::npos) std::printf("guide lacks: %s\n", w);
+    CHECK(guide.find("non-ASCII") != std::string::npos && guide.find("UNC") != std::string::npos && guide.find("MAX_PATH") != std::string::npos);  // Issue #9
+    CHECK(guide.find("leaves the file's time as it was") != std::string::npos);  // Issue #9: stale_files cannot see it, map_load runs the new code
+    fs::remove_all(base, ec);
+}
+
 // Issue #9 (chaos testing 2026-11-20, F5): a 30000-file mount made status and lua_reload {mounted_changed} take ~9 s (one scan
 // per realm, each stat-ing every file again) and map_load 8 -> 25 s (a scan inside the MountLua hook, on the main thread, once
 // per realm). Fewer scans (one per status, one per load for both realms) and a cheaper scan (the directory listing already
@@ -2519,6 +2604,7 @@ int main(int argc, char **argv) {
     test_issue9_shadow_base();
     test_issue9_provenance_changed();
     test_issue9_scan_cost();
+    test_issue9_small_fixes();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();

@@ -614,6 +614,31 @@ static json run_file_in_realms(const std::string &abs, const json &args, const s
     return per;
 }
 
+json mounted_reload_result(const json &st, const json &plan, const json &reloaded, bool all_ok) {
+    json out{{"ok", all_ok}, {"mode", "mounted_changed"}, {"path", st["path"]}, {"reloaded", reloaded}, {"skipped", plan["skipped"]},
+             {"realms_without_mount", st["realms_without_mount"]}};
+    if (reloaded.empty() && plan["skipped"].empty()) out["note"] = "no mounted file changed since the realms loaded them: nothing to reload";
+    if (!st["realms_without_mount"].empty())
+        out["warning"] = "a realm did not load with the folder in front (see realms_without_mount): the files run here come from the folder, the rest of its code may be another copy: map_load";
+    if (all_ok) return ok(out);
+    // A file failed in some realm: an error result, like every other tool that fails (isError), with everything that ran in the details.
+    std::string msg;
+    size_t failed = 0;
+    for (const auto &f : reloaded) {
+        if (!f.contains("realms") || !f["realms"].is_object()) continue;
+        for (auto it = f["realms"].begin(); it != f["realms"].end(); ++it) {
+            if (!it.value().is_object() || !it.value().contains("error")) continue;
+            const json &e = it.value()["error"];
+            if (++failed <= 5)
+                msg += (msg.empty() ? "" : "; ") + f.value("file", std::string("?")) + " (" + it.key() + "): " +
+                       (e.is_object() ? e.value("code", std::string("error")) + ": " + e.value("message", std::string()) : e.dump());
+        }
+    }
+    if (failed > 5) msg += "; ... " + std::to_string(failed - 5) + " more";
+    return agent::err("reload_failed", std::to_string(failed) + " file run(s) failed while running the changed files of the mounted folder again: " + msg +
+                                           ". The other files ran: see details.reloaded.", out);
+}
+
 static json reload_mounted_changed(const json &args) {
     std::vector<int> present = mount_realms();
     json st = mount_state(present);
@@ -629,12 +654,7 @@ static json reload_mounted_changed(const json &args) {
         json per = run_file_in_realms(it["disk"].get<std::string>(), args, rs, all_ok, chunk);
         reloaded.push_back({{"file", it["file"]}, {"chunkname", chunk}, {"reason", it["reason"]}, {"realms", per}});
     }
-    json out{{"ok", all_ok}, {"mode", "mounted_changed"}, {"path", st["path"]}, {"reloaded", reloaded}, {"skipped", plan["skipped"]},
-             {"realms_without_mount", st["realms_without_mount"]}};
-    if (reloaded.empty() && plan["skipped"].empty()) out["note"] = "no mounted file changed since the realms loaded them: nothing to reload";
-    if (!st["realms_without_mount"].empty())
-        out["warning"] = "a realm did not load with the folder in front (see realms_without_mount): the files run here come from the folder, the rest of its code may be another copy: map_load";
-    return ok(out);
+    return mounted_reload_result(st, plan, reloaded, all_ok);
 }
 
 static json lua_reload_tool(const json &args) {
@@ -943,7 +963,7 @@ void register_core() {
                         "file of that folder whose time differs from what each realm loaded (modified, added; the list is status.lua_mount.stale_files), "
                         "in alphabetical order and in the realms each file belongs to, and returns {ok, mode, path, reloaded: [{file, chunkname, "
                         "reason, realms: {<realm>: lua_exec result or {error}}}], skipped: [{file, why}] (deleted files, entity/weapon/effect "
-                        "files: map_load or lua_reload {path}), realms_without_mount, note?, warning?}; error no_mount if no folder is mounted. "
+                        "files: map_load or lua_reload {path}), realms_without_mount, note?, warning?}; error no_mount if no folder is mounted, error reload_failed (isError, the whole result in details) if a file fails in a realm. "
                         "Limits: a reload re-runs the file, it does not undo what the old copy did (hooks and timers it added under another name, "
                         "net strings, entities), and it does not reload a realm that loaded before the folder was mounted (map_load).",
                         json{{"properties", reload_props}}, json{{"destructiveHint", true}}, lua_reload_tool});

@@ -210,7 +210,11 @@ check when it ends (`warning` and `lua_mount` in its result) and empties the eng
 files and entity/weapon/effect files are listed in `skipped`: `map_load`, or `lua_reload {path}` to force one), or
 `lua_reload {path: "my_addon/core.lua"}` for a single file, or `map_load` for a clean state. A reload re-runs the file: it
 does not undo what the old copy did (hooks or timers under another name, net strings, entities already spawned) and what
-the file built at load time is not reset. Check with `lua_function_source {realm, expr: "MyAddon.Update"}`.
+the file built at load time is not reset. If a file fails (a syntax error, a Lua error) `lua_reload {mounted_changed}` answers
+the error `reload_failed` (`isError`): `details` holds the whole `reloaded` list, the other files did run.
+Limit of `stale_files`: it compares file times, not contents. An edit that leaves the file's time as it was (a tool that
+restores the time, or two saves inside the clock's resolution) is not seen, whatever its size; `map_load` still runs the
+new code (the engine reads the files again, and the module empties its Lua cache first). Check with `lua_function_source {realm, expr: "MyAddon.Update"}`.
 
 Which copy a function came from: the source name `@lua/my_addon/core.lua` is the same for the folder's copy and for the
 installed copy (a Workshop addon is named that way too). `lua_function_source` and `lua_inspect` (on a function) say

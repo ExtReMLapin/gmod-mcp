@@ -23,6 +23,19 @@ namespace lua_mount {
 // root or its lua/ folder. Refuses relative paths, missing folders, a root without lua/, and characters that would
 // break a command line or the engine's ';'-separated path lists (quotes, ';', line breaks).
 bool normalize_root(const std::string &in, std::string &root, std::string &err);
+// Pure: whether two paths name the same folder the way Windows does: case-insensitive, either separator, no trailing
+// separators, dots or spaces (Windows drops them). False for an empty path.
+bool same_path(const std::string &a, const std::string &b);
+// One search path the mount adds to the engine (and removes again): MOD gets the root at its END, "lsv" (server) and "lcl"
+// (client) get <root>\lua and <root>\gamemodes at the head.
+struct MountPath {
+    std::string path;
+    std::string id;
+    bool tail = false;
+};
+// Pure: every search path a mount of `root` may have added, in the order they are added. Unmounting removes ALL of them,
+// whatever is on disk then (a <root>\gamemodes deleted before the unmount left its paths in lsv/lcl).
+std::vector<MountPath> mount_search_paths(const std::string &root);
 // Pure: "" if `root` may be mounted for the game in `game_dir` (the garrysmod folder), else why not. A folder inside
 // the game folder (garrysmod itself, an installed addon) is already searched by the engine: mounting it would only
 // reorder the game's own paths.

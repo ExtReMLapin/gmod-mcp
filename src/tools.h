@@ -62,6 +62,10 @@ json mount_engine_serves(const std::vector<int> &realms);
 std::string mount_warning(const json &state);
 // {reload:[{file, disk, realms, reason}], skipped:[{file, why}]}: what lua_reload {mounted_changed} would run.
 json plan_mount_reload(const json &state);
+// What lua_reload {mounted_changed} answers once its files ran: `reloaded` is [{file, chunkname, reason, realms: {<realm>: result or
+// {error}}}]. All ran: ok {ok:true, mode, path, reloaded, skipped, realms_without_mount, note?, warning?}. A file failed in a realm
+// (`all_ok` false): the error reload_failed (isError at the MCP layer), the same object in its details.
+json mounted_reload_result(const json &state, const json &plan, const json &reloaded, bool all_ok);
 // Tests only: replaces what asks a realm's file system about the mounted folder's files (answers [{exists, time?}] one per
 // probe, or null when it cannot be asked); an empty function restores the real one (the realm's mount_probe).
 void set_mount_probe_for_tests(std::function<json(int, const std::vector<lua_mount::Probe> &)> fn);

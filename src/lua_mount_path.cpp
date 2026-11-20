@@ -12,6 +12,27 @@ namespace fs = std::filesystem;
 // A directory path: 247 characters (MAX_PATH 260 minus the 8.3 file name Windows reserves and the terminator).
 constexpr size_t kMaxRootChars = 248;
 
+bool same_path(const std::string &a, const std::string &b) {
+    auto norm = [](std::string x) {
+        for (char &c : x) {
+            if (c == '/') c = '\\';
+            else if ((unsigned char)c < 0x80) c = (char)std::tolower((unsigned char)c);
+        }
+        while (!x.empty() && (x.back() == '\\' || x.back() == '.' || x.back() == ' ')) x.pop_back();
+        return x;
+    };
+    std::string na = norm(a), nb = norm(b);
+    return !na.empty() && na == nb;
+}
+
+std::vector<MountPath> mount_search_paths(const std::string &root) {
+    return {{root, "MOD", true},
+            {root + "\\lua", "lsv", false},
+            {root + "\\gamemodes", "lsv", false},
+            {root + "\\lua", "lcl", false},
+            {root + "\\gamemodes", "lcl", false}};
+}
+
 bool normalize_root(const std::string &in, std::string &root, std::string &err) {
     root.clear();
     if (in.empty()) {
@@ -64,6 +85,15 @@ bool normalize_root(const std::string &in, std::string &root, std::string &err) 
     }
     p = p.lexically_normal();
     while (p.filename().empty() && p.has_parent_path() && p != p.root_path()) p = p.parent_path();  // trailing separator
+#ifdef _WIN32
+    {
+        // Windows resolves "wt." and "wt " to "wt": the stored root must not keep them (comparisons and the engine would disagree).
+        std::string s = p.u8string();
+        while (s.size() > 3 && (s.back() == '.' || s.back() == ' ')) s.pop_back();
+        while (s.size() > 3 && (s.back() == '/' || s.back() == '\\')) s.pop_back();
+        p = fs::u8path(s);
+    }
+#endif
     std::error_code ec;
     if (!fs::exists(p, ec)) {
         err = "folder not found: " + p.make_preferred().u8string();
@@ -93,7 +123,18 @@ std::string refuse_inside_game(const std::string &root, const std::string &game_
     };
     std::string r = norm(root), g = norm(game_dir);
     std::string sep(1, (char)fs::path::preferred_separator);
-    if (r == g || r.rfind(g + sep, 0) == 0)
+    bool inside = r == g || r.rfind(g + sep, 0) == 0;
+    if (!inside) {
+        // A junction or symlink that resolves into the game folder is the game folder too.
+        std::error_code ec;
+        fs::path cr = fs::weakly_canonical(fs::u8path(root), ec);
+        fs::path cg = ec ? fs::path() : fs::weakly_canonical(fs::u8path(game_dir), ec);
+        if (!ec && !cr.empty() && !cg.empty()) {
+            std::string rr = norm(cr.u8string()), gg = norm(cg.u8string());
+            inside = rr == gg || rr.rfind(gg + sep, 0) == 0;
+        }
+    }
+    if (inside)
         return "the folder to mount is inside the game folder (" + game_dir + "), which the engine already searches: mounting "
                "it would only reorder the game's own paths. Pass a folder outside the game, e.g. your git worktree";
     return "";

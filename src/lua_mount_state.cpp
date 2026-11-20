@@ -48,13 +48,7 @@ constexpr std::chrono::seconds kSharedScanWindow(3);
 
 bool valid_realm(int r) { return r >= 0 && r < realms::COUNT; }
 
-std::string norm(std::string p) {
-    std::replace(p.begin(), p.end(), '\\', '/');
-    while (p.size() > 3 && p.back() == '/') p.pop_back();
-    return util::to_lower(p);
-}
-
-bool same_root(const std::string &a, const std::string &b) { return !a.empty() && norm(a) == norm(b); }
+bool same_root(const std::string &a, const std::string &b) { return same_path(a, b); }
 
 void scan_dir(const fs::path &dir, const std::string &prefix, Files &out) {
     std::error_code ec;
