@@ -17,6 +17,21 @@
 #include <windows.h>
 #endif
 
+// The bytes of the fake dump: "MDMP", or the file GMCP_FAKE_DUMP_SRC names (a minidump built by the test: issue #8, the crash answer reads it).
+static void write_dump_body(FILE *d) {
+    const char *src = std::getenv("GMCP_FAKE_DUMP_SRC");
+    if (src && *src) {
+        if (FILE *in = std::fopen(src, "rb")) {
+            char buf[4096];
+            size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, in)) > 0) std::fwrite(buf, 1, n, d);
+            std::fclose(in);
+            return;
+        }
+    }
+    std::fputs("MDMP", d);
+}
+
 int main(int argc, char **argv) {
     // The real game starts helper processes of the same executable (about 2 per game). GMCP_FAKE_CHILDREN=n makes this stand-in start n
     // children (the same executable with --fake-child, no breakaway: they join the parent's job object, if any). A child writes its pid
@@ -66,7 +81,7 @@ int main(int argc, char **argv) {
             if (dir && *dir) {
                 std::string p = std::string(dir) + "/gmod_win64_20261114_120000_1_accessviolation.mdmp";
                 if (FILE *d = std::fopen(p.c_str(), "wb")) {
-                    std::fputs("MDMP", d);
+                    write_dump_body(d);
                     std::fclose(d);
                 }
             }
@@ -140,7 +155,7 @@ int main(int argc, char **argv) {
                 if (dir && *dir && !(dump && std::string(dump) == "0")) {
                     std::string p = std::string(dir) + "/gmod_win64_20261114_120000_1_accessviolation.mdmp";
                     if (FILE *d = std::fopen(p.c_str(), "wb")) {
-                        std::fputs("MDMP", d);
+                        write_dump_body(d);
                         std::fclose(d);
                     }
                 }

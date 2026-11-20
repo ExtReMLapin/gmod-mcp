@@ -203,6 +203,7 @@ static bool finalize_locked(Tracked &t) {
     std::vector<crashinfo::Dump> dumps;
     if (!f.requested && !f.goodbye) dumps = crashinfo::list_dumps(crashinfo::dump_dirs(t.game_dir));
     t.ending.verdict = crashinfo::judge(f, dumps, g_claimed_dumps);
+    crashinfo::read_dump_facts(crashinfo::dump_dirs(t.game_dir), t.ending.verdict);  // issue #8: the faulting module and the stack's callers
     if (!t.ending.verdict.dump.empty()) {
         if (g_claimed_dumps.size() > 500) g_claimed_dumps.clear();
         g_claimed_dumps.insert(t.ending.verdict.dump);
@@ -452,6 +453,7 @@ static json ended_error(Tracked &t) {
     const crashinfo::Verdict &v = t.ending.verdict;
     if (v.cause == crashinfo::Cause::Crashed) {
         json details{{"instance", t.id}, {"pid", t.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)}, {"evidence", v.evidence}};
+        crashinfo::add_fault_details(details, v);  // issue #8: fault, stack_candidates
         if (t.ending.exit_known) details["exit_code"] = t.ending.exit_code;
         std::string message = crashinfo::crash_message(t.mode, t.id, t.pid, ago, v, t.ending.exit_known, t.ending.exit_code);
         lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low

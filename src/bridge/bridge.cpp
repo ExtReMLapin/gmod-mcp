@@ -1155,6 +1155,7 @@ bool launched_end(const Launched &l, crashinfo::Verdict &v, uint32_t &code, doub
         std::vector<crashinfo::Dump> dumps = crashinfo::list_dumps(crashinfo::dump_dirs(l.root + "/garrysmod"));
         std::lock_guard<std::mutex> ck(g_claimed_mu);
         l.slot->verdict = crashinfo::judge(f, dumps, g_claimed_dumps);
+        crashinfo::read_dump_facts(crashinfo::dump_dirs(l.root + "/garrysmod"), l.slot->verdict);  // issue #8: the faulting module and the stack's callers
         if (!l.slot->verdict.dump.empty()) g_claimed_dumps.insert(l.slot->verdict.dump);
         l.slot->exit_code = pi.exit_code;
         l.slot->ended_unix = pi.exit_unix;
@@ -1181,6 +1182,7 @@ json launched_crash_error(const Launched &l, int wait_ms = 0) {
     double ago = std::max(0.0, unix_now() - ended);
     json details{{"instance", l.id.empty() ? json(nullptr) : json(l.id)}, {"pid", l.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)},
                  {"evidence", v.evidence}, {"exit_code", code}};
+    crashinfo::add_fault_details(details, v);  // issue #8: fault, stack_candidates
     std::string message = crashinfo::crash_message("client", l.id.empty() ? "started by this session" : l.id, l.pid, ago, v, true, code);
     lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low
     return json{{"code", crashinfo::crash_code("client")}, {"message", message}, {"details", details}};
@@ -1638,8 +1640,6 @@ json launch_tool(const json &args, const json &token) {
         if (!inside.empty()) return tool_error(code, "lua_mount: " + inside);
     }
     json peers_list = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
-    // Issue #8 (chaos test G1): a frozen client blocks a new one from registering: refuse up front, with the way out.
-    if (!args.value("ignore_unhealthy", false)) {
     // Issue #5 (live verification of 0.3.7): a program that is not gmod-mcp holds the base port. The module takes the next free port, which
     // this bridge never looks at (every call goes through the base port): the clients would start, never be seen and the launch would fail
     // `timeout` after its whole budget. Refused up front, nothing started, with the way out.
@@ -1648,6 +1648,8 @@ json launch_tool(const json &args, const json &token) {
         return tool_error("port_conflict", "instances_launch refused: " + port_conflict_text() + " Nothing was started: a client launched now would register with whatever answers on that port, "
                                                           "and this bridge could not see it.");
     }
+    // Issue #8 (chaos test G1): a frozen client blocks a new one from registering: refuse up front, with the way out.
+    if (!args.value("ignore_unhealthy", false)) {
         json bad = unhealthy_peers(peers_list);
         if (!bad.empty()) {
             std::string pids;
@@ -1764,13 +1766,13 @@ json launch_tool(const json &args, const json &token) {
     double conflict_since = -1;
     while ((int)found.size() < count && elapsed() < timeout && !(conflict_since >= 0 && elapsed() - conflict_since > kConflictGiveUpS)) {
         json lst = game_call("instances_list", json::object(), 5);
-        note_instances(lst);
-        for (const auto &u : unhealthy_peers(lst)) seen_unhealthy[u.value("instance", std::string("?"))] = u;
         if (g_conflict) {
             if (conflict_since < 0) conflict_since = elapsed();
         } else {
             conflict_since = -1;
         }
+        note_instances(lst);
+        for (const auto &u : unhealthy_peers(lst)) seen_unhealthy[u.value("instance", std::string("?"))] = u;
         for (const auto &in : lst.value("instances", json::array()))
             for (auto &l : started)
                 if (in.value("pid", 0u) == l.pid && in.value("state", "") != "crashed" && !found.contains(std::to_string(l.pid))) {

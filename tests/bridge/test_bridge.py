@@ -1256,6 +1256,28 @@ def case_launch_options():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def synthetic_minidump():
+    """Issue #8: a minidump built by hand (x64 layouts, as tests/native/mdmp_builder.h): an access violation in engine.dll+0x2069e0, a stack
+    with client.dll+0x1234 and lua_shared.dll+0x5555 on it. Returns the bytes."""
+    import struct
+    eng, cli, lua, stack = 0x7ff800000000, 0x7ff900000000, 0x7ffa00000000, 0x7f00000000
+    b = bytearray(0x1600)
+    def put(fmt, off, *v): struct.pack_into(fmt, b, off, *v)
+    put("<IIII", 0, 0x504d444d, 0xa793, 4, 32)
+    for i, (t, sz, rva) in enumerate(((3, 52, 0x100), (4, 328, 0x200), (5, 20, 0x700), (6, 168, 0x400))): put("<III", 32 + 12 * i, t, sz, rva)
+    put("<I", 0x100, 1); put("<I", 0x104, 7); put("<QII", 0x104 + 24, stack, 0x400, 0x1200)       # thread list: the faulting thread and its stack
+    put("<I", 0x200, 3)
+    for i, (base, name) in enumerate(((eng, "C:" + chr(92) + "x" + chr(92) + "bin" + chr(92) + "engine.dll"), (cli, "client.dll"), (lua, "lua_shared.dll"))):
+        o = 0x204 + 108 * i
+        put("<QI", o, base, 0x400000); put("<I", o + 20, 0x800 + 0x100 * i)
+        raw = name.encode("utf-16-le"); put("<I", 0x800 + 0x100 * i, len(raw)); b[0x804 + 0x100 * i:0x804 + 0x100 * i + len(raw)] = raw
+    put("<I", 0x400, 7); put("<I", 0x408, 0xC0000005); put("<Q", 0x408 + 16, eng + 0x2069e0); put("<II", 0x400 + 160, 0x4D0, 0x600)
+    put("<Q", 0x600 + 0x98, stack + 0x20)
+    put("<I", 0x700, 1); put("<QII", 0x704, 0x6000000000, 16, 0x1100)
+    put("<QQQ", 0x1200 + 0x20, 0, cli + 0x1234, lua + 0x5555)
+    return bytes(b)
+
+
 def case_crash():
     """Crash report (B6): a client this session launched that crashed is reported as client_crashed (dump name, exit code),
     shown by instances_list as crashed, and told apart from a clean exit. The stand-in game ends on a trigger file with a
@@ -1270,7 +1292,7 @@ def case_crash():
         return
     import shutil
 
-    def run(tag, exit_code, dump, old_dump=False, map_name=None, cut_first=False, inflight=False):
+    def run(tag, exit_code, dump, old_dump=False, map_name=None, cut_first=False, inflight=False, dump_src=None):
         game = tempfile.mkdtemp(prefix="gmcp-crash-game-")
         shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
         os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
@@ -1282,6 +1304,8 @@ def case_crash():
         env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes,
                    GMCP_FAKE_EXIT=str(exit_code), GMCP_FAKE_DUMP="1" if dump else "0")
         if cut_first: env["GMCP_FAKE_EXIT_DELAY_MS"] = "800"  # Issue #8: the connection breaks, the process object is signalled later
+        if dump_src:  # Issue #8: the stand-in writes this file's bytes as its dump
+            src = os.path.join(work, "dump_src.mdmp"); open(src, "wb").write(dump_src); env["GMCP_FAKE_DUMP_SRC"] = src
         srv = FakeServer(port, version=bridge_version()); srv.pid_file = pid_file
         b = Bridge(port, env)
         out = {"game": game}
@@ -1337,9 +1361,13 @@ def case_crash():
 
     DUMP = "gmod_win64_20261114_120000_1_accessviolation.mdmp"
     # 1. an access violation with a dump written just before.
-    o = run("c1", 0xC0000005, True)
+    o = run("c1", 0xC0000005, True, dump_src=synthetic_minidump())
     e = o["status"].get("error", {})
     check("CRASH access violation with a dump: client_crashed", e.get("code") == "client_crashed", o["status"])
+    # Issue #8 (live verification of 0.3.7): the answer says where the exception happened and the callers on the stack, read from the dump.
+    check("CRASH details.fault names the faulting module and offset read from the dump, the message says it too",
+          e.get("details", {}).get("fault") == "engine.dll+0x2069e0" and "engine.dll+0x2069e0" in e.get("message", ""), e)
+    check("CRASH details.stack_candidates lists the module+offset words of the faulting thread's stack", e.get("details", {}).get("stack_candidates") == ["client.dll+0x1234", "lua_shared.dll+0x5555"], e)
     check("CRASH the answer names the dump file, the exit code, the pid and says to relaunch",
           DUMP in e.get("message", "") and "0xC0000005" in e.get("message", "") and str(o["pid"]) in e.get("message", "") and "instances_launch" in e.get("message", ""), e)
     check("CRASH details: instance, pid, dump, exit_code, evidence", e.get("details", {}).get("dump") == DUMP and e["details"].get("exit_code") == 0xC0000005
@@ -1348,12 +1376,14 @@ def case_crash():
     check("CRASH instances_list shows it as crashed with the dump, the owner and the pid",
           len(crashed) == 1 and crashed[0].get("pid") == o["pid"] and crashed[0].get("crash", {}).get("dump") == DUMP and crashed[0].get("owner") == "c1"
           and crashed[0]["crash"].get("exit_code") == 0xC0000005, o["list"])
+    check("CRASH the instances_list entry carries the fault and the stack candidates too", crashed and crashed[0]["crash"].get("fault") == "engine.dll+0x2069e0" and crashed[0]["crash"].get("stack_candidates") == ["client.dll+0x1234", "lua_shared.dll+0x5555"], o["list"])
     check("CRASH it is no longer 'launched_not_answering'", not o["list"].get("launched_not_answering"), o["list"])
     # 2. a crash that wrote no dump, with an old dump of another game in the folder: the old one is not taken.
     o = run("c2", 0xC0000005, False, old_dump=True)
     e = o["status"].get("error", {})
     check("CRASH access violation without a dump (an hour-old dump in the folder): client_crashed, dump null",
           e.get("code") == "client_crashed" and e.get("details", {}).get("dump") is None and "No crash dump" in e.get("message", "") and "gmod_win64_2020" not in e.get("message", ""), e)
+    check("CRASH without a dump there is no fault and no stack in the details", "fault" not in e.get("details", {}) and "stack_candidates" not in e.get("details", {}), e)
     # 3. abnormal exit without any dump.
     o = run("c3", 1, False)
     e = o["status"].get("error", {})

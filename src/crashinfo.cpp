@@ -1,5 +1,7 @@
 #include "crashinfo.h"
 
+#include "mdmp.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -131,6 +133,26 @@ Verdict judge(const Facts &f, const std::vector<Dump> &dumps, const std::set<std
     return v;
 }
 
+void read_dump_facts(const std::vector<std::string> &dirs_u8, Verdict &v) {
+    if (v.dump.empty()) return;
+    for (const auto &d : dirs_u8) {
+        std::error_code ec;
+        fs::path p = fs::u8path(d) / fs::u8path(v.dump);
+        if (!fs::is_regular_file(p, ec)) continue;
+        mdmp::Facts f = mdmp::parse_file(p.u8string());
+        if (f.ok) {
+            v.fault = f.fault;
+            v.stack = f.candidates;
+        }
+        return;
+    }
+}
+
+void add_fault_details(nlohmann::json &o, const Verdict &v) {
+    if (!v.fault.empty()) o["fault"] = v.fault;
+    if (!v.stack.empty()) o["stack_candidates"] = v.stack;
+}
+
 const char *crash_code(const std::string &mode) { return mode == "srcds" ? "server_crashed" : "client_crashed"; }
 
 std::string crash_message(const std::string &mode, const std::string &id, uint32_t pid, double seconds_ago, const Verdict &v,
@@ -142,7 +164,8 @@ std::string crash_message(const std::string &mode, const std::string &id, uint32
     m += ". ";
     if (!v.dump.empty())
         m += "Crash dump: crashes/" + v.dump + " in the game folder (for a human with a debugger; nothing to do with it here)" +
-             (v.dump_ambiguous ? " (matched by time only: several games crashed together)" : "") + ". ";
+             (v.dump_ambiguous ? " (matched by time only: several games crashed together)" : "") + ". " +
+             (v.fault.empty() ? "" : "It faulted at " + v.fault + " (details.stack_candidates lists return-address candidates of its stack). ");
     else
         m += "No crash dump was found for it (it may have been killed from outside, or crashed before writing one). ";
     if (server) m += "Restart the server; the session and what was in memory are lost.";
@@ -161,6 +184,7 @@ nlohmann::json crashed_entry(const std::string &id, const std::string &mode, uin
     nlohmann::json crash{{"dump", v.dump.empty() ? nlohmann::json(nullptr) : nlohmann::json(v.dump)}, {"evidence", v.evidence}};
     if (exit_known) crash["exit_code"] = exit_code;
     if (v.dump_ambiguous) crash["dump_matched_by_time_only"] = true;
+    add_fault_details(crash, v);
     return nlohmann::json{{"id", id}, {"mode", mode}, {"pid", pid}, {"state", "crashed"}, {"crashed_s_ago", (int)seconds_ago}, {"crash", crash},
                 {"self", false}, {"role", "member"},
                 {"note", "this game crashed: relaunch a client with instances_launch; the dump (crashes/*.mdmp in the game folder) is for a human"}};

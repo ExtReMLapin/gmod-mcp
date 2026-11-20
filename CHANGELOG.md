@@ -4,6 +4,11 @@
 
 ### Fixes
 
+- **A crash answer says where the dump's exception happened** (issue #8, live verification). `client_crashed` / `server_crashed` named
+  the minidump and nothing else. The module now reads it (exception record, the faulting thread's stack pointer and stack memory, the
+  module list) and `details` and the `instances_list` crash entry carry `fault` (e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up
+  to 8 stack words that point into a module, from the stack pointer up). The guide adds that a crash only on test clients may be
+  timing (`fps_max` 20 runs several server ticks per frame): retry with `fps_max: 300` to tell.
 - **`instances_launch` under a foreign-held base port** (issue #5, live verification). Every call already answered `port_conflict` when a
   program that is not gmod-mcp holds the base port, but `instances_launch` started its clients (which take the next free port, where the
   bridge never looks) and waited its whole budget to fail `timeout` "gmod-mcp did not load in them". It now refuses up front with

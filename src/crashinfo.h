@@ -52,7 +52,15 @@ struct Verdict {
     std::string dump;               // matched dump file name ("" = none)
     bool dump_ambiguous = false;    // another unclaimed dump was just as close in time
     std::vector<std::string> evidence;  // short sentences, for the answer
+    std::string fault;                  // where the dump says the exception happened, "engine.dll+0x2069e0" ("" = no dump or not readable)
+    std::vector<std::string> stack;     // up to 8 stack words of the faulting thread that point into a module (return-address candidates)
 };
+
+// Reads the matched dump (v.dump, in one of `dirs_u8`) and fills v.fault and v.stack. Does nothing without a dump or when it cannot
+// be read. The dump is for a human; this is what a report can say without a debugger.
+void read_dump_facts(const std::vector<std::string> &dirs_u8, Verdict &v);
+// Adds `fault` and `stack_candidates` to the object `o` (the details of a crash answer, or its entry in instances_list) when the dump was read.
+void add_fault_details(nlohmann::json &o, const Verdict &v);
 
 // NTSTATUS error code as exit code (0xC0000005 access violation, 0xC0000094 integer divide by zero...): the process was
 // ended by an unhandled exception.

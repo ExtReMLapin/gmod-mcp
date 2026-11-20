@@ -31,6 +31,7 @@
 #include "installer.h"
 #include "launch_opts.h"
 #include "crashinfo.h"
+#include "mdmp_builder.h"
 #include "health.h"
 #include "jobs.h"
 #include "lowmem.h"
@@ -1616,6 +1617,38 @@ static void test_crash_report() {
     msg = crashinfo::quit_message("client-9", 777, 4.0, "it was closed on request");
     CHECK(msg.find("client-9") != std::string::npos && msg.find("closed on request") != std::string::npos && msg.find("crash") == std::string::npos);
 
+    // Issue #8: the faulting module and the callers are read from the dump the verdict names (any of the dump folders); a dump that is not
+    // a minidump, or a missing one, leaves them empty and the answer as it was.
+    {
+        fs::path dd = fs::temp_directory_path() / "gmcp-mdmp-facts";
+        std::error_code ec2;
+        fs::remove_all(dd, ec2);
+        fs::create_directories(dd / "b");
+        std::string good = mdmp_test::build({mdmp_test::kClient + 0x2222}, false);
+        std::ofstream(dd / "b" / "good.mdmp", std::ios::binary).write(good.data(), (std::streamsize)good.size());
+        std::ofstream(dd / "b" / "junk.mdmp", std::ios::binary) << "MDMP";
+        crashinfo::Verdict rv;
+        rv.dump = "good.mdmp";
+        crashinfo::read_dump_facts({(dd / "a").u8string(), (dd / "b").u8string()}, rv);
+        CHECK(rv.fault == "engine.dll+0x2069e0" && rv.stack == std::vector<std::string>{"client.dll+0x2222"});
+        json fj = json::object();
+        crashinfo::add_fault_details(fj, rv);
+        CHECK(fj == (json{{"fault", "engine.dll+0x2069e0"}, {"stack_candidates", {"client.dll+0x2222"}}}));
+        crashinfo::Verdict jv;
+        jv.dump = "junk.mdmp";
+        crashinfo::read_dump_facts({(dd / "b").u8string()}, jv);
+        json fj2 = json::object();
+        crashinfo::add_fault_details(fj2, jv);
+        CHECK(jv.fault.empty() && jv.stack.empty() && fj2.empty());
+        crashinfo::Verdict nv;
+        nv.dump = "missing.mdmp";
+        crashinfo::read_dump_facts({(dd / "b").u8string()}, nv);
+        CHECK(nv.fault.empty());
+        crashinfo::Verdict ev;  // no dump at all
+        crashinfo::read_dump_facts({(dd / "b").u8string()}, ev);
+        CHECK(ev.fault.empty());
+        fs::remove_all(dd, ec2);
+    }
     // The same dead-instance entry that instances_list shows.
     cv.dump = "d.mdmp";
     json e = crashinfo::crashed_entry("client-9", "client", 777, 4.0, cv, true, 0xC0000005u);
@@ -1732,10 +1765,17 @@ static void test_crash_report_coordinator() {
         CHECK(c.start());
         CHECK(heartbeat("crash-1", "client", c.pi.dwProcessId));
         CHECK(state_in_list("crash-1") == "running");
-        write_dump("gmod_win64_20261114_101010_1_accessviolation.mdmp");
+        // Issue #8 (live verification of 0.3.7): the answer says where the dump's exception happened and the callers on its stack.
+        {
+            std::string dump = mdmp_test::build({0, mdmp_test::kClient + 0x1234, mdmp_test::kLua + 0x5555}, false);
+            std::ofstream(game / "crashes" / "gmod_win64_20261114_101010_1_accessviolation.mdmp", std::ios::binary).write(dump.data(), (std::streamsize)dump.size());
+        }
         c.end(0xC0000005u);
         json e = status_of("crash-1");
         CHECK(e.value("code", "") == "client_crashed");
+        CHECK(e.value("details", json::object()).value("fault", "") == "engine.dll+0x2069e0");
+        CHECK(e.value("details", json::object()).value("stack_candidates", json::array()) == json::array({"client.dll+0x1234", "lua_shared.dll+0x5555"}));
+        CHECK(e.value("message", "").find("engine.dll+0x2069e0") != std::string::npos);
         CHECK(e.value("message", "").find("gmod_win64_20261114_101010_1_accessviolation.mdmp") != std::string::npos);
         CHECK(e.value("details", json::object()).value("dump", "") == "gmod_win64_20261114_101010_1_accessviolation.mdmp");
         CHECK(e.value("details", json::object()).value("exit_code", 0u) == 0xC0000005u);
@@ -1746,6 +1786,7 @@ static void test_crash_report_coordinator() {
         for (const auto &x : coordinator::instances())
             if (x.value("id", "") == "crash-1") entry = x;
         CHECK(entry["crash"].value("dump", "") == "gmod_win64_20261114_101010_1_accessviolation.mdmp" && entry.value("pid", 0u) == c.pi.dwProcessId);
+        CHECK(entry["crash"].value("fault", "") == "engine.dll+0x2069e0" && entry["crash"].value("stack_candidates", json::array()).size() == 2);  // issue #8
     }
     // 2. Another crash, no new dump: the first crash's dump is not given again.
     {

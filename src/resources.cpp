@@ -353,12 +353,17 @@ the numbers. When the game is not running the plugin itself answers `game_not_ru
 shutdown. The answer's `details` hold `instance`, `pid`, `dump` (the minidump file name in `crashes/` of the game folder,
 or null when none was found), `exit_code` (when known) and `evidence`. What to do: relaunch a client with
 `instances_launch` (a server must be restarted by whoever runs it); what it held (map, Lua state, running tests) is lost,
-so run the test again. The dump is for a human with a debugger: do not try to read it. A crash is told from a clean quit
+so run the test again. The dump is for a human with a debugger: do not try to read it. When the dump could be read, `details`
+also holds `fault` (where the exception happened, module+offset, e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up to 8
+words of the faulting thread's stack that point into a module, from the stack pointer up: a list of places to look at, not an
+unwound call stack; the first ones are usually the callers): worth quoting in a bug report. A crash that happens only on
+test clients can be timing: they run at `fps_max` 20, so several server ticks run per frame; relaunch with `fps_max: 300`
+(`instances_launch {fps_max}`) and rerun to tell a timing bug (it disappears) from a plain one. A crash is told from a clean quit
 by what the coordinator saw: a goodbye the game sends when it shuts down, a `game_quit`/`game_terminate` sent through it,
 a dump written just before the process ended, then its exit code (0 = quit, 0xC0000005 and other 0xC... = crash). Limits:
 a process killed from outside (Task Manager) with no dump looks like a crash with exit code 1 and `dump: null`; with
 several games crashing together the dump is matched by time only (`dump_matched_by_time_only`). `instances_list` shows
-a crashed instance for an hour as `state: "crashed"` with a `crash` object ({dump, exit_code, evidence}); a map_load in
+a crashed instance for an hour as `state: "crashed"` with a `crash` object ({dump, exit_code, evidence, fault, stack_candidates}); a map_load in
 flight when the client died answers `client_crashed` too (through `instances_launch {map}`: in that client's `map_error`).
 A call in flight to an instance that dies is answered at once, not at its own timeout: the coordinator and, for the clients
 it launched, the bridge watch the process. `details.memory` ({free_commit_mb, free_ram_mb}, measured when the crash is
