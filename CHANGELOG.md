@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.7
+
+Works with the x86-64 build of Garry's Mod of 2026-11-19 (new install layout, moved engine interface slots, every
+fixed slot now checked before use), and with Claude Code's Code Mode. Adds ui_click / ui_key, screenshots without a
+map, launch options for test clients and hung / crashed / low-memory reporting; makes the coordinator hand-over,
+the map-load lock and lua_mount hold under live chaos tests with several agents; fixes dedicated servers (Linux and
+Windows) so a first call never sends the model into a loop.
 
 ### Features
 
