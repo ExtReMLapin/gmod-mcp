@@ -99,6 +99,18 @@ constexpr size_t kMaxTextChars = 256;
 // UTF-8 to UTF-16 (strict). False with `err` for invalid UTF-8, a control character (use `key` for enter, tab, backspace...)
 // or more than kMaxTextChars characters.
 bool text_to_utf16(const std::string &utf8, std::u16string &out, std::string &err);
+// The engine narrows every WM_CHAR through the system ANSI code page with best-fit substitutions (live, CP1252: e-acute is kept,
+// l-stroke becomes l, Greek alpha a, Cyrillic and CJK ?); WM_UNICHAR, WM_IME_CHAR and VK_PACKET are ignored. There is no way to type
+// such a character, so the call refuses (text_not_representable) unless allow_lossy. `keeps` says whether one code point survives
+// the code page unchanged (plat::ui_ansi_keeps on Windows; injected for the tests).
+using KeepsFn = std::function<bool(unsigned cp)>;
+// The code points of `text` that `keeps` refuses, each once, in order of first appearance (a surrogate pair is one). ASCII is never asked.
+std::vector<unsigned> altered_chars(const std::u16string &text, const KeepsFn &keeps);
+std::string utf8_of(unsigned cp);
+// code "text_not_representable": names the characters (glyph and code point, 16 at most), the code page, and the way out.
+struct Refusal;  // below
+Refusal not_representable(const std::vector<unsigned> &cps, unsigned code_page);
+
 // One WM_CHAR per UTF-16 unit (a surrogate pair is two, as Windows delivers it), a few per step.
 std::vector<Step> text_steps(const std::u16string &text);
 

@@ -10,8 +10,12 @@
   double-click, up) a frame apart, or one `WM_MOUSEWHEEL`; `ui_key {key?, text?, wait_frames?, screenshot_after?}` posts a key
   (named keys, f1..f12; enter, tab, backspace and escape as key down, `WM_CHAR`, key up; a letter, a digit or space as the one
   `WM_CHAR` of the character, like `text`: the game's message loop turns a posted key down into its own `WM_CHAR` from the real
-  keyboard layout, so key down plus `WM_CHAR` typed "aa" and "5(" on AZERTY) and/or `text` as `WM_CHAR` (Unicode, accents
-  included, 256 characters at most). Coordinates are pixels of the `screenshot` image by default (`screenshot_size` converts from
+  keyboard layout, so key down plus `WM_CHAR` typed "aa" and "5(" on AZERTY) and/or `text` as `WM_CHAR` (256 characters at most). The engine narrows
+  every typed `WM_CHAR` through the machine's ANSI code page with best-fit substitutions (live, CP1252: an accent of western Europe
+  arrives, `ł` becomes `l`, `α` `a`, Cyrillic and CJK `?`; `WM_UNICHAR`, IME characters and `VK_PACKET` are ignored, so there is no
+  other way in): a text with such a character is refused with `text_not_representable` (before anything is typed; `details`
+  `code_page` and `characters`) unless `allow_lossy: true`, and the message points to `lua_exec` in the realm that owns the panel
+  (`DTextEntry:SetText`; `SetValue` does nothing while the entry has the keyboard focus). The clipboard is never used. Coordinates are pixels of the `screenshot` image by default (`screenshot_size` converts from
   an image of another size, `coords: "window"` gives client-area pixels); the title bar is never part of them, and a client
   area that differs from the backbuffer the engine renders (DPI scaling) is scaled. The messages go to the game's own main window with
   `PostMessage`: the user's real cursor does not move and no window takes the focus (never `SetCursorPos`, `SendInput` or

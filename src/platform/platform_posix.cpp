@@ -257,6 +257,8 @@ bool ui_post(uint64_t, unsigned, unsigned long long, long long, std::string &err
     return false;
 }
 unsigned ui_scan_code(unsigned) { return 0; }
+unsigned ui_ansi_code_page() { return 0; }
+bool ui_ansi_keeps(unsigned) { return true; }
 
 bool patch_pointer(void **slot, void *value) {
     long page = sysconf(_SC_PAGESIZE);

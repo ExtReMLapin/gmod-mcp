@@ -317,6 +317,52 @@ static void test_text() {
     CHECK(text_steps(u"").empty());
 }
 
+// Live verification of 0.3.7: the engine narrows every WM_CHAR through the system ANSI code page with best-fit
+// (CP1252: e-acute stays, l-stroke becomes l, alpha a, Cyrillic and CJK ?). The characters that would change are found per code
+// point with an injected "does it survive" function (the Win32 one is plat::ui_ansi_keeps).
+static void test_ansi_check() {
+    std::u16string u;
+    std::string err;
+    KeepsFn latin1 = [](unsigned cp) { return cp < 0x100; };
+    CHECK(text_to_utf16("h\xC3\xA9llo w\xC3\xB6rld", u, err) && altered_chars(u, latin1).empty());
+    // Greek alpha and l-stroke would be altered; each listed once, in order of appearance.
+    CHECK(text_to_utf16("\xC5\x82 and \xCE\xB1 and \xC5\x82", u, err));
+    CHECK(altered_chars(u, latin1) == (std::vector<unsigned>{0x142, 0x3B1}));
+    // A surrogate pair is one character (U+1F600), not two lone surrogates.
+    CHECK(text_to_utf16("ok \xF0\x9F\x98\x80", u, err) && altered_chars(u, latin1) == (std::vector<unsigned>{0x1F600}));
+    // ASCII is never asked, whatever the function says (a code page always has it).
+    int asked = 0;
+    KeepsFn none = [&](unsigned) { ++asked; return false; };
+    CHECK(text_to_utf16("hello, world 123 !?", u, err) && altered_chars(u, none).empty() && asked == 0);
+    CHECK(altered_chars(std::u16string(), none).empty());
+    // The refusal names the characters (glyph and code point), the code page, the way out and the override.
+    Refusal r = not_representable({0x142, 0x3B1}, 1252);
+    CHECK(r.code == "text_not_representable");
+    for (const char *w : {"\xC5\x82 (U+0142)", "\xCE\xB1 (U+03B1)", "1252", "allow_lossy", "lua_exec", "SetText", "SetValue"})
+        if (!contains(r.message, w)) {
+            std::printf("missing \"%s\" in: %s\n", w, r.message.c_str());
+            CHECK(false);
+        }
+    // A long list is cut, with the count left out said.
+    std::vector<unsigned> many;
+    for (unsigned c = 0x400; c < 0x400 + 40; ++c) many.push_back(c);
+    r = not_representable(many, 1252);
+    CHECK(contains(r.message, "24 more") && !contains(r.message, "U+0420"));
+    CHECK(utf8_of(0x41) == "A" && utf8_of(0xE9) == "\xC3\xA9" && utf8_of(0x65E5) == "\xE6\x97\xA5" && utf8_of(0x1F600) == "\xF0\x9F\x98\x80");
+
+#ifdef _WIN32
+    // The Win32 side: ASCII always passes; on a CP1252 machine the examples above hold (the test is skipped on other code pages).
+    CHECK(plat::ui_ansi_code_page() != 0 && plat::ui_ansi_keeps('a') && plat::ui_ansi_keeps(' '));
+    if (plat::ui_ansi_code_page() == 1252) {
+        CHECK(plat::ui_ansi_keeps(0xE9) && plat::ui_ansi_keeps(0x20AC));  // e-acute, euro
+        CHECK(!plat::ui_ansi_keeps(0x142) && !plat::ui_ansi_keeps(0x3B1) && !plat::ui_ansi_keeps(0x42F) && !plat::ui_ansi_keeps(0x65E5) &&
+              !plat::ui_ansi_keeps(0x1F600));
+    }
+#else
+    CHECK(plat::ui_ansi_code_page() == 0 && plat::ui_ansi_keeps(0x65E5));  // no check off Windows: ui_key is unsupported there anyway
+#endif
+}
+
 static void test_describe() {
     Geometry g = geom(1280, 720, 1280, 720);
     ClickRequest r;
@@ -453,6 +499,7 @@ void test_uiinput() {
     test_mouse_steps();
     test_keys();
     test_text();
+    test_ansi_check();
     test_describe();
     test_decide();
 }

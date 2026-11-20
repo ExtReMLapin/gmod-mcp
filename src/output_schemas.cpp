@@ -203,7 +203,7 @@ json build(const std::string &tool) {
                              {"scale", Obj}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj}, {"cursor_via", S}, {"screenshot", Obj},
                              {"screenshot_note", S}, {"screenshot_error", ANY}},
                             {"sent", "at", "frames_waited"});
-        s["ui_key"] = obj({{"sent", STRS}, {"key", S}, {"text_units", N}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj},
+        s["ui_key"] = obj({{"sent", STRS}, {"key", S}, {"text_units", N}, {"lossy_characters", STRS}, {"ansi_code_page", N}, {"frames_waited", N}, {"window", Obj}, {"screen", Obj},
                            {"cursor_via", S}, {"screenshot", Obj}, {"screenshot_note", S}, {"screenshot_error", ANY}},
                           {"sent", "frames_waited"});
         s["debug_draw"] = obj({{"added", N}, {"active", N}, {"expire_in_s", N}}, {"added", "active"});

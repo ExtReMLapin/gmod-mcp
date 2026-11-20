@@ -2485,6 +2485,31 @@ static void test_ui_tools() {
 #else
     CHECK(err_code(mcp::call_tool("ui_click", json{{"x", 1}, {"y", 1}})) == "unsupported");
 #endif
+#ifdef _WIN32
+    // Live verification of 0.3.7: the engine narrows every WM_CHAR through the ANSI code page with best-fit (l-stroke -> l, alpha -> a,
+    // Cyrillic and CJK -> ?). A text with such a character is refused before anything is posted (no game access), unless allow_lossy.
+    // U+65E5 (a CJK character) is outside every single-byte code page; on a CJK or UTF-8 machine the check is skipped.
+    if (!plat::ui_ansi_keeps(0x65E5)) {
+        cfg.test_client = true;
+        json lossy = mcp::call_tool("ui_key", json{{"text", "ab \xE6\x97\xA5 \xC5\x82 cd"}});
+        const json le = lossy.value("isError", false) ? lossy["structuredContent"]["error"] : json::object();
+        CHECK(le.value("code", "") == "text_not_representable");
+        std::string lm = le.value("message", "");
+        CHECK(lm.find("\xE6\x97\xA5 (U+65E5)") != std::string::npos && lm.find("U+0142") != std::string::npos && lm.find("lua_exec") != std::string::npos &&
+              lm.find("allow_lossy") != std::string::npos && lm.find(std::to_string(plat::ui_ansi_code_page())) != std::string::npos);
+        CHECK(le["details"].value("code_page", 0u) == plat::ui_ansi_code_page() && le["details"]["characters"].is_array());
+        // The same text with allow_lossy goes on to the policy check of the call (this test game was not started by instances_launch).
+        cfg.test_client = false;
+        CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "\xE6\x97\xA5"}, {"allow_lossy", true}})) == "not_a_test_client");
+        // Text that survives the code page is not refused for that reason.
+        CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "caf\xC3\xA9"}})) != "text_not_representable");
+        // A dedicated server says unsupported first, whatever the text.
+        cfg.mode = agent::Mode::Dedicated;
+        cfg.test_client = true;
+        CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "\xE6\x97\xA5"}})) == "unsupported");
+        cfg.mode = agent::Mode::Client;
+    }
+#endif
     cfg.mode = mode;
     cfg.test_client = test_client;
 

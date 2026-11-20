@@ -432,6 +432,11 @@ types text (Unicode included). Click a text field first, then type. `screenshot_
   visible when the game menu is up (main menu, ESC menu, a dialog on it: `gui.IsGameUIVisible()`) or, in game, a Derma popup,
   the context or spawn menu has it (`vgui.CursorVisible()` in the client realm). `console_exec {cmd: "gameui_activate"}`
   opens the game menu.
+- `ui_key` text: the engine narrows each typed character through the machine's ANSI code page with best-fit (CP1252: accents of
+  western Europe arrive, `ł` becomes `l`, Cyrillic and CJK `?`). A text with such a character is refused (`text_not_representable`,
+  details `code_page` and `characters`) unless `allow_lossy: true`; set it from Lua instead (`lua_exec` in the realm that owns the
+  panel: `entry:SetText("...")` on a DTextEntry; `SetValue` does nothing while the entry has the focus a click gave it). A letter,
+  a digit or space as `key` is typed as a character (`WM_CHAR`), not pressed.
 - `screenshot` needs a loaded map: at the main menu (no client realm) there is no image to read coordinates from, and
   `screenshot_after` says so in `screenshot_note`. Use `coords: "window"` there.
 
