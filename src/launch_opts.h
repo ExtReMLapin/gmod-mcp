@@ -47,4 +47,33 @@ constexpr size_t kMaxOwnerChars = 64;
 std::string encode_owner(const std::string &owner);
 std::string decode_owner(const std::string &token);
 
+// Giving the foreground back (Windows). A test client (-mcp_test_client) takes the foreground window when it starts and keeps it, which pulls
+// the user out of what they were doing. The bridge records the foreground window before it starts a client and passes it as
+// `-mcp_return_focus <window handle, decimal>`; once the client's own window is up, the module hands the foreground back to that window.
+// A window handle is 32 significant bits on 64-bit Windows: the value is 1..4294967295, plain decimal digits, no sign, space or leading zero.
+constexpr unsigned long long kMaxWindowHandle = 0xFFFFFFFFull;
+unsigned long long parse_return_focus(const std::string &token);  // 0 when the token is not a valid handle
+std::string format_return_focus(unsigned long long hwnd);         // "" for 0 or an out-of-range value
+
+// The window the bridge asks the client to give the foreground back to: the foreground window it sees right now (`foreground`, 0 = none), unless
+// that window belongs to a client this bridge just started (`foreground_is_ours`: an earlier client of the same launch has not given the
+// foreground back yet), in which case the window recorded before the first start (`remembered`) stays the target. 0 = no target.
+unsigned long long pick_return_target(unsigned long long foreground, bool foreground_is_ours, unsigned long long remembered);
+
+// What the module does about the foreground, decided from facts it reads from the system.
+struct FocusFacts {
+    bool test_client = false;         // started by instances_launch (-mcp_test_client); the user's own game is never touched
+    unsigned long long target = 0;    // -mcp_return_focus (0 = none)
+    bool target_exists = false;       // the window handle is still a window (not destroyed)
+    bool target_usable = false;       // ... and it is visible, not minimized and not a window of this process (SetForegroundWindow would be wrong otherwise)
+    bool game_window_found = false;   // this process's main window exists
+    bool game_is_foreground = false;  // and a window of this process is the foreground window
+};
+enum class FocusAction { Wait, Return, Stop };
+// The module checks every few frames. Wait: nothing to do yet. Return: SetForegroundWindow(target). Stop: done for good (nothing to give
+// back, the window is gone, or the budget is spent). `returns` counts earlier returns; `elapsed_s` is the time since the module started.
+constexpr int kMaxFocusReturns = 3;           // the game can take the foreground again once (the first map load): never more than this
+constexpr double kFocusWatchSeconds = 180.0;  // after this a window the user gave the focus to on purpose is left alone
+FocusAction decide_return_focus(const FocusFacts &f, int returns, double elapsed_s);
+
 }  // namespace launchopts

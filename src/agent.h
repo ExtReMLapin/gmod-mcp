@@ -25,6 +25,7 @@ struct Config {
     bool test_client = false;  // -mcp_test_client: started by the bridge (instances_launch); see native.test_client
     std::string owner;  // -mcp_owner (issue #8): the instances_launch owner label, carried in the heartbeat so it outlives the launching bridge
     std::string restore_convars;  // -mcp_restore_convars a,b (Issue #10): more archived convars to give back on a clean quit; see native.restore_convars
+    unsigned long long return_focus = 0;  // -mcp_return_focus <hwnd> (test clients): the window that gets the foreground back; see launchopts::decide_return_focus
     std::string version = GMOD_MCP_VERSION;
 };
 

@@ -25,6 +25,7 @@ Cases (default: a f):
          hung, unless ignore_unhealthy, and names the unhealthy peers when it times out (fake server, stand-in game)
   chaos_launch Issue #8 (chaos test G2): a launched client dies at startup while its sibling keeps running: the error names
          the survivor and warns it is not closed (stand-in game, fake game server)
+  return_focus FO-6: instances_launch records the foreground window (-mcp_return_focus) and starts clients without activating them
   chaos_owner Issue #8 (chaos test G3): the owner label rides on the command line and in the heartbeat; instances_close {owner}
          closes keep:true test clients of another session that carry it (never a non-test client or an untagged one)
   chaos_memory Issue #8 (chaos test G4): low_memory counts the game processes of the game folder, registered or not, and reports
@@ -3062,6 +3063,41 @@ def case_chaos_owner():
             except OSError: pass
 
 
+def case_return_focus():
+    """FO-6 (live finding, x86-64 branch): a test client took the foreground window and kept it. instances_launch records the foreground
+    window before each start and passes it as `-mcp_return_focus <decimal handle>` (the module gives the foreground back to it), and
+    starts the client with a window shown without activation (STARTF_USESHOWWINDOW + SW_SHOWNOACTIVATE). Stand-in game, Windows."""
+    print("== RETURN_FOCUS: -mcp_return_focus and the no-activate start", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("RETURN_FOCUS stand-in game built next to the bridge", False)
+        return
+    import ctypes, re
+    user32 = ctypes.windll.user32
+    startup = os.path.join(tempfile.mkdtemp(prefix="gmcp-focus-"), "startup.txt")
+    S = chaos_session(extra_env={"GMCP_FAKE_STARTUP": startup})
+    def lines(name):
+        try: return open(startup if name == "startup.txt" else os.path.join(S["work"], name), encoding="utf-8").read().splitlines()
+        except OSError: return []
+    fg_before = user32.GetForegroundWindow()
+    sc, err = S["call"]("instances_launch", {"count": 2, "timeout_s": 30, "game_dir": S["game"]})
+    fg_after = user32.GetForegroundWindow()
+    argv = lines("argv.txt")
+    handles = [re.search(r" -mcp_return_focus (\S+)", l) for l in argv]
+    values = [m.group(1) if m else None for m in handles]
+    if fg_before and fg_before == fg_after:
+        check("RETURN_FOCUS every client of a launch carries the foreground window the user had (decimal handle)", len(argv) == 2 and values == [str(fg_before)] * 2, (argv, fg_before))
+    else:
+        check("RETURN_FOCUS (the foreground changed during the test: only the form is checked) the option is a valid decimal handle or absent", all(v is None or (v.isdigit() and not v.startswith("0") and 0 < int(v) <= 0xFFFFFFFF) for v in values), (argv, fg_before, fg_after))
+    check("RETURN_FOCUS the option comes after the fixed options and nothing else follows it but the owner/restore options",
+          all(m is None or "-mcp_test_client" in l[:m.start()] for l, m in zip(argv, handles)), argv)
+    st = lines("startup.txt")
+    check("RETURN_FOCUS clients start with a window shown without activation (SW_SHOWNOACTIVATE = 4, STARTF_USESHOWWINDOW)", len(st) == 2 and all(x == "show=4 uses_show=1" for x in st), st)
+    S["close"]()
+
+
 def case_chaos_memory():
     """Issue #8 (chaos test G4): low_memory counts the game processes of this game folder, not only the registered instances and
     this bridge's own clients: clients another session started that have not registered yet are running too. Both numbers are
@@ -3390,8 +3426,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

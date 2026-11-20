@@ -249,6 +249,9 @@ bool memory_status(uint64_t &, uint64_t &) { return false; }
 
 int process_has_foreground() { return -1; }
 bool send_focus_lost() { return false; }
+bool foreground_window(Foreground &) { return false; }
+void focus_target_state(unsigned long long, bool &exists, bool &usable) { exists = usable = false; }
+bool return_focus_to(unsigned long long) { return false; }
 bool install_close_guard(bool (*)(), int) { return false; }
 bool ui_supported() { return false; }
 bool ui_window(UiWindow &) { return false; }

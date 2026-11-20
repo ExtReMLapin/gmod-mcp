@@ -90,6 +90,16 @@ int process_has_foreground();
 // Sends WM_ACTIVATE(WA_INACTIVE) to this process's main game window, as Windows does when another window takes the
 // focus. Returns false if no such window was found (or on other platforms).
 bool send_focus_lost();
+// The foreground window as {handle, owning process id}; false when there is none (or not supported).
+struct Foreground {
+    unsigned long long hwnd = 0;
+    unsigned pid = 0;
+};
+bool foreground_window(Foreground &out);
+// Giving the foreground back (see launchopts::decide_return_focus): the facts about the window the bridge named, and the call that gives
+// it the foreground. Only ever called from a test client. `usable` is false for a window of this process, a hidden or a minimized one.
+void focus_target_state(unsigned long long hwnd, bool &exists, bool &usable);
+bool return_focus_to(unsigned long long hwnd);  // SetForegroundWindow, true when that window is the foreground one afterwards
 // Close guard (Windows only; false elsewhere and when no game window exists yet): subclasses this process's main game
 // window so that a close request (the X button, Alt+F4, the taskbar: WM_SYSCOMMAND SC_CLOSE or WM_CLOSE) first calls
 // `before` on the window's thread. When `before` returns true the request is held back and posted again `delay_ms`

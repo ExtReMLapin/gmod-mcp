@@ -467,6 +467,57 @@ static void test_launch_options() {
     CHECK(decode_owner(std::string(65, 'a')).empty());                                  // longer than the 64 characters instances_launch accepts
 }
 
+// Giving the foreground back (FO-1..FO-4): the value of -mcp_return_focus, the bridge's choice of target and the module's decision.
+static void test_return_focus() {
+    using namespace launchopts;
+    // FO-1: the option carries a window handle in plain decimal; anything else is no handle (the module then does nothing).
+    CHECK(parse_return_focus("855190") == 855190ull && parse_return_focus("1") == 1ull && parse_return_focus("4294967295") == 4294967295ull);
+    for (const char *bad : {"", "0", "007", "-5", "+5", "12 ", " 12", "0x1F", "12a", "4294967296", "99999999999", "1e3", "Ù¡"})
+        CHECK(parse_return_focus(bad) == 0ull);
+    CHECK(format_return_focus(855190) == "855190" && format_return_focus(0).empty() && format_return_focus(4294967296ull).empty());
+    CHECK(parse_return_focus(format_return_focus(4294967295ull)) == 4294967295ull);
+    // FO-2: the target is the foreground window at the time of the start, except one of our own just-started clients.
+    CHECK(pick_return_target(100, false, 0) == 100ull);   // first start: what the user has in front
+    CHECK(pick_return_target(200, true, 100) == 100ull);  // second start, the first client holds the foreground: keep the user's window
+    CHECK(pick_return_target(300, false, 100) == 300ull); // the user moved to another window meanwhile: follow them
+    CHECK(pick_return_target(0, false, 100) == 100ull);   // no foreground window right now (desktop switch): keep the earlier one
+    CHECK(pick_return_target(200, true, 0) == 0ull);      // our own client holds it and there is nothing earlier: no target
+    // FO-3: when the module gives the foreground back.
+    FocusFacts f;
+    f.test_client = true;
+    f.target = 100;
+    f.target_exists = f.target_usable = f.game_window_found = f.game_is_foreground = true;
+    CHECK(decide_return_focus(f, 0, 5.0) == FocusAction::Return);
+    FocusFacts g = f;
+    g.test_client = false;  // the user's own game: never
+    CHECK(decide_return_focus(g, 0, 5.0) == FocusAction::Stop);
+    g = f;
+    g.target = 0;  // no target recorded (an older bridge, no foreground window)
+    CHECK(decide_return_focus(g, 0, 5.0) == FocusAction::Stop);
+    g = f;
+    g.game_is_foreground = false;  // the game does not have the foreground (yet, or any more): not touched, keep watching for the start-up grab
+    CHECK(decide_return_focus(g, 0, 5.0) == FocusAction::Wait);
+    g = f;
+    g.game_window_found = false;  // no window of its own yet
+    CHECK(decide_return_focus(g, 0, 5.0) == FocusAction::Wait);
+    g = f;
+    g.target_usable = false;  // minimized or hidden: SetForegroundWindow would not restore it
+    CHECK(decide_return_focus(g, 0, 5.0) == FocusAction::Wait);
+    g = f;
+    g.target_exists = g.target_usable = false;  // closed meanwhile
+    CHECK(decide_return_focus(g, 0, 5.0) == FocusAction::Stop);
+    CHECK(decide_return_focus(f, kMaxFocusReturns - 1, 5.0) == FocusAction::Return && decide_return_focus(f, kMaxFocusReturns, 5.0) == FocusAction::Stop);
+    CHECK(decide_return_focus(f, 0, kFocusWatchSeconds - 1) == FocusAction::Return && decide_return_focus(f, 0, kFocusWatchSeconds + 1) == FocusAction::Stop);
+    // FO-4: the platform side answers about handles that are not windows, and never claims a foreground it did not set.
+    bool exists = true, usable = true;
+    plat::focus_target_state(0, exists, usable);
+    CHECK(!exists && !usable);
+    exists = usable = true;
+    plat::focus_target_state(0xFFFFFFF0ull, exists, usable);
+    CHECK(!exists && !usable);
+    CHECK(!plat::return_focus_to(0) && !plat::return_focus_to(0xFFFFFFF0ull));
+}
+
 // Issue #8 (chaos test G3): the owner label and the test-client mark ride in this instance's entry of instances_list (the
 // heartbeat), so every instance shows its owner whatever bridge session launched it.
 static void test_owner_in_list() {
@@ -3227,6 +3278,7 @@ int main(int argc, char **argv) {
     test_issue9_small_fixes();
     test_game_exe_layouts();
     test_launch_options();
+    test_return_focus();
     test_port_conflict_link();
     test_owner_in_list();
 #ifdef _WIN32

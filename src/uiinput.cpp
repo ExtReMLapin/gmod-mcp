@@ -108,6 +108,8 @@ bool parse_button(const std::string &name, Button &out) {
     return true;
 }
 
+int settle_moves(bool game_foreground) { return game_foreground ? kForegroundSettleMoves : 0; }
+
 ClickPlan plan_click(const ClickRequest &req, const Geometry &g) {
     ClickPlan p;
     auto bad = [&](const std::string &msg) {
@@ -130,7 +132,7 @@ ClickPlan plan_click(const ClickRequest &req, const Geometry &g) {
         return p;
     }
     const Point at = p.at.client;
-    p.steps.push_back(one(make(kWmMouseMove, 0, pack(at.x, at.y))));
+    for (int i = 0; i <= req.settle_moves; ++i) p.steps.push_back(one(make(kWmMouseMove, 0, pack(at.x, at.y))));
     if (req.has_wheel) {
         unsigned long long delta = (unsigned long long)(unsigned short)(short)(req.wheel * kWheelDelta);
         p.steps.push_back(one(make(kWmMouseWheel, delta << 16, pack(g.origin_x + at.x, g.origin_y + at.y))));

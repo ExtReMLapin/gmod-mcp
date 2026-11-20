@@ -11,6 +11,7 @@
 #include "installer.h"
 #include "coordinator.h"
 #include "jobs.h"
+#include "launch_opts.h"
 #include "loadflag.h"
 #include "log.h"
 #include "luaapi.h"
@@ -574,6 +575,34 @@ static void check_focus() {
     }
 }
 
+// A test client takes the foreground window when it starts and keeps it (live, x86-64 branch: the user's terminal lost the focus at every launch).
+// instances_launch records the foreground window before it starts the client (-mcp_return_focus); once this client's own window is the foreground
+// window, hand the foreground back to that window. The process that owns the foreground is allowed to do it. Never for a game that is not a test
+// client, and never more than a few times, so a window the user gives the focus to on purpose later is left alone.
+static void check_return_focus() {
+    static const auto t0 = std::chrono::steady_clock::now();
+    static bool stopped = false;
+    static int returns = 0;
+    if (stopped || !g_cfg.test_client || g_cfg.return_focus == 0) return;
+    launchopts::FocusFacts f;
+    f.test_client = g_cfg.test_client;
+    f.target = g_cfg.return_focus;
+    plat::focus_target_state(f.target, f.target_exists, f.target_usable);
+    plat::UiWindow w;
+    f.game_window_found = plat::ui_window(w);
+    f.game_is_foreground = plat::process_has_foreground() == 1;
+    double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    switch (launchopts::decide_return_focus(f, returns, elapsed)) {
+        case launchopts::FocusAction::Stop: stopped = true; return;
+        case launchopts::FocusAction::Wait: return;
+        case launchopts::FocusAction::Return: break;
+    }
+    ++returns;
+    bool ok = plat::return_focus_to(f.target);
+    logx::info("this test client had the foreground window: %s it back to the window the launch recorded (try %d)", ok ? "gave" : "could not give", returns);
+    events::publish("focus_returned", json{{"ok", ok}, {"try", returns}});
+}
+
 static bool g_close_guard = false;
 
 // The window's close request, on the main thread: queues the convar restore. True when something was queued: the
@@ -641,6 +670,7 @@ void pump(lua_State *host) {
         client_allowed();
         check_focus();
     }
+    if (g_cfg.mode == Mode::Client && g_cfg.test_client && jobs::frame_count() % 5 == 0) check_return_focus();
     // A test client (-mcp_test_client) gives the user's values back to the archived convars its command line changed
     // before the window is closed (the engine saves them at shutdown; see restore_test_client_convars in 30_session.lua).
     if (g_cfg.test_client && g_cfg.mode == Mode::Client && !g_close_guard && fc % 30 == 0)

@@ -213,4 +213,33 @@ std::string decode_owner(const std::string &token) {
     return chars > kMaxOwnerChars ? std::string() : out;
 }
 
+unsigned long long parse_return_focus(const std::string &token) {
+    if (token.empty() || token.size() > 10 || token[0] == '0') return 0;
+    unsigned long long v = 0;
+    for (unsigned char c : token) {
+        if (c < '0' || c > '9') return 0;
+        v = v * 10 + (c - '0');
+    }
+    return v > kMaxWindowHandle ? 0 : v;
+}
+
+std::string format_return_focus(unsigned long long hwnd) {
+    if (hwnd == 0 || hwnd > kMaxWindowHandle) return "";
+    return std::to_string(hwnd);
+}
+
+unsigned long long pick_return_target(unsigned long long foreground, bool foreground_is_ours, unsigned long long remembered) {
+    if (foreground == 0 || foreground_is_ours) return remembered;
+    return foreground;
+}
+
+FocusAction decide_return_focus(const FocusFacts &f, int returns, double elapsed_s) {
+    if (!f.test_client || f.target == 0) return FocusAction::Stop;
+    if (returns >= kMaxFocusReturns || elapsed_s > kFocusWatchSeconds) return FocusAction::Stop;
+    if (!f.target_exists) return FocusAction::Stop;
+    if (!f.target_usable) return FocusAction::Wait;  // minimized or hidden for now: the user may bring it back
+    if (!f.game_window_found || !f.game_is_foreground) return FocusAction::Wait;
+    return FocusAction::Return;
+}
+
 }  // namespace launchopts

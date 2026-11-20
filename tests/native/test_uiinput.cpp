@@ -206,6 +206,28 @@ static void test_mouse_steps() {
           parse_button("middle", b) && b == Button::Middle && !parse_button("", b) && !parse_button("Left ", b));
 }
 
+// FO-5: with the game in front the move is posted again, a frame apart, before the press; in the background the plan is unchanged.
+static void test_foreground_settle() {
+    CHECK(settle_moves(false) == 0 && settle_moves(true) == kForegroundSettleMoves && kForegroundSettleMoves >= 1);
+    Geometry g = geom(1280, 720, 1280, 720);
+    ClickRequest r;
+    r.point = shot(100, 50);
+    ClickPlan back = plan_click(r, g);
+    r.settle_moves = settle_moves(true);
+    ClickPlan front = plan_click(r, g);
+    CHECK(back.ok && front.ok && back.steps.size() == 3 && front.steps.size() == (size_t)(3 + kForegroundSettleMoves));
+    for (int i = 0; front.ok && i <= kForegroundSettleMoves; ++i)  // every step before the press is the same move, one per frame
+        CHECK(front.steps[i].msgs.size() == 1 && front.steps[i].msgs[0].msg == kWmMouseMove && front.steps[i].msgs[0].lparam == mk_lparam(100, 50));
+    if (front.ok) {
+        const size_t d = (size_t)kForegroundSettleMoves + 1;
+        CHECK(front.steps[d].msgs[0].msg == kWmLButtonDown && front.steps[d + 1].msgs[0].msg == kWmLButtonUp);
+    }
+    r.has_wheel = true;  // the wheel is a move then one message: also gets the settle moves
+    r.wheel = 2;
+    ClickPlan wheel = plan_click(r, g);
+    CHECK(wheel.ok && wheel.steps.size() == (size_t)(2 + kForegroundSettleMoves) && wheel.steps.back().msgs[0].msg == kWmMouseWheel);
+}
+
 static void test_keys() {
     KeyInfo k;
     CHECK(lookup_key("enter", k) && k.vk == 0x0D && k.ch == 13 && !k.extended && k.name == "enter");
@@ -497,6 +519,7 @@ void test_uiinput() {
     test_platform();
     test_coordinates();
     test_mouse_steps();
+    test_foreground_settle();
     test_keys();
     test_text();
     test_ansi_check();
