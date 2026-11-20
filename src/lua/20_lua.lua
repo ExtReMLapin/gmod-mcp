@@ -107,6 +107,23 @@ function H.chunk_dump(args)
 	return out
 end
 
+-- Issue #9: does this realm's file system find files of the mounted folder? The module hands over a few names (as file.Exists
+-- takes them, from the "LUA" path: no lua/ prefix); file.Time tells which copy answered (the folder's file time is known).
+function H.mount_probe(args)
+	local files = args.files
+	if type(files) ~= "table" or #files > 8 then A.fail("invalid_params", "files: expected a list of at most 8 {name}") end
+	if type(file) ~= "table" or type(file.Exists) ~= "function" or type(file.Time) ~= "function" then
+		A.fail("unsupported", "this realm has no file library")
+	end
+	local answers = J.array({})
+	for i, f in ipairs(files) do
+		if type(f) ~= "table" or type(f.name) ~= "string" then A.fail("invalid_params", "files[" .. i .. "].name: expected a string") end
+		local exists = file.Exists(f.name, "LUA") and true or false
+		answers[#answers + 1] = { exists = exists, time = exists and file.Time(f.name, "LUA") or nil }
+	end
+	return { answers = answers }
+end
+
 -- Realm-specific status.
 function H.status(args)
 	local s = { realm = A.realm, generation = A.generation, lua_memory_kb = collectgarbage("count"), runtime_age_s = SysTime() - A.injected_at }

@@ -393,6 +393,21 @@ json source_provenance(int realm, const std::string &source) {
         if (!has) out["provenance_note"] = "the file was in the mounted folder when this realm loaded it and has been deleted since";
         return out;
     }
+    // The mounted folder changed since this realm loaded (another folder or none, no map load): the realm still runs the copy of
+    // the folder it loaded with.
+    std::string old = std::filesystem::u8path(rel).is_absolute() ? std::string() : lua_mount::loaded_from_other_mount(realm, rel);
+    if (!old.empty()) {
+        std::string ofile = native_path(old + "/" + rel);
+        out["provenance"] = "mount_changed_since_load";
+        out["loaded_from"] = old;
+        std::string now = root.empty() ? "no folder is mounted now" : "the mounted folder is " + root + " now";
+        std::string note = "this realm loaded the file from the mounted folder " + old + ", which is " +
+                           (root.empty() ? "no longer mounted" : "not the mounted folder any more") + " (" + now + "): it still runs that copy until map_load";
+        if (std::filesystem::is_regular_file(std::filesystem::u8path(ofile), ec)) out["disk"] = ofile;
+        else note += ". The file was deleted from that folder since";
+        out["provenance_note"] = note;
+        return out;
+    }
     std::string abs, e;
     if (resolve_lua_path(rel, false, abs, e, false)) {
         out["disk"] = abs;
@@ -419,6 +434,36 @@ std::vector<int> mount_realms() {
     return rs;
 }
 
+static std::function<json(int, const std::vector<lua_mount::Probe> &)> g_mount_probe;
+
+void set_mount_probe_for_tests(std::function<json(int, const std::vector<lua_mount::Probe> &)> fn) { g_mount_probe = std::move(fn); }
+
+// Asks one realm's file system about a few files of the mounted folder (Issue #9): answers [{exists, time?}] or null.
+static json ask_engine(int realm, const std::vector<lua_mount::Probe> &probes) {
+    if (g_mount_probe) return g_mount_probe(realm, probes);
+    if (!agent::realm_present(realm) || !agent::realm_injected(realm)) return nullptr;
+    json files = json::array();
+    for (const auto &p : probes) files.push_back({{"name", p.name}});
+    json r = agent::rt(realm, "mount_probe", json{{"files", files}}, 5.0);
+    if (!r.value("ok", false) || !r["result"].is_object() || !r["result"].contains("answers")) return nullptr;
+    return r["result"]["answers"];
+}
+
+// {engine_serves: {realm: bool}, engine_serves_folder: true|false|null}: what the realms' file systems say about the folder.
+json mount_engine_serves(const std::vector<int> &rs) {
+    json serves = json::object();
+    bool any_true = false, any_false = false;
+    for (int r : rs) {
+        auto probes = lua_mount::pick_probes(lua_mount::probe_sample(r));
+        if (probes.empty()) continue;
+        json v = lua_mount::probes_verdict(probes, ask_engine(r, probes));
+        if (v.is_null()) continue;
+        serves[realm_name_of(r)] = v;
+        (v.get<bool>() ? any_true : any_false) = true;
+    }
+    return json{{"engine_serves", serves}, {"engine_serves_folder", any_false ? json(false) : any_true ? json(true) : json(nullptr)}};
+}
+
 // status.lua_mount and the map_load check. null when no folder is mounted.
 json mount_state(const std::vector<int> &rs) {
     std::string root = lua_mount::current();
@@ -426,11 +471,22 @@ json mount_state(const std::vector<int> &rs) {
     json st{{"path", root}};
     json with = json::object(), without = json::array();
     std::map<std::string, json> files;
+    // Issue #9: a folder renamed or deleted since it was mounted serves nothing; every file would only show up as "deleted".
+    bool missing = !lua_mount::folder_present(root);
+    if (missing) st["folder_missing"] = true;
+    // One scan of the folder for every realm (a big folder costs seconds to stat), and none when no realm has a record.
+    lua_mount::Files now;
+    bool scanned = false;
     for (int r : rs) {
         bool w = lua_mount::realm_loaded_with_mount(r);
         with[realm_name_of(r)] = w;
         if (!w) without.push_back(realm_name_of(r));
-        for (const auto &c : lua_mount::changed_files(r)) {
+        if (missing) continue;
+        if (!scanned && lua_mount::has_record(r)) {
+            now = lua_mount::scan_files(root);
+            scanned = true;
+        }
+        for (const auto &c : lua_mount::changed_files(r, now)) {
             auto runs_in = default_realms(c.rel);
             if (std::find(runs_in.begin(), runs_in.end(), r) == runs_in.end()) continue;
             auto it = files.find(c.rel);
@@ -445,17 +501,50 @@ json mount_state(const std::vector<int> &rs) {
     st["loaded_with_mount"] = with;
     st["realms_without_mount"] = without;
     st["stale_files"] = stale;
+    // Issue #9: the engine, not the module's bookkeeping, has the last word: does each realm's file system serve the folder?
+    if (!missing) {
+        json es = mount_engine_serves(rs);
+        st["engine_serves"] = es["engine_serves"];
+        st["engine_serves_folder"] = es["engine_serves_folder"];
+    }
     std::string w = mount_warning(st);
     if (!w.empty()) st["warning"] = w;
     return st;
 }
 
+std::string mount_timeout_hint() {
+    std::string root = lua_mount::current();
+    if (root.empty()) return "";
+    return "A Lua mount is set (" + root + "): a mounted folder can break the game's Lua (a file that replaces a base file, a Lua error in its "
+           "autorun, a folder the engine cannot read) and hang the load. errors_since shows the Lua errors of this load, lua_mount {} the "
+           "folder's state (base_lua_mounted, engine_serves_folder, folder_missing). If the game does not recover: lua_mount {path: null}, "
+           "or close this client and relaunch without lua_mount.";
+}
+
 std::string mount_warning(const json &st) {
     if (!st.is_object()) return "";
     std::string out;
+    if (st.value("folder_missing", false)) {
+        // The rest (stale files, realms that predate the mount) is moot while there is nothing to serve.
+        return "mount_folder_missing: the mounted folder " + st.value("path", std::string("?")) +
+               " (or its lua/ folder) does not exist any more (renamed, moved or deleted), so the game serves nothing from it and runs the "
+               "installed code. Restore it, or mount the right folder with lua_mount {path}, or remove it with lua_mount {path: null}; then map_load.";
+    }
+    if (st.contains("engine_serves_folder") && st["engine_serves_folder"] == json(false)) {
+        out = "The game's file system does not serve this folder's files";
+        std::string which;
+        if (st.contains("engine_serves") && st["engine_serves"].is_object())
+            for (auto it = st["engine_serves"].begin(); it != st["engine_serves"].end(); ++it)
+                if (it.value() == json(false)) which += (which.empty() ? "" : "/") + it.key();
+        if (!which.empty()) out += " (the " + which + " realm finds none of the files it was asked for)";
+        out += ": the game runs the installed code, whatever the module reports as mounted. The path is probably one the engine cannot "
+               "read (UNC, junction, over-long or non-ASCII path, a folder moved or deleted). Remove it with lua_mount {path: null}, "
+               "mount a plain local path, then map_load.";
+    }
     const json &stale = st.contains("stale_files") ? st["stale_files"] : json::array();
     if (stale.is_array() && !stale.empty()) {
-        out = std::to_string(stale.size()) + " file(s) of the mounted folder changed since the game loaded them, so the game still runs the old code: ";
+        if (!out.empty()) out += " ";
+        out += std::to_string(stale.size()) + " file(s) of the mounted folder changed since the game loaded them, so the game still runs the old code: ";
         size_t n = 0;
         for (const auto &f : stale) {
             if (n++) out += ", ";
@@ -472,7 +561,8 @@ std::string mount_warning(const json &st) {
         out += "The ";
         size_t n = 0;
         for (const auto &r : st["realms_without_mount"]) out += (n++ ? "/" : "") + r.get<std::string>();
-        out += " realm loaded its Lua before this folder was mounted, so it runs the installed addon's files: map_load.";
+        out += " realm did not load with this folder in front (it loaded before the folder was mounted or changed, or its load did not go "
+               "through the folder): its code may be another copy than the folder's. map_load loads it again with the folder.";
     }
     return out;
 }
@@ -524,10 +614,36 @@ static json run_file_in_realms(const std::string &abs, const json &args, const s
     return per;
 }
 
+json mounted_reload_result(const json &st, const json &plan, const json &reloaded, bool all_ok) {
+    json out{{"ok", all_ok}, {"mode", "mounted_changed"}, {"path", st["path"]}, {"reloaded", reloaded}, {"skipped", plan["skipped"]},
+             {"realms_without_mount", st["realms_without_mount"]}};
+    if (reloaded.empty() && plan["skipped"].empty()) out["note"] = "no mounted file changed since the realms loaded them: nothing to reload";
+    if (!st["realms_without_mount"].empty())
+        out["warning"] = "a realm did not load with the folder in front (see realms_without_mount): the files run here come from the folder, the rest of its code may be another copy: map_load";
+    if (all_ok) return ok(out);
+    // A file failed in some realm: an error result, like every other tool that fails (isError), with everything that ran in the details.
+    std::string msg;
+    size_t failed = 0;
+    for (const auto &f : reloaded) {
+        if (!f.contains("realms") || !f["realms"].is_object()) continue;
+        for (auto it = f["realms"].begin(); it != f["realms"].end(); ++it) {
+            if (!it.value().is_object() || !it.value().contains("error")) continue;
+            const json &e = it.value()["error"];
+            if (++failed <= 5)
+                msg += (msg.empty() ? "" : "; ") + f.value("file", std::string("?")) + " (" + it.key() + "): " +
+                       (e.is_object() ? e.value("code", std::string("error")) + ": " + e.value("message", std::string()) : e.dump());
+        }
+    }
+    if (failed > 5) msg += "; ... " + std::to_string(failed - 5) + " more";
+    return agent::err("reload_failed", std::to_string(failed) + " file run(s) failed while running the changed files of the mounted folder again: " + msg +
+                                           ". The other files ran: see details.reloaded.", out);
+}
+
 static json reload_mounted_changed(const json &args) {
     std::vector<int> present = mount_realms();
     json st = mount_state(present);
     if (st.is_null()) return agent::err("no_mount", "no folder is mounted (lua_mount {path} first): there is nothing to reload from it");
+    if (st.value("folder_missing", false)) return agent::err("mount_folder_missing", mount_warning(st));
     json plan = plan_mount_reload(st);
     json reloaded = json::array();
     bool all_ok = true;
@@ -538,12 +654,7 @@ static json reload_mounted_changed(const json &args) {
         json per = run_file_in_realms(it["disk"].get<std::string>(), args, rs, all_ok, chunk);
         reloaded.push_back({{"file", it["file"]}, {"chunkname", chunk}, {"reason", it["reason"]}, {"realms", per}});
     }
-    json out{{"ok", all_ok}, {"mode", "mounted_changed"}, {"path", st["path"]}, {"reloaded", reloaded}, {"skipped", plan["skipped"]},
-             {"realms_without_mount", st["realms_without_mount"]}};
-    if (reloaded.empty() && plan["skipped"].empty()) out["note"] = "no mounted file changed since the realms loaded them: nothing to reload";
-    if (!st["realms_without_mount"].empty())
-        out["warning"] = "a realm loaded its Lua before the folder was mounted: files run here from the folder, but the rest of its code is the installed copy: map_load";
-    return ok(out);
+    return mounted_reload_result(st, plan, reloaded, all_ok);
 }
 
 static json lua_reload_tool(const json &args) {
@@ -852,7 +963,7 @@ void register_core() {
                         "file of that folder whose time differs from what each realm loaded (modified, added; the list is status.lua_mount.stale_files), "
                         "in alphabetical order and in the realms each file belongs to, and returns {ok, mode, path, reloaded: [{file, chunkname, "
                         "reason, realms: {<realm>: lua_exec result or {error}}}], skipped: [{file, why}] (deleted files, entity/weapon/effect "
-                        "files: map_load or lua_reload {path}), realms_without_mount, note?, warning?}; error no_mount if no folder is mounted. "
+                        "files: map_load or lua_reload {path}), realms_without_mount, note?, warning?}; error no_mount if no folder is mounted, error reload_failed (isError, the whole result in details) if a file fails in a realm. "
                         "Limits: a reload re-runs the file, it does not undo what the old copy did (hooks and timers it added under another name, "
                         "net strings, entities), and it does not reload a realm that loaded before the folder was mounted (map_load).",
                         json{{"properties", reload_props}}, json{{"destructiveHint", true}}, lua_reload_tool});

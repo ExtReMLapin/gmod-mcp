@@ -105,6 +105,23 @@
   `instances_close {owner}` closes `keep: true` test clients of an earlier bridge session (never a game that is not a test
   client, never one without the tag). (6) `low_memory` counts the game's processes, not only registered instances, and reports
   `registered_clients` and `game_processes`.
+- **`lua_mount` no longer reports a mount that loads nothing** (issue #9, found by live chaos testing). The module said `active`
+  and `loaded_with_mount` from its own bookkeeping for folders the engine takes into its search paths but cannot read. UNC
+  paths (also `\\localhost\D$\...`), extended-length paths (`\\?\D:\...`) and roots whose files pass MAX_PATH are now refused
+  with the reason, and with a map loaded each realm's file system is asked for a few of the folder's files:
+  `engine_serves_folder` / `engine_serves` in `lua_mount {}`, `status.lua_mount` and `map_load` (a warning when false), and
+  `instances_launch {lua_mount}` reports such a client `active: false` with `error_code: "mount_not_effective"`.
+  A folder renamed or deleted (or only its `lua/`) is reported (`folder_missing`, `mount_folder_missing`) instead of an empty
+  "all current" state, and `lua_reload {mounted_changed}` answers `mount_folder_missing`. A folder that replaces the game's own
+  base Lua (`lua/includes/init.lua`: the client hung and `map_load` timed out after 180 s) is refused with `shadows_base_lua`
+  and the files listed, unless `allow_shadow: true`; a `map_load` timeout with a mount set names the mount. After the mounted
+  folder changes without a map load, a function that ran from the old folder reports `provenance: "mount_changed_since_load"`
+  with its old copy as `disk`; a file loaded in place and then reloaded is `reloaded_from_mount`. A 30000-file mount no longer
+  costs seconds per `status`, `lua_reload {mounted_changed}` or `map_load` (one cheap scan instead of one slow scan per
+  realm: 5000 files 1064 ms -> 16 ms). The warning for a realm without a load record no longer claims it ran the installed
+  files. Smaller: stored paths compare like Windows does (trailing dot, case), a junction into the game folder is refused,
+  unmount removes the `gamemodes` paths even when that folder is gone, and a failing file in
+  `lua_reload {mounted_changed}` is an error result (`reload_failed`, details hold the whole result).
 - **`lua_mount` works again on the x86-64 build of Garry's Mod of 2026-11-19** (issue #9). That build added four slots to
   the engine's `IAppSystem` interface, so every `IFileSystem` slot moved by four: the module's `AddSearchPath` and
   `RemoveSearchPath` calls landed on two functions that do nothing, and the mounted folder was silently never searched

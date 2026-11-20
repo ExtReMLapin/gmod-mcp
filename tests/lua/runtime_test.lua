@@ -623,6 +623,24 @@ do
 	local enc = J.encode({ pos = J.array({ 0 / 0, 1, math.huge, -math.huge }) })
 	check(enc:find("null", 1, true) and not enc:find("nan", 1, true) and not enc:find("inf", 1, true), "non-finite numbers are written as null: " .. enc)
 end
+-- Issue #9 (chaos testing 2026-11-20): mount_probe asks the realm's own file system whether it finds files of the mounted
+-- folder (file.Exists and file.Time with "LUA", which see the mounted folder): the module cannot know it from the folder alone.
+file = { Exists = function(n, p) return p == "LUA" and n == "pba/a.lua" end,
+	Time = function(n, p) if p == "LUA" and n == "pba/a.lua" then return 1234 end return 0 end }
+r = call("mount_probe", { files = { { name = "pba/a.lua" }, { name = "zz/none.lua" } } })
+check(r.ok and #r.result.answers == 2 and r.result.answers[1].exists == true and r.result.answers[1].time == 1234
+	and r.result.answers[2].exists == false and r.result.answers[2].time == nil, "mount_probe answers exists and time per file, in order")
+r = call("mount_probe", { files = "pba/a.lua" })
+check(not r.ok and r.error.code == "invalid_params", "mount_probe: files must be a list")
+r = call("mount_probe", { files = { { name = 5 } } })
+check(not r.ok and r.error.code == "invalid_params", "mount_probe: a file name must be a string")
+local many = {}
+for i = 1, 40 do many[i] = { name = "x" .. i .. ".lua" } end
+r = call("mount_probe", { files = many })
+check(not r.ok and r.error.code == "invalid_params", "mount_probe: at most a few files (it runs on the main thread)")
+file = nil
+r = call("mount_probe", { files = { { name = "pba/a.lua" } } })
+check(not r.ok, "mount_probe without a file library is an error, not a guess")
 
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

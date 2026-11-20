@@ -178,7 +178,7 @@ static void hooked_mount(void *self, const char *id) {
         add_lua(root, id);
         // Issue #9: the folder is in front for the Lua this realm loads next: remember what it holds right now.
         try {
-            note_load_start(sv ? realms::SERVER : realms::CLIENT, root, scan_files(root));
+            record_load_start(sv ? realms::SERVER : realms::CLIENT, root);
         } catch (...) {
         }
     }
@@ -246,10 +246,11 @@ json set(const std::string &root, bool empty_cache) {
     std::string old = current();
     json removed = json::object();
     if (!old.empty()) {
-        removed["MOD"] = fs_remove(old, "MOD");
-        for (const char *id : {"lsv", "lcl"}) {
-            removed[std::string(id) + ":lua"] = fs_remove(old + "\\lua", id);
-            if (is_dir(old + "\\gamemodes")) removed[std::string(id) + ":gamemodes"] = fs_remove(old + "\\gamemodes", id);
+        // Every path the mount may have added, whatever is on disk now (a deleted <root>\gamemodes left its paths in lsv/lcl).
+        for (const auto &sp : mount_search_paths(old)) {
+            bool r = fs_remove(sp.path, sp.id.c_str());
+            if (sp.id == "MOD") removed["MOD"] = r;
+            else removed[sp.id + ":" + (sp.path.size() >= 9 && sp.path.compare(sp.path.size() - 9, 9, "gamemodes") == 0 ? "gamemodes" : "lua")] = r;
         }
     }
     {

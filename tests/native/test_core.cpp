@@ -411,7 +411,7 @@ static void test_launch_options() {
     std::vector<std::string> tk;
     CHECK(check_launch_args(json::array({"-noborder", "-nosound", "+cl_showfps", "1"}), tk).empty() && tk.size() == 4 && tk[2] == "+cl_showfps");
     CHECK(check_launch_args(json::array(), tk).empty() && tk.empty());
-    for (const char *bad : {"-multirun", "-MULTIRUN", "-mcp", "-mcpport", "-mcp_test_client", "-mcp_lua_mount", "-mcp_restore_convars", "+mcp_x", "-w", "-h", "-width", "-height",
+    for (const char *bad : {"-multirun", "-MULTIRUN", "-mcp", "-mcpport", "-mcp_test_client", "-mcp_lua_mount", "-mcp_lua_mount_allow_shadow", "-mcp_restore_convars", "+mcp_x", "-w", "-h", "-width", "-height",
                             "-windowed", "-window", "-sw", "-fullscreen", "-full", "-dxlevel", "-condebug", "-game", "+map", "+changelevel",
                             "+connect", "-connect", "+connect_lobby", "+retry", "+redirect", "+quit", "+exit", "+load", "+host_workshop_map"}) {
         std::string e = check_launch_args(json::array({"-noborder", bad}), tk);
@@ -574,6 +574,463 @@ static void test_lua_mount_paths() {
     CHECK(r.value("isError", false) && r.dump().find("invalid_params") != std::string::npos);
     r = mcp::call_tool("lua_mount", json{{"path", (t / "nolua").u8string()}});
     CHECK(r.value("isError", false) && r.dump().find("lua") != std::string::npos);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F1): paths the engine's file system accepts into its search paths but loads nothing
+// from. A UNC share, an extended-length (\\?\) or device (\\.\) path and a root so long that a file under it passes MAX_PATH
+// were all reported mounted and active while no file loaded. They are refused up front, each with its way out.
+static void test_issue9_unloadable_paths() {
+    std::string root, err;
+    auto refused = [&](const std::string &in, const char *word) {
+        root.clear();
+        err.clear();
+        bool r = lua_mount::normalize_root(in, root, err);
+        if (r || !root.empty() || err.find(word) == std::string::npos)
+            std::printf("not refused as expected: %s -> %s\n", in.c_str(), err.c_str());
+        return !r && root.empty() && err.find(word) != std::string::npos;
+    };
+    CHECK(refused(R"(\\localhost\D$\dev\wt)", "UNC"));      // Issue #9
+    CHECK(refused("//localhost/D$/dev/wt", "UNC"));         // Issue #9: forward slashes name the same share
+    CHECK(refused(R"(\\server\share\wt\lua)", "UNC"));      // Issue #9
+    CHECK(refused(R"(\\?\D:\dev\wt)", "extended-length"));  // Issue #9
+    CHECK(refused(R"(\\.\D:\dev\wt)", "extended-length"));  // Issue #9: device namespace
+    CHECK(refused("//?/D:/dev/wt", "extended-length"));     // Issue #9
+    // A root path that long cannot hold any file under MAX_PATH: refused without looking at the disk.
+    CHECK(refused("D:\\" + std::string(250, 'a'), "too long"));  // Issue #9
+    // The files decide: the longest mounted file path (root + separator + its root-relative name) must fit under MAX_PATH.
+    fs::path t = fs::temp_directory_path() / "gmod-mcp-coretests-longmount";
+    std::error_code ec;
+    fs::remove_all(t, ec);
+    touch(t / "wt" / "lua" / "a.lua");
+    touch(t / "wt" / "lua" / "deep" / "er" / "name_that_is_rather_long.lua");
+    std::string wt = fs::path(t / "wt").make_preferred().u8string();
+    CHECK(lua_mount::refuse_too_long(wt).empty());  // Issue #9: the real limit is far away
+    size_t longest = wt.size() + 1 + std::string("lua/deep/er/name_that_is_rather_long.lua").size();
+    CHECK(lua_mount::refuse_too_long(wt, longest).empty());         // Issue #9: exactly at the limit still fits
+    std::string why = lua_mount::refuse_too_long(wt, longest - 1);  // Issue #9: one character over
+    CHECK(!why.empty() && why.find("name_that_is_rather_long.lua") != std::string::npos && why.find("MAX_PATH") != std::string::npos);
+    // refuse_mount is the one check the tool, the bridge and the module run.
+    std::string code;
+    CHECK(lua_mount::refuse_mount(wt, "", false, &code).empty());  // Issue #9
+    CHECK(!lua_mount::refuse_mount(wt, t.u8string(), false, &code).empty() && code == "invalid_params");  // Issue #9: inside the game folder
+    fs::remove_all(t, ec);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F1b): the module reported a mount active and "loaded with the mount" from its own
+// bookkeeping while the engine loaded nothing from the folder. It now asks each realm's file system for a few files of the
+// folder (file.Exists and file.Time with "LUA", which see the mounted folder) and reports engine_serves_folder.
+static void test_issue9_engine_serves() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-serves", ov = base / "wt";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    for (const char *f : {"lua/pba/a.lua", "lua/pba/b.lua", "lua/zz/c.lua", "lua/d.lua", "lua/e/f/g.lua", "gamemodes/ovgm/gamemode/init.lua"}) touch(ov / f);
+    const int SV = realms::SERVER, CL = realms::CLIENT;
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+    auto files = lua_mount::scan_files(ov.u8string());
+
+    // Probes: Lua path names as file.Exists takes them (no lua/ or gamemodes/ prefix), lua/ files first, spread over the folder.
+    auto probes = lua_mount::pick_probes(files, 3);
+    CHECK(probes.size() == 3);  // Issue #9
+    for (const auto &p : probes)
+        CHECK(p.name.rfind("lua/", 0) != 0 && p.name.rfind("gamemodes/", 0) != 0 && p.name != "ovgm/gamemode/init.lua" && p.name.size() > 4);  // Issue #9
+    CHECK(probes[0].name != probes[1].name && probes[1].name != probes[2].name);  // Issue #9: distinct files
+    lua_mount::Files gm_only;
+    gm_only["gamemodes/ovgm/gamemode/init.lua"] = files["gamemodes/ovgm/gamemode/init.lua"];
+    auto gp = lua_mount::pick_probes(gm_only, 3);
+    CHECK(gp.size() == 1 && gp[0].name == "ovgm/gamemode/init.lua");  // Issue #9: a gamemode file is named from gamemodes/
+    CHECK(lua_mount::pick_probes({}, 3).empty());  // Issue #9: nothing to ask about
+    // The expected file time is in Unix seconds, as file.Time answers.
+    long long now = (long long)std::time(nullptr);
+    CHECK(std::llabs(probes[0].unix_time - now) <= 5);  // Issue #9
+    CHECK(lua_mount::unix_seconds_of(-1) == -1);  // Issue #9: unknown stays unknown
+
+    // The verdict: some probe found in the folder (right time) = served; found but another time = another copy;
+    // not found = not served; no usable answer = unknown.
+    long long t0 = probes[0].unix_time;
+    auto ans = [](bool e, long long t) { return json{{"exists", e}, {"time", t}}; };
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0), ans(false, 0), ans(true, 5)})) == json(true));  // Issue #9: one is enough
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0 + 2), ans(false, 0), ans(false, 0)})) == json(true));  // Issue #9: 2 s of slack
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0 + 100), ans(true, t0 - 100), ans(true, t0 + 3600)})) == json(false));  // Issue #9: another copy
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(false, 0), ans(false, 0), ans(false, 0)})) == json(false));  // Issue #9: nothing found
+    CHECK(lua_mount::probes_verdict(probes, json(nullptr)).is_null());  // Issue #9
+    CHECK(lua_mount::probes_verdict(probes, json::array({ans(true, t0)})).is_null());  // Issue #9: a short answer is no answer
+    CHECK(lua_mount::probes_verdict({}, json::array()).is_null());  // Issue #9
+    CHECK(lua_mount::probes_verdict({{"pba/a.lua", -1}}, json::array({ans(true, 12345)})) == json(true));  // Issue #9: unknown time: existence only
+
+    // status.lua_mount / map_load: both realms loaded with the folder in front, the engine is asked per realm.
+    lua_mount::note_load_start(SV, ov.u8string(), files);
+    lua_mount::note_load_start(CL, ov.u8string(), files);
+    lua_mount::note_realm_loaded(SV);
+    lua_mount::note_realm_loaded(CL);
+    std::map<int, int> asked;
+    json sv_exists = true, cl_exists = true;
+    tools::set_mount_probe_for_tests([&](int realm, const std::vector<lua_mount::Probe> &ps) -> json {
+        asked[realm]++;
+        bool e = realm == realms::SERVER ? sv_exists.get<bool>() : cl_exists.get<bool>();
+        json a = json::array();
+        for (const auto &p : ps) a.push_back(ans(e, e ? p.unix_time : 0));
+        return a;
+    });
+    json st = tools::mount_state({SV, CL});
+    CHECK(asked[SV] == 1 && asked[CL] == 1);  // Issue #9: once per realm
+    CHECK(st["engine_serves_folder"] == true && st["engine_serves"]["server"] == true && st["engine_serves"]["client"] == true);  // Issue #9
+    CHECK(!st.contains("warning"));  // Issue #9: a healthy mount says nothing
+    sv_exists = false;
+    st = tools::mount_state({SV, CL});
+    CHECK(st["engine_serves_folder"] == false && st["engine_serves"]["server"] == false && st["engine_serves"]["client"] == true);  // Issue #9
+    std::string w = st.value("warning", "");
+    CHECK(w.find("server") != std::string::npos && w.find("file system") != std::string::npos && w.find("installed") != std::string::npos);  // Issue #9
+    CHECK(w.find("lua_mount") != std::string::npos);  // Issue #9: the way out is named
+    // A realm that cannot be asked (no runtime): unknown, not a failure.
+    tools::set_mount_probe_for_tests([](int, const std::vector<lua_mount::Probe> &) -> json { return nullptr; });
+    st = tools::mount_state({SV, CL});
+    CHECK(st["engine_serves_folder"].is_null() && !st.contains("warning"));  // Issue #9
+    tools::set_mount_probe_for_tests(nullptr);
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F7): the small ones. Stored paths are compared the way Windows does (case, trailing
+// separators, dots and spaces); a junction that resolves into the game folder is refused; the paths removed at unmount do
+// not depend on what is on disk then; a failed file in lua_reload {mounted_changed} is an error result.
+static void test_issue9_small_fixes() {
+    // Paths that name the same folder compare equal; different folders do not; nothing equals nothing.
+    CHECK(lua_mount::same_path("D:/Dev/WT/", "d:\\dev\\wt"));  // Issue #9
+    CHECK(lua_mount::same_path("D:\\dev\\wt.", "D:/dev/wt"));  // Issue #9: Windows drops a trailing dot
+    CHECK(lua_mount::same_path("D:/dev/wt \\", "d:/dev/wt"));  // Issue #9: and a trailing space
+    CHECK(!lua_mount::same_path("D:/dev/wt", "D:/dev/wt2"));  // Issue #9
+    CHECK(!lua_mount::same_path("D:/dev/wt/lua", "D:/dev/wt"));  // Issue #9
+    CHECK(!lua_mount::same_path("", "") && !lua_mount::same_path("D:/x", ""));  // Issue #9
+
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-small", game = base / "garrysmod";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(base / "wt" / "lua" / "a.lua");
+    touch(game / "lua" / "base.lua");
+    touch(game / "addons" / "inst" / "lua" / "i.lua");
+#ifdef _WIN32
+    // Windows resolves a trailing dot or space; the stored root must not keep it (the engine and the comparisons would disagree).
+    std::string root, err;
+    CHECK(lua_mount::normalize_root(fs::path(base / "wt").u8string() + ".", root, err) && lua_mount::same_path(root, (base / "wt").u8string()) &&
+          root.back() != '.');  // Issue #9
+    CHECK(lua_mount::normalize_root(fs::path(base / "wt" / "lua").u8string() + ". ", root, err) && root.back() != '.' && root.back() != ' ');  // Issue #9
+#endif
+    // A junction (or symlink) into the game folder is refused: the engine searches the game folder already.
+    fs::path link = base / "linkinst";
+    bool linked = false;
+#ifdef _WIN32
+    linked = std::system(("cmd /c mklink /J \"" + link.make_preferred().string() + "\" \"" + fs::path(game / "addons" / "inst").make_preferred().string() + "\" >nul 2>nul").c_str()) == 0;
+#else
+    fs::create_directory_symlink(game / "addons" / "inst", link, ec);
+    linked = !ec;
+#endif
+    if (linked) {
+        std::string why = lua_mount::refuse_inside_game(link.u8string(), game.u8string());
+        CHECK(!why.empty() && why.find("inside the game folder") != std::string::npos);  // Issue #9
+        fs::path outside = base / "wt-link";
+#ifdef _WIN32
+        bool l2 = std::system(("cmd /c mklink /J \"" + outside.make_preferred().string() + "\" \"" + fs::path(base / "wt").make_preferred().string() + "\" >nul 2>nul").c_str()) == 0;
+#else
+        fs::create_directory_symlink(base / "wt", outside, ec);
+        bool l2 = !ec;
+#endif
+        if (l2) CHECK(lua_mount::refuse_inside_game(outside.u8string(), game.u8string()).empty());  // Issue #9: a junction to a folder outside is fine
+        fs::remove(outside, ec);
+        fs::remove(link, ec);
+    } else {
+        std::printf("  (junction not created here: the junction checks were skipped)\n");
+    }
+
+    // Unmount removes every path the mount added, whatever is on disk now (a deleted <root>\gamemodes left its paths in lsv/lcl).
+    auto sp = lua_mount::mount_search_paths("D:\\wt");
+    std::set<std::string> have;
+    for (const auto &p : sp) have.insert(p.id + ":" + p.path);
+    CHECK(sp.size() == 5);  // Issue #9
+    CHECK(have.count("MOD:D:\\wt") && have.count("lsv:D:\\wt\\lua") && have.count("lsv:D:\\wt\\gamemodes") && have.count("lcl:D:\\wt\\lua") &&
+          have.count("lcl:D:\\wt\\gamemodes"));  // Issue #9
+    CHECK(sp[0].id == "MOD" && sp[0].tail && !sp[1].tail);  // Issue #9: the root goes at the END of MOD, the Lua folders at the head
+
+    // lua_reload {mounted_changed}: a file that failed makes the result an error (isError), with everything in the details.
+    json st{{"path", "D:/dev/wt"}, {"realms_without_mount", json::array()}};
+    json plan{{"reload", json::array()}, {"skipped", json::array({json{{"file", "lua/entities/x/init.lua"}, {"why", "entity"}}})}};
+    json good = json::array({json{{"file", "lua/a.lua"}, {"chunkname", "@lua/a.lua"}, {"reason", "modified"}, {"realms", {{"server", {{"values", json::array()}}}}}}});
+    json r = tools::mounted_reload_result(st, plan, good, true);
+    CHECK(r.value("ok", false) && r["result"]["reloaded"].size() == 1 && r["result"]["ok"] == true);  // Issue #9: success unchanged
+    json bad = json::array({json{{"file", "lua/b.lua"}, {"chunkname", "@lua/b.lua"}, {"reason", "modified"},
+                                 {"realms", {{"server", {{"error", {{"code", "lua_syntax_error"}, {"message", "b.lua:3: unexpected symbol"}}}}}, {"client", {{"values", json::array()}}}}}}});
+    r = tools::mounted_reload_result(st, plan, bad, false);
+    CHECK(!r.value("ok", true) && r["error"]["code"] == "reload_failed");  // Issue #9: ok:false -> isError at the MCP layer
+    std::string msg = r["error"]["message"].get<std::string>();
+    CHECK(msg.find("lua/b.lua") != std::string::npos && msg.find("server") != std::string::npos && msg.find("unexpected symbol") != std::string::npos);  // Issue #9
+    CHECK(msg.find("client") == std::string::npos);  // Issue #9: only the realm that failed
+    const json &d = r["error"]["details"];
+    CHECK(d["mode"] == "mounted_changed" && d["reloaded"].size() == 1 && d["skipped"].size() == 1 && d["path"] == "D:/dev/wt" && d["ok"] == false);  // Issue #9: nothing lost
+    // The guide lists what is refused and what the stale-file check cannot see.
+    json gd = resources::read("mcpagent://guide");
+    std::string guide = gd.is_object() && gd.contains("text") ? gd["text"].get<std::string>() : "";
+    for (const char *w : {"non-ASCII", "UNC", "MAX_PATH", "leaves the file's time as it was"})
+        if (guide.find(w) == std::string::npos) std::printf("guide lacks: %s\n", w);
+    CHECK(guide.find("non-ASCII") != std::string::npos && guide.find("UNC") != std::string::npos && guide.find("MAX_PATH") != std::string::npos);  // Issue #9
+    CHECK(guide.find("leaves the file's time as it was") != std::string::npos);  // Issue #9: stale_files cannot see it, map_load runs the new code
+    fs::remove_all(base, ec);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F5): a 30000-file mount made status and lua_reload {mounted_changed} take ~9 s (one scan
+// per realm, each stat-ing every file again) and map_load 8 -> 25 s (a scan inside the MountLua hook, on the main thread, once
+// per realm). Fewer scans (one per status, one per load for both realms) and a cheaper scan (the directory listing already
+// carries each file's time). A scan counts; the file time check must stay exact (an OLDER file is changed too).
+static void test_issue9_scan_cost() {
+    using Clock = std::chrono::steady_clock;
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-scan", ov = base / "wt";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    constexpr int kDirs = 50, kPerDir = 100;  // 5000 files
+    for (int d = 0; d < kDirs; ++d) {
+        fs::create_directories(ov / "lua" / ("d" + std::to_string(d)));
+        for (int f = 0; f < kPerDir; ++f) std::ofstream(ov / "lua" / ("d" + std::to_string(d)) / ("f" + std::to_string(f) + ".lua"), std::ios::binary) << "return 1\n";
+    }
+    const int SV = realms::SERVER, CL = realms::CLIENT;
+    auto ms = [](Clock::time_point a) { return std::chrono::duration<double, std::milli>(Clock::now() - a).count(); };
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+
+    auto t = Clock::now();
+    auto files = lua_mount::scan_files(ov.u8string());
+    double scan_ms = ms(t);
+    CHECK(files.size() == (size_t)kDirs * kPerDir);  // Issue #9
+    std::printf("  F5 scan of %zu files: %.0f ms\n", files.size(), scan_ms);
+
+    // One load: the server's and the client's MountLua hook share one scan.
+    uint64_t c0 = lua_mount::scan_count();
+    t = Clock::now();
+    lua_mount::record_load_start(SV, ov.u8string());
+    lua_mount::record_load_start(CL, ov.u8string());
+    std::printf("  F5 both hooks: %.0f ms, %llu scan(s)\n", ms(t), (unsigned long long)(lua_mount::scan_count() - c0));
+    CHECK(lua_mount::scan_count() - c0 == 1);  // Issue #9: was 2
+    lua_mount::note_realm_loaded(SV);
+    lua_mount::note_realm_loaded(CL);
+    CHECK(lua_mount::realm_loaded_with_mount(SV) && lua_mount::realm_loaded_with_mount(CL));  // Issue #9
+
+    // status / lua_reload {mounted_changed} / the end of map_load: one scan for both realms.
+    c0 = lua_mount::scan_count();
+    t = Clock::now();
+    json st = tools::mount_state({SV, CL});
+    std::printf("  F5 mount_state: %.0f ms, %llu scan(s)\n", ms(t), (unsigned long long)(lua_mount::scan_count() - c0));
+    CHECK(lua_mount::scan_count() - c0 == 1);  // Issue #9: was 2
+    CHECK(st["stale_files"].empty());  // Issue #9
+
+    // The check stays exact: newer, OLDER (a git checkout of an older file), added and deleted files are all found.
+    auto set_age = [&](const char *rel, int hours) {
+        fs::path p = ov / rel;
+        fs::last_write_time(p, fs::last_write_time(p) + std::chrono::hours(hours));
+    };
+    set_age("lua/d3/f7.lua", 2);    // newer
+    set_age("lua/d4/f8.lua", -48);  // older
+    std::ofstream(ov / "lua/d5/added.lua", std::ios::binary) << "return 2\n";
+    fs::remove(ov / "lua/d6/f9.lua");
+    auto ch = lua_mount::changed_files(SV);
+    std::map<std::string, std::string> by;
+    for (const auto &c : ch) by[c.rel] = c.reason;
+    CHECK(ch.size() == 4 && by["lua/d3/f7.lua"] == "modified" && by["lua/d4/f8.lua"] == "modified" && by["lua/d5/added.lua"] == "added" &&
+          by["lua/d6/f9.lua"] == "deleted");  // Issue #9
+    st = tools::mount_state({SV, CL});
+    CHECK(st["stale_files"].size() == 4);  // Issue #9: each file once, with both realms (shared files run in both)
+    // A realm that only has files run again (no load record) is compared too, with the one shared scan: its file is current.
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+    lua_mount::note_reloaded(CL, ov.u8string(), "lua/d1/f1.lua", lua_mount::mtime_of((ov / "lua/d1/f1.lua").u8string()));
+    st = tools::mount_state({CL});
+    CHECK(st["stale_files"].empty());  // Issue #9: not "5000 files deleted" because the scan was skipped
+    set_age("lua/d1/f1.lua", 1);
+    st = tools::mount_state({CL});
+    CHECK(st["stale_files"].size() == 1 && st["stale_files"][0]["file"] == "lua/d1/f1.lua");  // Issue #9
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F4): the mounted folder changed (another folder, or none) without a map load: a function
+// that ran from the first folder was reported from_mount false / not_on_disk with a note about a .gma. The realm remembers the
+// folder it loaded with. And a file loaded in place at load, then run again with lua_reload, is reloaded_from_mount.
+static void test_issue9_provenance_changed() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-prov", game = base / "garrysmod", fa = base / "fa", fb = base / "fb";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(fa / "lua/pba/x.lua");
+    touch(fa / "lua/pba/gone.lua");
+    touch(fb / "lua/pba/x.lua");
+    touch(game / "lua/pba/x.lua");
+    auto &cfg = agent::config();
+    cfg.game_dir = game.u8string();
+    cfg.tmp_dir = (game / "lua/mcpagent_tmp").u8string();
+    const int SV = realms::SERVER, CL = realms::CLIENT;
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(fa.u8string());
+    lua_mount::record_load_start(SV, fa.u8string());
+    lua_mount::note_realm_loaded(SV);
+    json p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["provenance"] == "mount_in_place_at_load");  // Issue #9: the baseline
+
+    // Another folder is mounted, no map load: the realm still runs fa's copy.
+    lua_mount::set_current_for_tests(fb.u8string());
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["provenance"] == "mount_changed_since_load" && p["from_mount"] == false);  // Issue #9
+    CHECK(p.contains("disk") && same(p["disk"], fa / "lua/pba/x.lua") && same(p["loaded_from"], fa));  // Issue #9: the copy the realm ran
+    std::string note = p.value("provenance_note", "");
+    CHECK(note.find(fb.u8string()) != std::string::npos && note.find("map_load") != std::string::npos && note.find("gma") == std::string::npos);  // Issue #9
+    // Unmounted: same, and the note says so.
+    lua_mount::set_current_for_tests("");
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["provenance"] == "mount_changed_since_load" && same(p["disk"], fa / "lua/pba/x.lua"));  // Issue #9
+    CHECK(p.value("provenance_note", "").find("no longer mounted") != std::string::npos);  // Issue #9
+    // The old copy was deleted since: no disk, still the right provenance, and it says why.
+    lua_mount::set_current_for_tests(fb.u8string());
+    fs::remove(fa / "lua/pba/gone.lua");
+    p = tools::source_provenance(SV, "@lua/pba/gone.lua");
+    CHECK(p["provenance"] == "mount_changed_since_load" && !p.contains("disk") && p.value("provenance_note", "").find("deleted") != std::string::npos);  // Issue #9
+    // A file that was not in the first folder's snapshot is not from it; a realm without record is untouched.
+    p = tools::source_provenance(SV, "@lua/pba/other.lua");
+    CHECK(p["provenance"] != "mount_changed_since_load");  // Issue #9
+    p = tools::source_provenance(CL, "@lua/pba/x.lua");
+    CHECK(p["provenance"] == "installed" && p["from_mount"] == false);  // Issue #9
+    // The realm loads again with the new folder: from_mount again.
+    lua_mount::record_load_start(SV, fb.u8string());
+    lua_mount::note_realm_loaded(SV);
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["provenance"] == "mount_in_place_at_load" && same(p["disk"], fb / "lua/pba/x.lua"));  // Issue #9
+
+    // lua_reload of a file the realm loaded in place: it now comes from the reload (the guide says so).
+    lua_mount::note_reloaded(SV, fb.u8string(), "lua/pba/x.lua", lua_mount::mtime_of((fb / "lua/pba/x.lua").u8string()));
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["provenance"] == "reloaded_from_mount");  // Issue #9
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F3): a folder holding lua/includes/init.lua shadowed the game's own base Lua: the
+// client hung in its load and map_load timed out after 180 s without a word about the mount. The mount is refused up front,
+// listing the files that would shadow the game's own, unless allow_shadow is passed.
+static void test_issue9_shadow_base() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-shadow", game = base / "garrysmod";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(game / "lua/includes/init.lua");
+    touch(game / "lua/includes/util.lua");
+    touch(game / "lua/autorun/base_autorun.lua");
+    touch(game / "gamemodes/base/gamemode/init.lua");
+    touch(game / "gamemodes/sandbox/gamemode/init.lua");
+    touch(base / "addon/lua/pba/x.lua");                       // an addon's own file: fine
+    touch(base / "addon/gamemodes/mygm/gamemode/init.lua");   // a gamemode of its own: fine
+    touch(base / "shadowing/lua/pba/x.lua");
+    touch(base / "shadowing/lua/includes/init.lua");           // shadows lua/includes/init.lua
+    touch(base / "gmshadow/lua/pba/x.lua");
+    touch(base / "gmshadow/gamemodes/base/gamemode/init.lua");  // shadows the base gamemode
+    touch(base / "gmfork/lua/pba/x.lua");
+    touch(base / "gmfork/gamemodes/sandbox/gamemode/init.lua");  // a fork of another gamemode is the point of the mount
+    auto root = [&](const char *n) { return fs::path(base / n).make_preferred().u8string(); };
+    std::string g = game.u8string();
+    CHECK(lua_mount::shadowed_base_files(root("addon"), g).empty());  // Issue #9
+    CHECK(lua_mount::shadowed_base_files(root("gmfork"), g).empty());  // Issue #9: only the base gamemode counts
+    auto sh = lua_mount::shadowed_base_files(root("shadowing"), g);
+    CHECK(sh.size() == 1 && sh[0] == "lua/includes/init.lua");  // Issue #9: named from the mount root
+    sh = lua_mount::shadowed_base_files(root("gmshadow"), g);
+    CHECK(sh.size() == 1 && sh[0] == "gamemodes/base/gamemode/init.lua");  // Issue #9
+    CHECK(lua_mount::shadowed_base_files(root("shadowing"), "").empty());  // Issue #9: no game folder known: no check
+
+    std::string code;
+    CHECK(lua_mount::refuse_mount(root("addon"), g, false, &code).empty());  // Issue #9
+    std::string why = lua_mount::refuse_mount(root("shadowing"), g, false, &code);
+    CHECK(code == "shadows_base_lua" && why.find("lua/includes/init.lua") != std::string::npos && why.find("allow_shadow") != std::string::npos);  // Issue #9
+    CHECK(lua_mount::refuse_mount(root("shadowing"), g, true, &code).empty());  // Issue #9: the caller knows what it does
+    CHECK(lua_mount::refuse_mount(root("shadowing"), "", false, &code).empty());  // Issue #9
+    // Many files: the message lists a few and counts the rest.
+    for (int i = 0; i < 20; ++i) {
+        touch(game / ("lua/includes/m" + std::to_string(i) + ".lua"));
+        touch(base / "shadowing" / ("lua/includes/m" + std::to_string(i) + ".lua"));
+    }
+    why = lua_mount::refuse_mount(root("shadowing"), g, false, &code);
+    CHECK(code == "shadows_base_lua" && why.find("21 file") != std::string::npos && why.find("...") != std::string::npos);  // Issue #9
+
+    // The tool refuses it too (the arguments are checked on the network thread, before any engine call).
+    tools::register_lua_mount();
+    auto &cfg = agent::config();
+    std::string saved = cfg.game_dir;
+    cfg.game_dir = g;
+    json r = mcp::call_tool("lua_mount", json{{"path", root("shadowing")}});
+    CHECK(r.value("isError", false) && r.dump().find("shadows_base_lua") != std::string::npos && r.dump().find("includes/init.lua") != std::string::npos);  // Issue #9
+    cfg.game_dir = saved;
+
+    // A map_load that times out with a mount set names the mount and where to look (the hang had no word about it).
+    lua_mount::set_current_for_tests("");
+    CHECK(tools::mount_timeout_hint().empty());  // Issue #9: no mount, no hint
+    lua_mount::set_current_for_tests(root("addon"));
+    std::string hint = tools::mount_timeout_hint();
+    CHECK(hint.find(root("addon")) != std::string::npos && hint.find("errors_since") != std::string::npos && hint.find("lua_mount") != std::string::npos);  // Issue #9
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
+// Issue #9 (chaos testing 2026-11-20, F2): the mounted folder renamed or deleted (or only its lua/) while the game loads:
+// the map loaded without it, and status still said loaded_with_mount true, no stale file and no warning.
+static void test_issue9_folder_missing() {
+    if (mcp::tools().empty()) tools::register_all();
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-missing", ov = base / "wt", moved = base / "wt-moved";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(ov / "lua/pba/x.lua");
+    touch(ov / "lua/pba/sv_y.lua");
+    const int SV = realms::SERVER;
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+    CHECK(lua_mount::folder_present(ov.u8string()));  // Issue #9
+    CHECK(!lua_mount::folder_present((base / "nothing").u8string()));  // Issue #9
+
+    // Healthy: the hook found the folder, the realm loaded with it, status says nothing.
+    lua_mount::record_load_start(SV, ov.u8string());
+    lua_mount::note_realm_loaded(SV);
+    CHECK(lua_mount::realm_loaded_with_mount(SV));  // Issue #9
+    json st = tools::mount_state({SV});
+    CHECK(!st.contains("folder_missing") && !st.contains("warning"));  // Issue #9
+
+    // The folder is renamed after the load: status says so, once, and does not list every file as deleted.
+    fs::rename(ov, moved);
+    st = tools::mount_state({SV});
+    CHECK(st["folder_missing"] == true);  // Issue #9
+    std::string w = st.value("warning", "");
+    CHECK(w.find("mount_folder_missing") != std::string::npos && w.find(ov.u8string()) != std::string::npos);  // Issue #9
+    CHECK(st["stale_files"].empty());  // Issue #9: one clear message instead of every file "deleted"
+    json r = mcp::call_tool("lua_reload", json{{"mounted_changed", true}});
+    CHECK(r.value("isError", false) && r.dump().find("mount_folder_missing") != std::string::npos);  // Issue #9: nothing to reload from
+    // Only its lua/ deleted: same.
+    fs::rename(moved, ov);
+    fs::remove_all(ov / "lua", ec);
+    st = tools::mount_state({SV});
+    CHECK(st["folder_missing"] == true && st.value("warning", "").find("lua/") != std::string::npos);  // Issue #9
+
+    // The hook ran while the folder was gone: the realm did NOT load with the mount, and says so (not "predates the mount").
+    lua_mount::forget_loads_for_tests();
+    lua_mount::record_load_start(SV, ov.u8string());
+    lua_mount::note_realm_loaded(SV);
+    CHECK(!lua_mount::realm_loaded_with_mount(SV));  // Issue #9
+    st = tools::mount_state({SV});
+    CHECK(st["loaded_with_mount"]["server"] == false && st["folder_missing"] == true);  // Issue #9
+    CHECK(st.value("warning", "").find("mount_folder_missing") != std::string::npos);  // Issue #9
+    // The folder comes back: that load still did not have it (map_load), and the warning is the usual one.
+    touch(ov / "lua/pba/x.lua");
+    st = tools::mount_state({SV});
+    CHECK(!st.contains("folder_missing") && st["loaded_with_mount"]["server"] == false);  // Issue #9
+    CHECK(st.value("warning", "").find("map_load") != std::string::npos);  // Issue #9
+    // F6: the warning only states what is known. A realm without a record may have loaded the folder's files (the mid-load race:
+    // the hook ran for another state of the folder) or the installed ones: it must not claim it ran the installed addon's files.
+    std::string wr = st.value("warning", "");
+    CHECK(wr.find("server") != std::string::npos && wr.find("did not load") != std::string::npos);  // Issue #9
+    CHECK(wr.find("installed addon") == std::string::npos && wr.find("before this folder was mounted") == std::string::npos);  // Issue #9
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
 }
 
 // Issue #9: the GMod x86-64 build of 2026-11-19 grew IAppSystem from 5 to 9 slots, so every IFileSystem slot moved by
@@ -2309,6 +2766,13 @@ int main(int argc, char **argv) {
     test_lua_mount_paths();
     test_fs_vtable_layout();
     test_issue9_mount_reload();
+    test_issue9_unloadable_paths();
+    test_issue9_engine_serves();
+    test_issue9_folder_missing();
+    test_issue9_shadow_base();
+    test_issue9_provenance_changed();
+    test_issue9_scan_cost();
+    test_issue9_small_fixes();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();

@@ -1026,6 +1026,8 @@ json bridge_tools() {
                                          "Each engine is asked what it really has BEFORE any map loads (instances[i].lua_mount.active); a missing mount is "
                                          "applied again, and a client that still has none gets no map (map_error lua_mount_not_active, "
                                          "isError, warning). Windows only."}}},
+            {"allow_shadow", {{"type", "boolean"}, {"description", "With lua_mount: accept a folder that replaces files of the game's own base Lua "
+                                                                                 "(lua/includes/init.lua...). Refused by default (shadows_base_lua): such a client hangs in its load."}}},
             {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe or bin/win64/gmod.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
           {"additionalProperties", false}}},
@@ -1359,18 +1361,7 @@ std::wstring utf8_to_wide(const std::string &s) {
 // answered (its structuredContent, or {"error"} when the call failed). The mount counts as active only when the
 // engine reports the requested folder; the answer's base_lua_mounted false means the client cannot run its base Lua.
 [[maybe_unused]] json lua_mount_verdict(const std::string &requested, const json &answer) {
-    auto same = [](std::string a, std::string b) {
-        auto norm = [](std::string &x) {
-            for (auto &c : x) {
-                if (c == '/') c = '\\';
-                else if ((unsigned char)c < 0x80) c = (char)std::tolower((unsigned char)c);
-            }
-            while (x.size() > 3 && x.back() == '\\') x.pop_back();
-        };
-        norm(a);
-        norm(b);
-        return !a.empty() && a == b;
-    };
+    auto same = [](const std::string &a, const std::string &b) { return lua_mount::same_path(a, b); };
     json v{{"requested", requested}, {"active", false}, {"base_lua_mounted", nullptr}};
     if (!answer.is_object() || answer.contains("error")) {
         json e = answer.is_object() && answer.contains("error") ? answer["error"] : json("no usable answer from the game");
@@ -1382,6 +1373,23 @@ std::wstring utf8_to_wide(const std::string &s) {
     json engine = answer.value("lua_mount", json());
     if (engine.is_string() && same(engine.get<std::string>(), requested)) {
         v["active"] = true;
+        if (answer.value("folder_missing", false)) {  // Issue #9: renamed or deleted since it was mounted
+            v["active"] = false;
+            v["error_code"] = "mount_folder_missing";
+            v["error"] = "mount_folder_missing: the mounted folder (or its lua/) does not exist any more: the game serves nothing from it";
+            return v;
+        }
+        // Issue #9: the engine lists the folder, but its file system may not be able to read it (UNC, junction, long path...):
+        // the game then asks the module's own bookkeeping, not the file system, and runs the installed code.
+        if (answer.contains("engine_serves_folder") && answer["engine_serves_folder"].is_boolean()) {
+            v["engine_serves_folder"] = answer["engine_serves_folder"];
+            if (answer["engine_serves_folder"] == json(false)) {
+                v["active"] = false;
+                v["error_code"] = "mount_not_effective";
+                v["error"] = "mount_not_effective: the engine lists the folder but its file system serves none of the files it was asked "
+                             "for (a path it cannot read: UNC, junction, over-long or non-ASCII), so the game runs the installed addon's code";
+            }
+        }
     } else {
         v["engine_lua_mount"] = engine.is_string() ? engine : json(nullptr);
         v["error"] = engine.is_string() ? "the engine has another folder mounted: " + engine.get<std::string>()
@@ -1496,8 +1504,8 @@ json launch_tool(const json &args, const json &token) {
                                                 (given.empty() ? "" : "; " + gamedir::missing_exe_message(given)));
     }
     if (!mount_root.empty()) {
-        std::string inside = lua_mount::refuse_inside_game(mount_root, root + "/garrysmod");
-        if (!inside.empty()) return tool_error("invalid_params", "lua_mount: " + inside);
+        std::string code, inside = lua_mount::refuse_mount(mount_root, root + "/garrysmod", args.value("allow_shadow", false), &code);
+        if (!inside.empty()) return tool_error(code, "lua_mount: " + inside);
     }
     json peers_list = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
     // Issue #8 (chaos test G1): a frozen client blocks a new one from registering: refuse up front, with the way out.
@@ -1554,7 +1562,7 @@ json launch_tool(const json &args, const json &token) {
     opts += " -dxlevel 95";
     if (!sound) opts += " -nosound";
     // The folder was checked: no quote or line break can end the argument.
-    if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"";
+    if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"" + (args.value("allow_shadow", false) ? " -mcp_lua_mount_allow_shadow" : "");
     // Issue #10: the extra tokens (validated: no space, quote or ';'), after ours so that a `+convar` of theirs wins; then the
     // names of the convars they and the commands may change, which the module gives back to the user's values before a
     // clean quit (an older module ignores this option).

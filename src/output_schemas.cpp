@@ -85,7 +85,8 @@ json build(const std::string &tool) {
                            {"main_thread_stalled", B}, {"perf", Obj}, {"realms", Obj}, {"client_lock", Obj},
                            {"console_capture", S}, {"tmp_dir", S}, {"game_dir", S}, {"menu", Obj}, {"server", Obj}, {"client", Obj},
                            {"host_error", Obj}, {"map", NS}, {"gamemode", ANY}, {"maxplayers", ANY}, {"loading", B},
-                           {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS}});
+                           {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS},
+                           {"lua_mount", Obj}});
         // --- Lua execution
         json exec = obj({{"values", ANYS}, {"n", N}, {"output", S}, {"duration_ms", N}, {"chunk_bytes", N}, {"chunkname", S},
                          {"budget_s", N}, {"generation", N}, {"truncated", N}, {"projected", STRS}, {"fields_note", S}, {"file", S},
@@ -100,17 +101,26 @@ json build(const std::string &tool) {
         s["lua_check"] = obj({{"ok", B}, {"realm", S}, {"checked", N}, {"errors", ANYS}, {"unknown_globals", ANYS},
                               {"globals_written", ANYS}, {"truncated", B}, {"notes", STRS}, {"path", S}},
                              {"ok", "realm", "checked", "errors"});
-        s["lua_inspect"] = obj({{"type", S}, {"value", ANY}, {"count", N}, {"keys", ANYS}, {"truncated", B}, {"metatable", Obj}},
-                               {"type"});
-        s["lua_function_source"] = obj({{"source", S}, {"linedefined", N}, {"lastlinedefined", N}, {"file", S}, {"file_age_s", N},
-                                        {"matches_disk", nullable("boolean")}, {"line_on_disk", N}},
-                                       {"source", "linedefined", "lastlinedefined", "matches_disk"});
+        // Where a function's code came from (Issue #9): lua_inspect of a function and lua_function_source carry the same fields.
+        const Props prov = {{"from_mount", B}, {"mount_has_file", B}, {"disk", S}, {"provenance", S}, {"provenance_note", S}, {"loaded_from", S}};
+        auto with_prov = [&](Props base) {
+            json o = obj(base, {});
+            for (const auto &kv : prov) o["properties"][kv.first] = kv.second;
+            return o;
+        };
+        s["lua_inspect"] = with_prov({{"type", S}, {"value", ANY}, {"count", N}, {"keys", ANYS}, {"truncated", B}, {"metatable", Obj},
+                                      {"source", S}, {"linedefined", N}, {"lastlinedefined", N}});
+        s["lua_inspect"]["required"] = json::array({"type"});
+        s["lua_function_source"] = with_prov({{"source", S}, {"linedefined", N}, {"lastlinedefined", N}, {"file", S}, {"file_age_s", N},
+                                              {"matches_disk", nullable("boolean")}, {"line_on_disk", N}});
+        s["lua_function_source"]["required"] = json::array({"source", "linedefined", "lastlinedefined", "matches_disk"});
         s["lua_file_write"] = obj({{"path", S}, {"bytes", N}, {"exec_path", S}}, {"path", "bytes"});
         s["lua_file_read"] = obj({{"path", S}, {"content", S}}, {"path", "content"});
         s["lua_file_list"] = obj({{"dir", S}, {"files", STRS}}, {"dir", "files"});
         s["lua_file_delete"] = obj({{"deleted", S}}, {"deleted"});
         s["lua_mount"] = obj({{"lua_mount", NS}, {"base_lua_mounted", ANY}, {"mount_hook", B}, {"hook_calls", N}, {"search_paths", Obj},
-                              {"previous", NS}, {"cache_emptied", B}});
+                              {"previous", NS}, {"cache_emptied", B}, {"hook_path_ids", Obj}, {"removed", Obj}, {"fs_first_slot", N},
+                              {"engine_serves_folder", nullable("boolean")}, {"engine_serves", Obj}, {"folder_missing", B}});
         // --- jobs
         s["lua_job"] = obj({{"job_id", S}, {"state", S}, {"realm", S}, {"generation", N}, {"concurrent_jobs", ANYS}, {"values", ANYS},
                             {"n", N}, {"reports", ANYS}, {"output", S}, {"frames", N}, {"resumes", N}, {"cpu_ms", N}, {"elapsed_s", N},
@@ -123,7 +133,8 @@ json build(const std::string &tool) {
         // --- session
         s["map_list"] = obj({{"maps", STRS}, {"count", N}, {"truncated", B}, {"filter", S}}, {"maps", "count", "truncated"});
         s["map_load"] = obj({{"map", S}, {"gamemode", ANY}, {"maxplayers", ANY}, {"requested_map", S}, {"duration_s", N},
-                             {"server_generation", N}, {"client_generation", N}}, {"requested_map", "duration_s"});
+                             {"server_generation", N}, {"client_generation", N}, {"lua_mount", Obj}, {"lua_cache_emptied", B}},
+                            {"requested_map", "duration_s"});
         s["disconnect"] = obj({{"disconnected", B}, {"was_in_game", B}, {"duration_s", N}, {"realms", Obj}},
                               {"disconnected", "was_in_game", "duration_s", "realms"});
         s["game_quit"] = obj({{"quitting", B}}, {"quitting"});

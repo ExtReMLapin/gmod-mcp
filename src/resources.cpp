@@ -163,7 +163,16 @@ Example. The worktree `D:/dev/my-addon-wt` is a copy of the addon installed as `
 
 Refused paths: a relative path, a folder without `lua/` (e.g. `D:/dev`, or a folder holding several addons), a folder
 inside the game folder (`garrysmod/` or an installed addon: the engine already searches it), a path with `"`, `;` or a
-line break.
+line break, a path with non-ASCII characters, a UNC path (`\\server\share`, also `\\localhost\D$`), an extended-length or
+device path (`\\?\D:\x`, `\\.\D:\x`) and a folder holding a file whose full path would pass Windows' 259
+characters (MAX_PATH). The engine accepts all of these into its search paths and then loads nothing from them, so the
+mount would report `active` while the game ran the installed code. For the non-ASCII, UNC and long cases a junction on a
+short local path (`mklink /J C:\gmod-wt "<your folder>"`) is the way out.
+A folder that REPLACES the game's own base Lua is refused too (error `shadows_base_lua`, the files are listed): any .lua of
+the folder's `lua/` that also exists in the game's own `garrysmod/lua/`, or of its `gamemodes/base/` that exists in the game's
+`gamemodes/base/` (e.g. `lua/includes/init.lua`: the client then hangs in its load and `map_load` times out). Move those
+files out of the folder; `allow_shadow: true` (`lua_mount`, `instances_launch`) mounts it anyway. A `map_load` that times out
+with a mount set names the mount in its message: look at `errors_since` and `lua_mount {}`.
 
 When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
 set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it
@@ -194,21 +203,28 @@ a caller by its file path sees another name. gmod-mcp's tools use the same names
 Editing a file of the folder: there is no autorefresh, saving a file does not reload it. `status.lua_mount` tells what is
 out of date: `stale_files` lists the folder's .lua files whose time differs from what each realm loaded (modified, added,
 deleted; a `git checkout` that brings an OLDER file counts too), with the realms each runs in; `realms_without_mount`
-names a realm that loaded before the folder was mounted (it runs the installed copies: `map_load`). `map_load` repeats the
+names a realm that did not load with the folder in front (the folder was mounted or changed after that realm loaded, or the
+load did not go through it: its code may be another copy than the folder's: `map_load`). `map_load` repeats the
 check when it ends (`warning` and `lua_mount` in its result) and empties the engine's Lua file cache first. To run the edits:
 `lua_reload {mounted_changed: true}` runs again every changed file of the folder in its realms (alphabetical order; deleted
 files and entity/weapon/effect files are listed in `skipped`: `map_load`, or `lua_reload {path}` to force one), or
 `lua_reload {path: "my_addon/core.lua"}` for a single file, or `map_load` for a clean state. A reload re-runs the file: it
 does not undo what the old copy did (hooks or timers under another name, net strings, entities already spawned) and what
-the file built at load time is not reset. Check with `lua_function_source {realm, expr: "MyAddon.Update"}`.
+the file built at load time is not reset. If a file fails (a syntax error, a Lua error) `lua_reload {mounted_changed}` answers
+the error `reload_failed` (`isError`): `details` holds the whole `reloaded` list, the other files did run.
+Limit of `stale_files`: it compares file times, not contents. An edit that leaves the file's time as it was (a tool that
+restores the time, or two saves inside the clock's resolution) is not seen, whatever its size; `map_load` still runs the
+new code (the engine reads the files again, and the module empties its Lua cache first). Check with `lua_function_source {realm, expr: "MyAddon.Update"}`.
 
 Which copy a function came from: the source name `@lua/my_addon/core.lua` is the same for the folder's copy and for the
 installed copy (a Workshop addon is named that way too). `lua_function_source` and `lua_inspect` (on a function) say
 which one the realm really ran: `from_mount` (true: the folder; false: the installed copy), `disk` (the real file),
 `mount_has_file` (the folder has a file of that name now) and `provenance`: `mount_in_place_at_load` (the module put the
 folder in front of this realm's Lua path right before the realm loaded, and the file was in the folder at that moment: recorded
-at load time, not guessed from the name), `reloaded_from_mount` (the file was run again from the folder with lua_reload),
-`installed`, `not_on_disk` (inside a .gma), `no_file` (code from lua_exec/RunString). Limit: the engine, not the module,
+at load time, not guessed from the name), `reloaded_from_mount` (the file was run again from the folder with lua_reload, whether it was loaded in place at load
+or not), `mount_changed_since_load` (the realm loaded it from a folder that is no longer the mounted one: another folder was
+mounted, or none, without a map load; `from_mount` is false, `loaded_from` is that folder and `disk` its copy when it
+still exists: this is what the realm runs until `map_load`), `installed`, `not_on_disk` (inside a .gma), `no_file` (code from lua_exec/RunString). Limit: the engine, not the module,
 reads each file, so `from_mount` comes from the folder's content when the realm loaded, not from a trace of each read.
 
 Typical flow:
@@ -237,6 +253,19 @@ settings (resolution, anti-aliasing), so test clients do not change the way the 
 start by hand with `-w`/`-h` does: add `-dxlevel 95` to it.
 
 If `base_lua_mounted` is false, the game's own `lua/` is missing from the server paths: remove the folder at once.
+
+`engine_serves_folder` (in `lua_mount {}` and `status.lua_mount`, once a map is loaded; per realm in `engine_serves`) is the
+engine's own answer, not the module's bookkeeping: the module asks each realm's file system (`file.Exists` and `file.Time`
+with `"LUA"`) for up to three files of the folder and compares the file time with the folder's. `false` means the engine lists
+the folder but serves none of its files: the game runs the installed code, whatever `active` or `loaded_with_mount` say. A
+`warning` says so, `map_load` repeats it, and `instances_launch {lua_mount}` reports that client's mount as `active: false`
+with `error_code: "mount_not_effective"`. `null`: nobody could be asked (no map loaded yet). Remove the folder
+(`lua_mount {path: null}`) and mount a plain local path.
+
+A mounted folder that is renamed, moved or deleted (or whose `lua/` is deleted) serves nothing: `lua_mount {}`, `status.lua_mount`
+and `map_load` then carry `folder_missing: true` and a `mount_folder_missing` warning (no list of "deleted" files), `lua_reload
+{mounted_changed}` answers the error `mount_folder_missing`, and a realm that loaded while the folder was gone is not
+`loaded_with_mount`. Restore the folder (or mount the right one) and `map_load`.
 
 ## Reporting frictions
 The maintainers want to hear about every friction agents meet with gmod-mcp, without making work for the user.

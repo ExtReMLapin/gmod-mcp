@@ -23,10 +23,37 @@ namespace lua_mount {
 // root or its lua/ folder. Refuses relative paths, missing folders, a root without lua/, and characters that would
 // break a command line or the engine's ';'-separated path lists (quotes, ';', line breaks).
 bool normalize_root(const std::string &in, std::string &root, std::string &err);
+// Pure: whether two paths name the same folder the way Windows does: case-insensitive, either separator, no trailing
+// separators, dots or spaces (Windows drops them). False for an empty path.
+bool same_path(const std::string &a, const std::string &b);
+// One search path the mount adds to the engine (and removes again): MOD gets the root at its END, "lsv" (server) and "lcl"
+// (client) get <root>\lua and <root>\gamemodes at the head.
+struct MountPath {
+    std::string path;
+    std::string id;
+    bool tail = false;
+};
+// Pure: every search path a mount of `root` may have added, in the order they are added. Unmounting removes ALL of them,
+// whatever is on disk then (a <root>\gamemodes deleted before the unmount left its paths in lsv/lcl).
+std::vector<MountPath> mount_search_paths(const std::string &root);
 // Pure: "" if `root` may be mounted for the game in `game_dir` (the garrysmod folder), else why not. A folder inside
 // the game folder (garrysmod itself, an installed addon) is already searched by the engine: mounting it would only
 // reorder the game's own paths.
 std::string refuse_inside_game(const std::string &root, const std::string &game_dir);
+
+// Pure: "" if every .lua file under <root>/lua and <root>/gamemodes has a full path (root, separator, root-relative name)
+// of at most `max_path` characters (Windows MAX_PATH leaves 259), else why not. The engine accepts a root whose files pass
+// it into its search paths but cannot open any of them: the mount would report active and load nothing.
+std::string refuse_too_long(const std::string &root, size_t max_path = 259);
+// Pure: the files of the folder that would shadow the game's own base Lua (named from the mount root: "lua/includes/init.lua"):
+// every .lua under <root>/lua that also exists under <game_dir>/lua, and under <root>/gamemodes/base that exists in the game's
+// own gamemodes/base. A folder with lua/includes/init.lua replaced the game's base Lua and the client hung in its load.
+// Sorted; empty when `game_dir` is "" (unknown).
+std::vector<std::string> shadowed_base_files(const std::string &root, const std::string &game_dir);
+// Pure: the one check run before a folder is mounted (lua_mount tool, instances_launch, -mcp_lua_mount): "" if it may be,
+// else why not, with the error `code` ("invalid_params", or "shadows_base_lua"). `game_dir` is the garrysmod folder
+// ("" = unknown: only the other checks run).
+std::string refuse_mount(const std::string &root, const std::string &game_dir, bool allow_shadow, std::string *code = nullptr);
 
 // Pure: whether `code` (the first bytes of a function) only returns a constant: `ret`, `ret n`, or one
 // `xor`/`mov` into al/eax/rax then `ret`. A jump thunk is not followed (not constant).
@@ -64,11 +91,19 @@ struct FileStamp {
 using Files = std::map<std::string, FileStamp>;  // key: lower-case rel
 // Every .lua under <root>/lua and <root>/gamemodes.
 Files scan_files(const std::string &root);
+// How many times scan_files ran (a scan stats every file of the folder: tests count them).
+uint64_t scan_count();
 // File time in ticks of the file system clock, -1 if the file cannot be read.
 long long mtime_of(const std::string &abs);
 // "lua/x.lua" if `abs` is inside the current mount root, else "".
 std::string rel_in_mount(const std::string &abs);
 
+// Whether the mount root and its lua/ folder exist (a folder renamed or deleted since it was mounted is not served).
+bool folder_present(const std::string &root);
+// The hook's entry (main thread): the folder was put in front of the realm's Lua path. Records the folder's files, unless
+// the folder (or its lua/) is gone: the realm then loads without it and must not be reported as loaded with the mount. The
+// server's and the client's hook of one map load (seconds apart at most) share one scan of the folder.
+void record_load_start(int realm, const std::string &root);
 // The folder was put in front of the realm's Lua path (hook, main thread): `files` is the folder at that moment. The
 // record becomes the realm's once its runtime is injected (a new Lua state is a new load of every file).
 void note_load_start(int realm, const std::string &root, Files files);
@@ -83,12 +118,37 @@ bool realm_loaded_with_mount(int realm);
 // Did the realm get this file ("lua/pba/x.lua") from the mounted folder (in the load-time snapshot, or reloaded since)?
 // `reloaded` tells which of the two.
 bool loaded_from_mount(int realm, const std::string &rel, bool *reloaded = nullptr);
+// The folder the realm loaded this file from when that is NOT the mounted folder any more (another folder was mounted, or
+// none, without a map load since): its root, else "". The realm still runs that copy.
+std::string loaded_from_other_mount(int realm, const std::string &rel);
 struct Change {
     std::string rel;
     std::string reason;  // "modified" (time differs, newer or older), "added" (not there at load), "deleted"
 };
 // Files of the mounted folder that are not what the realm loaded (empty if the realm has no record).
 std::vector<Change> changed_files(int realm);
+// Whether the realm has a record (a load, or files run again by lua_reload) for the CURRENT mounted folder.
+bool has_record(int realm);
+// Same, against a scan the caller already made (`now`): several realms share one scan.
+std::vector<Change> changed_files(int realm, const Files &now);
+// ---- Does the engine really serve the folder? (Issue #9, chaos testing 2026-11-20) ----
+// The bookkeeping above is the module's own: a path the engine accepts but cannot read (UNC, junction, too long...) is
+// recorded as loaded and loads nothing. So each realm's file system is asked for a few files of the folder.
+struct Probe {
+    std::string name;         // the Lua path as file.Exists takes it: "pba/x.lua" (no lua/ or gamemodes/ prefix)
+    long long unix_time = -1; // the folder file's time in Unix seconds as file.Time answers, -1 unknown
+};
+// A few files to ask about, spread over the snapshot, lua/ files first (a gamemodes/ file only when there are too few).
+std::vector<Probe> pick_probes(const Files &files, size_t n = 3);
+// File system clock ticks (mtime_of) to Unix seconds; -1 stays -1.
+long long unix_seconds_of(long long ticks);
+// The realm's answers ([{exists, time?}], one per probe) as a verdict: true when some probe is served from the folder (it
+// exists and its time is the folder file's, give or take 2 s; existence alone when the time is unknown), false when none
+// is, null when there is no usable answer.
+nlohmann::json probes_verdict(const std::vector<Probe> &probes, const nlohmann::json &answers);
+// The files to probe for a realm: its load-time snapshot, else the folder as it is now.
+Files probe_sample(int realm);
+
 // Tests only: forget every record.
 void forget_loads_for_tests();
 

@@ -1031,6 +1031,31 @@ def case_lua_mount():
     pids = sc.get("silent_pids", [])
     check("LUA_MOUNT non-ASCII folder refused before launching, with the way out",
           res.get("isError") and "ASCII" in json.dumps(sc) and "mklink" in json.dumps(sc) and not os.path.exists(argv_file), sc)
+    # Issue #9 (chaos testing 2026-11-20): a UNC share, an extended-length path and a root passing MAX_PATH were accepted and
+    # reported active while no file loaded. Refused before anything starts, with the reason.
+    for bad, word in ((r"\\localhost" + "\\" + wt.replace(":", "$", 1), "UNC"), (r"\\?" + "\\" + wt, "extended-length"), ("D:\\" + "a" * 250, "too long")):
+        if os.path.exists(argv_file): os.remove(argv_file)
+        res = launch(bad)
+        sc = res.get("structuredContent", {})
+        check("LUA_MOUNT Issue #9 refused before launching: " + word, res.get("isError") and word in json.dumps(sc) and not os.path.exists(argv_file), sc)
+    # Issue #9 (chaos testing 2026-11-20, F3): a folder with lua/includes/init.lua replaced the game's base Lua and the client hung
+    # in its load. Refused before anything starts unless allow_shadow is passed (then the module is told not to refuse it either).
+    base_lua = os.path.join(game, "garrysmod", "lua", "includes")
+    os.makedirs(base_lua)
+    open(os.path.join(base_lua, "init.lua"), "w").write("return 1\n")
+    shadow = os.path.join(work, "shadowing")
+    os.makedirs(os.path.join(shadow, "lua", "includes"))
+    open(os.path.join(shadow, "lua", "includes", "init.lua"), "w").write("return 2\n")
+    if os.path.exists(argv_file): os.remove(argv_file)
+    res = launch(shadow)
+    sc = res.get("structuredContent", {})
+    check("LUA_MOUNT Issue #9 a folder shadowing the base Lua is refused before launching, files listed",
+          res.get("isError") and "shadows_base_lua" in json.dumps(sc) and "includes/init.lua" in json.dumps(sc) and "allow_shadow" in json.dumps(sc) and not os.path.exists(argv_file), sc)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 10, "game_dir": game, "lua_mount": shadow, "allow_shadow": True}}, 40)
+    sc = ((r or {}).get("result", {})).get("structuredContent", {})
+    line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+    check("LUA_MOUNT Issue #9 allow_shadow launches it, and the client is told (-mcp_lua_mount_allow_shadow)",
+          ('-mcp_lua_mount "%s"' % shadow) in line and " -mcp_lua_mount_allow_shadow" in line, line or sc)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     b.close()
     shutil.rmtree(game, ignore_errors=True)
@@ -1110,6 +1135,25 @@ def case_lua_mount_verify():
     check("LUA_MOUNT_VERIFY base Lua missing: isError and warning", res.get("isError") and m.get("base_lua_mounted") is False and "base" in sc.get("warning", "").lower(), sc)
     check("LUA_MOUNT_VERIFY (issue 3) base Lua missing: next_call removes the mount (path null) from that client",
           sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": None, "instance": ((sc.get("instances") or [{}])[0]).get("instance")}}, sc.get("next_call"))
+    # Issue #9 (chaos testing 2026-11-20): the engine lists the folder but its file system serves none of the files (a path it
+    # cannot read): the mount is not effective, whatever the module's bookkeeping says.
+    answers["now"] = lambda a: {"lua_mount": wt, "base_lua_mounted": True, "engine_serves_folder": False, "engine_serves": {"server": False}}
+    res, sc = launch(wt)
+    inst = (sc.get("instances") or [{}])[0]
+    m = inst.get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY Issue #9 engine_serves_folder false: not active, mount_not_effective, isError, warning",
+          res.get("isError") and m.get("active") is False and m.get("error_code") == "mount_not_effective" and "mount_not_effective" in m.get("error", "")
+          and m.get("engine_serves_folder") is False and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    answers["now"] = lambda a: {"lua_mount": wt, "base_lua_mounted": True, "folder_missing": True}
+    res, sc = launch(wt)
+    m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY Issue #9 folder_missing: not active, mount_folder_missing, isError",
+          res.get("isError") and m.get("active") is False and m.get("error_code") == "mount_folder_missing" and "NOT" in sc.get("warning", ""), sc)
+    for served in (True, None):
+        answers["now"] = lambda a, served=served: {"lua_mount": wt, "base_lua_mounted": True, "engine_serves_folder": served}
+        res, sc = launch(wt)
+        m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+        check("LUA_MOUNT_VERIFY Issue #9 engine_serves_folder %s: still active" % served, not res.get("isError") and m.get("active") is True and "warning" not in sc, sc)
     # 6. no mount requested: the game is not asked.
     n = len(srv.lua_mount_calls)
     answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}
