@@ -118,7 +118,7 @@ that connects, map changes (use `map`) and what gmod-mcp sets itself (`-multirun
   map load ending in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). The bridge therefore
   serialises `instances_launch` and `map_load` for every session using it: `map_load` waits while a game is being started
   and for 15 s after the last start, `instances_launch` waits while any game loads a map, and `instances_launch {map}`
-  loads 2 maps at a time after that delay. A call that waited carries `waited_s` and `waited_reason` (and progress). If the
+  loads its maps after that delay, and at most 2 maps load at a time across every session (`instances_launch {map}` and `map_load` alike: a third waits). A call that waited carries `waited_s` and `waited_reason` (and progress). If the
   wait would exceed `timeout_s`, it fails with `launch_in_progress` (map_load) or `map_load_in_progress` (launch) and
   nothing was started: retry later or with a larger `timeout_s`. `instances_launch` also waits for a map load the bridge did
   not start (console `map` / `changelevel`, Lua, a script talking to the game: every game reports `loading` in

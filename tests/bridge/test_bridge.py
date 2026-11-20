@@ -52,7 +52,7 @@ Cases a, f and fslow use a temporary config folder: the user's token and cache a
 
 Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash lowmem fp7137 orphan portconflict unseen handover launch_mount_first close_coordinator fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
-import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
+import base64, http.server, json, os, queue, random, select, socket, socketserver, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
 
 # The bridges these tests start must not refuse a launch because THIS machine is short of memory at that moment (issue #8's
@@ -320,6 +320,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
             sc = srv.exec_answer(args)
             return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc,
                                         "isError": "error" in sc}))
+        if name == "status" and srv.status_answer:  # chaos tests (issues #6/#8): instances_launch polls a client whose map_load answer was lost
+            sc = srv.status_answer(args)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": False}))
         if name == "lua_mount" and srv.lua_mount_answer:
             with srv.lock: srv.lua_mount_calls.append(args)
             sc = srv.lua_mount_answer(args)
@@ -349,6 +352,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
         self.changing, self.terminate_hook, self.instances_answer = 0, None, None  # Issue #6
         self.map_load_hook = None
+        self.status_answer = None  # chaos tests: what `status` says ({map, loading}), a function of the arguments
         self.exec_answer, self.exec_calls, self.order = None, [], []  # Issue #10: console_exec answers and the order of console_exec / map_load calls
         self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
         self.extra_instances = []  # FP7137 tests (issue #7): games the bridge never started, as instances_list shows them (with "loading")
@@ -2522,9 +2526,7 @@ def case_handover():
     The bridge rides it out instead of answering game_not_running / the raw coordinator_changing, but only when other
     instances are known to live (it never makes a call wait when the only game is closed)."""
     print("== HANDOVER: a call survives the coordinator role moving to another game", flush=True)
-    cluster = lambda: {"instances": [{"id": "client-1", "pid": 1, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True},
-                                     {"id": "client-2", "pid": 2, "port": 27082, "mode": "client", "state": "running", "role": "member"}],
-                       "coordinator_id": "client-1"}
+    cluster = live_cluster(os.getpid())  # the member's process lives (the bridge checks it before it waits for a hand-over)
     env0 = isolated_config(with_token=True)
     env0["GMOD_MCP_HANDOVER_WAIT_S"] = "4"  # the real wait is 10 s: the tests that give up do not need that long
     # 1. Nothing else known to live: the game closes, the next call says game_not_running at once (no wait added).
@@ -2912,25 +2914,310 @@ def case_chaos_memory():
         check("CHAOS_MEMORY nothing runs: low_memory with running_clients 0, registered_clients 0, game_processes 0",
               sc.get("error", {}).get("code") == "low_memory" and d.get("running_clients") == 0 and d.get("registered_clients") == 0 and d.get("game_processes") == 0, sc)
         # Three game processes started by other sessions, not registered (still starting); one of them is registered after all, plus a registered fake.
-        procs = [sp.Popen([exe], stdout=sp.DEVNULL, stderr=sp.DEVNULL) for _ in range(3)]
-        time.sleep(0.5)
+        # Issue #8 (live chaos test): every game starts about 2 helper processes of the same executable; they are not games (stand-ins
+        # started with GMCP_FAKE_CHILDREN=2 do the same: 3 games, 6 helpers).
+        procs = [sp.Popen([exe], stdout=sp.DEVNULL, stderr=sp.DEVNULL, env=dict(os.environ, GMCP_FAKE_CHILDREN="2")) for _ in range(3)]
+        time.sleep(1.5)
         S["srv"].extra_instances = [{"id": "reg-1", "pid": procs[0].pid, "port": 1, "mode": "client", "state": "running"},
                                     {"id": "reg-2", "pid": 4000001, "port": 1, "mode": "client", "state": "running"}]
         sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
         e = sc.get("error", {}); d = e.get("details", {})
         check("CHAOS_MEMORY 3 unregistered-or-not game processes + 1 fake registered one: running_clients 4 (union), registered_clients 2, game_processes 3",
               e.get("code") == "low_memory" and d.get("running_clients") == 4 and d.get("registered_clients") == 2 and d.get("game_processes") == 3, sc)
+        check("CHAOS_MEMORY the helper processes a game starts (same executable, parent is a game) are not counted: 3 games with 6 helpers read 3",
+              d.get("game_processes") == 3, d)
         check("CHAOS_MEMORY the message gives both numbers", "2 registered" in e.get("message", "") and "3 game processes" in e.get("message", ""), e)
         check("CHAOS_MEMORY nothing started", S["started"]() == [], S["started"]())
     finally:
         for p in procs:
-            try: p.kill()
-            except OSError: pass
+            sp.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)  # the helpers too (a killed game leaves them)
         S["close"]()
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "fuzz"]
+def live_cluster(member_pid, coordinator_pid=1):
+    """What a fake coordinator answers to instances_list: two games, one of them the coordinator. `member_pid` should be a
+    process that really lives (or does not, to play a member that died): the bridge checks it before it waits for a hand-over."""
+    return lambda: {"instances": [{"id": "client-1", "pid": coordinator_pid, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True},
+                                  {"id": "client-2", "pid": member_pid, "port": 27082, "mode": "client", "state": "running", "role": "member"}],
+                    "coordinator_id": "client-1"}
+
+
+class DyingListener:
+    """What a coordinator's listener does in its last moments (live 2026-11-20): it still accepts a connection, reads the request,
+    then drops it with no answer (a reset). Stands in for the base port between the process being killed and the port closing."""
+    def __init__(self, port):
+        self.s = socket.socket(); self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.s.bind(("127.0.0.1", port)); self.s.listen(16)
+        self.n, self.run = 0, True
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def loop(self):
+        while self.run:
+            try: c, _ = self.s.accept()
+            except OSError: return
+            self.n += 1
+            try: c.recv(65536)
+            except OSError: pass
+            try:
+                c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                c.close()
+            except OSError: pass
+
+    def stop(self):
+        self.run = False
+        try: self.s.close()
+        except OSError: pass
+
+
+def case_chaos_relay():
+    """Issue #6 (chaos test of the hand-over, live 2026-11-20), BUG-1: a call in flight when the coordinator dies is not
+    "game_not_running": the target game lives and the call may have run (relay_lost, maybe_executed). instances_launch polls
+    the client before it reports a map failure (a map_load whose answer was lost, the map loaded)."""
+    print("== CHAOS_RELAY: a call lost in flight during a hand-over", flush=True)
+    env0 = isolated_config(with_token=True)
+    env0["GMOD_MCP_HANDOVER_WAIT_S"] = "4"
+    env0["GMOD_MCP_FP7137_WORKAROUND"] = "0"
+    me = os.getpid()
+    # 1. Another game lives (seen in instances_list): the connection breaks mid-call (the answer never comes).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.map_load_hook = lambda a: time.sleep(1.0)
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "map_load", "arguments": {"instance": "client-2", "map": "gm_construct"}}, 30)
+    res = (r or {}).get("result", {}); sc = res.get("structuredContent", {}); e = sc.get("error", {}); d = e.get("details", {})
+    check("CHAOS_RELAY a call lost in flight while another game lives: relay_lost, isError, not game_not_running",
+          res.get("isError") and e.get("code") == "relay_lost", r)
+    check("CHAOS_RELAY ... retry_after_s and maybe_executed: true in details, and the message says the call may have run",
+          d.get("maybe_executed") is True and d.get("retry_after_s", 0) > 0 and "may have" in e.get("message", "") and "Start the game" not in e.get("message", ""), e)
+    check("CHAOS_RELAY ... answered at once (no wait for a hand-over: it would repeat a call that may have run)", time.time() - t0 < 3.5, time.time() - t0)
+    check("CHAOS_RELAY ... the text twin is the same JSON", json_equal(res["content"][0]["text"], sc), res)
+    srv.stop(); b.close()
+    # 2. No other game known to live: the same cut is a closed game (unchanged).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    b = Bridge(port, env0)
+    srv.map_load_hook = lambda a: time.sleep(1.0)
+    r = b.req("tools/call", {"name": "map_load", "arguments": {"map": "gm_construct"}}, 30)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("CHAOS_RELAY nothing else known to live: a connection cut mid-call is still game_not_running", sc.get("error", {}).get("code") == "game_not_running", r)
+    srv.stop(); b.close()
+    # 5. Issue #6 (BUG-2): a FRESH call while the dying listener still accepts: the connection is made, then reset before any answer.
+    # Nothing ran: it is the same as a refused connection, ridden out until the next game takes the base port (here after 1.6 s).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop()
+    dying = DyingListener(port)
+    new = {}
+    def takeover():
+        time.sleep(1.6); dying.stop(); time.sleep(0.2)
+        new["srv"] = FakeServer(port, version=bridge_version())
+    threading.Thread(target=takeover, daemon=True).start()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    res = (r or {}).get("result", {})
+    check("CHAOS_RELAY BUG-2: a fresh call reset by the dying listener is ridden out and answered by the next coordinator",
+          dying.n >= 1 and not res.get("isError") and res.get("structuredContent", {}).get("args", {}).get("instance") == "client-2" and 1.4 < time.time() - t0 < 5,
+          {"hits": dying.n, "took": time.time() - t0, "r": r})
+    b.close()
+    if "srv" in new: new["srv"].stop()
+    # ... but a call that was already running for a while (not fresh) when the connection broke is relay_lost, not retried (case 1).
+    # 6. No other game known to live: a reset on a fresh call is a closed game, said at once (unchanged).
+    port = free_port()
+    dying = DyingListener(port)
+    b = Bridge(port, env0)
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {}}, 25)
+    check("CHAOS_RELAY BUG-2: a fresh call reset with no other game known: game_not_running at once", "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close(); dying.stop()
+    # 7. Issue #6 (BUG-3): the last other games are gone (the member's process died with the coordinator): nobody can take the role
+    # over. The bridge knew two games a moment ago, but no process of them lives: game_not_running at once, not 30 s of coordinator_changing.
+    member = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(member.pid)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop(); member.kill(); member.wait()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("CHAOS_RELAY BUG-3: the other games' processes are all gone: game_not_running at once (no coordinator_changing)",
+          "game_not_running" in json.dumps(r) and "coordinator_changing" not in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
+    # 8. A list that shows one instance only (the others closed) forgets the hand-over memory, even when a process of the earlier list lives.
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.instances_answer = lambda: {"instances": [{"id": "client-1", "pid": me, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True}], "coordinator_id": "client-1"}
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("CHAOS_RELAY BUG-3: a list showing one instance resets the hand-over memory: game_not_running at once", "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
+    if os.name != "nt":
+        print("   (the launch scenarios are Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_RELAY stand-in game built next to the bridge", False)
+        return
+    # 3. instances_launch {map}: the client's map_load answer is lost, the map loaded (status says it, after a loading phase).
+    S = chaos_session()
+    S["srv"].map_load_hook = lambda a: time.sleep(1.0)
+    polls = {"n": 0}
+    def status(a):
+        polls["n"] += 1
+        return {"map": "gm_construct" if polls["n"] >= 3 else "", "loading": polls["n"] < 3}
+    S["srv"].status_answer = status
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "d1", "timeout_s": 60, "game_dir": S["game"], "map": "gm_construct"})
+    inst = (sc.get("instances") or [{}])[0]
+    check("CHAOS_RELAY instances_launch: a map_load answer lost while the client loaded the map: reported as loaded (status polled until loading ended)",
+          err is not True and inst.get("map") == "gm_construct" and "map_error" not in inst and polls["n"] >= 3, {"polls": polls["n"], "sc": sc})
+    S["close"]()
+    # 4. The client did not load it (not loading, another map): the failure is reported, as relay_lost.
+    S = chaos_session()
+    S["srv"].map_load_hook = lambda a: time.sleep(1.0)
+    S["srv"].status_answer = lambda a: {"map": "gm_other", "loading": False}
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "d1", "timeout_s": 60, "game_dir": S["game"], "map": "gm_construct"})
+    inst = (sc.get("instances") or [{}])[0]
+    me_err = inst.get("map_error", {})
+    check("CHAOS_RELAY instances_launch: the client reports another map and is not loading: map_error relay_lost (maybe_executed), map null",
+          err is True and inst.get("map") is None and me_err.get("code") == "relay_lost" and me_err.get("details", {}).get("maybe_executed") is True, sc)
+    S["close"]()
+
+
+def case_chaos_maps():
+    """Issue #7 follow-up (live chaos test 2026-11-20): "at most 2 maps at a time" was per call. Two launches of 2 clients each, plus a
+    map_load, had 5 games loading at once. The cap is now global: every map load of every bridge (instances_launch {map} and map_load)
+    registers in the shared FP7137 state and waits while 2 others are registered (fake game server counting concurrent loads,
+    stand-in games, Windows)."""
+    print("== CHAOS_MAPS: at most 2 maps load at a time across every bridge", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("CHAOS_MAPS stand-in game built next to the bridge", False)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    launch_args = lambda **kw: dict({"count": 2, "owner": "maps", "timeout_s": 120, "game_dir": game, "map": "gm_x"}, **kw)
+    for off in (False, True):
+        port, env, srv = fp_setup(settle_ms=1500, workaround="0" if off else None, hold={"*": 1.5})
+        env.update(GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+        a, b, c = Bridge(port, env), Bridge(port, env), Bridge(port, env)
+        rid_a = fp_call(a, "instances_launch", launch_args(), 120)
+        rid_b = fp_call(b, "instances_launch", launch_args(), 120)
+        end = time.time() + 60
+        while not srv.map_log and time.time() < end: time.sleep(0.05)
+        rid_c = fp_call(c, "map_load", {"map": "gm_y", "timeout_s": 120}, 120)
+        res_a, sc_a = fp_result(a, rid_a, 120)
+        res_b, sc_b = fp_result(b, rid_b, 120)
+        res_c, sc_c = fp_result(c, rid_c, 60)
+        tag = "CHAOS_MAPS kill switch off: " if off else "CHAOS_MAPS "
+        check(tag + "every call succeeded (2 + 2 + 1 loads)", not res_a.get("isError") and not res_b.get("isError") and not res_c.get("isError") and len(srv.map_log) == 5,
+              {"a": sc_a.get("error"), "b": sc_b.get("error"), "c": sc_c.get("error"), "loads": len(srv.map_log)})
+        if off:
+            check(tag + "the loads overlap beyond 2 (no cap)", srv.map_max >= 3, srv.map_max)
+        else:
+            check(tag + "never more than 2 maps loading at the same time (two launches and a map_load, three bridges)", srv.map_max == 2, srv.map_max)
+        for x in (a, b):
+            x.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 30)
+        for x in (a, b, c): x.close()
+        srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+
+
+def case_chaos_job():
+    """Issue #8 (live chaos test): a bridge killed with taskkill /F (or TerminateProcess) used to leave its keep:false clients running
+    forever (nothing runs in a killed process). The launched keep:false clients now live in a job object that closes with the bridge
+    (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE): the game and the helper processes it started (the real game has about 2) end with it. A
+    keep:true client is NOT in the job and survives (stand-in game that starts children, Windows)."""
+    print("== CHAOS_JOB: keep:false clients end with a bridge that was killed, keep:true ones do not", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_JOB stand-in game built next to the bridge", False)
+        return
+    import shutil
+    def run(keep):
+        cdir = tempfile.mkdtemp(prefix="gmcp-chaos-kids-")
+        S = chaos_session(extra_env={"GMCP_FAKE_CHILDREN": "2", "GMCP_FAKE_CHILD_PID_DIR": cdir})
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "job", "timeout_s": 30, "game_dir": S["game"], "keep": keep})
+        game_pids = S["started"]()
+        end = time.time() + 10
+        while len(os.listdir(cdir)) < 2 and time.time() < end: time.sleep(0.1)
+        kids = [int(open(os.path.join(cdir, f)).read() or 0) for f in os.listdir(cdir)]
+        everyone = game_pids + kids
+        out = {"ok": not err and len(game_pids) == 1 and len(kids) == 2 and all(alive(p) for p in everyone), "sc": sc, "pids": everyone}
+        S["b"].p.kill()  # TerminateProcess: no clean exit, no chance to close anything
+        S["b"].p.wait(10)
+        time.sleep(2.0)
+        out["alive"] = [alive(p) for p in everyone]
+        for p in everyone:
+            if alive(p): subprocess.run(["taskkill", "/F", "/PID", str(p)], capture_output=True)
+        S["srv"].stop()
+        shutil.rmtree(S["game"], ignore_errors=True); shutil.rmtree(S["work"], ignore_errors=True); shutil.rmtree(cdir, ignore_errors=True)
+        return out
+    o = run(False)
+    check("CHAOS_JOB a keep:false client and its 2 helper processes ran before the bridge was killed", o["ok"], o)
+    check("CHAOS_JOB the bridge was killed (TerminateProcess): the client and its helper processes ended with it", o["ok"] and not any(o["alive"]), o)
+    o = run(True)
+    check("CHAOS_JOB a keep:true client and its 2 helper processes ran before the bridge was killed", o["ok"], o)
+    check("CHAOS_JOB ... and they are still running after it (not in the job object)", o["ok"] and all(o["alive"]), o)
+
+
+def case_chaos_close():
+    """Issue #8 (live chaos test): instances_close {owner} listed a pid that had already quit as `closed`. A client that is gone
+    before the call is `already_gone` (nothing was closed), for this session's clients and for another session's keep:true test client
+    (stand-in games, fake game server, Windows)."""
+    print("== CHAOS_CLOSE: instances_close reports what was already gone", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_CLOSE stand-in game built next to the bridge", False)
+        return
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-close-")
+    trigger = os.path.join(work, "go")
+    dead = fp_dead_pid()
+    # A client of this session quit by itself (clean exit) before instances_close; another one still runs; a foreign test client's
+    # process (another session, keep: true) is gone too, and a third one lives.
+    live_foreign = subprocess.Popen([os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        S = chaos_session(extra_env={"GMCP_FAKE_TRIGGER": trigger, "GMCP_FAKE_EXIT": "0", "GMCP_FAKE_DUMP": "0"},
+                          extra_instances=[{"id": "gone-9", "pid": dead, "port": 1, "mode": "client", "state": "running", "owner": "other", "test_client": True},
+                                           {"id": "live-9", "pid": live_foreign.pid, "port": 1, "mode": "client", "state": "running", "owner": "other", "test_client": True}])
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "mine", "timeout_s": 30, "game_dir": S["game"]})
+        mine = S["started"]()[0]
+        open(trigger, "w").close()
+        end = time.time() + 10
+        while alive(mine) and time.time() < end: time.sleep(0.1)
+        check("CHAOS_CLOSE the client quit by itself before the close", not alive(mine), mine)
+        sc, err = S["call"]("instances_close", {"owner": "mine"}, 30)
+        ag = sc.get("already_gone", [])
+        check("CHAOS_CLOSE this session's client that had already quit: already_gone {pid, instance, owner}, not closed, no error",
+              sc.get("closed") == [] and [(x.get("pid"), x.get("owner")) for x in ag] == [(mine, "mine")] and ag[0].get("instance") == "fake-%d" % mine and err is not True, sc)
+        sc, err = S["call"]("instances_close", {"owner": "other"}, 30)
+        closed, ag = sc.get("closed", []), sc.get("already_gone", [])
+        time.sleep(0.5)
+        check("CHAOS_CLOSE another session's test client whose process is gone: already_gone (launched_by_other_session), the live one is closed",
+              [x.get("pid") for x in closed] == [live_foreign.pid] and [x.get("pid") for x in ag] == [dead] and ag[0].get("instance") == "gone-9"
+              and ag[0].get("launched_by_other_session") is True and not alive(live_foreign.pid), sc)
+        S["close"]()
+    finally:
+        try: live_foreign.kill()
+        except OSError: pass
+        import shutil; shutil.rmtree(work, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

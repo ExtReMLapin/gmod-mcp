@@ -161,6 +161,42 @@
   only delays its own calls). Everything is tagged `FP7137` and obeys `GMOD_MCP_FP7137_WORKAROUND=0` (see
   `docs/FP7137.md`); the agent-facing texts (server instructions, `instances_launch` / `map_load` descriptions, guide,
   skill, README) say so.
+- **A call lost in flight while the coordinator moves is `relay_lost`, not `game_not_running`** (issue #6, live chaos test).
+  When the coordinator died with a call in flight and other games were running, the call answered `game_not_running`
+  ("Start the game with -mcp") although its target game lived and the action had happened (a map load completed, a Lua job
+  kept running). It now answers the retryable `relay_lost` (`details.retry_after_s`, `details.maybe_executed: true`): the call
+  may have run, check the state before repeating one that is not idempotent. `instances_launch {map}` asks the client for its
+  `status` after a lost `map_load` answer and reports the map loaded (`map_note`) when it sits on it, instead of `map: null`.
+- **A call made in the first moments after the coordinator died is ridden out** (issue #6, live chaos test). The dying
+  coordinator's listener still accepts a connection for a fraction of a second, then drops it; only a refused connect counted
+  as "coordinator gone", so such a call (and the first calls of bridges that had launched no client) answered
+  `game_not_running`. A connection that breaks within 0.5 s with nothing of an answer now counts as refused: with other
+  games known to live the bridge waits for the next coordinator like for any hand-over.
+- **No wait for a hand-over that cannot happen** (issue #6, live chaos test). After the last games closed, other bridges
+  answered `coordinator_changing` for up to 30 s (a call waited 10 s) because "several games live" stayed in their memory for
+  30 s. The bridge now remembers which processes could take the coordinator role over (the members of the last list that
+  showed several games) and answers `game_not_running` at once when none lives any more, or when a later list shows a single
+  game.
+- **A game killed together with the coordinator is reported as gone, not `unknown_instance`** (issue #6, live chaos test).
+  The new coordinator had never heard from a member that died with the old one: calls for it blocked 7-8 s on
+  `coordinator_changing`, then answered `unknown_instance`. Heartbeat answers now carry the directory of instances (the
+  coordinator included); the member that takes the base port over keeps a tombstone for every instance it does not hear from,
+  and a call for one whose process ended answers `instance_gone` / `client_crashed` at once, with the same reasons as always
+  (exit code, dump). A crashed old coordinator is now listed as `crashed` like any other crashed instance.
+- **At most 2 maps load at a time across every bridge** (issue #7, live chaos test). The limit of 2 was per call: two
+  `instances_launch {count: 2, map}` plus a `map_load` had 5 games loading at once. Every map load of every bridge now
+  registers in the shared FP7137 state and waits while 2 others are registered (`map_load_in_progress` at the timeout; the
+  kill switch lifts it).
+- **A killed bridge no longer leaves its `keep: false` clients running** (issue #8, live chaos test). `taskkill /F` on a
+  bridge ran no exit code, so the test clients it had launched ran for ever. On Windows they are now started in a job object
+  that closes with the bridge (`KILL_ON_JOB_CLOSE`), helper processes of the game included; `keep: true` clients stay out of it.
+- **`low_memory` counts games, not their helper processes** (issue #8, live chaos test). The `game_processes` figure counted
+  every process running the game's executable; each game starts helper processes of the same executable (`--type=renderer`,
+  `--type=utility`), so it was about 3 times too high and could refuse a launch the machine could take. A process whose parent
+  is a game process that started before it is a helper and is no longer counted.
+- **`instances_close` says `already_gone` for a process that had already ended** (issue #8, live chaos test). `{owner}`
+  listed a pid that had quit before the call as `closed`. Such pids (a client of this session that quit by itself, another
+  session's test client whose process is gone) are now in `already_gone`, with a note, and nothing is sent to them.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for

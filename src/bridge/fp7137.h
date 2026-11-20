@@ -7,7 +7,8 @@
 //     bridge never saw (console `map`, Lua, a script talking HTTP to the game: issue #7), known from the games'
 //     heartbeat through a probe the bridge gives to Gate::enter;
 //   - map_load waits while a launch is in progress and until `settle_ms` after the last game process was started;
-//   - instances_launch {map} loads its maps at most kMaxParallelMaps at a time (after that same delay).
+//   - instances_launch {map} loads its maps after that same delay, and at most kMaxParallelMaps maps load at a time across every
+//     bridge (map_load included): a load waits while that many others are registered in the state.
 // State is a small file in the bridge's config folder, shared by all bridges and guarded by an OS file lock. Every
 // entry names its owner process and carries an expiry, so a dead bridge never leaves a stale lock.
 //
@@ -26,7 +27,7 @@
 namespace fp7137 {
 
 constexpr int64_t kDefaultSettleMs = 15000;
-constexpr size_t kMaxParallelMaps = 2;  // FP7137: instances_launch {map} loads at most this many maps at once
+constexpr size_t kMaxParallelMaps = 2;  // FP7137: at most this many map loads run at once, across every bridge (and per instances_launch call)
 
 bool enabled();         // FP7137: false when GMOD_MCP_FP7137_WORKAROUND=0
 int64_t settle_ms();    // FP7137: settle delay after the last game process start
@@ -61,7 +62,8 @@ struct Verdict {
 // loading_elsewhere: ids of the games that report a map load in progress. A load registered in the state keeps its own
 // reason; otherwise those loads are ones the bridge did not start (reason starts with "map_load_outside_bridge").
 Verdict launch_verdict(const State &s, int64_t now_ms, const std::vector<std::string> &loading_elsewhere = {});
-Verdict map_load_verdict(const State &s, int64_t now_ms, int64_t settle_ms);
+// max_parallel: how many map loads (entries M) may run at once across every bridge; a load beyond that waits.
+Verdict map_load_verdict(const State &s, int64_t now_ms, int64_t settle_ms, size_t max_parallel = kMaxParallelMaps);
 // True when the verdict's known earliest moment already lies beyond the deadline: waiting is pointless.
 bool exceeds_deadline(const Verdict &v, int64_t deadline_ms);
 

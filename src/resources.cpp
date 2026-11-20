@@ -317,7 +317,7 @@ Every tool returns `isError: true` and `{"error": {"code", "message", "details"}
 `realm_unavailable`, `client_locked`, `main_thread_timeout`, `invalid_params`, `lua_error`, `timeout`, `not_found`.
 Calls to another instance (`instance` argument) can also fail with: `unknown_instance`, `coordinator_changing` (the game that
 held the directory of instances ended and another is taking the role over, or has not heard from that instance yet: nothing
-was sent, retry after `details.retry_after_s`; the plugin already waits a few seconds before giving it to you), `instance_unreachable` (its process
+was sent, retry after `details.retry_after_s`; the plugin already waits a few seconds before giving it to you), `relay_lost` (the connection to the coordinator broke while the call was in flight and other games run: the call MAY HAVE BEEN EXECUTED, `details.maybe_executed`; check the game's state before repeating a call that is not idempotent), `instance_unreachable` (its process
 runs but does not answer: frozen or busy; `status {instance}`, `game_terminate {instance}`), `instance_gone` (its process
 ended normally: quit, closed or killed on request), `instance_hung` and `client_crashed` / `server_crashed` (see below).
 

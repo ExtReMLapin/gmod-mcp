@@ -258,9 +258,13 @@ bool is_modern(const json &msg) {
            p["_meta"][kMetaVersion].is_string();
 }
 
+const double kFreshLossS = 0.5;  // issue #6: a connection that breaks sooner than this, with no answer, is a dying listener
+
 struct Relay {
     bool reached = false;  // false: game unreachable (why in g_why)
     bool refused = false;  // unreachable because the connection was never made (refused, or no answer to the connect): nothing was sent
+    bool lost = false;     // issue #6: the connection was made, then broke before a complete answer: the game may have run the call
+    bool lost_fresh = false;  // ... within kFreshLossS of the send and with nothing of an answer: the listener that accepted it was dying
     int status = 0;
     json response;         // final JSON-RPC response (null for notifications)
     bool aborted = false;  // issue #8: cut because the launched client the call waited on died (reached is true: the game itself is fine)
@@ -401,6 +405,7 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
         return true;
     };
     std::string payload = msg.dump(-1, ' ', false, json::error_handler_t::replace);
+    const auto t_sent = std::chrono::steady_clock::now();
     if (cancel) {
         std::lock_guard<std::mutex> lk(cancel->mu);
         if (cancel->cancelled) {
@@ -439,6 +444,10 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
         }
         auto e = res.error();
         r.refused = e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout;
+        r.lost = e == httplib::Error::Read || e == httplib::Error::Write;  // issue #6
+        // Issue #6 (BUG-2): a coordinator that was just killed still accepts a connection for a moment, then drops it. When that
+        // happens at once and nothing came back, the call never ran: it counts as a refused connection (ridden out).
+        r.lost_fresh = r.lost && !decided && std::chrono::duration<double>(std::chrono::steady_clock::now() - t_sent).count() < kFreshLossS;
         if (e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout)
             set_down("nothing listening: the game is closed or was started without -mcp");
         else
@@ -846,12 +855,41 @@ std::atomic<int64_t> g_multi_seen_ms{0};
 
 int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() + 1; }
 
-// instances_list answer: several live instances seen now means a coordinator change is worth waiting for.
+std::mutex g_peers_mu;
+bool g_peers_known = false;           // the last list that showed several games named their members
+std::vector<uint32_t> g_peer_pids;    // their pids (0 = unknown): the running games other than the coordinator, who would take its role over
+
+// instances_list answer: several live instances seen now means a coordinator change is worth waiting for; a list that shows one
+// game (or none) means there is nothing to wait for (issue #6). A list of a coordinator that has just changed is incomplete: ignored.
 void note_instances(const json &sc) {
+    if (!sc.is_object() || !sc.contains("instances") || !sc["instances"].is_array() || sc.value("coordinator_changing", false)) return;
     int running = 0;
-    for (const auto &e : sc.value("instances", json::array()))
-        if (e.is_object() && e.value("state", "running") == "running") ++running;
-    if (running >= 2) g_multi_seen_ms = steady_ms();
+    std::string coord = sc.value("coordinator_id", "");
+    std::vector<uint32_t> members;
+    for (const auto &e : sc["instances"])
+        if (e.is_object() && e.value("state", "running") == "running") {
+            ++running;
+            if (e.value("role", "") != "coordinator" && e.value("id", "") != coord) members.push_back(e.value("pid", 0u));
+        }
+    std::lock_guard<std::mutex> lk(g_peers_mu);
+    if (running >= 2) {
+        g_multi_seen_ms = steady_ms();
+        g_peers_known = true;
+        g_peer_pids = members;
+    } else {
+        g_multi_seen_ms = 0;
+        g_peers_known = false;
+        g_peer_pids.clear();
+    }
+}
+
+// Issue #6 (BUG-3): does a game that could take the coordinator role over still run? Unknown (no list seen) counts as yes.
+bool peers_may_live() {
+    std::lock_guard<std::mutex> lk(g_peers_mu);
+    if (!g_peers_known) return true;
+    for (uint32_t pid : g_peer_pids)
+        if (pid == 0 || plat::process_start_stamp(pid) != 0) return true;
+    return false;
 }
 
 // A client this session launched, that answered once, still runs.
@@ -867,8 +905,12 @@ bool launched_client_alive() {
 }
 
 bool handover_expected() {
+    if (launched_client_alive()) return true;
     int64_t t = g_multi_seen_ms.load();
-    return launched_client_alive() || (t != 0 && steady_ms() - t < 30000);
+    if (t == 0 || steady_ms() - t >= 30000) return false;
+    if (peers_may_live()) return true;
+    g_multi_seen_ms = 0;  // issue #6 (BUG-3): the games that could take the role over are gone: nothing to wait for
+    return false;
 }
 
 // The result of a tool call is the retryable coordinator_changing: *retry_after gets the advised delay.
@@ -910,7 +952,8 @@ json bridge_tools() {
          "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, waits until it answers, "
          "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
          "Returns their instance ids and pids: pass an id as `instance` on every call. "
-         "Without keep: true they end with this bridge session (when it ends, the clients it started are closed); with keep: true they "
+         "Without keep: true they end with this bridge session (when it ends, the clients it started are closed, also when the bridge is killed: "
+         "they run in a job object that dies with it); with keep: true they "
          "outlive it, and a later session closes them by `owner` (below) or by pid / game_terminate. "
          "They close when this session ends unless keep is true; close them earlier with instances_close (not game_quit: "
          "it keeps their exit short; a clean quit is safe too, see the convar note below). Sub-agents of one Claude Code session share "
@@ -982,7 +1025,7 @@ json bridge_tools() {
          "Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load that "
          "ends in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). So the bridge serialises "
          "the launches and map loads that go through it, from any session: this call first waits while any game loads a "
-         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time. \"Any game\" includes loads the bridge did "
+         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time across every session (a map_load of another session counts). \"Any game\" includes loads the bridge did "
          "not start (console `map`, changelevel, Lua RunConsoleCommand, a script talking to the game): every game reports "
          "when it is loading a map (instances_list `loading`), and waited_reason then starts with map_load_outside_bridge. "
          "A call that waited reports waited_s and "
@@ -1042,7 +1085,7 @@ json bridge_tools() {
          "those only if the user asks, with game_terminate. By owner label it also closes keep: true test clients of an earlier "
          "session (a bridge restarted, another agent) that carry that label (instances_list shows it as `owner`; closed[i]."
          "launched_by_other_session is true), but never a game that is not a test client or one without the tag. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
-         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], refused?: [ids, pids or "
+         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], already_gone?: [{pid, instance?, owner?}] (processes that had ended before the call: nothing was closed), refused?: [ids, pids or "
          "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error only when nothing was "
          "closed. Closing the client that is the coordinator (the game on the base port, see instances_list: role, "
          "coordinator_warning) while other games live moves that role: the answer says so (closed[i].was_coordinator, "
@@ -1144,11 +1187,11 @@ json launched_crash_error(const Launched &l, int wait_ms = 0) {
 // instances_list, completed by the bridge: the owner label of each client it launched, the clients it launched that
 // never answered (gmod-mcp not loaded, still starting), and an optional owner filter. `sc` is the game's answer
 // (or an empty list when no game answers).
-json annotate_instances(json sc, const json &args) {
+json annotate_instances(json sc, const json &args, bool from_game = true) {
     std::string want = args.value("owner", "");
     std::set<uint32_t> listed;
     json kept = json::array();
-    note_instances(sc);
+    if (from_game) note_instances(sc);
     json coord_warning;  // issue #6: the coordinator is a client this session launched, and other instances depend on it
     {
         int running = 0;
@@ -1246,15 +1289,29 @@ Relay ride_out_handover(Relay r, const std::function<Relay()> &again, const std:
     for (;;) {
         double retry = 1.0;
         bool wait = false;
-        if (!r.reached) wait = r.refused && handover_expected();
+        if (!r.reached && r.lost && !r.lost_fresh && !r.refused && handover_expected()) {
+            // Issue #6: the call was in flight when the coordinator went away while other games live. The target game may well
+            // have run it (a map load, a Lua job): repeating it here could run it twice, and game_not_running would be a lie.
+            json e{{"error", {{"code", "relay_lost"},
+                              {"message", "the connection to the coordinator (the game on port " + std::to_string(g_port) + ") broke while this call was in flight, "
+                                          "and other games are running: the coordinator role is moving. The call MAY HAVE BEEN EXECUTED by its target game (a map "
+                                          "load or a Lua job may have started or finished): check the game's state (status, instances_list, lua_job_status) before "
+                                          "repeating a call that is not idempotent. The game itself is not closed; calls work again within a few seconds."},
+                              {"details", {{"retry_after_s", 3.0}, {"maybe_executed", true}}}}}};
+            r.reached = true;
+            r.status = 200;
+            r.response = rpc_result(id, tool_text(e, true));
+            return r;
+        }
+        if (!r.reached) wait = (r.refused || r.lost_fresh) && handover_expected();
         else if (r.response.is_object() && r.response.contains("result")) wait = coordinator_changing_result(r.response["result"], &retry);
         if (!wait) return r;
         if (waited() >= g_handover_wait_s || (cancelled && cancelled->load())) {
             if (!r.reached) {
                 json e{{"error", {{"code", "coordinator_changing"},
                                   {"message", "the coordinator (the game on port " + std::to_string(g_port) + ") stopped answering while other instances "
-                                              "live, and none has taken the role over yet (waited " + std::to_string((int)waited()) + " s). Retry in a few seconds; "
-                                              "nothing was sent to the game."},
+                                              "live, and none has taken the role over yet (waited " + std::to_string((int)waited()) + " s). Retry in a few seconds; " +
+                                              (r.lost_fresh ? "the call was cut at once, before any answer: it most likely did not run." : "nothing was sent to the game.")},
                                   {"details", {{"retry_after_s", 3.0}, {"waited_s", std::round(waited() * 10) / 10}}}}}};
                 r.reached = true;
                 r.status = 200;
@@ -1433,13 +1490,25 @@ std::string describe_unhealthy(const json &peers) {
 }
 
 #ifdef _WIN32
-// Issue #8 (chaos test G4): pids of the processes running this game's executable (any session's client, registered with the
+// Issue #8 (chaos test G4): pids of the games running this game's executable (any session's client, registered with the
 // directory or still starting). Matched by the full image path (case-insensitive), so another copy of the game is not counted.
+// Each game also starts helper processes of the same executable (`--type=renderer`, `--type=utility`: about 4 on a live game, 2 on a
+// light one), which are not games and each hold memory of their own to a small degree only: a process whose parent is itself a
+// process of the game (created before it: the pid may have been reused) is left out. Seen live: 14 processes for 3 games.
 std::set<uint32_t> game_process_pids(const std::string &exe) {
     std::set<uint32_t> out;
+    std::map<uint32_t, uint32_t> parent;
     auto norm = [](std::wstring w) {
         for (auto &c : w) c = c == L'/' ? L'\\' : (wchar_t)towlower(c);
         return w;
+    };
+    auto created = [](uint32_t pid) -> uint64_t {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) return 0;
+        FILETIME c{}, e{}, k{}, u{};
+        uint64_t t = GetProcessTimes(h, &c, &e, &k, &u) ? (((uint64_t)c.dwHighDateTime << 32) | c.dwLowDateTime) : 0;
+        CloseHandle(h);
+        return t;
     };
     std::wstring want = norm(utf8_to_wide(exe));
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -1451,11 +1520,70 @@ std::set<uint32_t> game_process_pids(const std::string &exe) {
         if (!h) continue;
         wchar_t buf[2048];
         DWORD n = 2048;
-        if (QueryFullProcessImageNameW(h, 0, buf, &n) && norm(std::wstring(buf, n)) == want) out.insert(e.th32ProcessID);
+        if (QueryFullProcessImageNameW(h, 0, buf, &n) && norm(std::wstring(buf, n)) == want) {
+            out.insert(e.th32ProcessID);
+            parent[e.th32ProcessID] = e.th32ParentProcessID;
+        }
         CloseHandle(h);
     }
     CloseHandle(snap);
-    return out;
+    std::set<uint32_t> games;
+    for (uint32_t pid : out) {
+        auto pp = parent.find(pid);
+        bool helper = false;
+        if (pp != parent.end() && out.count(pp->second) && pp->second != pid) {
+            uint64_t tp = created(pp->second), tc = created(pid);
+            helper = tp != 0 && tc != 0 && tp <= tc;  // the parent is a game process that started first: this is its helper
+        }
+        if (!helper) games.insert(pid);
+    }
+    return games;
+}
+#endif
+
+#ifdef _WIN32
+// Issue #8 (live chaos test): the clients this session launches without keep live in a job object that dies with the bridge
+// (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE), so a bridge killed by TerminateProcess / taskkill /F (which runs no exit code) no longer
+// leaves them running for ever. The game starts helper processes of its own executable: they join the job (children inherit it; no
+// breakaway flag is set, and the client is created suspended so that no child can start before it is in the job). Clients started
+// with keep: true are not put in it. Null when the job could not be created (the clients are then started as before).
+HANDLE client_job() {
+    static HANDLE job = [] {
+        HANDLE j = CreateJobObjectW(nullptr, nullptr);
+        if (!j) return (HANDLE) nullptr;
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info, sizeof info)) {
+            CloseHandle(j);
+            return (HANDLE) nullptr;
+        }
+        return j;
+    }();
+    return job;
+}
+
+// Issue #6: a map_load whose answer never came (the connection to the coordinator broke while the role moved): the client may have
+// loaded the map anyway (seen live: maps loaded with the lua_mount active while instances_launch reported game_not_running).
+// Polls its status until it is not loading any more. Returns {map} when it sits on `map`, null when it does not, or when it ended.
+json recover_lost_map_load(const Launched &l, const std::string &map, double budget_s) {
+    auto t0 = std::chrono::steady_clock::now();
+    int idle = 0;  // consecutive readings that say "not loading, another map"
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < budget_s) {
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) return json();
+        json st = game_call("status", json{{"instance", l.id}}, 10);
+        if (!st.is_object() || st.contains("error")) {
+            idle = 0;  // the answer itself may be lost again: look again
+        } else if (st.value("loading", false)) {
+            idle = 0;
+        } else if (st.contains("map") && st["map"].is_string() && st["map"].get<std::string>() == map) {
+            return json{{"map", map},
+                        {"note", "the answer to map_load was lost (the coordinator role moved while it ran); the client reports the map loaded"}};
+        } else if (++idle >= 2) {
+            return json();
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return json();
 }
 #endif
 
@@ -1589,9 +1717,14 @@ json launch_tool(const json &args, const json &token) {
         STARTUPINFOW si{};
         si.cb = sizeof si;
         PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, 0, nullptr, wdir.c_str(), &si, &pi)) {
+        HANDLE job = keep ? nullptr : client_job();  // issue #8: ends with the bridge unless keep: true
+        if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
             for (auto &l : started) TerminateProcess(l.h, 0);
             return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(GetLastError()) + ") for " + exe);
+        }
+        if (job) {
+            AssignProcessToJobObject(job, pi.hProcess);  // a failure (a parent job that forbids nesting): the client just runs without the guard
+            ResumeThread(pi.hThread);
         }
         CloseHandle(pi.hThread);
         fp_gate.note_started();  // FP7137
@@ -1736,7 +1869,7 @@ json launch_tool(const json &args, const json &token) {
         for (const auto &arr : cmd_res)
             for (const auto &e : arr) commands_ok = commands_ok && e.value("ok", false);
     }
-    // Maps: at most 2 at a time, after the settle delay (FP7137: was all at once).
+    // Maps: at most 2 at a time (per call here, and across every bridge through the gate), after the settle delay (FP7137: was all at once).
     json results = json::array();
     std::vector<json> map_res(started.size());
     if (!map.empty()) {
@@ -1766,9 +1899,15 @@ json launch_tool(const json &args, const json &token) {
             if (map_res[i].contains("error") && mount_ok[i]) {
                 std::string code = map_res[i]["error"].is_object() ? map_res[i]["error"].value("code", "") : "";
                 bool broken = code == "game_not_running" || code == "port_conflict" || code == "instance_gone" || code == "instance_unreachable" ||
-                              code == "coordinator_changing" || code == "relay_error" || code == "rpc_error";
+                              code == "coordinator_changing" || code == "relay_error" || code == "rpc_error" || code == "relay_lost";
                 json ce = launched_crash_error(started[i], broken ? 2500 : 0);
-                if (!ce.is_null()) map_res[i] = json{{"error", ce}};
+                if (!ce.is_null()) {
+                    map_res[i] = json{{"error", ce}};
+                } else if (broken && !started[i].id.empty()) {
+                    // Issue #6: the answer was lost (the coordinator moved while the load ran), the load may have gone through: ask the client.
+                    json ok = recover_lost_map_load(started[i], map, std::max(10.0, timeout - elapsed()));
+                    if (!ok.is_null()) map_res[i] = ok;
+                }
             }
         // With the map loaded the engine's server Lua paths exist: look again, for the base Lua (a mounted folder that hides
         // the game's own lua/ makes a client unusable).
@@ -1806,6 +1945,7 @@ json launch_tool(const json &args, const json &token) {
             e["map"] = ok ? json(map) : json(nullptr);
             if (!ok) e["map_error"] = map_res[i]["error"];
             if (map_res[i].contains("fp7137_waited")) e.update(map_res[i]["fp7137_waited"]);  // FP7137
+            if (ok && map_res[i].contains("note")) e["map_note"] = map_res[i]["note"];  // issue #6: the answer was lost, the client has the map
         }
         results.push_back(e);
     }
@@ -1924,15 +2064,26 @@ json close_tool(const json &args) {
     }
     bool coordinator_ended = false;
     json closed = json::array();
+    json already_gone = json::array();  // issue #8: processes that had ended before this call: nothing was closed
     for (auto &l : todo) {
-        if (!l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
+        bool gone = false;
 #ifdef _WIN32
-        if (WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
+        gone = l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0;
+#endif
+        if (!gone && !l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
+#ifdef _WIN32
+        if (!gone && WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
         CloseHandle(l.h);
 #endif
         json c{{"pid", l.pid}};
         if (!l.id.empty()) c["instance"] = l.id;
         if (!l.owner.empty()) c["owner"] = l.owner;
+        if (gone) {
+            already_gone.push_back(c);
+            std::lock_guard<std::mutex> lk(g_default_mu);
+            if (g_default_instance == l.id) g_default_instance.clear();
+            continue;
+        }
         if (!l.id.empty() && l.id == coordinator_before && others_alive > 0) {
             c["was_coordinator"] = true;
             coordinator_ended = true;
@@ -1944,18 +2095,31 @@ json close_tool(const json &args) {
     for (const auto &e : foreign) {
         std::string id = e.value("id", "");
         uint32_t pid = e.value("pid", 0u);
-        game_call("game_terminate", json{{"instance", id}}, 5);
+        bool gone = false;
 #ifdef _WIN32
-        if (HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid)) {
+        HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
+        gone = !h || WaitForSingleObject(h, 0) == WAIT_OBJECT_0;  // issue #8: the list still shows it (a game that just quit)
+        if (gone) {
+            if (h) CloseHandle(h);
+            h = nullptr;
+        }
+#endif
+        if (!gone) game_call("game_terminate", json{{"instance", id}}, 5);
+#ifdef _WIN32
+        if (h) {
             if (WaitForSingleObject(h, 3000) != WAIT_OBJECT_0) TerminateProcess(h, 0);
             CloseHandle(h);
         }
 #endif
-        closed.push_back(json{{"pid", pid}, {"instance", id}, {"owner", owner}, {"launched_by_other_session", true}});
+        (gone ? already_gone : closed).push_back(json{{"pid", pid}, {"instance", id}, {"owner", owner}, {"launched_by_other_session", true}});
         std::lock_guard<std::mutex> lk(g_default_mu);
         if (g_default_instance == id) g_default_instance.clear();
     }
     json res{{"closed", closed}};
+    if (!already_gone.empty()) {
+        res["already_gone"] = already_gone;
+        res["note"] = "already_gone: the process had ended before this call (it quit or crashed by itself): nothing was closed for it";
+    }
     if (coordinator_ended) {
         // The others elect a new coordinator within about a second of the port being released: say who took the role.
         std::set<std::string> gone;
@@ -2375,7 +2539,7 @@ void handle_request(const json &msg) {
                 {"note", g_conflict ? "no game instance reachable: port_conflict: " + port_conflict_text()
                                     : "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
                                           "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
-        out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object())), false)));
+        out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object()), false), false)));  // the bridge's own empty list: not a reading of the games
     } else if (method == "tools/call" && !launched_answer(fwd).is_null()) {
         out(local_result(msg, launched_answer(fwd)));
     } else if (method == "tools/call") {

@@ -5,7 +5,8 @@
 // a stand-in minidump into the folder GMCP_FAKE_CRASH_DIR (unless GMCP_FAKE_DUMP is 0) and ends at once with the exit code
 // GMCP_FAKE_EXIT (decimal, default 3221225477 = 0xC0000005), like a game that crashed (or, with 0, that quit). With
 // GMCP_FAKE_EXIT_DELAY_MS it keeps running that long after the trigger (the dump is written at once): a game whose
-// connections broke before the process object is signalled (issue #8).
+// connections broke before the process object is signalled (issue #8). GMCP_FAKE_CHILDREN=n starts n helper processes of the same
+// executable (the real game has about 2), see main.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,39 @@
 #endif
 
 int main(int argc, char **argv) {
+    // The real game starts helper processes of the same executable (about 2 per game). GMCP_FAKE_CHILDREN=n makes this stand-in start n
+    // children (the same executable with --fake-child, no breakaway: they join the parent's job object, if any). A child writes its pid
+    // to <GMCP_FAKE_CHILD_PID_DIR>/<pid>.pid when that is set, does nothing else, and ends after 120 s like the parent.
+    if (argc > 1 && std::string(argv[1]) == "--fake-child") {
+#ifdef _WIN32
+        const char *cdir = std::getenv("GMCP_FAKE_CHILD_PID_DIR");
+        if (cdir && *cdir) {
+            std::string path = std::string(cdir) + "\\" + std::to_string((unsigned long)GetCurrentProcessId()) + ".pid";
+            if (FILE *f = std::fopen(path.c_str(), "wb")) {
+                std::fprintf(f, "%lu", (unsigned long)GetCurrentProcessId());
+                std::fclose(f);
+            }
+        }
+#endif
+        for (int i = 0; i < 1200; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return 0;
+    }
+#ifdef _WIN32
+    if (const char *nk = std::getenv("GMCP_FAKE_CHILDREN")) {
+        char self[MAX_PATH * 2] = {};
+        GetModuleFileNameA(nullptr, self, sizeof self);
+        for (int i = 0, n = std::atoi(nk); i < n; ++i) {
+            std::string cmd = std::string("\"") + self + "\" --fake-child";
+            STARTUPINFOA si{};
+            si.cb = sizeof si;
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+        }
+    }
+#endif
     // GMCP_FAKE_DIE_ONCE names a file: the first process to create it is "the one that dies" (issue #8: a client that exits ~1 s
     // after the bridge started it, while its sibling keeps starting). It registers nowhere, writes a dump into
     // GMCP_FAKE_CRASH_DIR (when set) after GMCP_FAKE_DIE_AFTER_MS (default 1000) and ends with GMCP_FAKE_EXIT (default 0xC0000005).

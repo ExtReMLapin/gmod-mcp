@@ -9,7 +9,10 @@
 // nobody holds the port, so it never takes a slow coordinator over; it used to wait for 3 failures, 9 s on Windows where
 // a closed loopback port takes 2 s to refuse). The new coordinator then asks every other port of the range to
 // re-register at once, and for a few seconds it answers `coordinator_changing` (retryable) rather than
-// `unknown_instance` for an instance that did not register yet.
+// `unknown_instance` for an instance that did not register yet. Every heartbeat answer also carries the directory (who lives,
+// pid, process start stamp, game folder), which the members keep: the one that takes the role over turns it into tombstones, so a
+// call for an instance that vanished together with the old coordinator says instance_gone / client_crashed at once instead of
+// waiting out the grace period and answering unknown_instance.
 #include "coordinator.h"
 
 #ifdef _WIN32
@@ -107,6 +110,8 @@ void wake() { g_wake = true; }  // FP7137
 static std::atomic<int64_t> g_takeover_ms{0};  // steady-clock ms of the last take-over of the base port (0 = never)
 static std::mutex g_cid_mu;
 static std::string g_coordinator_id;  // member side: the coordinator named by the last heartbeat answer
+static std::mutex g_peers_mu;
+static json g_peers = json::array();  // member side (issue #6): the directory the last heartbeat answer carried (the coordinator included)
 
 static int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count() + 1; }
 
@@ -169,6 +174,7 @@ struct Gone {
     std::shared_ptr<Tracked> t;
     Clock::time_point when;  // last heartbeat
     json info;               // what its last heartbeat said (issue #8: an instance that went silent but whose process lives is still listed)
+    bool seeded = false;     // issue #6: made at a take-over from the directory the old coordinator last sent: the instance never registered here
 };
 static std::map<std::string, Gone> g_gone;
 static const double kCrashShownS = 3600.0;
@@ -300,6 +306,7 @@ json instances() {
             // Issue #8: no heartbeat any more but the process lives (frozen as a whole, crash dialog): it used to vanish from the
             // list. A game that is closing (goodbye, or asked to end) is not shown.
             if (t.goodbye || t.requested) continue;
+            if (kv.second.seeded && in_handover()) continue;  // issue #6: it has not had the time to register with the new coordinator
             json e = kv.second.info;
             double silent_s = std::chrono::duration<double>(now - kv.second.when).count();
             e["self"] = false;
@@ -354,6 +361,24 @@ static void feed_fps(Member &m, const json &info) {
     m.fps_watch.feed(steady_s(), fps, info.value("loading", false) || tick >= health::kStalledShownS);
 }
 
+// Issue #6: the directory sent with every heartbeat answer: the other instances and this coordinator itself (id, mode, pid, start
+// stamp, game folder, last heartbeat). Needs g_mu. A member that takes the role over seeds its tombstones from it.
+static json directory_locked(const std::string &except_id) {
+    json peers = json::array();
+    for (const auto &kv : g_members) {
+        if (kv.first == except_id) continue;
+        const Tracked &t = *kv.second.t;
+        peers.push_back(json{{"id", kv.first}, {"mode", t.mode}, {"pid", t.pid}, {"stamp", std::to_string(t.stamp)}, {"game_dir", t.game_dir}, {"info", kv.second.info}});
+    }
+    json me = self_info();
+    std::string dir = me.value("game_dir", "");
+    me.erase("game_dir");
+    uint32_t pid = plat::process_id();
+    peers.push_back(json{{"id", agent::config().instance_id}, {"mode", agent::mode_name()}, {"pid", pid},
+                         {"stamp", std::to_string(plat::process_start_stamp(pid))}, {"game_dir", dir}, {"info", me}});
+    return peers;
+}
+
 // Coordinator side: heartbeat / registration (upsert).
 static json on_heartbeat(const json &in) {
     if (!is_coordinator()) return json{{"ok", false}, {"error", "not_coordinator"}};
@@ -366,7 +391,7 @@ static json on_heartbeat(const json &in) {
         if (old != g_members.end()) old->second.t->goodbye = true;
         auto gone = g_gone.find(id);  // issue #8: it may have been listed as unresponsive meanwhile
         if (gone != g_gone.end()) gone->second.t->goodbye = true;
-        return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
+        return json{{"ok", true}, {"coordinator", agent::config().instance_id}, {"peers", directory_locked(id)}};
     }
     json info = in;
     info.erase("game_dir");
@@ -395,7 +420,7 @@ static json on_heartbeat(const json &in) {
         old->second.last_seen = Clock::now();
         feed_fps(old->second, info);
     }
-    return json{{"ok", true}, {"coordinator", agent::config().instance_id}};
+    return json{{"ok", true}, {"coordinator", agent::config().instance_id}, {"peers", directory_locked(id)}};
 }
 
 bool same_process_running(uint64_t now, uint64_t recorded) {
@@ -451,6 +476,12 @@ static json relay(const std::string &instance, const std::string &tool, const js
             if (g != g_gone.end()) {
                 Tracked &gt = *g->second.t;
                 if (finalize_locked(gt)) return ended_error(gt);
+                if (g->second.seeded && in_handover())  // alive, just not re-registered yet
+                    return wrap_err("coordinator_changing",
+                                    "the coordinator role just moved to this instance (" + agent::config().instance_id + ") and " + instance +
+                                        " has not registered with it yet: retry in " + std::to_string((int)kHandoverRetryS) +
+                                        " s (nothing was sent to it)",
+                                    json{{"retry_after_s", kHandoverRetryS}, {"instance", instance}});
                 double ago = std::chrono::duration<double>(Clock::now() - g->second.when).count();
                 return wrap_err("instance_gone", gone_message(instance, gt.pid, ago, true));
             }
@@ -581,6 +612,10 @@ static bool heartbeat() {
                 std::lock_guard<std::mutex> lk(g_cid_mu);
                 g_coordinator_id = r["coordinator"].get<std::string>();
             }
+            if (r.contains("peers") && r["peers"].is_array()) {  // issue #6: kept for the day this instance takes the role over
+                std::lock_guard<std::mutex> lk(g_peers_mu);
+                g_peers = r["peers"];
+            }
         } catch (...) {
         }
         return true;
@@ -592,6 +627,43 @@ static bool heartbeat() {
 static json on_reregister(const json &) {
     if (is_coordinator()) return json{{"ok", false}, {"error", "is_coordinator"}};
     return json{{"ok", heartbeat()}};
+}
+
+// Issue #6: right after a take-over, the instances of the old coordinator's directory that this one does not hold become tombstones
+// (the old coordinator itself included): the process of one that ended is told apart from one that has not re-registered yet, so
+// a call for it answers instance_gone / client_crashed at once, or coordinator_changing while it may still be on its way.
+static void seed_from_directory() {
+    json peers;
+    {
+        std::lock_guard<std::mutex> lk(g_peers_mu);
+        peers = g_peers;
+    }
+    std::lock_guard<std::mutex> lk(g_mu);
+    for (const auto &p : peers) {
+        if (!p.is_object() || !p.contains("id") || !p["id"].is_string()) continue;
+        std::string id = p["id"].get<std::string>();
+        if (id == agent::config().instance_id || g_members.count(id) || g_gone.count(id)) continue;
+        auto t = std::make_shared<Tracked>();
+        t->id = id;
+        t->mode = p.value("mode", "client");
+        t->game_dir = p.value("game_dir", "");
+        t->pid = p.value("pid", 0u);
+        try {
+            t->stamp = p.contains("stamp") && p["stamp"].is_string() ? std::stoull(p["stamp"].get<std::string>()) : 0;
+        } catch (...) {
+            t->stamp = 0;
+        }
+        t->watch = t->pid ? plat::process_watch_open(t->pid) : nullptr;  // null when it already ended
+        plat::ProcInfo pi;
+        if (t->watch && plat::process_watch_query(t->watch, pi, 0) && pi.start_unix > 0) t->start_unix = pi.start_unix;
+        t->last_seen_unix = unix_now() - kHeartbeatS;
+        Gone g;
+        g.t = t;
+        g.when = Clock::now();
+        g.info = p.value("info", json::object());
+        g.seeded = true;
+        g_gone[id] = std::move(g);
+    }
 }
 
 // Coordinator side, right after the take-over: the other instances listen on the next ports of the range (the main
@@ -645,6 +717,7 @@ static void loop() {
         // Try to take over the base port: it only succeeds when nobody holds it (exclusive bind), whatever the failure was.
         if (httpsrv::try_bind_extra(agent::config().base_port)) {
             g_takeover_ms = steady_ms();
+            seed_from_directory();  // issue #6
             logx::info("coordinator unreachable: this instance is now the coordinator (port %d)", agent::config().base_port);
             wait_s = kHeartbeatS;
             solicit_members();
