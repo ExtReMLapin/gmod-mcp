@@ -8,6 +8,9 @@
 namespace tools {
 
 static json lua_mount_tool(const json &args) {
+    // The engine's file system is not reached on a dedicated server: say so before anything else (nothing to chase).
+    if (agent::config().mode != agent::Mode::Client)
+        return agent::err("unsupported", "the Lua mount is not supported on a dedicated server (srcds): use it on a game client (instances_launch {lua_mount})");
     bool set = args.contains("path");
     std::string root;
     // The path is checked first, on any platform, before touching the game's main thread.
@@ -68,7 +71,7 @@ void register_lua_mount() {
          "file system says: false means it lists the folder but finds none of its files (a path it cannot read), so the game runs "
          "the installed code whatever else says mounted: a warning names the way out. A test client can start with one: instances_launch "
          "{lua_mount}. empty_cache (default true) empties the engine's Lua file cache. Windows game clients only "
-         "(unsupported_platform on Linux; refused on a dedicated server). Full guide: resource mcpagent://guide, "
+         "(unsupported_platform on Linux; client only, unsupported on srcds). Full guide: resource mcpagent://guide, "
          "section \"Mounted Lua folder\".",
          json{{"properties",
                {{"path", {{"type", json::array({"string", "null"})},

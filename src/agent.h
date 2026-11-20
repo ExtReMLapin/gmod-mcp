@@ -99,5 +99,9 @@ void jobs_wake(int realm);
 
 // Structured error code.
 nlohmann::json err(const std::string &code, const std::string &message, nlohmann::json extra = nullptr);
+// The `realm_unavailable` error of a realm that cannot be used now. On a dedicated server (srcds) the answer says so and carries
+// details {mode: "srcds", realm}: the menu and client realms never exist there ("use 'server'"), and a missing server realm is the
+// gap between two maps. In client mode: "realm X unavailable (not loaded)", the map is not loaded yet.
+nlohmann::json realm_unavailable_err(int realm);
 
 }  // namespace agent

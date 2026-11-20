@@ -2707,6 +2707,128 @@ static void test_ui_tools() {
     CHECK(gtext.find("## UI input") != std::string::npos && gtext.find("ui_click") != std::string::npos && gtext.find("cursor_hidden") != std::string::npos);
 }
 
+// Issue #3: a model that calls a tool for the first time on a dedicated server (srcds) must not be sent in a loop. The client and
+// menu realms never exist there, so `map_load` (the answer to a missing realm in client mode) is a dead end: a tool that needs the
+// client side says `unsupported` first, a client/menu realm asked for by name says to use 'server', and a tool whose realm
+// defaults to the menu defaults to the server. No game: the realm states are absent, which is all these answers need.
+static void test_srcds_client_tools() {
+    if (mcp::tools().empty()) tools::register_all();
+    auto err_of_r = [](const json &r) { return r.value("isError", false) ? r["structuredContent"]["error"] : json::object(); };
+    auto code_of = [&](const json &r) { return err_of_r(r).value("code", ""); };
+    auto msg_of = [&](const json &r) { return err_of_r(r).value("message", ""); };
+    auto has = [](const std::string &s, const char *part) { return s.find(part) != std::string::npos; };
+    auto no_map_load = [&](const json &r) {
+        json n = err_of_r(r).value("next_call", json());
+        return n.is_null() || n.value("tool", "") != "map_load";
+    };
+    auto &cfg = agent::config();
+    agent::Mode mode = cfg.mode;
+    std::string tmp = cfg.tmp_dir;
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / ("gmcp_core_srcds_" + std::to_string((unsigned long long)std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(dir);
+    std::ofstream((dir / "one.lua").string()) << "return 1";
+    std::ofstream((dir / "cl_only.lua").string()) << "return 2";
+    cfg.tmp_dir = dir.u8string();
+    // The game's main thread, standing in: agent::rt runs its call there (call_runtime answers realm_unavailable from it).
+    std::atomic<bool> stop_pump{false};
+    std::thread pump([&] {
+        while (!stop_pump) {
+            jobs::pump(50.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+
+    // The data of the answer: realm_unavailable names its realm and the mode; next_call (pure part, as the module builds the error).
+    CHECK(next_of(err_result("realm_unavailable", "realm client unavailable in srcds mode", json{{"mode", "srcds"}, {"realm", "client"}}), "ents_find",
+                  json{{"realm", "client"}}).is_null());
+    CHECK(next_of(err_result("realm_unavailable", "realm menu unavailable in srcds mode", json{{"mode", "srcds"}, {"realm", "menu"}}), "lua_exec",
+                  json{{"code", "x"}, {"instance", "srv-1"}}).is_null());
+    // The server realm of a srcds is there between two maps at most: map_load needs it itself, so it is not the way out; look at the status.
+    CHECK(next_of(err_result("realm_unavailable", "realm server unavailable (not loaded)", json{{"mode", "srcds"}, {"realm", "server"}}), "ents_find",
+                  json{{"instance", "srv-1"}}) == (json{{"tool", "status"}, {"arguments", {{"instance", "srv-1"}}}}));
+
+    cfg.mode = agent::Mode::Dedicated;
+    // The tools that need the client realm, its renderer or a window: unsupported, first, with no map_load to chase.
+    const json cam = json{{"pos", json::array({0, 0, 0})}, {"ang", json::array({0, 0, 0})}};
+    const json prim = json{{"primitives", json::array({json{{"type", "line"}, {"from", json::array({0, 0, 0})}, {"to", json::array({1, 1, 1})}}})}};
+    struct Case { const char *tool; json args; } client_only[] = {
+        {"screenshot", json::object()},          {"screenshot", json{{"source", "render"}}}, {"screenshot_from", cam},   {"screenshot_from", json{{"pos", cam["pos"]}, {"ang", cam["ang"]}, {"w", 64}, {"h", 64}}},
+        {"debug_draw", prim},                    {"debug_clear", json::object()},            {"disconnect", json::object()}, {"ui_click", json{{"x", 1}, {"y", 1}}},
+        {"ui_key", json{{"key", "enter"}}},      {"lua_mount", json::object()},              {"lua_mount", json{{"path", dir.u8string()}}},
+    };
+    for (const auto &c : client_only) {
+        json r = mcp::call_tool(c.tool, c.args);
+        CHECK(code_of(r) == "unsupported");
+        CHECK(has(msg_of(r), "srcds") || has(msg_of(r), "dedicated"));
+        CHECK(no_map_load(r));
+        if (code_of(r) != "unsupported") std::printf("  srcds client-only tool %s answered %s: %s\n", c.tool, code_of(r).c_str(), msg_of(r).c_str());
+    }
+    // A client or menu realm asked for by name: realm_unavailable that says to use 'server', and no map_load.
+    struct RealmCase { const char *tool; json args; } by_name[] = {
+        {"ents_find", json{{"realm", "client"}}},
+        {"trace", json{{"start", json::array({0, 0, 0})}, {"end", json::array({1, 1, 1})}, {"realm", "client"}}},
+        {"players_list", json{{"realm", "client"}}},
+        {"sound_emit", json{{"name", "x.wav"}, {"pos", json::array({0, 0, 0})}, {"realm", "client"}}},
+        {"lua_exec", json{{"code", "return 1"}, {"realm", "menu"}}},
+        {"lua_exec", json{{"code", "return 1"}, {"realm", "client"}}},
+        {"lua_inspect", json{{"expr", "_G"}, {"realm", "menu"}}},
+        {"hook_list", json{{"realm", "client"}}},
+        {"convar_get", json{{"name", "sv_gravity"}, {"realm", "client"}}},
+        {"wait_for", json{{"condition", "true"}, {"realm", "client"}, {"timeout_s", 1}}},
+    };
+    for (const auto &c : by_name) {
+        json r = mcp::call_tool(c.tool, c.args);
+        CHECK(code_of(r) == "realm_unavailable");
+        CHECK(has(msg_of(r), "srcds") && has(msg_of(r), "'server'"));
+        CHECK(no_map_load(r));
+        if (code_of(r) != "realm_unavailable" || !has(msg_of(r), "'server'")) std::printf("  srcds realm tool %s answered %s: %s\n", c.tool, code_of(r).c_str(), msg_of(r).c_str());
+    }
+    // The realm defaults to the server on srcds (it was the menu): the answer is about the server realm, and the way out is not map_load.
+    const std::string one = (dir / "one.lua").u8string();
+    struct DefaultCase { const char *tool; json args; } defaults[] = {
+        {"lua_exec", json{{"code", "return 1"}}},        {"lua_exec_file", json{{"path", one}}}, {"lua_check", json{{"code", "return 1"}}},
+        {"lua_inspect", json{{"expr", "_G"}}},           {"lua_function_source", json{{"expr", "print"}}},
+        // The tools whose realm already defaults to the server (or to the host realm): the same answer on srcds, nothing about the menu.
+        {"lua_job", json{{"code", "return 1"}}},         {"hook_list", json::object()},          {"hook_trace", json{{"event", "Think"}, {"duration_s", 0.1}}},
+        {"perf_hook_cost", json{{"event", "Think"}, {"duration_s", 0.1}}}, {"tests_run", json{{"path", one}}}, {"wait_for", json{{"condition", "true"}, {"timeout_s", 1}}},
+        {"convar_get", json{{"name", "sv_gravity"}}},    {"convar_set", json{{"name", "sv_gravity"}, {"value", "600"}}}, {"console_exec", json{{"cmd", "echo hi"}}},
+        {"concommand_list", json::object()},             {"ents_find", json::object()},          {"sound_trace", json{{"duration_s", 0.1}}},
+    };
+    for (const auto &c : defaults) {
+        json r = mcp::call_tool(c.tool, c.args);
+        CHECK(code_of(r) == "realm_unavailable");
+        CHECK(has(msg_of(r), "realm server") && !has(msg_of(r), "realm menu"));
+        CHECK(no_map_load(r));
+        if (!has(msg_of(r), "realm server")) std::printf("  srcds default realm of %s: %s\n", c.tool, msg_of(r).c_str());
+    }
+    // lua_reload: a shared file runs in the server realm only; a client-only file has nowhere to run.
+    json shared = mcp::call_tool("lua_reload", json{{"path", one}});
+    CHECK(!shared.value("isError", false) && shared["structuredContent"]["realms"].contains("server") && !shared["structuredContent"]["realms"].contains("client"));
+    json clonly = mcp::call_tool("lua_reload", json{{"path", (dir / "cl_only.lua").u8string()}});
+    CHECK(code_of(clonly) == "unsupported" && no_map_load(clonly));
+
+    // In client mode nothing changes: the menu is the default realm and a missing realm still points at map_load.
+    cfg.mode = agent::Mode::Client;
+    json cm = mcp::call_tool("lua_exec", json{{"code", "return 1"}});
+    CHECK(code_of(cm) == "realm_unavailable" && has(msg_of(cm), "realm menu") && err_of_r(cm).value("next_call", json()).value("tool", "") == "map_load");
+    json cc = mcp::call_tool("screenshot_from", cam);
+    CHECK(code_of(cc) == "realm_unavailable");
+
+    // The descriptions say it.
+    for (const char *name : {"screenshot", "screenshot_from", "debug_draw", "debug_clear", "disconnect", "ui_click", "ui_key", "lua_mount"}) {
+        const mcp::Tool *t = mcp::find_tool(name);
+        CHECK(t != nullptr);
+        if (t) CHECK(t->description.find("unsupported on srcds") != std::string::npos);
+    }
+    cfg.mode = mode;
+    cfg.tmp_dir = tmp;
+    stop_pump = true;
+    pump.join();
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 // screenshot without a client realm: the engine's `jpeg` command (no game: the decision, the arguments, the refusals, the whole
 // tool path with the engine faked by a sender that writes the file and prints the line, the declared shape and the docs).
 static void test_screenshot_engine_jpeg() {
@@ -3367,6 +3489,7 @@ int main(int argc, char **argv) {
     test_wiki_http_realms();
     test_next_call();
     test_ui_tools();
+    test_srcds_client_tools();
     test_screenshot_engine_jpeg();
     test_cmdline();
     test_crash_report();

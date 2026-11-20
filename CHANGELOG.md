@@ -126,6 +126,17 @@
 
 ### Fixes
 
+- **A model's first call on a dedicated server (srcds) is no longer sent in a loop** (issue #3, live on a Linux srcds). The client and
+  menu realms never exist on srcds, yet every `realm_unavailable` answered `next_call: map_load`, a dead end (a map never gives a
+  srcds a client realm, and `map_load` itself runs through the server realm). `lua_exec`, `lua_exec_file`, `lua_check`,
+  `lua_inspect` and `lua_function_source` also defaulted to the menu realm, so `lua_exec {code}` with no realm failed on srcds with
+  "realm menu unavailable in srcds mode". Now: those tools default to the server realm on srcds (the menu in client mode, as before);
+  a client or menu realm asked for by name says to use `server` and gives no `next_call` (`error.details` is `{mode: "srcds", realm}`);
+  the server realm of a srcds, missing only between two maps, points at `status`; `screenshot_from`, `debug_draw`, `debug_clear`,
+  `disconnect` and `lua_mount` answer `unsupported` first on srcds (like `screenshot`, `ui_click` and `ui_key`), and their
+  descriptions say "unsupported on srcds"; `lua_reload` runs a shared file in the server realm only and refuses a client-only file
+  with `unsupported`. Client mode is unchanged.
+
 - **A game closed on purpose is no longer reported as crashed when it was the coordinator** (issue #6, live with four agents in parallel).
   `instances_close` ended the client that held the base port with `game_terminate` (exit code 1). Only a member that says goodbye, or
   one the coordinator relayed `game_quit`/`game_terminate` to, is known to end on purpose; the coordinator itself told nobody. The

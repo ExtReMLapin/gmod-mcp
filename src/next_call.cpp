@@ -5,8 +5,15 @@ namespace next_call {
 namespace {
 
 // The next call of an error result, or null.
-json for_error(const std::string &code, const std::string &tool, const json &args) {
-    if (code == "realm_unavailable") return make("map_load", instance_of(args));  // the server/client realms exist once a map is loaded
+json for_error(const std::string &code, const std::string &tool, const json &args, const json &details) {
+    if (code == "realm_unavailable") {
+        // Client mode: the server/client realms exist once a map is loaded. A dedicated server has no client or menu realm, ever
+        // (no next step: the error says to use 'server'), and its server realm is only missing between two maps, which map_load
+        // (it runs through that realm itself) cannot help: look at the status.
+        if (details.is_object() && details.value("mode", "") == "srcds")
+            return details.value("realm", "") == "server" ? make("status", instance_of(args)) : json(nullptr);
+        return make("map_load", instance_of(args));
+    }
     if (code == "main_thread_timeout") return make("status", instance_of(args));
     if (code == "ambiguous_instance") return make("instances_list");
     if (tool.compare(0, 3, "ui_") == 0) {
@@ -80,7 +87,7 @@ void annotate(json &r, const std::string &tool, const json &args) {
     const json &sc = r["structuredContent"];
     if (r.value("isError", false)) {
         if (!sc.contains("error") || !sc["error"].is_object() || sc["error"].contains("next_call")) return;
-        attach(r, for_error(sc["error"].value("code", ""), tool, args));
+        attach(r, for_error(sc["error"].value("code", ""), tool, args, sc["error"].value("details", json())));
     } else if (!sc.contains("next_call")) {
         attach(r, for_success(sc, tool, args));
     }

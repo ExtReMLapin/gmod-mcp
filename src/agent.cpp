@@ -156,6 +156,15 @@ json err(const std::string &code, const std::string &message, json extra) {
     return json{{"ok", false}, {"error", e}};
 }
 
+json realm_unavailable_err(int realm) {
+    std::string name = realms::name(realm);
+    if (g_cfg.mode != Mode::Dedicated) return err("realm_unavailable", "realm " + name + " unavailable (not loaded)");
+    json d{{"mode", "srcds"}, {"realm", name}};
+    if (realm != realms::SERVER)
+        return err("realm_unavailable", "realm " + name + " unavailable in srcds mode: a dedicated server only has the 'server' realm (use realm 'server')", d);
+    return err("realm_unavailable", "realm server unavailable (not loaded): a dedicated server has it once its map is loaded, and not for a moment between two maps", d);
+}
+
 json lock_status() {
     std::lock_guard<std::mutex> lk(g_lock_mu);
     return g_lock_status;
@@ -680,10 +689,9 @@ void pump(lua_State *host) {
 
 json call_runtime(int realm, const std::string &tool, const json &args) {
     if (realm < 0 || realm >= realms::COUNT) return err("invalid_realm", "unknown realm");
-    if (g_cfg.mode == Mode::Dedicated && realm != realms::SERVER)
-        return err("realm_unavailable", std::string("realm ") + realms::name(realm) + " unavailable in srcds mode");
+    if (g_cfg.mode == Mode::Dedicated && realm != realms::SERVER) return realm_unavailable_err(realm);
     lua_State *L = realms::state(realm);
-    if (!L) return err("realm_unavailable", std::string("realm ") + realms::name(realm) + " unavailable (not loaded)");
+    if (!L) return realm_unavailable_err(realm);
     if (realm == realms::CLIENT) {
         std::string why;
         if (!client_allowed(&why)) return err("client_locked", why);

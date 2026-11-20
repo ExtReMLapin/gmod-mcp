@@ -123,7 +123,16 @@ json take_screenshot(const json &a) {
 
 static json screenshot_tool(const json &a) { return take_screenshot(a); }
 
+// A tool that draws or renders needs the client realm and the renderer: a dedicated server has neither, whatever the map. The answer
+// comes first and gives nothing to chase (no map_load: a map never gives a srcds a client realm).
+static json srcds_refusal(const char *tool) {
+    if (agent::config().mode == agent::Mode::Client) return nullptr;
+    return agent::err("unsupported", std::string(tool) + " needs the client realm and the renderer: a dedicated server (srcds) has neither");
+}
+
 static json screenshot_from_tool(const json &a) {
+    json refused = srcds_refusal("screenshot_from");
+    if (!refused.is_null()) return refused;
     if (!agent::realm_present(realms::CLIENT)) return agent::err("realm_unavailable", "screenshot_from needs a loaded map (client realm)");
     bool custom_size = a.contains("w") || a.contains("h");
     if (custom_size) {
@@ -306,7 +315,7 @@ void register_render() {
                                            "engine's render capture (client realm only). engine_jpeg: the engine's own `jpeg` console command, with or "
                                            "without a map (format, w, h and quality do not apply to it)."}};
     mcp::register_tool({"screenshot", "Take a screenshot",
-                        "Captures what the game shows and returns it as an MCP image (plus {source, format, w, h, screen_w, screen_h, "
+                        "Client only (unsupported on srcds). Captures what the game shows and returns it as an MCP image (plus {source, format, w, h, screen_w, screen_h, "
                         "method, bytes}). Two sources, chosen by `source` (auto by default). render: what the local player sees, "
                         "drawn by the engine; needs a loaded map (client realm); without w/h it is the game window as it is, HUD "
                         "included (method backbuffer), with w/h the player's view rendered again at that size, without HUD or view "
@@ -331,7 +340,7 @@ void register_render() {
     from["fov"] = {{"type", "number"}, {"minimum", 1}, {"maximum", 179}, {"description", "Field of view in degrees (default 90)."}};
     mcp::register_tool({"screenshot_from", "Screenshot from a viewpoint",
                         "Captures the scene from an arbitrary camera (pos, ang, fov) and returns it as an MCP image; the player does "
-                        "not move. Game client with a loaded map only. Without w/h: a temporary CalcView hook moves the view for 3 "
+                        "not move. Client only (unsupported on srcds), with a loaded map. Without w/h: a temporary CalcView hook moves the view for 3 "
                         "frames, the window is captured, then the hook is removed (result method calcview, camera_restored: true "
                         "when the player's view is back). With w/h: rendered into an off-screen target of that size (method "
                         "render_target), the view is not touched. The local player's body is drawn (it is not the camera). "
@@ -358,7 +367,7 @@ void register_render() {
                  {"required", {"type"}},
                  {"additionalProperties", false}};
     mcp::register_tool({"debug_draw", "Draw debug primitives",
-                        "Draws 3D lines, arrows (a line with a head at `to`), wireframe boxes, wireframe spheres and text in the game world, in the client realm (a map "
+                        "Client only (unsupported on srcds: it draws in the client realm, a dedicated server has none). Draws 3D lines, arrows (a line with a head at `to`), wireframe boxes, wireframe spheres and text in the game world, in the client realm (a map "
                         "must be loaded), visible on screen and in screenshot/screenshot_from. They add up across calls and expire "
                         "after `duration` seconds of game time (0 = until debug_clear or the next map). Nothing changes in the "
                         "game itself. Result: {added, active, expire_in_s}. Example: {\"primitives\": [{\"type\": \"line\", "
@@ -369,10 +378,16 @@ void register_render() {
                                              {"duration", {{"type", "number"}, {"minimum", 0}, {"description", "Lifetime in seconds of game time (default 10; 0 = until debug_clear)."}}}}},
                              {"required", {"primitives"}}},
                         json{{"destructiveHint", false}},
-                        [](const json &a) { return agent::rt(realms::CLIENT, "debug_draw", pass(a, {"primitives", "duration"})); }});
-    mcp::register_tool({"debug_clear", "Clear debug primitives", "Removes every primitive drawn by debug_draw (client realm). Result: {cleared: count}.", json::object(),
+                        [](const json &a) {
+                            json refused = srcds_refusal("debug_draw");
+                            return refused.is_null() ? agent::rt(realms::CLIENT, "debug_draw", pass(a, {"primitives", "duration"})) : refused;
+                        }});
+    mcp::register_tool({"debug_clear", "Clear debug primitives", "Client only (unsupported on srcds). Removes every primitive drawn by debug_draw (client realm). Result: {cleared: count}.", json::object(),
                         json{{"destructiveHint", false}, {"idempotentHint", true}},
-                        [](const json &) { return agent::rt(realms::CLIENT, "debug_clear", json::object()); }});
+                        [](const json &) {
+                            json refused = srcds_refusal("debug_clear");
+                            return refused.is_null() ? agent::rt(realms::CLIENT, "debug_clear", json::object()) : refused;
+                        }});
 
     // Sound.
     mcp::register_tool({"sound_emit", "Emit a sound",

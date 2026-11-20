@@ -40,6 +40,9 @@ json take_screenshot(const json &a);
 void set_engine_jpeg_sender_for_tests(std::function<std::string(std::string &code)> fn);
 json ok(json result);
 json realm_prop(const std::string &desc, bool with_menu = true);
+// The realm the module itself lives in: menu in client mode, server on srcds (a dedicated server has no menu). The default realm of
+// the Lua tools.
+int default_host_realm();
 int realm_of(const json &args, const char *key, int def);  // -1 if invalid
 // Runtime call with realm resolution and an error message if invalid.
 json rt_realm(const json &args, const char *key, int def, const std::string &tool, const json &payload, double timeout_s = 10.0);
