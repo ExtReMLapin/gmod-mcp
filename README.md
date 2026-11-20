@@ -150,6 +150,12 @@ Without the plugin, Claude Code only connects if the game is already running whe
 Reconnect, once the game is up. The plugin avoids that. Other MCP clients can do the same with `gmod-mcp-bridge` from the
 release zip, a stdio server that stays up while the game is closed.
 
+Each release also attaches `gmod-mcp.mcpb`, the same bridge (Windows and Linux x86-64) as an
+[MCP Bundle](https://github.com/modelcontextprotocol/mcpb), and is listed in the
+[official MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.ExtReMLapin/gmod-mcp`: MCP clients that
+install from the registry or open `.mcpb` files can use it. It is only the bridge: the game still needs the module from
+step 1 above, and the game still has to run with `-mcp`.
+
 ### Dedicated server
 
 Same zip (`gmod-mcp-linux64.zip` for a Linux server), same drag and drop of its `garrysmod` folder into the server's

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Listed in the official MCP Registry.** Each release now attaches `gmod-mcp.mcpb` (one MCP Bundle with the bridge for Windows
+  and Linux x86-64, built by `cmake/mcp_registry.py` and run once in CI before the release) and, from a tag, publishes
+  `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the
+  bridge; the module for the game is still installed as before. See `docs/MCP_REGISTRY.md`.
+
 ## 0.3.7
 
 Works with the x86-64 build of Garry's Mod of 2026-11-19 (new install layout, moved engine interface slots, every
