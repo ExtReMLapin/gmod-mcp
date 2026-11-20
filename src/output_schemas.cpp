@@ -96,11 +96,19 @@ json build(const std::string &tool) {
         s["lua_check"] = obj({{"ok", B}, {"realm", S}, {"checked", N}, {"errors", ANYS}, {"unknown_globals", ANYS},
                               {"globals_written", ANYS}, {"truncated", B}, {"notes", STRS}, {"path", S}},
                              {"ok", "realm", "checked", "errors"});
-        s["lua_inspect"] = obj({{"type", S}, {"value", ANY}, {"count", N}, {"keys", ANYS}, {"truncated", B}, {"metatable", Obj}},
-                               {"type"});
-        s["lua_function_source"] = obj({{"source", S}, {"linedefined", N}, {"lastlinedefined", N}, {"file", S}, {"file_age_s", N},
-                                        {"matches_disk", nullable("boolean")}, {"line_on_disk", N}},
-                                       {"source", "linedefined", "lastlinedefined", "matches_disk"});
+        // Where a function's code came from (Issue #9): lua_inspect of a function and lua_function_source carry the same fields.
+        const Props prov = {{"from_mount", B}, {"mount_has_file", B}, {"disk", S}, {"provenance", S}, {"provenance_note", S}, {"loaded_from", S}};
+        auto with_prov = [&](Props base) {
+            json o = obj(base, {});
+            for (const auto &kv : prov) o["properties"][kv.first] = kv.second;
+            return o;
+        };
+        s["lua_inspect"] = with_prov({{"type", S}, {"value", ANY}, {"count", N}, {"keys", ANYS}, {"truncated", B}, {"metatable", Obj},
+                                      {"source", S}, {"linedefined", N}, {"lastlinedefined", N}});
+        s["lua_inspect"]["required"] = json::array({"type"});
+        s["lua_function_source"] = with_prov({{"source", S}, {"linedefined", N}, {"lastlinedefined", N}, {"file", S}, {"file_age_s", N},
+                                              {"matches_disk", nullable("boolean")}, {"line_on_disk", N}});
+        s["lua_function_source"]["required"] = json::array({"source", "linedefined", "lastlinedefined", "matches_disk"});
         s["lua_file_write"] = obj({{"path", S}, {"bytes", N}, {"exec_path", S}}, {"path", "bytes"});
         s["lua_file_read"] = obj({{"path", S}, {"content", S}}, {"path", "content"});
         s["lua_file_list"] = obj({{"dir", S}, {"files", STRS}}, {"dir", "files"});

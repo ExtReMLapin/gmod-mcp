@@ -28,11 +28,13 @@
   ],
   "lua_inspect": [
     {"case": "table with a metatable", "result": {"type": "table", "value": {"a": 1}, "count": 1, "keys": [{"key": "a", "key_type": "string", "type": "number"}], "truncated": false, "metatable": {"type": "table", "name": "Player", "keys": ["__index"], "methods": ["Nick"]}, "answered_by": "client-1"}},
-    {"case": "number", "result": {"type": "number", "value": 42, "answered_by": "client-1"}}
+    {"case": "number", "result": {"type": "number", "value": 42, "answered_by": "client-1"}},
+    {"case": "function from the mounted folder (issue #9)", "result": {"type": "function", "value": "function: 0x1", "source": "@lua/pba/x.lua", "linedefined": 3, "lastlinedefined": 8, "from_mount": true, "mount_has_file": true, "provenance": "reloaded_from_mount", "disk": "D:/dev/wt/lua/pba/x.lua", "answered_by": "client-1"}}
   ],
   "lua_function_source": [
     {"case": "no file", "result": {"source": "=mcpagent:lua_exec", "linedefined": 1, "lastlinedefined": 1, "matches_disk": null, "note": "defined by code that has no file", "answered_by": "client-1"}},
-    {"case": "same code", "result": {"source": "@addons/a/lua/a.lua", "linedefined": 4, "lastlinedefined": 9, "file": "D:/g/addons/a/lua/a.lua", "file_age_s": 120, "matches_disk": true, "line_on_disk": 4, "answered_by": "client-1"}}
+    {"case": "same code", "result": {"source": "@addons/a/lua/a.lua", "linedefined": 4, "lastlinedefined": 9, "file": "D:/g/addons/a/lua/a.lua", "file_age_s": 120, "matches_disk": true, "line_on_disk": 4, "answered_by": "client-1"}},
+    {"case": "function that ran from a folder no longer mounted (issue #9)", "result": {"source": "@lua/pba/x.lua", "linedefined": 3, "lastlinedefined": 8, "from_mount": false, "mount_has_file": true, "provenance": "mount_changed_since_load", "loaded_from": "D:/dev/wt-a", "disk": "D:/dev/wt-a/lua/pba/x.lua", "provenance_note": "this realm loaded the file from the mounted folder D:/dev/wt-a, which is not the mounted folder any more", "file": "D:/dev/wt-a/lua/pba/x.lua", "file_age_s": 40, "matches_disk": true, "line_on_disk": 3, "answered_by": "client-1"}}
   ],
   "lua_file_write": [{"case": "write", "result": {"path": "D:/g/garrysmod/lua/mcpagent_tmp/t.lua", "bytes": 17, "exec_path": "t.lua", "answered_by": "client-1"}}],
   "lua_file_read": [{"case": "read", "result": {"path": "D:/g/garrysmod/lua/mcpagent_tmp/t.lua", "content": "return 1\n", "answered_by": "client-1"}}],

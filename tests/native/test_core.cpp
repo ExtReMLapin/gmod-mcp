@@ -657,6 +657,65 @@ static void test_issue9_engine_serves() {
     fs::remove_all(base, ec);
 }
 
+// Issue #9 (chaos testing 2026-11-20, F4): the mounted folder changed (another folder, or none) without a map load: a function
+// that ran from the first folder was reported from_mount false / not_on_disk with a note about a .gma. The realm remembers the
+// folder it loaded with. And a file loaded in place at load, then run again with lua_reload, is reloaded_from_mount.
+static void test_issue9_provenance_changed() {
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-prov", game = base / "garrysmod", fa = base / "fa", fb = base / "fb";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    touch(fa / "lua/pba/x.lua");
+    touch(fa / "lua/pba/gone.lua");
+    touch(fb / "lua/pba/x.lua");
+    touch(game / "lua/pba/x.lua");
+    auto &cfg = agent::config();
+    cfg.game_dir = game.u8string();
+    cfg.tmp_dir = (game / "lua/mcpagent_tmp").u8string();
+    const int SV = realms::SERVER, CL = realms::CLIENT;
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(fa.u8string());
+    lua_mount::record_load_start(SV, fa.u8string());
+    lua_mount::note_realm_loaded(SV);
+    json p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["provenance"] == "mount_in_place_at_load");  // Issue #9: the baseline
+
+    // Another folder is mounted, no map load: the realm still runs fa's copy.
+    lua_mount::set_current_for_tests(fb.u8string());
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["provenance"] == "mount_changed_since_load" && p["from_mount"] == false);  // Issue #9
+    CHECK(p.contains("disk") && same(p["disk"], fa / "lua/pba/x.lua") && same(p["loaded_from"], fa));  // Issue #9: the copy the realm ran
+    std::string note = p.value("provenance_note", "");
+    CHECK(note.find(fb.u8string()) != std::string::npos && note.find("map_load") != std::string::npos && note.find("gma") == std::string::npos);  // Issue #9
+    // Unmounted: same, and the note says so.
+    lua_mount::set_current_for_tests("");
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["provenance"] == "mount_changed_since_load" && same(p["disk"], fa / "lua/pba/x.lua"));  // Issue #9
+    CHECK(p.value("provenance_note", "").find("no longer mounted") != std::string::npos);  // Issue #9
+    // The old copy was deleted since: no disk, still the right provenance, and it says why.
+    lua_mount::set_current_for_tests(fb.u8string());
+    fs::remove(fa / "lua/pba/gone.lua");
+    p = tools::source_provenance(SV, "@lua/pba/gone.lua");
+    CHECK(p["provenance"] == "mount_changed_since_load" && !p.contains("disk") && p.value("provenance_note", "").find("deleted") != std::string::npos);  // Issue #9
+    // A file that was not in the first folder's snapshot is not from it; a realm without record is untouched.
+    p = tools::source_provenance(SV, "@lua/pba/other.lua");
+    CHECK(p["provenance"] != "mount_changed_since_load");  // Issue #9
+    p = tools::source_provenance(CL, "@lua/pba/x.lua");
+    CHECK(p["provenance"] == "installed" && p["from_mount"] == false);  // Issue #9
+    // The realm loads again with the new folder: from_mount again.
+    lua_mount::record_load_start(SV, fb.u8string());
+    lua_mount::note_realm_loaded(SV);
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["provenance"] == "mount_in_place_at_load" && same(p["disk"], fb / "lua/pba/x.lua"));  // Issue #9
+
+    // lua_reload of a file the realm loaded in place: it now comes from the reload (the guide says so).
+    lua_mount::note_reloaded(SV, fb.u8string(), "lua/pba/x.lua", lua_mount::mtime_of((fb / "lua/pba/x.lua").u8string()));
+    p = tools::source_provenance(SV, "@lua/pba/x.lua");
+    CHECK(p["from_mount"] == true && p["provenance"] == "reloaded_from_mount");  // Issue #9
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
 // Issue #9 (chaos testing 2026-11-20, F3): a folder holding lua/includes/init.lua shadowed the game's own base Lua: the
 // client hung in its load and map_load timed out after 180 s without a word about the mount. The mount is refused up front,
 // listing the files that would shadow the game's own, unless allow_shadow is passed.
@@ -2379,6 +2438,7 @@ int main(int argc, char **argv) {
     test_issue9_engine_serves();
     test_issue9_folder_missing();
     test_issue9_shadow_base();
+    test_issue9_provenance_changed();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();

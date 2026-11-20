@@ -102,6 +102,9 @@ bool realm_loaded_with_mount(int realm);
 // Did the realm get this file ("lua/pba/x.lua") from the mounted folder (in the load-time snapshot, or reloaded since)?
 // `reloaded` tells which of the two.
 bool loaded_from_mount(int realm, const std::string &rel, bool *reloaded = nullptr);
+// The folder the realm loaded this file from when that is NOT the mounted folder any more (another folder was mounted, or
+// none, without a map load since): its root, else "". The realm still runs that copy.
+std::string loaded_from_other_mount(int realm, const std::string &rel);
 struct Change {
     std::string rel;
     std::string reason;  // "modified" (time differs, newer or older), "added" (not there at load), "deleted"

@@ -393,6 +393,21 @@ json source_provenance(int realm, const std::string &source) {
         if (!has) out["provenance_note"] = "the file was in the mounted folder when this realm loaded it and has been deleted since";
         return out;
     }
+    // The mounted folder changed since this realm loaded (another folder or none, no map load): the realm still runs the copy of
+    // the folder it loaded with.
+    std::string old = std::filesystem::u8path(rel).is_absolute() ? std::string() : lua_mount::loaded_from_other_mount(realm, rel);
+    if (!old.empty()) {
+        std::string ofile = native_path(old + "/" + rel);
+        out["provenance"] = "mount_changed_since_load";
+        out["loaded_from"] = old;
+        std::string now = root.empty() ? "no folder is mounted now" : "the mounted folder is " + root + " now";
+        std::string note = "this realm loaded the file from the mounted folder " + old + ", which is " +
+                           (root.empty() ? "no longer mounted" : "not the mounted folder any more") + " (" + now + "): it still runs that copy until map_load";
+        if (std::filesystem::is_regular_file(std::filesystem::u8path(ofile), ec)) out["disk"] = ofile;
+        else note += ". The file was deleted from that folder since";
+        out["provenance_note"] = note;
+        return out;
+    }
     std::string abs, e;
     if (resolve_lua_path(rel, false, abs, e, false)) {
         out["disk"] = abs;

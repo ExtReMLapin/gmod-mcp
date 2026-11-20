@@ -216,8 +216,10 @@ installed copy (a Workshop addon is named that way too). `lua_function_source` a
 which one the realm really ran: `from_mount` (true: the folder; false: the installed copy), `disk` (the real file),
 `mount_has_file` (the folder has a file of that name now) and `provenance`: `mount_in_place_at_load` (the module put the
 folder in front of this realm's Lua path right before the realm loaded, and the file was in the folder at that moment: recorded
-at load time, not guessed from the name), `reloaded_from_mount` (the file was run again from the folder with lua_reload),
-`installed`, `not_on_disk` (inside a .gma), `no_file` (code from lua_exec/RunString). Limit: the engine, not the module,
+at load time, not guessed from the name), `reloaded_from_mount` (the file was run again from the folder with lua_reload, whether it was loaded in place at load
+or not), `mount_changed_since_load` (the realm loaded it from a folder that is no longer the mounted one: another folder was
+mounted, or none, without a map load; `from_mount` is false, `loaded_from` is that folder and `disk` its copy when it
+still exists: this is what the realm runs until `map_load`), `installed`, `not_on_disk` (inside a .gma), `no_file` (code from lua_exec/RunString). Limit: the engine, not the module,
 reads each file, so `from_mount` comes from the folder's content when the realm loaded, not from a trace of each read.
 
 Typical flow:

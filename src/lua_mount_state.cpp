@@ -136,7 +136,7 @@ void note_reloaded(int realm, const std::string &root, const std::string &rel, l
     Record &r = g_cur[realm];
     if (!same_root(r.root, root)) r = Record{root, {}, false, {}};
     std::string key = util::to_lower(rel);
-    if (!r.full || !r.files.count(key)) r.reloaded.insert(key);
+    r.reloaded.insert(key);  // from now on the realm's copy is the one lua_reload ran, in place at load or not
     r.files[key] = FileStamp{rel, mtime};
 }
 
@@ -158,6 +158,15 @@ bool loaded_from_mount(int realm, const std::string &rel, bool *reloaded) {
     if (it == r.files.end()) return false;
     if (reloaded) *reloaded = r.reloaded.count(util::to_lower(rel)) > 0;
     return true;
+}
+
+std::string loaded_from_other_mount(int realm, const std::string &rel) {
+    if (!valid_realm(realm)) return "";
+    std::string cur = current();
+    std::lock_guard<std::mutex> lk(g_mu);
+    const Record &r = g_cur[realm];
+    if (r.root.empty() || same_root(r.root, cur) || !r.files.count(util::to_lower(rel))) return "";
+    return r.root;
 }
 
 std::vector<Change> changed_files(int realm) {
