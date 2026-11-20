@@ -96,6 +96,11 @@
 
 ### Fixes
 
+- **Whatever the compiler answers that is not a function is a `lua_syntax_error`** (live verification of 0.3.7: `lua_exec` code with a
+  `"\u0041"` escape, invalid in LuaJIT 2.1 which only knows `"\u{41}"`, came back as an empty result once). `A.compile` now
+  returns a function or `nil` and a message in every case: a compiler that gives the message as its first value (as `CompileString`
+  does) or nothing at all no longer reaches the code that runs the chunk. The plain case already answered `lua_syntax_error` with the
+  message and line in the Lua runtime tests; the live empty result could not be reproduced outside the game.
 - **`loading` is true while a `map_load` is waiting to start the load** (live verification of 0.3.7). `map_load` first waits for the
   menu to be idle (up to 15 s on a client whose loading screen is stuck) and 30 frames before the engine starts the load; `status` and
   `instances_list` said `loading: false` for those ~18 s, so a launch or another `map_load` was not held back. The call itself now

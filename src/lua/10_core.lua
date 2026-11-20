@@ -356,12 +356,21 @@ function A.convar(name)
 	return GetConVar and GetConVar(name)
 end
 
--- Compilation: native.compile (luaL_loadbuffer, exact chunk name); falls back to CompileString.
+-- Compilation: native.compile (luaL_loadbuffer, exact chunk name); falls back to CompileString. Returns a function, or nil and the
+-- compiler's message. Whatever the compiler answers that is not a function is a failure to compile (live verification of 0.3.7: code
+-- with an invalid escape came back as an empty result): a compiler that gives the message as its first value, as CompileString does
+-- with handleError false, or nothing at all, never gets to run anything.
 function A.compile(code, chunk)
-	if native.compile then return native.compile(code, chunk) end
-	local f = CompileString(code, chunk, false)
+	local f, e
+	if native.compile then
+		f, e = native.compile(code, chunk)
+	else
+		f = CompileString(code, chunk, false)
+	end
 	if type(f) == "function" then return f end
-	return nil, tostring(f)
+	if e == nil and type(f) == "string" then e = f end
+	if e == nil or tostring(e) == "" then e = (chunk or "?") .. ": the code did not compile (the compiler gave no message)" end
+	return nil, tostring(e)
 end
 
 -- Public API for scripts: mcpagent.report(channel, value), mcpagent.event(type, data).
