@@ -14,21 +14,93 @@ Cases (default: a f):
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
   lua_mount_verify instances_launch {lua_mount}: the result reports the mount each engine really has (fake game server)
+  launch_options instances_launch {fps_max, fps_max_nofocus, commands, launch_args} (Issue #10): command line, commands in
+         order before the map, convars to restore listed for the module, bad options refused before anything starts
+  handover Issue #6: the coordinator role moves to another game: calls wait for it and retry coordinator_changing, but
+         never wait when no other instance is known to live (fake server)
+  launch_mount_first Issue #6: instances_launch checks (and re-applies) the lua_mount before any map loads, no map for a client
+         without it, coordinator_changing waited out (fake server, stand-in game)
+  close_coordinator Issue #6: instances_close of the coordinator says the role moved and to whom; instances_list warns beforehand
+  chaos_health Issue #8 (chaos tests G1): instances_launch refuses (peer_unhealthy) while a running client is unresponsive or
+         hung, unless ignore_unhealthy, and names the unhealthy peers when it times out (fake server, stand-in game)
+  chaos_launch Issue #8 (chaos test G2): a launched client dies at startup while its sibling keeps running: the error names
+         the survivor and warns it is not closed (stand-in game, fake game server)
+  return_focus FO-6: instances_launch records the foreground window (-mcp_return_focus) and starts clients without activating them
+  chaos_owner Issue #8 (chaos test G3): the owner label rides on the command line and in the heartbeat; instances_close {owner}
+         closes keep:true test clients of another session that carry it (never a non-test client or an untagged one)
+  chaos_memory Issue #8 (chaos test G4): low_memory counts the game processes of the game folder, registered or not, and reports
+         both numbers (stand-in game processes started outside the bridge)
+  lowmem instances_launch refuses under low free memory (low_memory), ignore_low_memory, free memory in a crash report
+  crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
+         with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
+         in flight when the client dies reports the crash, an old dump is not taken for its own (Windows)
+  fp7137 launch / map_load lock shared by the bridges (FP7137, docs/FP7137.md): waits, expiry, dead bridge, kill switch
+  unseen map loads the bridge does not see (issue #7, FP7137): a launch waits for a game that reports loading, fails at its
+         timeout, obeys the kill switch; map_load lists the other games that were loading
   lua_mount instances_launch {lua_mount}: -mcp_lua_mount passed to the client (stand-in game), bad folders refused
+  win64_layout instances_launch finds bin/win64/gmod.exe (no gmod_win64.exe at the root), starts it in the game folder
+         (Issue #4)
   orphan the process that started the bridge dies without closing the pipe: the bridge exits (and stays with
          --no-parent-watch)
   fuzz   400 random messages (random JSON shapes, ids, params, invalid UTF-8): the bridge survives and still answers
   fslow  the fake server keeps a stream silent for 65 s (a client request has no idle limit)
   launch live: instances_launch of 2 light clients with a map, default instance, instances_close (Windows, Steam,
          no other game; the game saves their window size as its video setting)
+  portconflict  a program that is not gmod-mcp holds the port (issue #5): port_conflict, names the port and the fix
   b      live game on 27080, read-only calls (needs the game and the user's token)
   c      the live game appears mid-session through a local HTTP relay (needs the game)
 Cases a, f and fslow use a temporary config folder: the user's token and cache are not touched.
 
-Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount lua_mount_verify orphan fuzz)
+Usage: python test_bridge.py <path to gmod-mcp-bridge> [case ...]   (default: a f m multi session orphans lua_mount win64_layout lua_mount_verify crash lowmem fp7137 orphan portconflict unseen handover launch_mount_first close_coordinator fuzz)
 Prints PASS/FAIL per check and exits non-zero on a failure."""
-import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
+import atexit, base64, http.server, json, os, queue, random, select, shutil, socket, socketserver, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
+
+# Linux finding LF-5: the cases make a temporary folder per bridge / fake game / config (3356 gmcp-* folders were left in %TEMP%
+# by a few weeks of runs) and start stand-in processes. Every folder made through tempfile.mkdtemp and every process started
+# through subprocess.Popen is recorded here and removed when a case ends and again when this process exits, whatever the case
+# did (an exception, a check that failed before its own cleanup). Cases keep their own cleanup: this is the safety net.
+_made_dirs, _made_procs, _made_lock = [], [], threading.Lock()
+_real_mkdtemp, _RealPopen = tempfile.mkdtemp, subprocess.Popen
+
+
+def _tracked_mkdtemp(*a, **k):
+    d = _real_mkdtemp(*a, **k)
+    with _made_lock: _made_dirs.append(d)
+    return d
+
+
+class _TrackedPopen(_RealPopen):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        with _made_lock: _made_procs.append(self)
+
+
+def cleanup_made():
+    """Ends the stand-in processes still alive (with their children) and removes the recorded folders."""
+    with _made_lock: procs, dirs = list(_made_procs), list(_made_dirs); _made_procs.clear(); _made_dirs.clear()
+    for p in procs:
+        try:
+            if p.poll() is not None: continue
+            if os.name == "nt": _RealPopen(["taskkill", "/F", "/T", "/PID", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
+            else: p.kill()
+            p.wait(timeout=10)
+        except Exception: pass
+    for d in dirs:
+        for _ in range(20):  # a just-killed process may still hold a file for a moment (Windows)
+            shutil.rmtree(d, ignore_errors=True)
+            if not os.path.exists(d): break
+            time.sleep(0.25)
+
+
+tempfile.mkdtemp, subprocess.Popen = _tracked_mkdtemp, _TrackedPopen
+atexit.register(cleanup_made)
+
+# The bridges these tests start must not refuse a launch because THIS machine is short of memory at that moment (issue #8's
+# low_memory check measures the real machine): plenty of fake free memory by default. The cases about low memory set their
+# own values explicitly, and a value already set in the environment is kept.
+os.environ.setdefault("GMOD_MCP_FAKE_FREE_COMMIT_MB", "1000000")
+os.environ.setdefault("GMOD_MCP_FAKE_FREE_RAM_MB", "1000000")
 
 try: sys.stdout.reconfigure(errors="replace")  # failure details may hold non-ASCII paths
 except Exception: pass
@@ -41,6 +113,42 @@ MODERN = "2026-07-28"
 def check(name, cond, info=""):
     results.append((name, bool(cond)))
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else "  -> " + str(info)[:400]), flush=True)
+
+
+def json_equal(text, value):
+    """True when `text` is JSON that equals `value` (the text block of a result is the JSON of its structuredContent)."""
+    try: return json.loads(text) == value
+    except (ValueError, TypeError): return False
+
+
+# Issue #3 (Code Mode): Claude Code turns an isError result into a thrown McpToolError whose `message` is the text blocks joined
+# with a newline and whose `detail` is JSON.parse(message) only when the whole message starts with `{`. So the text of EVERY error
+# result the bridge sends must be exactly one JSON object {"error": {"code", "message", ...}}. Every Bridge of every case feeds
+# this audit; main() turns the tally into one check per case (so each error path a case drives is covered).
+ERROR_AUDIT = {"seen": 0, "bad": [], "codes": set()}
+
+
+def error_text_problem(res):
+    """None when the isError result `res` is what code mode needs, else what is wrong."""
+    texts = [c.get("text", "") for c in res.get("content", []) if isinstance(c, dict) and c.get("type") == "text"]
+    if len(texts) != 1: return "%d text blocks (want exactly 1): %r" % (len(texts), texts)
+    if not texts[0].startswith("{"): return "text does not start with '{': %r" % texts[0][:120]
+    try: obj = json.loads(texts[0])
+    except ValueError as e: return "text is not JSON (%s): %r" % (e, texts[0][:120])
+    e = obj.get("error") if isinstance(obj, dict) else None
+    if not (isinstance(e, dict) and isinstance(e.get("code"), str) and isinstance(e.get("message"), str)):
+        return "no error.code / error.message: %r" % texts[0][:200]
+    return None
+
+
+def audit_error_result(m):
+    res = m.get("result") if isinstance(m, dict) else None
+    if not isinstance(res, dict) or res.get("isError") is not True: return
+    ERROR_AUDIT["seen"] += 1
+    problem = error_text_problem(res)
+    code = ((res.get("structuredContent") or {}).get("error") or {}).get("code")
+    if code: ERROR_AUDIT["codes"].add(code)
+    if problem: ERROR_AUDIT["bad"].append(problem + " | " + json.dumps(res)[-700:])
 
 
 def free_port():
@@ -72,6 +180,7 @@ class Bridge:
     def _read(self):
         for line in self.p.stdout:
             m = json.loads(line)
+            audit_error_result(m)
             with self.cv:
                 self.order.append(m)
                 if "id" in m and "method" not in m: self.by_id[json.dumps(m["id"])] = m
@@ -177,7 +286,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         with srv.lock: srv.seen.append((body, dict(self.headers)))
         if self.headers.get("Authorization") != "Bearer " + srv.token:
-            return self.reply_json({"error": "unauthorized"}, 401)
+            return self.reply_json({"error": {"code": "unauthorized", "message": "missing or invalid bearer token"}}, 401)
         if "id" not in body:
             self.send_response(202); self.send_header("Content-Length", "0"); self.end_headers(); return
         rid, method, params = body["id"], body.get("method"), body.get("params", {})
@@ -224,10 +333,23 @@ class Fake(http.server.BaseHTTPRequestHandler):
         token = params.get("_meta", {}).get("progressToken", "pt")
         prog = lambda i: {"jsonrpc": "2.0", "method": "notifications/progress",
                           "params": {"progressToken": token, "progress": i}}
+        if name == "echo" and srv.changing > 0:  # Issue #6: the coordinator role is moving
+            srv.changing -= 1
+            sc = {"error": {"code": "coordinator_changing", "message": "the coordinator role just moved", "details": {"retry_after_s": 0.3}}}
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": True}))
+        if name == "game_terminate" and srv.terminate_hook:  # Issue #6
+            srv.terminate_hook(args)
+            return self.reply_json(text("terminating"))
+        if name == "instances_list" and srv.instances_answer:  # Issue #6: the test decides what the directory says
+            sc = srv.instances_answer()
+            return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "jsonerr":  # Issue #3: an error result with no structuredContent whose text is the JSON error (e.g. a cancelled task)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps({"error": {"code": "fake_error", "message": "fails on purpose", "details": {"n": 1}}})}], "isError": True}))
         if name == "echo":
             h = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("mcp")}
-            return self.reply_json(res({"content": [{"type": "text", "text": "echo"}],
-                                        "structuredContent": {"args": args, "headers": h}}))
+            sc = {"args": args, "headers": h}  # like the module: the text is the JSON of structuredContent
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc, separators=(",", ":"))}],
+                                        "structuredContent": sc}))
         if name == "progress":
             self.sse_start()
             for i in range(1, 4): self.sse(prog(i)); time.sleep(0.05)
@@ -244,6 +366,37 @@ class Fake(http.server.BaseHTTPRequestHandler):
             except (OSError, ValueError): pid = 0
             sc = {"instances": [{"id": "fake-%d" % pid, "pid": pid, "port": 1, "mode": "client"}] if pid else []}
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "map_load" and srv.map_load_hook:
+            srv.map_load_hook(args)  # blocks until the test lets the client die: then the connection is cut, no answer
+            self.close_connection = True
+            return
+        if name == "instances_list" and srv.pid_dir:  # FP7137 tests: one pid file per stand-in game
+            pids = []
+            for f in os.listdir(srv.pid_dir):
+                try: pids.append(int(open(os.path.join(srv.pid_dir, f)).read().strip()))
+                except (OSError, ValueError): pass
+            sc = {"instances": [{"id": "fake-%d" % p, "pid": p, "port": 1, "mode": "client"} for p in pids] + [dict(e) for e in srv.extra_instances]}
+            return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
+        if name == "map_load" and srv.map_hold is not None:  # FP7137 tests: a map load that takes srv.map_hold[map] s
+            t0 = time.time()
+            with srv.lock:
+                srv.order.append(("map_load", args.get("map")))
+                srv.map_active += 1; srv.map_max = max(srv.map_max, srv.map_active); srv.map_log.append([args.get("map"), t0, None])
+                entry = srv.map_log[-1]
+            time.sleep(srv.map_hold.get(args.get("map"), srv.map_hold.get("*", 0.5)))
+            with srv.lock:
+                srv.map_active -= 1; entry[2] = time.time()
+            sc = {"map": args.get("map"), "duration_s": time.time() - t0}
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": False}))
+        if name == "console_exec" and srv.exec_answer:  # Issue #10: instances_launch {commands}
+            with srv.lock:
+                srv.exec_calls.append(args); srv.order.append(("console_exec", args.get("cmd")))
+            sc = srv.exec_answer(args)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc,
+                                        "isError": "error" in sc}))
+        if name == "status" and srv.status_answer:  # chaos tests (issues #6/#8): instances_launch polls a client whose map_load answer was lost
+            sc = srv.status_answer(args)
+            return self.reply_json(res({"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": False}))
         if name == "lua_mount" and srv.lua_mount_answer:
             with srv.lock: srv.lua_mount_calls.append(args)
             sc = srv.lua_mount_answer(args)
@@ -271,6 +424,12 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.version, self.token = version, token
         self.instructions = "fake instructions"
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
+        self.changing, self.terminate_hook, self.instances_answer = 0, None, None  # Issue #6
+        self.map_load_hook = None
+        self.status_answer = None  # chaos tests: what `status` says ({map, loading}), a function of the arguments
+        self.exec_answer, self.exec_calls, self.order = None, [], []  # Issue #10: console_exec answers and the order of console_exec / map_load calls
+        self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
+        self.extra_instances = []  # FP7137 tests (issue #7): games the bridge never started, as instances_list shows them (with "loading")
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     def handle_error(self, request, client_address):
@@ -310,6 +469,13 @@ def case_a():
     r = b.req("tools/call", {"name": "status", "arguments": {}})
     res = (r or {}).get("result", {})
     check("A tools/call says not running", res.get("isError") and "game_not_running" in json.dumps(res), r)
+    # Issue #3: the same JSON error shape as the module (what Claude Code shows the model on isError is the text only).
+    texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    err = (res.get("structuredContent") or {}).get("error", {})
+    check("A (issue 3) game_not_running: the only text block is the JSON of structuredContent", len(texts) == 1 and json_equal(texts[0], res.get("structuredContent")), texts)
+    check("A (issue 3) game_not_running error carries code, message with what to do, and details naming the port and why",
+          err.get("code") == "game_not_running" and "-mcp" in err.get("message", "") and
+          err.get("details", {}).get("port") and err.get("details", {}).get("reason"), err)
     check("A ping ok", (b.req("ping") or {}).get("result") == {}, r)
     b.close()
 
@@ -422,6 +588,93 @@ def case_f(slow=False):
     r = b.req("initialize", INIT)
     check("F version mismatch announced in the instructions", r and r["result"]["instructions"].startswith("Version mismatch") and "9.9.9" in r["result"]["instructions"], r)
     b.close(); srv.stop()
+
+
+class Foreign(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """A program that is not gmod-mcp holding the port: answers every POST with a fixed status and body."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, port, status=404, body=b"<html>not found</html>", ctype="text/html", headers=None):
+        class H(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def log_message(self, *a): pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                for k, v in (headers or {}).items(): self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(body)
+        super().__init__(("127.0.0.1", port), H)
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def stop(self):
+        self.shutdown(); self.server_close()
+
+
+def two_free_ports():
+    while True:
+        p = free_port()
+        s = socket.socket()
+        try: s.bind(("127.0.0.1", p + 1))
+        except OSError: continue
+        finally: s.close()
+        return p
+
+
+def case_portconflict():
+    # Issue #5: a foreign program on the base port was reported as "the game is not running" / "rejected the token".
+    print("== PORT_CONFLICT: a program that is not gmod-mcp holds the port", flush=True)
+    for label, kw in (("404 html", dict(status=404)),
+                      ("403 empty", dict(status=403, body=b"", ctype="text/plain")),
+                      ("401 of another program", dict(status=401, body=b'{"error":"unauthorized"}', ctype="application/json"))):
+        port, env = free_port(), isolated_config(with_token=True)
+        foreign = Foreign(port, **kw)
+        b = Bridge(port, env)
+        r = b.req("initialize", INIT)
+        ins = (r or {}).get("result", {}).get("instructions", "")
+        check("PORT_CONFLICT [%s] instructions do not say the game is not running" % label, ins.startswith("port_conflict") and "not running right now" not in ins and "GMOD_MCP_PORT" in ins, ins[:300])
+        r = b.req("tools/call", {"name": "status", "arguments": {}})
+        res = (r or {}).get("result", {})
+        err = res.get("structuredContent", {}).get("error", {})
+        msg = err.get("message", "")
+        check("PORT_CONFLICT [%s] tool error port_conflict (not game_not_running, not the token)" % label,
+              res.get("isError") and err.get("code") == "port_conflict" and "rejected the token" not in json.dumps(res), r)
+        check("PORT_CONFLICT [%s] the message names the port, the fix and how to find the program" % label,
+              str(port) in msg and "GMOD_MCP_PORT" in msg and "Get-NetTCPConnection" in msg and "ss -ltnp" in msg and "another program" in msg, msg)
+        r = mreq(b, "tools/call", {"name": "status", "arguments": {}})
+        check("PORT_CONFLICT [%s] same error for a 2026-07-28 client" % label, "port_conflict" in json.dumps(r), r)
+        r = b.req("tools/call", {"name": "instances_list", "arguments": {}})
+        check("PORT_CONFLICT [%s] instances_list note names the conflict" % label, "port_conflict" in json.dumps(r) or "another program" in json.dumps(r), r)
+        b.close(); foreign.stop()
+
+    # A foreign 401 and the module's own 401 (0.3.6 body, no signature header) stay apart.
+    port, env = free_port(), isolated_config(with_token=True)
+    old = Foreign(port, status=401, ctype="application/json", body=json.dumps({"error": {"code": "unauthorized", "message": "x"}}).encode())
+    b = Bridge(port, env); b.req("initialize", INIT)
+    r = b.req("tools/call", {"name": "status", "arguments": {}})
+    check("PORT_CONFLICT a gmod-mcp 0.3.6 401 (no signature header) is still 'rejected the token'", "rejected the token" in json.dumps(r) and "port_conflict" not in json.dumps(r), r)
+    b.close(); old.stop()
+
+    # A real gmod-mcp on the next port: the message names it.
+    port, env = two_free_ports(), isolated_config(with_token=True)
+    foreign = Foreign(port); game = FakeServer(port + 1, version=bridge_version())
+    b = Bridge(port, env); b.req("initialize", INIT)
+    msg = ""
+    for _ in range(12):  # the next ports are probed in the background (a refused loopback connection is slow on Windows)
+        r = b.req("tools/call", {"name": "status", "arguments": {}})
+        msg = (r or {}).get("result", {}).get("structuredContent", {}).get("error", {}).get("message", "")
+        if "GMOD_MCP_PORT=%d" % (port + 1) in msg: break
+        time.sleep(1)
+    check("PORT_CONFLICT the message names the gmod-mcp instance found on the next port", "port_conflict" in json.dumps(r) and "GMOD_MCP_PORT=%d" % (port + 1) in msg, msg)
+    # The foreign program leaves, the game takes the port: back to normal with no restart.
+    foreign.stop(); game.stop(); game = FakeServer(port, version=bridge_version())
+    time.sleep(2.5)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("PORT_CONFLICT the port is freed and taken by the game: calls work again", "port_conflict" not in json.dumps(r) and "error" not in (r or {}).get("result", {}).get("structuredContent", {"error": 1}) and not (r or {}).get("result", {}).get("isError"), r)
+    b.close(); game.stop()
 
 
 def mreq(b, method, params=None, timeout=15, meta=None):
@@ -655,6 +908,24 @@ def case_session():
     r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": None}})
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     check("SESSION null clears the default", r and "instance" not in r["result"]["structuredContent"]["args"], r)
+    # Issue #3 (live fuzz): instance_select {instance: "nosuch"} was accepted silently and every later call failed. When the
+    # directory answers, an id it does not list is refused (unknown_instance) and the default stays as it was; a listed
+    # id is accepted; when the directory cannot be read the id is accepted with a warning.
+    srv.instances_answer = lambda: {"instances": [{"id": "client-1", "state": "running", "mode": "client"}]}
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": "nosuch"}})
+    res = (r or {}).get("result", {})
+    check("SESSION instance_select with an unknown id -> unknown_instance, listing the known ones",
+          res.get("isError") and res["structuredContent"]["error"]["code"] == "unknown_instance" and "client-1" in json.dumps(res["structuredContent"]), r)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("SESSION a refused instance_select leaves no default", r and "instance" not in r["result"]["structuredContent"]["args"], r)
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": "client-1"}})
+    check("SESSION instance_select with a listed id is accepted", r and not r["result"].get("isError") and r["result"]["structuredContent"].get("default_instance") == "client-1", r)
+    b.req("tools/call", {"name": "instance_select", "arguments": {"instance": None}})
+    srv.instances_answer = None
+    r = b.req("tools/call", {"name": "instance_select", "arguments": {"instance": "client-9"}})
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("SESSION instance_select when the directory cannot be read: accepted, with a warning", sc.get("default_instance") == "client-9" and "not checked" in sc.get("warning", ""), r)
+    b.req("tools/call", {"name": "instance_select", "arguments": {"instance": None}})
     r = b.req("tools/call", {"name": "instances_close", "arguments": {"instances": ["client-1234"]}})
     check("SESSION instances_close refuses an instance this session did not start", r and r["result"].get("isError") and "client-1234" in json.dumps(r["result"]["structuredContent"].get("refused")), r)
     r = b.req("tools/call", {"name": "instances_close", "arguments": {}})
@@ -716,6 +987,76 @@ def case_orphans():
     shutil.rmtree(game, ignore_errors=True)
 
 
+def case_win64_layout():
+    """Issue #4: the current x86-64 install has bin/win64/gmod.exe and no gmod_win64.exe (its root gmod.exe is 32-bit).
+    instances_launch must find the game there, start it with the game folder as working directory, and say which two
+    paths it looked for when there is none."""
+    print("== WIN64_LAYOUT: instances_launch finds bin/win64/gmod.exe (Issue #4)", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("WIN64_LAYOUT stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    work = tempfile.mkdtemp(prefix="gmcp-layout-")
+
+    def pe32(path):  # just a PE header saying "32-bit x86": the game's root gmod.exe
+        b = bytearray(0x100)
+        b[0:2] = b"MZ"
+        b[0x3C] = 0x80
+        b[0x80:0x84] = b"PE\0\0"
+        b[0x84], b[0x85] = 0x4C, 0x01
+        with open(path, "wb") as f: f.write(bytes(b))
+
+    game = os.path.join(work, "cur game")
+    os.makedirs(os.path.join(game, "bin", "win64"))
+    os.makedirs(os.path.join(game, "garrysmod"))
+    pe32(os.path.join(game, "gmod.exe"))
+    shutil.copy(fake, os.path.join(game, "bin", "win64", "gmod.exe"))
+    only32 = os.path.join(work, "only32")
+    os.makedirs(os.path.join(only32, "garrysmod"))
+    pe32(os.path.join(only32, "gmod.exe"))
+    argv_file, cwd_file = os.path.join(work, "argv.txt"), os.path.join(work, "cwd.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_ARGV"] = argv_file
+    env["GMCP_FAKE_CWD"] = cwd_file
+    b = Bridge(port, env)
+
+    def launch(game_dir, timeout=40):
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "lay", "timeout_s": 10, "game_dir": game_dir}}, timeout)
+        return (r or {}).get("result", {})
+
+    res = launch(only32)
+    sc = res.get("structuredContent", {})
+    msg = json.dumps(sc)
+    check("WIN64_LAYOUT a folder with only the 32-bit gmod.exe is refused, naming both paths",
+          res.get("isError") and "game_not_found" in msg and "gmod_win64.exe" in msg and "win64" in msg and "gmod.exe" in msg and not os.path.exists(argv_file), sc)
+    res = launch(game)
+    sc = res.get("structuredContent", {})
+    pids = sc.get("silent_pids", [])
+    check("WIN64_LAYOUT bin/win64/gmod.exe is found and started (no gmod_win64.exe at the root)", len(pids) == 1 and all(alive(p) for p in pids) and os.path.exists(argv_file), sc)
+    line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+    exe_in_line = line.lower().replace("/", "\\").lstrip().startswith('"' + os.path.join(game, "bin", "win64", "gmod.exe").lower().replace("/", "\\") + '"')
+    check("WIN64_LAYOUT the started file is bin/win64/gmod.exe of the game folder", exe_in_line, line)
+    cwd = open(cwd_file, encoding="utf-8", errors="replace").read().strip() if os.path.exists(cwd_file) else ""
+    check("WIN64_LAYOUT the game starts with the game folder as working directory", cwd != "" and os.path.normcase(os.path.realpath(cwd)) == os.path.normcase(os.path.realpath(game)), cwd)
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "lay"}}, 20)
+    time.sleep(1)
+    check("WIN64_LAYOUT stand-in closed", not any(alive(p) for p in pids), pids)
+    # game_dir may also be the garrysmod folder inside the game folder (what the module reports).
+    for f in (argv_file, cwd_file):
+        if os.path.exists(f): os.remove(f)
+    res = launch(os.path.join(game, "garrysmod"))
+    sc = res.get("structuredContent", {})
+    pids = sc.get("silent_pids", [])
+    check("WIN64_LAYOUT game_dir = <game>/garrysmod works with the new layout too", len(pids) == 1 and os.path.exists(argv_file), sc)
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "lay"}}, 20)
+    b.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def case_lua_mount():
     """instances_launch {lua_mount} (B1): the client starts with -mcp_lua_mount "<folder>", a path with spaces stays one
     argument; a folder without lua/, a relative path or a quote is refused before anything starts."""
@@ -755,6 +1096,8 @@ def case_lua_mount():
     line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
     check("LUA_MOUNT the client got -mcp_lua_mount with the addon root, quoted (spaces kept)", ('-mcp_lua_mount "%s"' % wt) in line, line)
     check("LUA_MOUNT the timeout answer names the mounted folder", sc.get("lua_mount") == wt, sc)
+    check("LAUNCH_VIDEO the client got -dxlevel 95 (the engine then neither reads nor writes the user's video settings)", " -dxlevel 95" in line and " -w 640 -h 360" in line, line)
+    check("TEST_CLIENT the client got -mcp_test_client (the module then restores the archived convars before a clean quit)", " -mcp_test_client " in line, line)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     time.sleep(1)
     check("LUA_MOUNT stand-in closed", not any(alive(p) for p in pids), pids)
@@ -766,6 +1109,31 @@ def case_lua_mount():
     pids = sc.get("silent_pids", [])
     check("LUA_MOUNT non-ASCII folder refused before launching, with the way out",
           res.get("isError") and "ASCII" in json.dumps(sc) and "mklink" in json.dumps(sc) and not os.path.exists(argv_file), sc)
+    # Issue #9 (chaos testing 2026-11-20): a UNC share, an extended-length path and a root passing MAX_PATH were accepted and
+    # reported active while no file loaded. Refused before anything starts, with the reason.
+    for bad, word in ((r"\\localhost" + "\\" + wt.replace(":", "$", 1), "UNC"), (r"\\?" + "\\" + wt, "extended-length"), ("D:\\" + "a" * 250, "too long")):
+        if os.path.exists(argv_file): os.remove(argv_file)
+        res = launch(bad)
+        sc = res.get("structuredContent", {})
+        check("LUA_MOUNT Issue #9 refused before launching: " + word, res.get("isError") and word in json.dumps(sc) and not os.path.exists(argv_file), sc)
+    # Issue #9 (chaos testing 2026-11-20, F3): a folder with lua/includes/init.lua replaced the game's base Lua and the client hung
+    # in its load. Refused before anything starts unless allow_shadow is passed (then the module is told not to refuse it either).
+    base_lua = os.path.join(game, "garrysmod", "lua", "includes")
+    os.makedirs(base_lua)
+    open(os.path.join(base_lua, "init.lua"), "w").write("return 1\n")
+    shadow = os.path.join(work, "shadowing")
+    os.makedirs(os.path.join(shadow, "lua", "includes"))
+    open(os.path.join(shadow, "lua", "includes", "init.lua"), "w").write("return 2\n")
+    if os.path.exists(argv_file): os.remove(argv_file)
+    res = launch(shadow)
+    sc = res.get("structuredContent", {})
+    check("LUA_MOUNT Issue #9 a folder shadowing the base Lua is refused before launching, files listed",
+          res.get("isError") and "shadows_base_lua" in json.dumps(sc) and "includes/init.lua" in json.dumps(sc) and "allow_shadow" in json.dumps(sc) and not os.path.exists(argv_file), sc)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "ov", "timeout_s": 10, "game_dir": game, "lua_mount": shadow, "allow_shadow": True}}, 40)
+    sc = ((r or {}).get("result", {})).get("structuredContent", {})
+    line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+    check("LUA_MOUNT Issue #9 allow_shadow launches it, and the client is told (-mcp_lua_mount_allow_shadow)",
+          ('-mcp_lua_mount "%s"' % shadow) in line and " -mcp_lua_mount_allow_shadow" in line, line or sc)
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "ov"}}, 20)
     b.close()
     shutil.rmtree(game, ignore_errors=True)
@@ -823,6 +1191,10 @@ def case_lua_mount_verify():
     m = inst.get("lua_mount") or {}
     check("LUA_MOUNT_VERIFY the game has no mount: not active, isError, warning names the instance",
           res.get("isError") and m.get("active") is False and m.get("requested") == wt and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    # Issue #3: the fix named in the warning is also data.
+    check("LUA_MOUNT_VERIFY (issue 3) not active: next_call is lua_mount {path, instance} for the client that lacks it",
+          sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": wt, "instance": inst.get("instance")}}
+          and json_equal(res["content"][0]["text"], sc), sc.get("next_call"))
     # 3. another folder mounted: not active.
     answers["now"] = lambda a: {"lua_mount": "D:\\other", "base_lua_mounted": True}
     res, sc = launch(wt)
@@ -839,6 +1211,27 @@ def case_lua_mount_verify():
     res, sc = launch(wt)
     m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
     check("LUA_MOUNT_VERIFY base Lua missing: isError and warning", res.get("isError") and m.get("base_lua_mounted") is False and "base" in sc.get("warning", "").lower(), sc)
+    check("LUA_MOUNT_VERIFY (issue 3) base Lua missing: next_call removes the mount (path null) from that client",
+          sc.get("next_call") == {"tool": "lua_mount", "arguments": {"path": None, "instance": ((sc.get("instances") or [{}])[0]).get("instance")}}, sc.get("next_call"))
+    # Issue #9 (chaos testing 2026-11-20): the engine lists the folder but its file system serves none of the files (a path it
+    # cannot read): the mount is not effective, whatever the module's bookkeeping says.
+    answers["now"] = lambda a: {"lua_mount": wt, "base_lua_mounted": True, "engine_serves_folder": False, "engine_serves": {"server": False}}
+    res, sc = launch(wt)
+    inst = (sc.get("instances") or [{}])[0]
+    m = inst.get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY Issue #9 engine_serves_folder false: not active, mount_not_effective, isError, warning",
+          res.get("isError") and m.get("active") is False and m.get("error_code") == "mount_not_effective" and "mount_not_effective" in m.get("error", "")
+          and m.get("engine_serves_folder") is False and inst.get("instance") in sc.get("warning", "") and "NOT" in sc.get("warning", ""), sc)
+    answers["now"] = lambda a: {"lua_mount": wt, "base_lua_mounted": True, "folder_missing": True}
+    res, sc = launch(wt)
+    m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+    check("LUA_MOUNT_VERIFY Issue #9 folder_missing: not active, mount_folder_missing, isError",
+          res.get("isError") and m.get("active") is False and m.get("error_code") == "mount_folder_missing" and "NOT" in sc.get("warning", ""), sc)
+    for served in (True, None):
+        answers["now"] = lambda a, served=served: {"lua_mount": wt, "base_lua_mounted": True, "engine_serves_folder": served}
+        res, sc = launch(wt)
+        m = ((sc.get("instances") or [{}])[0]).get("lua_mount") or {}
+        check("LUA_MOUNT_VERIFY Issue #9 engine_serves_folder %s: still active" % served, not res.get("isError") and m.get("active") is True and "warning" not in sc, sc)
     # 6. no mount requested: the game is not asked.
     n = len(srv.lua_mount_calls)
     answers["now"] = lambda a: {"lua_mount": None, "base_lua_mounted": True}
@@ -847,6 +1240,653 @@ def case_lua_mount_verify():
     b.close(); srv.stop()
     shutil.rmtree(game, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
+
+
+def case_launch_options():
+    """Issue #10: instances_launch {fps_max, fps_max_nofocus, commands, launch_args}. The stand-in game records its command
+    line, the fake game server records the console_exec and map_load calls. Bad options are refused before anything starts."""
+    print("== LAUNCH_OPTIONS: instances_launch passes fps_max, extra options and startup commands (Issue #10)", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("LAUNCH_OPTIONS stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-opts-")
+    pid_file, argv_file = os.path.join(work, "pid.txt"), os.path.join(work, "argv.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_ARGV=argv_file, GMOD_MCP_FP7137_WORKAROUND="0")  # no 15 s settle delay before the map
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    srv.map_hold = {"*": 0.1}
+    srv.exec_answer = lambda a: {"cmd": a.get("cmd"), "realm": "menu", "via": "menu"}
+    b = Bridge(port, env)
+
+    def launch(extra, timeout=60):
+        for f in (pid_file, argv_file):
+            if os.path.exists(f): os.remove(f)
+        args = {"count": 1, "owner": "opts", "timeout_s": 20, "game_dir": game}
+        args.update(extra)
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "opts"}}, 20)
+        return res, res.get("structuredContent", {}), line
+
+    # 1. no option: the preset's frame cap, nothing else added, the game is not asked for anything.
+    res, sc, line = launch({})
+    check("LAUNCH_OPTIONS default: +fps_max 20 +fps_max_nofocus 20, no restore list, no command", " +fps_max 20 +fps_max_nofocus 20" in line and "-mcp_restore_convars" not in line and not srv.exec_calls and sc.get("fps_max") == 20, (line, sc))
+    # 2. fps_max alone: the unfocused cap follows it; the result says what the clients run at.
+    res, sc, line = launch({"preset": "normal", "fps_max": 120})
+    check("LAUNCH_OPTIONS fps_max 120 overrides the preset, fps_max_nofocus follows", " +fps_max 120 +fps_max_nofocus 120" in line and "+fps_max 30" not in line and sc.get("fps_max") == 120 and sc.get("fps_max_nofocus") == 120, (line, sc))
+    check("LAUNCH_OPTIONS the fps_note names the value", "120" in sc.get("fps_note", ""), sc.get("fps_note"))
+    # 3. both, 0 = no cap.
+    res, sc, line = launch({"fps_max": 300, "fps_max_nofocus": 0})
+    check("LAUNCH_OPTIONS fps_max 300 and fps_max_nofocus 0 (no cap when unfocused)", " +fps_max 300 +fps_max_nofocus 0" in line and sc.get("fps_max") == 300 and sc.get("fps_max_nofocus") == 0, (line, sc))
+    res, sc, line = launch({"fps_max": 0})
+    check("LAUNCH_OPTIONS fps_max 0 = no cap, reported as such", " +fps_max 0 +fps_max_nofocus 0" in line and sc.get("fps_max") == 0 and "no cap" in sc.get("fps_note", "").lower(), (line, sc))
+    # 4. launch_args and commands: argv, restore list, commands in order, before the map.
+    srv.exec_calls.clear(); srv.order.clear()
+    res, sc, line = launch({"launch_args": ["-noborder", "+cl_showfps", "1"], "commands": ["fps_max 240", "toggle snd_mute_losefocus; echo hi"], "map": "gm_construct"}, 90)
+    check("LAUNCH_OPTIONS launch_args come after the fixed options, one token each", " -dxlevel 95 -noborder +cl_showfps 1" in line.replace(" -nosound", ""), line)
+    check("LAUNCH_OPTIONS the convars the options may change are listed for the module (-mcp_restore_convars)", " -mcp_restore_convars fps_max,snd_mute_losefocus,echo,cl_showfps" in line + " ", line)
+    inst = (sc.get("instances") or [{}])[0]
+    check("LAUNCH_OPTIONS the commands ran on the client, one statement each, in order", [c.get("cmd") for c in srv.exec_calls] == ["fps_max 240", "toggle snd_mute_losefocus", "echo hi"] and all(c.get("instance") == inst.get("instance") for c in srv.exec_calls), srv.exec_calls)
+    check("LAUNCH_OPTIONS the commands ran before the map load", [o[0] for o in srv.order] == ["console_exec"] * 3 + ["map_load"], srv.order)
+    check("LAUNCH_OPTIONS the result lists the commands and the arguments", [c.get("cmd") for c in inst.get("commands", [])] == ["fps_max 240", "toggle snd_mute_losefocus", "echo hi"] and all(c.get("ok") for c in inst.get("commands", [])) and sc.get("launch_args") == ["-noborder", "+cl_showfps", "1"] and not res.get("isError"), sc)
+    # 5. a command the game rejects: reported on the instance, the others still run, isError.
+    srv.exec_calls.clear()
+    srv.exec_answer = lambda a: {"error": {"code": "not_found", "message": "unknown"}} if a.get("cmd") == "nope 1" else {"cmd": a.get("cmd"), "realm": "menu"}
+    res, sc, line = launch({"commands": ["nope 1", "echo after"]})
+    inst = (sc.get("instances") or [{}])[0]
+    cmds = inst.get("commands", [])
+    check("LAUNCH_OPTIONS a failed command is reported, the next one still runs, isError", res.get("isError") and len(cmds) == 2 and cmds[0].get("ok") is False and "unknown" in json.dumps(cmds[0]) and cmds[1].get("ok") is True and len(srv.exec_calls) == 2, sc)
+    srv.exec_answer = lambda a: {"cmd": a.get("cmd"), "realm": "menu"}
+    # 6. refused before anything starts: invalid_params naming the option.
+    bad = [({"fps_max": 5}, "fps_max"), ({"fps_max_nofocus": 5000}, "fps_max_nofocus"), ({"fps_max": "fast"}, "fps_max"),
+           ({"commands": ["quit"]}, 'quit'), ({"commands": ["echo ok", "connect 8.8.8.8"]}, 'connect'), ({"commands": ["map gm_flatgrass"]}, "map option"),
+           ({"launch_args": ["-multirun"]}, "-multirun"), ({"launch_args": ["-mcpport", "1"]}, "-mcpport"), ({"launch_args": ["-w", "1920"]}, '-w'),
+           ({"launch_args": ["-dxlevel", "81"]}, "-dxlevel"), ({"launch_args": ["+connect", "1.2.3.4"]}, "+connect"), ({"launch_args": ["+map", "gm_x"]}, "map option"),
+           ({"launch_args": ["-mcp_test_client"]}, "-mcp_test_client"), ({"launch_args": ["-windowed"]}, "-windowed"), ({"launch_args": ["-a b"]}, "launch_args"),
+           ({"launch_args": ["-condebug"]}, "-condebug")]
+    for extra, word in bad:
+        res, sc, line = launch(extra)
+        err = sc.get("error", {})
+        check("LAUNCH_OPTIONS refused before starting anything: %s" % json.dumps(extra), res.get("isError") and (err.get("code") == "invalid_params" or "invalid" in json.dumps(res).lower()) and word in json.dumps(sc) and not line, sc)
+    check("LAUNCH_OPTIONS the refused launches never reached the game", not srv.exec_calls[2:], srv.exec_calls)
+    # 7. the tool description says where the options are listed.
+    r = b.req("tools/list", {})
+    tool = next((t for t in (r or {}).get("result", {}).get("tools", []) if t["name"] == "instances_launch"), {})
+    d = tool.get("description", "")
+    props = tool.get("inputSchema", {}).get("properties", {})
+    check("LAUNCH_OPTIONS the schema offers fps_max, fps_max_nofocus, commands, launch_args", all(k in props for k in ("fps_max", "fps_max_nofocus", "commands", "launch_args")), list(props))
+    check("LAUNCH_OPTIONS the description points at the option and command lists", "developer.valvesoftware.com/wiki/Command_line_options" in d and "concommand_list" in d and "api_search" in d, d[-600:])
+    b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def synthetic_minidump():
+    """Issue #8: a minidump built by hand (x64 layouts, as tests/native/mdmp_builder.h): an access violation in engine.dll+0x2069e0, a stack
+    with client.dll+0x1234 and lua_shared.dll+0x5555 on it. Returns the bytes."""
+    import struct
+    eng, cli, lua, stack = 0x7ff800000000, 0x7ff900000000, 0x7ffa00000000, 0x7f00000000
+    b = bytearray(0x1600)
+    def put(fmt, off, *v): struct.pack_into(fmt, b, off, *v)
+    put("<IIII", 0, 0x504d444d, 0xa793, 4, 32)
+    for i, (t, sz, rva) in enumerate(((3, 52, 0x100), (4, 328, 0x200), (5, 20, 0x700), (6, 168, 0x400))): put("<III", 32 + 12 * i, t, sz, rva)
+    put("<I", 0x100, 1); put("<I", 0x104, 7); put("<QII", 0x104 + 24, stack, 0x400, 0x1200)       # thread list: the faulting thread and its stack
+    put("<I", 0x200, 3)
+    for i, (base, name) in enumerate(((eng, "C:" + chr(92) + "x" + chr(92) + "bin" + chr(92) + "engine.dll"), (cli, "client.dll"), (lua, "lua_shared.dll"))):
+        o = 0x204 + 108 * i
+        put("<QI", o, base, 0x400000); put("<I", o + 20, 0x800 + 0x100 * i)
+        raw = name.encode("utf-16-le"); put("<I", 0x800 + 0x100 * i, len(raw)); b[0x804 + 0x100 * i:0x804 + 0x100 * i + len(raw)] = raw
+    put("<I", 0x400, 7); put("<I", 0x408, 0xC0000005); put("<Q", 0x408 + 16, eng + 0x2069e0); put("<II", 0x400 + 160, 0x4D0, 0x600)
+    put("<Q", 0x600 + 0x98, stack + 0x20)
+    put("<I", 0x700, 1); put("<QII", 0x704, 0x6000000000, 16, 0x1100)
+    put("<QQQ", 0x1200 + 0x20, 0, cli + 0x1234, lua + 0x5555)
+    return bytes(b)
+
+
+def case_crash():
+    """Crash report (B6): a client this session launched that crashed is reported as client_crashed (dump name, exit code),
+    shown by instances_list as crashed, and told apart from a clean exit. The stand-in game ends on a trigger file with a
+    chosen exit code and writes a fake .mdmp into <game>/crashes first; the fake game server plays the module."""
+    print("== CRASH: client_crashed, dump match, clean exit is not a crash", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("CRASH stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+
+    def run(tag, exit_code, dump, old_dump=False, map_name=None, cut_first=False, inflight=False, dump_src=None):
+        game = tempfile.mkdtemp(prefix="gmcp-crash-game-")
+        shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
+        if old_dump:  # another game's dump, from before this one even started
+            old = os.path.join(crashes, "gmod_win64_20200101_000000_1_crash.mdmp")
+            open(old, "wb").write(b"MDMP"); os.utime(old, (time.time() - 3600, time.time() - 3600))
+        work = tempfile.mkdtemp(prefix="gmcp-crash-"); pid_file, trigger = os.path.join(work, "pid.txt"), os.path.join(work, "go")
+        port, env = free_port(), isolated_config(with_token=True)
+        env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes,
+                   GMCP_FAKE_EXIT=str(exit_code), GMCP_FAKE_DUMP="1" if dump else "0")
+        if cut_first: env["GMCP_FAKE_EXIT_DELAY_MS"] = "800"  # Issue #8: the connection breaks, the process object is signalled later
+        if dump_src:  # Issue #8: the stand-in writes this file's bytes as its dump
+            src = os.path.join(work, "dump_src.mdmp"); open(src, "wb").write(dump_src); env["GMCP_FAKE_DUMP_SRC"] = src
+        srv = FakeServer(port, version=bridge_version()); srv.pid_file = pid_file
+        b = Bridge(port, env)
+        out = {"game": game}
+        def pid_now():
+            try: return int(open(pid_file).read().strip() or 0)
+            except (OSError, ValueError): return 0
+        def go(): open(trigger, "w").close()
+        args = {"count": 1, "owner": tag, "timeout_s": 30, "game_dir": game}
+        if map_name:
+            started = threading.Event()
+            def hook(a):
+                started.set(); go()
+                if cut_first: return  # Issue #8: the answer is cut at once, the process is still there for a moment
+                for _ in range(100):
+                    if not alive(pid_now()): break
+                    time.sleep(0.1)
+            srv.map_load_hook = hook
+            args["map"] = map_name
+            r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, 90)
+            out["launch"] = (r or {}).get("result", {}).get("structuredContent", {})
+            out["pid"] = pid_now()
+        else:
+            r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, 60)
+            sc = (r or {}).get("result", {}).get("structuredContent", {})
+            inst = (sc.get("instances") or [{}])[0]
+            out["launch"], out["pid"], out["id"] = sc, pid_now(), inst.get("instance")
+            if inflight:
+                # Issue #8: a call waits on the client (the fake game server holds it open, like a game that does not answer) when
+                # the client dies: the answer must come at once, not when the call times out.
+                box = {}
+                def call(): box["r"] = b.req("tools/call", {"name": "silent_hang", "arguments": {"instance": out["id"]}}, 60)
+                th = threading.Thread(target=call); th.start()
+                time.sleep(1.0)
+                t0 = time.time(); go()
+                th.join(45)
+                out["inflight"] = (box.get("r") or {}).get("result", {}).get("structuredContent", {})
+                out["inflight_s"] = time.time() - t0
+            else:
+                go()
+            for _ in range(100):
+                if not alive(out["pid"]): break
+                time.sleep(0.1)
+        srv.stop()  # the module is gone with the game: nothing answers any more
+        time.sleep(0.3)
+        r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+        out["list"] = (r or {}).get("result", {}).get("structuredContent", {})
+        r = b.req("tools/call", {"name": "status", "arguments": {"instance": out.get("id") or "x"}}, 20)
+        out["status"] = (r or {}).get("result", {}).get("structuredContent", {})
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": tag}}, 20)
+        b.close()
+        shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+        return out
+
+    DUMP = "gmod_win64_20261114_120000_1_accessviolation.mdmp"
+    # 1. an access violation with a dump written just before.
+    o = run("c1", 0xC0000005, True, dump_src=synthetic_minidump())
+    e = o["status"].get("error", {})
+    check("CRASH access violation with a dump: client_crashed", e.get("code") == "client_crashed", o["status"])
+    # Issue #8 (live verification of 0.3.7): the answer says where the exception happened and the callers on the stack, read from the dump.
+    check("CRASH details.fault names the faulting module and offset read from the dump, the message says it too",
+          e.get("details", {}).get("fault") == "engine.dll+0x2069e0" and "engine.dll+0x2069e0" in e.get("message", ""), e)
+    check("CRASH details.stack_candidates lists the module+offset words of the faulting thread's stack", e.get("details", {}).get("stack_candidates") == ["client.dll+0x1234", "lua_shared.dll+0x5555"], e)
+    check("CRASH the answer names the dump file, the exit code, the pid and says to relaunch",
+          DUMP in e.get("message", "") and "0xC0000005" in e.get("message", "") and str(o["pid"]) in e.get("message", "") and "instances_launch" in e.get("message", ""), e)
+    check("CRASH details: instance, pid, dump, exit_code, evidence", e.get("details", {}).get("dump") == DUMP and e["details"].get("exit_code") == 0xC0000005
+          and e["details"].get("pid") == o["pid"] and e["details"].get("instance") == o["id"] and e["details"].get("evidence"), e)
+    crashed = [i for i in o["list"].get("instances", []) if i.get("state") == "crashed"]
+    check("CRASH instances_list shows it as crashed with the dump, the owner and the pid",
+          len(crashed) == 1 and crashed[0].get("pid") == o["pid"] and crashed[0].get("crash", {}).get("dump") == DUMP and crashed[0].get("owner") == "c1"
+          and crashed[0]["crash"].get("exit_code") == 0xC0000005, o["list"])
+    check("CRASH the instances_list entry carries the fault and the stack candidates too", crashed and crashed[0]["crash"].get("fault") == "engine.dll+0x2069e0" and crashed[0]["crash"].get("stack_candidates") == ["client.dll+0x1234", "lua_shared.dll+0x5555"], o["list"])
+    check("CRASH it is no longer 'launched_not_answering'", not o["list"].get("launched_not_answering"), o["list"])
+    # 2. a crash that wrote no dump, with an old dump of another game in the folder: the old one is not taken.
+    o = run("c2", 0xC0000005, False, old_dump=True)
+    e = o["status"].get("error", {})
+    check("CRASH access violation without a dump (an hour-old dump in the folder): client_crashed, dump null",
+          e.get("code") == "client_crashed" and e.get("details", {}).get("dump") is None and "No crash dump" in e.get("message", "") and "gmod_win64_2020" not in e.get("message", ""), e)
+    check("CRASH without a dump there is no fault and no stack in the details", "fault" not in e.get("details", {}) and "stack_candidates" not in e.get("details", {}), e)
+    # 3. abnormal exit without any dump.
+    o = run("c3", 1, False)
+    e = o["status"].get("error", {})
+    check("CRASH exit code 1 without a dump: client_crashed, says it may have been killed from outside",
+          e.get("code") == "client_crashed" and "killed" in e.get("message", ""), e)
+    # 4. a clean exit.
+    o = run("c4", 0, False)
+    e = o["status"].get("error", {})
+    check("CRASH exit code 0: instance_gone, not a crash", e.get("code") == "instance_gone" and "crash" not in e.get("message", "").lower(), e)
+    check("CRASH a clean exit is not listed as crashed", not [i for i in o["list"].get("instances", []) if i.get("state") == "crashed"], o["list"])
+    # 5. a map_load in flight when the client dies.
+    o = run("c5", 0xC0000005, True, map_name="gm_construct")
+    inst = (o["launch"].get("instances") or [{}])[0]
+    me = inst.get("map_error", {})
+    check("CRASH map_load in flight when the client crashed: map_error is client_crashed with the dump",
+          me.get("code") == "client_crashed" and DUMP in me.get("message", "") and me.get("details", {}).get("dump") == DUMP, o["launch"])
+    # 6. Issue #8: the map_load connection breaks first and the process object is signalled 0.8 s later (a real crash closes the
+    # sockets before the process is signalled): map_error was game_not_running, with no crash entry.
+    o = run("c6", 0xC0000005, True, map_name="gm_construct", cut_first=True)
+    inst = (o["launch"].get("instances") or [{}])[0]
+    me = inst.get("map_error", {})
+    check("CRASH Issue #8: a client that dies during its map load (connection cut before the process ends): map_error is client_crashed with the dump, not game_not_running",
+          me.get("code") == "client_crashed" and DUMP in me.get("message", "") and me.get("details", {}).get("dump") == DUMP, o["launch"])
+    # 7. Issue #8: a call in flight on a client that dies is answered at once.
+    o = run("c7", 0xC0000005, True, inflight=True)
+    fl = o.get("inflight", {}).get("error", {})
+    check("CRASH Issue #8: a call in flight when the client crashes answers client_crashed with the dump",
+          fl.get("code") == "client_crashed" and DUMP in fl.get("message", "") and fl.get("details", {}).get("dump") == DUMP, o.get("inflight"))
+    check("CRASH Issue #8: ... within a few seconds (the call itself would have waited 30 s)", o.get("inflight_s", 99) < 6, o.get("inflight_s"))
+    # 8. the same with a clean exit: not a crash, still answered at once.
+    o = run("c8", 0, False, inflight=True)
+    fl = o.get("inflight", {}).get("error", {})
+    check("CRASH Issue #8: a call in flight when the client quits cleanly answers instance_gone, not client_crashed",
+          fl.get("code") == "instance_gone" and o.get("inflight_s", 99) < 6, o.get("inflight"))
+def case_lowmem():
+    """Issue #8: instances_launch refuses to start games when the free memory does not cover them (low_memory, with the figures),
+    unless ignore_low_memory; a crash report carries the free memory. The free memory is given by GMOD_MCP_FAKE_FREE_COMMIT_MB /
+    GMOD_MCP_FAKE_FREE_RAM_MB (the bridge measures the machine otherwise); stand-in game, fake game server, Windows."""
+    print("== LOWMEM: low_memory before any game starts, ignore_low_memory, free memory in a crash report", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("LOWMEM stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+
+    def session(commit, ram, args, crash=False, others=0):
+        game = tempfile.mkdtemp(prefix="gmcp-mem-game-")
+        shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
+        work = tempfile.mkdtemp(prefix="gmcp-mem-"); pid_dir, trigger = os.path.join(work, "pids"), os.path.join(work, "go")
+        os.makedirs(pid_dir)
+        port, env = free_port(), isolated_config(with_token=True)
+        env.update(GMCP_FAKE_PID_DIR=pid_dir, GMCP_FAKE_TRIGGER=trigger, GMCP_FAKE_CRASH_DIR=crashes, GMCP_FAKE_EXIT="3221225477",
+                   GMOD_MCP_FAKE_FREE_COMMIT_MB=str(commit), GMOD_MCP_FAKE_FREE_RAM_MB=str(ram))
+        srv = FakeServer(port, version=bridge_version()); srv.pid_dir = pid_dir
+        srv.extra_instances = [{"id": "other-%d" % i, "pid": 4000000 + i, "port": 1, "mode": "client", "state": "running"} for i in range(others)]
+        b = Bridge(port, env)
+        a = {"count": 1, "owner": "mem", "timeout_s": 30, "game_dir": game}
+        a.update(args)
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": a}, 90)
+        out = {"launch": (r or {}).get("result", {}).get("structuredContent", {}), "is_error": (r or {}).get("result", {}).get("isError")}
+        out["started"] = len(os.listdir(pid_dir))
+        if crash:
+            open(trigger, "w").close()
+            for _ in range(100):
+                if not any(alive(int(open(os.path.join(pid_dir, f)).read() or 0)) for f in os.listdir(pid_dir)): break
+                time.sleep(0.1)
+            inst = (out["launch"].get("instances") or [{}])[0]
+            srv.stop(); time.sleep(0.3)
+            r = b.req("tools/call", {"name": "status", "arguments": {"instance": inst.get("instance", "x")}}, 20)
+            out["status"] = (r or {}).get("result", {}).get("structuredContent", {})
+            r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+            out["list"] = (r or {}).get("result", {}).get("structuredContent", {})
+        else:
+            srv.stop()
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "mem"}}, 20)
+        b.close()
+        shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+        return out
+
+    # 1. The report of the issue: 11 clients run, 1.8 GB of commit is free, one more client is asked for.
+    o = session(1780, 6000, {}, others=11)
+    e = o["launch"].get("error", {})
+    d = e.get("details", {})
+    check("LOWMEM free commit 1780 MB, 11 clients running: low_memory, isError, nothing started", e.get("code") == "low_memory" and o["is_error"] is True and o["started"] == 0, o)
+    check("LOWMEM details: free_commit_mb, free_ram_mb, running_clients, per_client_mb, count, needed_commit_mb",
+          d.get("free_commit_mb") == 1780 and d.get("free_ram_mb") == 6000 and d.get("running_clients") == 11 and d.get("per_client_mb") == 1600
+          and d.get("count") == 1 and d.get("needed_commit_mb", 0) > 1780, e)
+    check("LOWMEM the message says how to go on (instances_close, ignore_low_memory)", "instances_close" in e.get("message", "") and "ignore_low_memory" in e.get("message", "") and "Nothing was started" in e.get("message", ""), e)
+    # 2. ignore_low_memory starts anyway.
+    o = session(1780, 6000, {"ignore_low_memory": True}, others=11)
+    check("LOWMEM ignore_low_memory: the client starts", o["started"] == 1 and not o["launch"].get("error"), o)
+    # 3. plenty of memory.
+    o = session(100000, 60000, {})
+    check("LOWMEM plenty of memory: the client starts", o["started"] == 1 and not o["launch"].get("error"), o)
+    # 4. free RAM alone is too low.
+    o = session(100000, 500, {})
+    check("LOWMEM free RAM 500 MB: low_memory", o["launch"].get("error", {}).get("code") == "low_memory" and o["started"] == 0, o)
+    # 5. the need grows with the count: 3 clients fit in 6000 MB of commit, 4 do not.
+    o = session(6000, 60000, {"count": 3})
+    check("LOWMEM 3 clients with 6000 MB of commit: they start", o["started"] == 3, o)
+    o = session(6000, 60000, {"count": 4})
+    check("LOWMEM 4 clients with 6000 MB of commit: low_memory, none started", o["launch"].get("error", {}).get("code") == "low_memory" and o["started"] == 0, o)
+    # 6. a crash report names the free memory.
+    o = session(1800, 900, {"ignore_low_memory": True}, crash=True)
+    e = o.get("status", {}).get("error", {})
+    check("LOWMEM client_crashed carries the free memory in details.memory and says memory is low",
+          e.get("code") == "client_crashed" and e.get("details", {}).get("memory", {}).get("free_commit_mb") == 1800
+          and e["details"]["memory"].get("free_ram_mb") == 900 and "Memory is low" in e.get("message", ""), e)
+    crashed = [i for i in o.get("list", {}).get("instances", []) if i.get("state") == "crashed"]
+    check("LOWMEM instances_list crash entry carries the memory too", len(crashed) == 1 and crashed[0].get("crash", {}).get("memory", {}).get("free_commit_mb") == 1800, o.get("list"))
+    # 7. plenty of memory at the crash: the figures, no hint.
+    o = session(60000, 30000, {}, crash=True)
+    e = o.get("status", {}).get("error", {})
+    check("LOWMEM a crash with plenty of memory: the figures without the low-memory sentence",
+          e.get("code") == "client_crashed" and e.get("details", {}).get("memory", {}).get("free_commit_mb") == 60000 and "Memory is low" not in e.get("message", ""), e)
+
+
+# --- FP7137: the launch / map_load lock shared by every bridge (docs/FP7137.md). Removed with the workaround. ---
+def fp_setup(settle_ms=2500, workaround=None, hold=None):
+    """A fake game server, a config folder shared by the bridges of the scenario, a folder where each stand-in game
+    drops its pid file."""
+    env = isolated_config(with_token=True)
+    env["GMOD_MCP_FP7137_SETTLE_MS"] = str(settle_ms)
+    if workaround is not None: env["GMOD_MCP_FP7137_WORKAROUND"] = workaround
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    srv.map_hold = hold or {"*": 0.5}
+    srv.pid_dir = tempfile.mkdtemp(prefix="gmcp-fp-pids-")
+    env["GMCP_FAKE_PID_DIR"] = srv.pid_dir
+    return port, env, srv
+
+
+def fp_state_file(env):
+    return os.path.join(env["_TEST_CONFIG_DIR"], "gmod-mcp", "fp7137.state")
+
+
+def fp_seed(env, entries, last_start=0):
+    """entries: (kind, pid, seconds until expiry, tag). The bridge's own state file format (src/bridge/fp7137.h)."""
+    lines = ["S %d" % last_start] + ["E %s %d 0 %d %s" % (k, pid, int(time.time() * 1000) + int(sec * 1000), tag) for k, pid, sec, tag in entries]
+    with open(fp_state_file(env), "w") as f: f.write("\n".join(lines) + "\n")
+
+
+def fp_call(b, tool, args, timeout, token=None):
+    params = {"name": tool, "arguments": args}
+    if token: params["_meta"] = {"progressToken": token}
+    return b.start("tools/call", params)
+
+
+def fp_result(b, rid, timeout):
+    r = b.wait(rid, timeout)
+    res = (r or {}).get("result", {})
+    return res, res.get("structuredContent", {})
+
+
+def fp_dead_pid():
+    p = subprocess.Popen([sys.executable, "-c", "pass"]); p.wait()
+    return p.pid
+
+
+def fp_progress(b, token):
+    with b.lock: return [m["params"].get("message", "") for m in b.notes if m.get("method") == "notifications/progress" and m["params"].get("progressToken") == token]
+
+
+def case_fp7137():
+    """FP7137 (B4): launch and map_load wait for each other through a state shared by every bridge of the user. Pieces
+    that need no game run everywhere (seeded state file); the real launches use the stand-in game (Windows)."""
+    print("== FP7137: launch / map_load lock shared by the bridges", flush=True)
+    import shutil
+    me = os.getpid()
+    # 1. A launch in progress (seeded, owner alive): map_load waits, says so, goes ahead when it ends.
+    port, env, srv = fp_setup()
+    b = Bridge(port, env)
+    fp_seed(env, [("L", me, 60, "launch")])
+    t0 = time.time()
+    rid = fp_call(b, "map_load", {"map": "gm_a", "timeout_s": 30}, 30, token="P1")
+    time.sleep(1.5)
+    with b.lock: early = json.dumps(rid) in b.by_id
+    check("FP7137 map_load waits while a launch is in progress (nothing sent to the game)", not early and not srv.map_log, srv.map_log)
+    check("FP7137 the wait is reported as progress notifications", any("waiting" in m and "launch" in m for m in fp_progress(b, "P1")), fp_progress(b, "P1"))
+    os.remove(fp_state_file(env))
+    res, sc = fp_result(b, rid, 10)
+    check("FP7137 once the launch ends, map_load goes ahead and reports waited_s and the reason",
+          not res.get("isError") and sc.get("map") == "gm_a" and sc.get("waited_s", 0) >= 1.0 and "launch" in sc.get("waited_reason", "")
+          and json.loads(res["content"][0]["text"]).get("waited_s") == sc.get("waited_s"), res)
+    check("FP7137 the game saw the load only after the wait", srv.map_log and srv.map_log[0][1] - t0 >= 1.3, srv.map_log)
+    # 2. The wait would outlast the call's timeout: clean error, the game is never asked.
+    fp_seed(env, [("L", me, 60, "launch")])
+    t1 = time.time()
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_never", "timeout_s": 5}, 5), 30)
+    check("FP7137 a wait longer than timeout_s fails with launch_in_progress and waited_s",
+          res.get("isError") and sc.get("error", {}).get("code") == "launch_in_progress" and 4 <= sc.get("waited_s", 0) <= 9 and time.time() - t1 < 12, sc)
+    check("FP7137 ... and the game was never asked", all(m[0] != "gm_never" for m in srv.map_log), srv.map_log)
+    # Issue #3: the retry is data too: the same call a little later, with more room to wait (and the text stays the JSON).
+    nc = sc.get("error", {}).get("next_call", {})
+    check("FP7137 (issue 3) launch_in_progress carries next_call: the same map_load, after_s, a larger timeout_s",
+          nc.get("tool") == "map_load" and nc.get("arguments", {}).get("map") == "gm_never" and nc.get("arguments", {}).get("timeout_s", 0) > 5
+          and nc.get("after_s", 0) > 0 and json_equal(res["content"][0]["text"], sc), nc)
+    # 3. The bridge that held the lock is gone (pid does not exist), expiry far away: no deadlock, no wait.
+    fp_seed(env, [("L", fp_dead_pid(), 3600, "launch"), ("M", fp_dead_pid(), 3600, "map:ghost")])
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_b", "timeout_s": 30}, 30), 10)
+    check("FP7137 an entry of a dead bridge is ignored: no wait, no waited_s", not res.get("isError") and sc.get("map") == "gm_b" and "waited_s" not in sc, sc)
+    check("FP7137 ... and it is removed from the shared state", "ghost" not in open(fp_state_file(env)).read(), open(fp_state_file(env)).read())
+    # 4. An entry of a live process past its expiry does not count.
+    fp_seed(env, [("L", me, -5, "launch")])
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_c", "timeout_s": 30}, 30), 10)
+    check("FP7137 an expired entry is ignored", not res.get("isError") and "waited_s" not in sc, sc)
+    b.close(); srv.stop()
+    # 5. Settle delay longer than timeout_s: refused at once instead of waiting in vain.
+    port, env, srv = fp_setup(settle_ms=8000)
+    b = Bridge(port, env)
+    fp_seed(env, [], last_start=int(time.time() * 1000))
+    t1 = time.time()
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_d", "timeout_s": 5}, 5), 20)
+    check("FP7137 a game started 0 s ago and settle 8 s > timeout_s 5: refused at once", res.get("isError") and sc.get("error", {}).get("code") == "launch_in_progress" and time.time() - t1 < 3, sc)
+    b.close(); srv.stop()
+    # 6. Settle delay shorter than the timeout: waits for it, then loads.
+    port, env, srv = fp_setup(settle_ms=2500)
+    b = Bridge(port, env)
+    fp_seed(env, [], last_start=int(time.time() * 1000))
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_e", "timeout_s": 30}, 30), 20)
+    check("FP7137 map_load waits for the settle delay after the last start", not res.get("isError") and 1.5 <= sc.get("waited_s", 0) <= 4, sc)
+    b.close(); srv.stop()
+    # 7. Kill switch: GMOD_MCP_FP7137_WORKAROUND=0 -> no wait whatever the state says.
+    port, env, srv = fp_setup(workaround="0")
+    b = Bridge(port, env)
+    fp_seed(env, [("L", me, 60, "launch")], last_start=int(time.time() * 1000))
+    t1 = time.time()
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_f", "timeout_s": 30}, 30), 10)
+    check("FP7137 kill switch off: no wait, no waited_s", not res.get("isError") and "waited_s" not in sc and time.time() - t1 < 2, sc)
+    b.close(); srv.stop()
+
+    if os.name != "nt":
+        print("   (the launch scenarios are Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("FP7137 stand-in game built next to the bridge", False, fake)
+        return
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    launch_args = lambda **kw: dict({"count": 1, "owner": "fp", "timeout_s": 40, "game_dir": game}, **kw)
+
+    def pid_times(srv):
+        return sorted(os.path.getmtime(os.path.join(srv.pid_dir, f)) for f in os.listdir(srv.pid_dir))
+
+    # 8. Two bridges: B loads a map, A launches meanwhile -> the launch waits for the load; then B loads again right
+    # after the launch -> that load waits for the settle delay.
+    port, env, srv = fp_setup(hold={"*": 3.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    rid_b = fp_call(b, "map_load", {"map": "gm_g", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    check("FP7137 the first load reached the game", bool(srv.map_log))
+    rid_a = fp_call(a, "instances_launch", launch_args(), 60, token="L1")
+    res_a, sc_a = fp_result(a, rid_a, 60)
+    res_b, sc_b = fp_result(b, rid_b, 10)
+    load_end = srv.map_log[0][2] or 0
+    first_pid = (pid_times(srv) or [0])[0]
+    check("FP7137 a launch waits for a map load running in another bridge", not res_a.get("isError") and first_pid >= load_end - 0.05 and sc_a.get("waited_s", 0) >= 1.5 and "map" in sc_a.get("waited_reason", ""),
+          {"first_pid": first_pid, "load_end": load_end, "sc": sc_a})
+    check("FP7137 the wait was reported as progress", any("waiting" in m for m in fp_progress(a, "L1")), fp_progress(a, "L1"))
+    check("FP7137 the load itself was not delayed", not res_b.get("isError") and "waited_s" not in sc_b, sc_b)
+    res_b, sc_b = fp_result(b, fp_call(b, "map_load", {"map": "gm_h", "timeout_s": 60}, 60), 30)
+    last_pid = (pid_times(srv) or [0])[-1]
+    start_h = [m for m in srv.map_log if m[0] == "gm_h"]
+    check("FP7137 a map_load right after a launch waits for the settle delay (2.5 s here)", not res_b.get("isError") and start_h and start_h[0][1] - last_pid >= 2.2 and sc_b.get("waited_s", 0) > 0.3 and "started" in sc_b.get("waited_reason", ""),
+          {"last_pid": last_pid, "h": start_h, "sc": sc_b})
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); b.close(); srv.stop()
+    # 9. A bridge dies while its map load runs: the other bridge's launch is not blocked.
+    port, env, srv = fp_setup(hold={"*": 30.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    fp_call(a, "map_load", {"map": "gm_i", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    a.p.kill()  # no clean exit: nothing releases its slot
+    t1 = time.time()
+    res_b, sc_b = fp_result(b, fp_call(b, "instances_launch", launch_args(timeout_s=20), 30), 30)
+    check("FP7137 a dead bridge's map load never blocks a launch", not res_b.get("isError") and time.time() - t1 < 15 and "waited_s" not in sc_b, {"took": time.time() - t1, "sc": sc_b})
+    b.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    b.close(); srv.stop()
+    # 10. A launch that would wait longer than its timeout fails cleanly, nothing is started.
+    port, env, srv = fp_setup(hold={"*": 40.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    fp_call(b, "map_load", {"map": "gm_j", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    t1 = time.time()
+    res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
+    check("FP7137 a launch blocked past timeout_s fails with map_load_in_progress and waited_s", res_a.get("isError") and sc_a.get("error", {}).get("code") == "map_load_in_progress" and 8 <= sc_a.get("waited_s", 0) <= 14, sc_a)
+    check("FP7137 ... and no game was started", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    nc = sc_a.get("error", {}).get("next_call", {})
+    check("FP7137 (issue 3) map_load_in_progress carries next_call: the same instances_launch, after_s, a larger timeout_s",
+          nc.get("tool") == "instances_launch" and nc.get("arguments", {}).get("count") == launch_args().get("count") and nc.get("arguments", {}).get("timeout_s", 0) > 10
+          and nc.get("after_s", 0) > 0 and json_equal(res_a["content"][0]["text"], sc_a), nc)
+    a.close(); b.close(); srv.stop()
+    # 11. Kill switch: the same two bridges, no wait either way.
+    port, env, srv = fp_setup(workaround="0", hold={"*": 3.0})
+    a, b = Bridge(port, env), Bridge(port, env)
+    rid_b = fp_call(b, "map_load", {"map": "gm_k", "timeout_s": 60}, 60)
+    end = time.time() + 10
+    while not srv.map_log and time.time() < end: time.sleep(0.05)
+    res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(), 60), 60)
+    done_b = srv.map_log[0][2]
+    check("FP7137 kill switch off: the launch does not wait for the load", not res_a.get("isError") and "waited_s" not in sc_a and (done_b is None or (pid_times(srv) or [0])[0] < done_b), {"sc": sc_a, "done_b": done_b})
+    res_b, sc_b = fp_result(b, rid_b, 10)
+    res_b, sc_b = fp_result(b, fp_call(b, "map_load", {"map": "gm_l", "timeout_s": 60}, 60), 20)
+    check("FP7137 kill switch off: map_load right after a launch does not wait", "waited_s" not in sc_b and not res_b.get("isError"), sc_b)
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); b.close(); srv.stop()
+    # 12. FP7137 (B5): instances_launch {map} loads after the settle delay and at most 2 maps at a time; with the kill
+    # switch off all 3 at once and no wait.
+    for off in (False, True):
+        port, env, srv = fp_setup(workaround="0" if off else None, hold={"*": 1.2})
+        a = Bridge(port, env)
+        res_a, sc_a = fp_result(a, fp_call(a, "instances_launch", launch_args(count=3, map="gm_m", timeout_s=60), 90), 90)
+        ins = sc_a.get("instances", [])
+        last_pid = (pid_times(srv) or [0])[-1]
+        first_load = min([m[1] for m in srv.map_log] or [0])
+        tag = "FP7137 kill switch off: " if off else "FP7137 "
+        check(tag + "instances_launch {map, count 3}: all three loaded", not res_a.get("isError") and len(ins) == 3 and all(i.get("map") == "gm_m" for i in ins) and len(srv.map_log) == 3, sc_a)
+        if off:
+            check(tag + "the three loads overlap (3 at once) and nobody waited", srv.map_max == 3 and not any("waited_s" in i for i in ins), {"max": srv.map_max, "ins": ins})
+        else:
+            check(tag + "at most 2 maps load at the same time", srv.map_max == 2, srv.map_max)
+            check(tag + "no load starts before the settle delay (2.5 s here) after the last process start", first_load - last_pid >= 2.0, {"gap": first_load - last_pid})
+        a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+        a.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+
+
+
+def case_unseen_loads():
+    """Issue #7 (FP7137): a map load the bridge does not see (console `map`, Lua, a script talking HTTP to the game) is
+    known from the games' heartbeat (`loading` in instances_list). instances_launch waits for it (reason
+    map_load_outside_bridge, waited_s), fails cleanly at its timeout, obeys the kill switch; map_load lists the other
+    games that were loading. The fake game server plays the games; the launches use the stand-in game (Windows)."""
+    print("== UNSEEN: map loads the bridge does not see (issue #7)", flush=True)
+    import shutil
+    hand = lambda loading: {"id": "by-hand", "pid": 1, "port": 1, "mode": "client", "state": "running", "loading": loading}
+    # Issue #7: map_load says which other games were loading (it does not wait for them: only launches matter).
+    port, env, srv = fp_setup()
+    b = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_a", "timeout_s": 30}, 30), 15)
+    check("UNSEEN map_load lists the other game that was loading, and does not wait for it",
+          not res.get("isError") and sc.get("other_games_loading") == ["by-hand"] and "waited_s" not in sc
+          and json.loads(res["content"][0]["text"]).get("other_games_loading") == ["by-hand"], res)
+    srv.extra_instances = [hand(False)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_b", "timeout_s": 30}, 30), 15)
+    check("UNSEEN map_load: no other game loading, nothing reported", not res.get("isError") and "other_games_loading" not in sc, sc)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_c", "instance": "by-hand", "timeout_s": 30}, 30), 15)
+    check("UNSEEN map_load targeting the game that loads does not list it as another game", not res.get("isError") and "other_games_loading" not in sc, sc)
+    b.close(); srv.stop()
+    port, env, srv = fp_setup(workaround="0")
+    b = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(b, fp_call(b, "map_load", {"map": "gm_d", "timeout_s": 30}, 30), 15)
+    check("UNSEEN kill switch off: map_load reports nothing", not res.get("isError") and "other_games_loading" not in sc, sc)
+    b.close(); srv.stop()
+
+    if os.name != "nt":
+        print("   (the launch scenarios are Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("UNSEEN stand-in game built next to the bridge", False, fake)
+        return
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    launch_args = lambda **kw: dict({"count": 1, "owner": "unseen", "timeout_s": 40, "game_dir": game}, **kw)
+    pid_times = lambda srv: sorted(os.path.getmtime(os.path.join(srv.pid_dir, f)) for f in os.listdir(srv.pid_dir))
+
+    # Issue #7: a game loads a map the bridge never saw: the launch waits until it is over, then starts.
+    port, env, srv = fp_setup()
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    t0 = time.time()
+    rid = fp_call(a, "instances_launch", launch_args(), 60, token="U1")
+    time.sleep(2.0)
+    check("UNSEEN the launch waits while a game loads outside the bridge (no game started yet)", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    check("UNSEEN the wait is reported as progress", any("map_load_outside_bridge" in m for m in fp_progress(a, "U1")), fp_progress(a, "U1"))
+    srv.extra_instances = [hand(False)]
+    flipped = time.time()
+    res, sc = fp_result(a, rid, 60)
+    first_pid = (pid_times(srv) or [0])[0]
+    check("UNSEEN once the load is over the launch goes ahead, with waited_s and waited_reason",
+          not res.get("isError") and first_pid >= flipped - 0.1 and sc.get("waited_s", 0) >= 1.5 and "map_load_outside_bridge" in sc.get("waited_reason", "") and "by-hand" in sc.get("waited_reason", ""),
+          {"first_pid": first_pid, "flipped": flipped, "sc": sc})
+    # No game loading: no wait.
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(), 60), 60)
+    check("UNSEEN no game loading: no wait", not res.get("isError") and "waited_s" not in sc, sc)
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); srv.stop()
+    # Issue #7: a load that never ends: the launch fails at its timeout, nothing is started.
+    port, env, srv = fp_setup()
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    t1 = time.time()
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
+    check("UNSEEN a launch blocked past timeout_s fails with map_load_in_progress and waited_s",
+          res.get("isError") and sc.get("error", {}).get("code") == "map_load_in_progress" and 8 <= sc.get("waited_s", 0) <= 14
+          and "map_load_outside_bridge" in sc.get("waited_reason", "") and time.time() - t1 < 18, sc)
+    check("UNSEEN ... and no game was started", not os.listdir(srv.pid_dir), os.listdir(srv.pid_dir))
+    a.close(); srv.stop()
+    # Issue #7: the game that answers instances_list is the bridge's own client loading through the bridge: that load
+    # is the bridge's (a seeded entry), the reason is the registered one, not "outside".
+    port, env, srv = fp_setup()
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    fp_seed(env, [("M", os.getpid(), 60, "map:gm_mine")])
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(timeout_s=10), 30), 30)
+    check("UNSEEN a load registered by a bridge keeps the registered reason", res.get("isError") and "map:gm_mine" in sc.get("waited_reason", "") and "map_load_outside_bridge" not in sc.get("waited_reason", ""), sc)
+    a.close(); srv.stop()
+    # Issue #7: kill switch.
+    port, env, srv = fp_setup(workaround="0")
+    a = Bridge(port, env)
+    srv.extra_instances = [hand(True)]
+    res, sc = fp_result(a, fp_call(a, "instances_launch", launch_args(), 60), 60)
+    check("UNSEEN kill switch off: the launch does not wait", not res.get("isError") and "waited_s" not in sc, sc)
+    a.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 20)
+    a.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
 
 
 def case_launch():
@@ -1308,21 +2348,35 @@ def case_version():
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     res = (r or {}).get("result", {})
     sc = res.get("structuredContent", {})
-    first = (res.get("content") or [{}])[0].get("text", "")
+    texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    first = texts[0] if texts else ""
     bv = bridge_version()
     check("VERSION every tool result carries version_warning naming both versions",
           "0.0.1" in sc.get("version_warning", "") and bv in sc.get("version_warning", ""), sc)
-    check("VERSION the first text the agent reads is the warning, with what to do",
-          first.startswith("WARNING") and "0.0.1" in first and "skill" in first, first[:300])
-    check("VERSION the tool's own answer is still there", sc.get("args") == {} and any(c.get("text") == "echo" for c in res.get("content", [])), res)
+    # Issue #3: no prose block next to the JSON; the warning is a field of the JSON and the text stays the JSON of
+    # structuredContent (code-mode hosts parse it), with the warning as its first key so it is read first.
+    check("VERSION (issue 3) one text block, the JSON of structuredContent, version_warning first, with what to do",
+          len(texts) == 1 and first.startswith('{"version_warning":"') and json_equal(first, sc) and "0.0.1" in first and "skill" in first, texts)
+    # Issue #3 (Code Mode): an error result WITHOUT structuredContent whose text is the JSON error: the warning goes into that JSON,
+    # no prose block in front of it (Claude Code only sets e.detail when the whole message starts with `{`).
+    r = b.req("tools/call", {"name": "jsonerr", "arguments": {}})
+    res = (r or {}).get("result", {})
+    texts_e = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    try: obj_e = json.loads(texts_e[0])
+    except (ValueError, IndexError): obj_e = None
+    check("VERSION (issue 3 code mode) an error without structuredContent: one text block, still a JSON object starting with `{`, error intact, version_warning inside",
+          res.get("isError") is True and len(texts_e) == 1 and texts_e[0].startswith("{") and isinstance(obj_e, dict) and
+          obj_e.get("error") == {"code": "fake_error", "message": "fails on purpose", "details": {"n": 1}} and
+          "0.0.1" in obj_e.get("version_warning", "") and error_text_problem(res) is None, res)
+    check("VERSION the tool's own answer is still there", sc.get("args") == {} and "args" in first, res)
     # The bridge's own tools too (seen in a real update, 2026-11-14: "launch an instance" went through instances_launch
     # and the agent never saw the warning).
     for name, args in (("instance_select", {"instance": None}), ("instances_close", {"owner": "nobody"})):
         r = b.req("tools/call", {"name": name, "arguments": args})
         res = (r or {}).get("result", {})
-        first = (res.get("content") or [{}])[0].get("text", "")
+        t0 = (res.get("content") or [{}])[0].get("text", "")
         check("VERSION the bridge's own %s carries the warning too" % name,
-              first.startswith("WARNING") and "0.0.1" in res.get("structuredContent", {}).get("version_warning", ""), res)
+              t0.startswith('{"version_warning":"') and json_equal(t0, res.get("structuredContent")) and "0.0.1" in res.get("structuredContent", {}).get("version_warning", ""), res)
     check("VERSION the warning explains tools missing from the list", "listed" in first or "list" in first, first[:400])
     fake.stop(); b.close()
     # Same version: no warning.
@@ -1334,7 +2388,7 @@ def case_version():
     r = b.req("tools/call", {"name": "echo", "arguments": {}})
     res = (r or {}).get("result", {})
     check("VERSION same version: no warning", "version_warning" not in res.get("structuredContent", {}) and
-          not (res.get("content") or [{}])[0].get("text", "").startswith("WARNING"), res)
+          "version_warning" not in (res.get("content") or [{}])[0].get("text", ""), res)
     fake.stop(); b.close()
 
 
@@ -1349,7 +2403,7 @@ def case_version_live():
     check("VERSION LIVE client launched", inst, r)
     lres = (r or {}).get("result", {})
     check("VERSION LIVE the instances_launch answer itself starts with the warning",
-          (lres.get("content") or [{}])[0].get("text", "").startswith("WARNING"), str(lres)[:300])
+          (lres.get("content") or [{}])[0].get("text", "").startswith('{"version_warning":"'), str(lres)[:300])
     time.sleep(4)
     r = b.req("tools/call", {"name": "status", "arguments": {"instance": inst} if inst else {}}, 30)
     res = (r or {}).get("result", {})
@@ -1357,7 +2411,7 @@ def case_version_live():
     sc = res.get("structuredContent", {})
     print("   module", sc.get("agent_version"), "| bridge", bridge_version(), flush=True)
     check("VERSION LIVE the result starts with the warning naming both versions",
-          first.startswith("WARNING") and str(sc.get("agent_version")) in first and bridge_version() in first, first[:300])
+          first.startswith('{"version_warning":"') and str(sc.get("agent_version")) in first and bridge_version() in first, first[:300])
     b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "version-live"}}, 60)
     b.close()
 
@@ -1434,6 +2488,41 @@ def case_observe():
     call("instances_close", {"owner": "observe"}, 60)
     os.remove(tmp)
     b.close()
+
+
+def case_codemode_tasks():
+    """Issue #3 (Claude Code Code Mode): GMOD_MCP_TASKS=off. The bridge then removes the Tasks extension from the client
+    capabilities it forwards to the game, so that the game never answers a call with a task (the script of a Code Mode
+    call would only get a stub). Default / auto: forwarded untouched."""
+    print("== CODEMODE_TASKS: GMOD_MCP_TASKS=off keeps the Tasks extension away from the game", flush=True)
+    ext = "io.modelcontextprotocol/tasks"
+    other = "io.example/other"
+    def forwarded(value):
+        port, env = free_port(), isolated_config(with_token=True)
+        if value is not None: env["GMOD_MCP_TASKS"] = value
+        fake = FakeServer(port, version=bridge_version())
+        b = Bridge(port, env)
+        meta = modern_meta()
+        meta["io.modelcontextprotocol/clientCapabilities"] = {"extensions": {ext: {}, other: {"x": 1}}, "elicitation": {}}
+        meta["claudecode/toolUseId"] = "repl_toolu_01abc"
+        r = mreq(b, "tools/call", {"name": "echo", "arguments": {"k": 1}}, meta=meta)
+        with fake.lock: seen = [m for m, _ in fake.seen if m.get("method") == "tools/call"]
+        b.close(); fake.stop()
+        caps = (seen[-1]["params"]["_meta"].get("io.modelcontextprotocol/clientCapabilities") if seen else None)
+        return r, caps, (seen[-1]["params"]["_meta"] if seen else {})
+    r, caps, m = forwarded(None)
+    check("CODEMODE_TASKS default: the Tasks extension is forwarded as the client sent it", caps and ext in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("auto")
+    check("CODEMODE_TASKS auto: the Tasks extension is forwarded", caps and ext in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("off")
+    check("CODEMODE_TASKS off: the Tasks extension is not forwarded; the other capabilities and extensions are kept",
+          caps is not None and ext not in caps.get("extensions", {}) and caps["extensions"].get(other) == {"x": 1} and "elicitation" in caps, caps)
+    check("CODEMODE_TASKS off: the call still works, and the other _meta keys (toolUseId) are untouched",
+          r and not r["result"].get("isError") and m.get("claudecode/toolUseId") == "repl_toolu_01abc", (r, m))
+    r, caps, m = forwarded("OFF")
+    check("CODEMODE_TASKS off is case-insensitive", caps is not None and ext not in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("bogus")
+    check("CODEMODE_TASKS an unknown value keeps the default", caps and ext in caps.get("extensions", {}), caps)
 
 
 def case_feedback():
@@ -1578,14 +2667,856 @@ def case_fixes_live():
     shutil.rmtree(base, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "lua_mount_verify": case_lua_mount_verify, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "lua_mount_verify", "orphan", "edge", "version", "feedback", "fuzz"]
+def tool_names(srv):
+    with srv.lock: return [b["params"]["name"] for b, _ in srv.seen if b.get("method") == "tools/call"]
+
+
+def case_handover():
+    """Issue #6: the coordinator role moves (the game on the base port ends, another takes over a few seconds later).
+    The bridge rides it out instead of answering game_not_running / the raw coordinator_changing, but only when other
+    instances are known to live (it never makes a call wait when the only game is closed)."""
+    print("== HANDOVER: a call survives the coordinator role moving to another game", flush=True)
+    cluster = live_cluster(os.getpid())  # the member's process lives (the bridge checks it before it waits for a hand-over)
+    env0 = isolated_config(with_token=True)
+    env0["GMOD_MCP_HANDOVER_WAIT_S"] = "4"  # the real wait is 10 s: the tests that give up do not need that long
+    # 1. Nothing else known to live: the game closes, the next call says game_not_running at once (no wait added).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    b = Bridge(port, env0)
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    check("HANDOVER a call is answered while the game runs", r and not r["result"].get("isError"), r)
+    srv.stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {}}, 20)
+    check("HANDOVER the only game closed: game_not_running at once, no wait",
+          r and "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
+    # 2. Several instances live (the bridge saw them in instances_list): the coordinator ends, another takes the port 2 s later.
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = cluster
+    b = Bridge(port, env0)
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    check("HANDOVER instances_list answers with the coordinator named", r and r["result"]["structuredContent"].get("coordinator_id") == "client-1", r)
+    srv.stop()
+    new = {}
+    threading.Thread(target=lambda: (time.sleep(2.0), new.setdefault("srv", FakeServer(port, version=bridge_version()))), daemon=True).start()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    took = time.time() - t0
+    check("HANDOVER a call for another instance waits for the new coordinator and succeeds",
+          r and not r["result"].get("isError") and r["result"]["structuredContent"]["args"].get("instance") == "client-2" and 1.5 < took < 4, (took, r))
+    # 3. The new coordinator says coordinator_changing twice (members not registered yet): retried, the answer is the real one.
+    if "srv" not in new:  # the bridge answered before the new coordinator existed (red run): bring it up anyway
+        time.sleep(2.5); new["srv"] = new.get("srv") or FakeServer(port, version=bridge_version())
+    new["srv"].changing = 2
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("HANDOVER coordinator_changing is retried, the caller gets the real answer",
+          r and not r["result"].get("isError") and r["result"]["structuredContent"]["args"].get("instance") == "client-2" and new["srv"].changing == 0, (time.time() - t0, r))
+    # 4. It never recovers: the caller gets the retryable coordinator_changing (with a delay), not game_not_running.
+    new["srv"].changing = 10 ** 6
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("HANDOVER still changing after the wait: the retryable coordinator_changing, relayed",
+          r and r["result"].get("isError") and sc.get("error", {}).get("code") == "coordinator_changing" and 3 < time.time() - t0 < 12, (time.time() - t0, r))
+    new["srv"].stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("HANDOVER nobody takes the role over: coordinator_changing with retry_after_s after the wait (not game_not_running)",
+          r and r["result"].get("isError") and sc.get("error", {}).get("code") == "coordinator_changing" and sc["error"].get("details", {}).get("retry_after_s", 0) > 0
+          and 3 < time.time() - t0 < 12, (time.time() - t0, r))
+    b.close()
+
+
+def case_launch_mount_first():
+    """Issue #6: instances_launch never leaves a client without the requested lua_mount. The mount is checked (and
+    re-applied when it is missing) BEFORE any map loads; a client that still has none gets no map and a clear error;
+    a hand-over answer while checking is waited out."""
+    print("== LAUNCH_MOUNT_FIRST: the mount is checked before the map loads", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("LAUNCH_MOUNT_FIRST stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-mount-")
+    wt = os.path.join(work, "wt")
+    os.makedirs(os.path.join(wt, "lua"))
+    pid_file = os.path.join(work, "pid.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_PID"] = pid_file
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    srv.map_hold = {"*": 0.1}
+    b = Bridge(port, env)
+    state, answers = {"m": None, "seq": 0}, {}
+    srv.lua_mount_answer = lambda a: answers["now"](a)
+
+    def launch():
+        if os.path.exists(pid_file): os.remove(pid_file)
+        with srv.lock: del srv.seen[:]
+        state["seq"] = 0
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "lmf", "timeout_s": 20, "game_dir": game,
+                                                                          "lua_mount": wt, "map": "gm_test"}}, 60)
+        res = (r or {}).get("result", {})
+        b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "lmf"}}, 20)
+        sc = res.get("structuredContent", {})
+        return res, sc, (sc.get("instances") or [{}])[0], tool_names(srv)
+
+    # 1. The client has no mount (the module did not apply it): re-applied with lua_mount {path}, then the map loads.
+    def missing_then_ok(a):
+        if "path" in a: state["m"] = a["path"]
+        return {"lua_mount": state["m"], "base_lua_mounted": True}
+    answers["now"] = missing_then_ok
+    res, sc, inst, names = launch()
+    check("LAUNCH_MOUNT_FIRST a missing mount is re-applied and verified before the map loads",
+          not res.get("isError") and inst.get("lua_mount", {}).get("active") is True and inst.get("lua_mount", {}).get("reapplied") is True
+          and inst.get("map") == "gm_test" and names.index("lua_mount") < names.index("map_load"), (names, sc))
+    # 2. Every check says "no mount" and the re-apply fails: no map is loaded, the client says why.
+    state["m"] = None
+    answers["now"] = lambda a: ({"error": {"code": "unsupported_platform", "message": "cannot mount"}} if "path" in a else {"lua_mount": None, "base_lua_mounted": True})
+    res, sc, inst, names = launch()
+    check("LAUNCH_MOUNT_FIRST a mount that cannot be applied: no map_load at all, clear error, isError",
+          res.get("isError") and "map_load" not in names and inst.get("lua_mount", {}).get("active") is False and inst.get("map") is None
+          and inst.get("map_error", {}).get("code") == "lua_mount_not_active" and wt in inst.get("map_error", {}).get("message", ""), (names, sc))
+    # 3. The coordinator is changing while the mount is checked: waited out, the mount counts as active, nothing re-applied.
+    state["m"] = wt
+    seq = {"n": 0}
+    def changing_twice(a):
+        seq["n"] += 1
+        if seq["n"] <= 2: return {"error": {"code": "coordinator_changing", "message": "moving", "details": {"retry_after_s": 0.2}}}
+        return {"lua_mount": state["m"], "base_lua_mounted": True}
+    answers["now"] = changing_twice
+    res, sc, inst, names = launch()
+    paths = [c for c in srv.lua_mount_calls if "path" in c]
+    check("LAUNCH_MOUNT_FIRST coordinator_changing while checking: retried, mount active, map loaded, nothing re-applied",
+          not res.get("isError") and inst.get("lua_mount", {}).get("active") is True and inst.get("map") == "gm_test" and not any(c.get("path") == wt and c.get("instance") for c in paths[2:]), (names, sc, paths))
+    b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def case_close_coordinator():
+    """Issue #6: instances_close on a client that is the coordinator while other instances live says so and reports the
+    instance that took the role; instances_list warns about it beforehand."""
+    print("== CLOSE_COORDINATOR: closing the coordinator says the role moves", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("CLOSE_COORDINATOR stand-in game built next to the bridge", False, fake)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    work = tempfile.mkdtemp(prefix="gmcp-cc-")
+    pid_file = os.path.join(work, "pid.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env["GMCP_FAKE_PID"] = pid_file
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    st = {"closed": False, "others": True}
+
+    def directory():
+        pid = int(open(pid_file).read().strip() or 0)
+        me = "fake-%d" % pid
+        other = {"id": "other-1", "pid": 4242, "port": 27082, "mode": "client", "state": "running", "role": "member", "self": False}
+        if not st["closed"]:
+            ents = [{"id": me, "pid": pid, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True}]
+            ents += [other] if st["others"] else []
+            return {"instances": ents, "coordinator_id": me}
+        other.update(role="coordinator", self=True)
+        return {"instances": [other], "coordinator_id": "other-1"}
+    srv.instances_answer = directory
+    srv.terminate_hook = lambda a: st.update(closed=True)
+    b = Bridge(port, env)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "cc", "timeout_s": 20, "game_dir": game}}, 60)
+    check("CLOSE_COORDINATOR launched", r and not r["result"].get("isError"), r)
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("CLOSE_COORDINATOR instances_list warns that a client of this session (owner cc) is the coordinator",
+          "coordinator" in sc.get("coordinator_warning", "") and "cc" in sc.get("coordinator_warning", "") and "instances_close" in sc.get("coordinator_warning", ""), sc)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "cc"}}, 40)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    c = (sc.get("closed") or [{}])[0]
+    check("CLOSE_COORDINATOR instances_close names the role move and the instance that took it over",
+          c.get("was_coordinator") is True and c.get("coordinator_moved_to") == "other-1" and "coordinator" in sc.get("warning", ""), sc)
+    # Alone: closing the coordinator says nothing (nothing to hand over).
+    st.update(closed=False, others=False)
+    r = b.req("tools/call", {"name": "instances_launch", "arguments": {"count": 1, "owner": "cc2", "timeout_s": 20, "game_dir": game}}, 60)
+    r = b.req("tools/call", {"name": "instances_list", "arguments": {}}, 20)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("CLOSE_COORDINATOR alone: no coordinator warning", "coordinator_warning" not in sc, sc)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "cc2"}}, 40)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    c = (sc.get("closed") or [{}])[0]
+    check("CLOSE_COORDINATOR alone: closing it says nothing about the role", "was_coordinator" not in c and "warning" not in sc, sc)
+    b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+# --- Issue #8 (chaos tests): instances_launch and instances_close around unhealthy, crashed and foreign clients. ---
+def chaos_session(extra_env=None, extra_instances=None, with_pid_dir=True):
+    """A bridge, a fake game server and a temporary game folder holding the stand-in game. Returns a dict with call(tool, args)."""
+    import shutil
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    game = tempfile.mkdtemp(prefix="gmcp-chaos-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-"); pid_dir = os.path.join(work, "pids"); os.makedirs(pid_dir)
+    port, env = free_port(), isolated_config(with_token=True)
+    env.update(GMCP_FAKE_CRASH_DIR=crashes, GMCP_FAKE_ARGV=os.path.join(work, "argv.txt"), GMOD_MCP_FP7137_WORKAROUND="0",
+               GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+    if with_pid_dir: env["GMCP_FAKE_PID_DIR"] = pid_dir
+    env.update(extra_env or {})
+    srv = FakeServer(port, version=bridge_version()); srv.pid_dir = pid_dir
+    srv.extra_instances = [dict(e) for e in (extra_instances or [])]
+    b = Bridge(port, env)
+    S = {"game": game, "work": work, "pid_dir": pid_dir, "srv": srv, "b": b, "crashes": crashes}
+    def call(tool, args, timeout=90):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), res.get("isError")
+    S["call"] = call
+    def started(): return [int(open(os.path.join(pid_dir, f)).read() or 0) for f in os.listdir(pid_dir)]
+    S["started"] = started
+    def close():
+        try: call("instances_close", {"all": True}, 30)
+        except Exception: pass
+        b.close(); srv.stop()
+        shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+    S["close"] = close
+    return S
+
+
+def case_chaos_health():
+    """Issue #8 (chaos test G1): a launch while a running client is frozen (unresponsive or hung) would time out with `0 of 1
+    clients answered` (a frozen client blocks a new one from registering, FP7137 handshake): it is refused up front with
+    peer_unhealthy unless ignore_unhealthy, and a timeout names the unhealthy peers seen meanwhile."""
+    print("== CHAOS_HEALTH: peer_unhealthy before a launch, unhealthy peers named at a timeout", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_HEALTH stand-in game built next to the bridge", False)
+        return
+    me = os.getpid()
+    # 1. A frozen client (unresponsive) is running: the launch is refused, nothing started, the error names it and the way out.
+    S = chaos_session(extra_instances=[{"id": "frozen-1", "pid": me, "port": 1, "mode": "client", "state": "unresponsive", "stalled_s": 25.0}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    e, d = sc.get("error", {}), sc.get("error", {}).get("details", {})
+    check("CHAOS_HEALTH an unresponsive client running: peer_unhealthy, isError, nothing started", e.get("code") == "peer_unhealthy" and err is True and S["started"]() == [], sc)
+    check("CHAOS_HEALTH the message names the instance, its pid and state, and the way out (instances_close, game_terminate, ignore_unhealthy)",
+          all(w in e.get("message", "") for w in ("frozen-1", str(me), "unresponsive", "instances_close", "game_terminate", "ignore_unhealthy")), e)
+    check("CHAOS_HEALTH details.unhealthy lists {instance, pid, state}", d.get("unhealthy") == [{"instance": "frozen-1", "pid": me, "state": "unresponsive"}], d)
+    # 2. ignore_unhealthy: true starts anyway.
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"], "ignore_unhealthy": True})
+    check("CHAOS_HEALTH ignore_unhealthy: the client starts and answers", len(S["started"]()) == 1 and not sc.get("error"), sc)
+    S["close"]()
+    # 3. A hung client counts too; a healthy one (running) and a crashed one do not.
+    S = chaos_session(extra_instances=[{"id": "hung-1", "pid": me, "port": 1, "mode": "client", "state": "hung", "stalled_s": 100.0},
+                                       {"id": "ok-1", "pid": me + 1, "port": 1, "mode": "client", "state": "running"},
+                                       {"id": "dead-1", "pid": me + 2, "port": 1, "mode": "client", "state": "crashed"}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    d = sc.get("error", {}).get("details", {})
+    check("CHAOS_HEALTH a hung client is refused too; only it is named (not the running or the crashed one)", sc.get("error", {}).get("code") == "peer_unhealthy" and [u["instance"] for u in d.get("unhealthy", [])] == ["hung-1"], sc)
+    S["close"]()
+    S = chaos_session(extra_instances=[{"id": "ok-1", "pid": me + 1, "port": 1, "mode": "client", "state": "running"},
+                                       {"id": "dead-1", "pid": me + 2, "port": 1, "mode": "client", "state": "crashed"}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    check("CHAOS_HEALTH only healthy and crashed peers: the launch goes ahead", len(S["started"]()) == 1 and not sc.get("error"), sc)
+    S["close"]()
+    # 4. A peer freezes while the launch waits for its client (which never answers): the timeout names it.
+    S = chaos_session(extra_instances=[{"id": "soon-frozen", "pid": me, "port": 1, "mode": "client", "state": "running"}], with_pid_dir=False)
+    def freeze():
+        time.sleep(3)
+        S["srv"].extra_instances[0].update(state="unresponsive", stalled_s=12.0)
+    threading.Thread(target=freeze, daemon=True).start()
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 10, "game_dir": S["game"]}, 60)
+    e = sc.get("error", {})
+    check("CHAOS_HEALTH timeout: 0 of 1 clients answered, and the unhealthy peer seen meanwhile is named in details and message",
+          e.get("code") == "timeout" and e.get("details", {}).get("unhealthy_peers") == [{"instance": "soon-frozen", "pid": me, "state": "unresponsive"}]
+          and "soon-frozen" in e.get("message", "") and "unresponsive" in e.get("message", ""), sc)
+    S["close"]()
+
+
+def case_chaos_launch():
+    """Issue #8 (chaos test G2): instances_launch {count: 2} where the first process dies ~1 s after it was spawned (before it
+    registered) while the second keeps starting: the error must name the sibling that still runs (pid, instance if known) and
+    carry a warning, so the caller does not leak it (stand-in game with GMCP_FAKE_DIE_ONCE)."""
+    print("== CHAOS_LAUNCH: a client dies during startup while its sibling keeps running", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_LAUNCH stand-in game built next to the bridge", False)
+        return
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-once-")
+    S = chaos_session(extra_env={"GMCP_FAKE_DIE_ONCE": os.path.join(work, "claimed"), "GMCP_FAKE_EXIT": "3221225477"})
+    sc, err = S["call"]("instances_launch", {"count": 2, "owner": "g2", "timeout_s": 40, "game_dir": S["game"]})
+    e = sc.get("error", {})
+    alive_pids = [p for p in S["started"]() if alive(p)]
+    check("CHAOS_LAUNCH the dead first client is reported (client_crashed, isError)", e.get("code") == "client_crashed" and err is True, sc)
+    sib = (e.get("details") or {}).get("still_running") or []
+    check("CHAOS_LAUNCH details.still_running names the sibling that keeps running (pid, state, instance when it answered)",
+          len(alive_pids) == 1 and [x.get("pid") for x in sib] == alive_pids and all(x.get("state") in ("answering", "still starting") for x in sib)
+          and (sib[0].get("state") != "answering" or sib[0].get("instance") == "fake-%d" % alive_pids[0]), {"alive": alive_pids, "sc": sc})
+    w = sc.get("warning", "")
+    check("CHAOS_LAUNCH a warning says the sibling is NOT closed and how (pid, instances_close)",
+          bool(alive_pids) and str(alive_pids[0]) in w and "instances_close" in w and "g2" in w and "not closed" in w.lower(), sc)
+    sc2, _ = S["call"]("instances_close", {"owner": "g2"}, 30)
+    check("CHAOS_LAUNCH the sibling is still closable by owner", bool(alive_pids) and alive_pids[0] in [c.get("pid") for c in sc2.get("closed", [])], sc2)
+    S["close"]()
+    import shutil; shutil.rmtree(work, ignore_errors=True)
+
+
+def case_chaos_final():
+    """Issue #5 (last findings of the live verification of 0.3.7): instances_launch while a program that is not gmod-mcp holds the
+    base port. The bridge knew (every other call said port_conflict) but the launch waited its whole budget and failed `timeout`
+    "gmod-mcp did not load in them" while the client was up on the next port."""
+    print("== CHAOS_FINAL: instances_launch under a foreign-held base port", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_FINAL stand-in game built next to the bridge", False)
+        return
+    import shutil
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    def session(next_game, foreign_after=None):
+        game = tempfile.mkdtemp(prefix="gmcp-final-game-")
+        shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+        os.makedirs(os.path.join(game, "garrysmod"))
+        work = tempfile.mkdtemp(prefix="gmcp-final-"); pid_dir = os.path.join(work, "pids"); os.makedirs(pid_dir)
+        port, env = two_free_ports(), isolated_config(with_token=True)
+        env.update(GMCP_FAKE_PID_DIR=pid_dir, GMOD_MCP_FP7137_WORKAROUND="0", GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+        S = {"port": port, "game": game, "work": work, "pid_dir": pid_dir, "foreign": None, "srv": None, "next": None}
+        if foreign_after is None: S["foreign"] = Foreign(port)
+        else: S["srv"] = FakeServer(port, version=bridge_version())  # a game answers at first (nothing registered), a foreign program takes the port later
+        if next_game: S["next"] = FakeServer(port + 1, version=bridge_version())
+        S["b"] = Bridge(port, env)
+        S["b"].req("initialize", INIT)
+        def call(tool, args, timeout=90):
+            r = S["b"].req("tools/call", {"name": tool, "arguments": args}, timeout)
+            res = (r or {}).get("result", {})
+            return res.get("structuredContent", {}), res.get("isError")
+        S["call"] = call
+        S["started"] = lambda: [int(open(os.path.join(pid_dir, f)).read() or 0) for f in os.listdir(pid_dir)]
+        def close():
+            S["b"].close()
+            for k in ("foreign", "srv", "next"):
+                if S[k]:
+                    try: S[k].stop()
+                    except Exception: pass
+            for p in S["started"]():
+                try: os.kill(p, 9)
+                except Exception: pass
+            shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+        S["close"] = close
+        return S
+    # 1. A foreign program on the base port, no game anywhere: refused up front, nothing started, the fix is named.
+    S = session(False)
+    S["call"]("status", {})  # the bridge learns of the conflict, as it does from any first call
+    t0 = time.time()
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 20, "game_dir": S["game"]}, 40)
+    took = time.time() - t0
+    e = sc.get("error", {})
+    check("CHAOS_FINAL foreign base port: instances_launch answers port_conflict at once (not `timeout` after the budget)", e.get("code") == "port_conflict" and err is True and took < 12, [took, sc])
+    check("CHAOS_FINAL the message names GMOD_MCP_PORT, the port, and says nothing was started", "GMOD_MCP_PORT" in e.get("message", "") and str(S["port"]) in e.get("message", "") and "nothing was started" in e.get("message", "").lower(), e)
+    check("CHAOS_FINAL no client was started", S["started"]() == [], S["started"]())
+    S["close"]()
+    # 2. The same with a game already up on the next port (what the live run had): the message names it.
+    S = session(True)
+    S["call"]("status", {})
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 20, "game_dir": S["game"]}, 40)
+    e = sc.get("error", {})
+    check("CHAOS_FINAL a gmod-mcp on the next port: port_conflict names GMOD_MCP_PORT=%d" % (S["port"] + 1), e.get("code") == "port_conflict" and "GMOD_MCP_PORT=%d" % (S["port"] + 1) in e.get("message", ""), sc)
+    check("CHAOS_FINAL ... and still starts nothing", S["started"]() == [], S["started"]())
+    S["close"]()
+    # 3. The port is taken by a foreign program while the launch waits (the clients start, they cannot be reached): the launch gives up
+    # after a few seconds instead of waiting its whole budget, and the error names the conflict and the next port.
+    S = session(True, foreign_after=1)
+    def swap():
+        time.sleep(1.5)
+        S["srv"].stop(); S["srv"] = None
+        S["foreign"] = Foreign(S["port"])
+    threading.Thread(target=swap, daemon=True).start()
+    t0 = time.time()
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 40, "game_dir": S["game"]}, 60)
+    took = time.time() - t0
+    e = sc.get("error", {})
+    check("CHAOS_FINAL the port taken mid-launch: gives up within ~20 s (not the 40 s budget) with a `timeout` that names the port conflict", e.get("code") == "timeout" and "port_conflict" in e.get("message", "") and "GMOD_MCP_PORT" in e.get("message", "") and took < 25, [took, sc])
+    check("CHAOS_FINAL ... and the message says where the gmod-mcp on the next port is", "GMOD_MCP_PORT=%d" % (S["port"] + 1) in e.get("message", ""), e)
+    check("CHAOS_FINAL ... the clients that were started are named (silent_pids) so they can be closed", len(sc.get("silent_pids") or []) == 1, sc)
+    S["close"]()
+
+
+def case_chaos_nogame():
+    """Live verification of 0.3.7: `map_load` with no game answered game_not_running after about 3 s, `status` after 1 s. Before it reaches the
+    game, map_load asks the directory which other games are loading (to report them), which is a second refused connection (about 1 s each
+    on Windows) when nothing listens. With no game that is already known, nothing is asked."""
+    print("== CHAOS_NOGAME: map_load with no game is as quick as status", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env); b.req("initialize", INIT)
+    def timed(tool, args):
+        t0 = time.time()
+        r = b.req("tools/call", {"name": tool, "arguments": args}, 30)
+        return time.time() - t0, (r or {}).get("result", {}).get("structuredContent", {}).get("error", {}).get("code")
+    ts, cs = timed("status", {})
+    tm, cm = timed("map_load", {"map": "gm_flatgrass"})
+    tm2, cm2 = timed("map_load", {"map": "gm_flatgrass"})
+    check("CHAOS_NOGAME status and map_load both answer game_not_running", cs == "game_not_running" and cm == "game_not_running" and cm2 == "game_not_running", [cs, cm, cm2])
+    check("CHAOS_NOGAME map_load with no game answers about as fast as status (one refused connection, not two)", tm < ts + 0.6 and tm2 < ts + 0.6, [round(ts, 2), round(tm, 2), round(tm2, 2)])
+    b.close()
+
+
+def case_chaos_owner():
+    """Issue #8 (chaos test G3): the owner label survives the bridge session that launched the client. instances_launch passes it
+    on the command line (-mcp_owner, encoded), the module sends it in its heartbeat (instances_list shows `owner` for every
+    instance), and instances_close {owner} closes keep:true TEST clients of another session carrying that tag, never a game that
+    is not a test client, never one without the tag (fake game server, stand-in game, Windows)."""
+    print("== CHAOS_OWNER: owner on the command line, in instances_list, closing foreign test clients by owner", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_OWNER stand-in game built next to the bridge", False)
+        return
+    S = chaos_session()
+    def argv_lines():
+        try: return open(os.path.join(S["work"], "argv.txt"), encoding="utf-8").read().splitlines()
+        except OSError: return []
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "fork-a", "timeout_s": 30, "game_dir": S["game"]})
+    import re
+    check("CHAOS_OWNER the owner label is on the client's command line (-mcp_owner fork-a)", any(re.search(r" -mcp_owner fork-a(\s|$)", l) for l in argv_lines()), argv_lines())
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "my task; \"x\"", "timeout_s": 30, "game_dir": S["game"]})
+    check("CHAOS_OWNER a label with spaces and quotes is encoded (no space, quote or ';' reaches the command line)",
+          any("-mcp_owner my%20task%3B%20%22x%22" in l for l in argv_lines()), argv_lines())
+    sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 30, "game_dir": S["game"]})
+    check("CHAOS_OWNER no owner: no -mcp_owner option", sum("-mcp_owner" in l for l in argv_lines()) == 2, argv_lines())
+    S["close"]()
+
+    # A keep:true client of an earlier bridge session: not in this bridge's table. Its module says owner and test_client.
+    import subprocess as sp
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    procs = [sp.Popen([fake], stdout=sp.DEVNULL, stderr=sp.DEVNULL) for _ in range(6)]
+    keep1, user1, other2, notag, crashed, local_pid = [p.pid for p in procs]
+    try:
+        S = chaos_session(extra_instances=[
+            {"id": "keep-1", "pid": keep1, "port": 1, "mode": "client", "state": "running", "owner": "fork-a", "test_client": True},
+            {"id": "user-1", "pid": user1, "port": 1, "mode": "client", "state": "running", "owner": "fork-a", "test_client": False},
+            {"id": "other-2", "pid": other2, "port": 1, "mode": "client", "state": "running", "owner": "fork-b", "test_client": True},
+            {"id": "notag-1", "pid": notag, "port": 1, "mode": "client", "state": "running", "test_client": True},
+            {"id": "dead-1", "pid": crashed, "port": 1, "mode": "client", "state": "crashed", "owner": "fork-a", "test_client": True}])
+        sc, _ = S["call"]("instances_list", {"owner": "fork-a"}, 20)
+        ids = sorted(e.get("id") for e in sc.get("instances", []))
+        check("CHAOS_OWNER instances_list shows the owner of instances another session launched, and the owner filter finds them",
+              ids == ["dead-1", "keep-1", "user-1"] and all(e.get("owner") == "fork-a" for e in sc.get("instances", [])), sc)
+        sc, err = S["call"]("instances_close", {"owner": "fork-a"}, 40)
+        closed = sc.get("closed", [])
+        check("CHAOS_OWNER instances_close {owner} closes the keep:true test client of another session (pid, instance, owner, launched_by_other_session)",
+              [(c.get("pid"), c.get("instance"), c.get("owner")) for c in closed] == [(keep1, "keep-1", "fork-a")] and closed[0].get("launched_by_other_session") is True, sc)
+        time.sleep(0.5)
+        check("CHAOS_OWNER that process ended; the game that is not a test client (same owner), the other owner, the untagged one and the crashed one are untouched",
+              not alive(keep1) and all(alive(p) for p in (user1, other2, notag, crashed)), {"alive": [alive(p) for p in (keep1, user1, other2, notag, crashed)]})
+        check("CHAOS_OWNER the refusal says which instance is not a test client and why", "user-1" in json.dumps(sc.get("refused", [])) and "test client" in sc.get("why_refused", ""), sc)
+        sc, err = S["call"]("instances_close", {"pids": [notag], "instances": ["notag-1", "other-2"]}, 30)
+        check("CHAOS_OWNER an instance of another session without this owner tag is still refused (by pid and by id), and stays alive",
+              err is True and sc.get("closed") == [] and alive(notag) and alive(other2), sc)
+        sc, err = S["call"]("instances_close", {"owner": "nobody"}, 30)
+        check("CHAOS_OWNER an owner nobody carries: refused, error", err is True and "owner:nobody" in sc.get("refused", []), sc)
+        sc, err = S["call"]("instances_close", {"all": True}, 30)
+        check("CHAOS_OWNER all: true never reaches another session's clients", sc.get("closed") == [] and alive(other2) and alive(notag), sc)
+        S["close"]()
+    finally:
+        for p in procs:
+            try: p.kill()
+            except OSError: pass
+
+
+def case_return_focus():
+    """FO-6 (live finding, x86-64 branch): a test client took the foreground window and kept it. instances_launch records the foreground
+    window before each start and passes it as `-mcp_return_focus <decimal handle>` (the module gives the foreground back to it), and
+    starts the client with a window shown without activation (STARTF_USESHOWWINDOW + SW_SHOWNOACTIVATE). Stand-in game, Windows."""
+    print("== RETURN_FOCUS: -mcp_return_focus and the no-activate start", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("RETURN_FOCUS stand-in game built next to the bridge", False)
+        return
+    import ctypes, re
+    user32 = ctypes.windll.user32
+    startup = os.path.join(tempfile.mkdtemp(prefix="gmcp-focus-"), "startup.txt")
+    S = chaos_session(extra_env={"GMCP_FAKE_STARTUP": startup})
+    def lines(name):
+        try: return open(startup if name == "startup.txt" else os.path.join(S["work"], name), encoding="utf-8").read().splitlines()
+        except OSError: return []
+    fg_before = user32.GetForegroundWindow()
+    sc, err = S["call"]("instances_launch", {"count": 2, "timeout_s": 30, "game_dir": S["game"]})
+    fg_after = user32.GetForegroundWindow()
+    argv = lines("argv.txt")
+    handles = [re.search(r" -mcp_return_focus (\S+)", l) for l in argv]
+    values = [m.group(1) if m else None for m in handles]
+    if fg_before and fg_before == fg_after:
+        check("RETURN_FOCUS every client of a launch carries the foreground window the user had (decimal handle)", len(argv) == 2 and values == [str(fg_before)] * 2, (argv, fg_before))
+    else:
+        check("RETURN_FOCUS (the foreground changed during the test: only the form is checked) the option is a valid decimal handle or absent", all(v is None or (v.isdigit() and not v.startswith("0") and 0 < int(v) <= 0xFFFFFFFF) for v in values), (argv, fg_before, fg_after))
+    check("RETURN_FOCUS the option comes after the fixed options and nothing else follows it but the owner/restore options",
+          all(m is None or "-mcp_test_client" in l[:m.start()] for l, m in zip(argv, handles)), argv)
+    st = lines("startup.txt")
+    check("RETURN_FOCUS clients start with a window shown without activation (SW_SHOWNOACTIVATE = 4, STARTF_USESHOWWINDOW)", len(st) == 2 and all(x == "show=4 uses_show=1" for x in st), st)
+    S["close"]()
+
+
+def case_chaos_memory():
+    """Issue #8 (chaos test G4): low_memory counts the game processes of this game folder, not only the registered instances and
+    this bridge's own clients: clients another session started that have not registered yet are running too. Both numbers are
+    reported (stand-in game processes started outside the bridge, fake game server)."""
+    print("== CHAOS_MEMORY: low_memory counts unregistered game processes", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_MEMORY stand-in game built next to the bridge", False)
+        return
+    import subprocess as sp
+    S = chaos_session(extra_env={"GMOD_MCP_FAKE_FREE_COMMIT_MB": "1780", "GMOD_MCP_FAKE_FREE_RAM_MB": "6000"})
+    exe = os.path.join(S["game"], "gmod_win64.exe")
+    procs = []
+    try:
+        # Nothing runs: running_clients 0, game_processes 0.
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
+        d = sc.get("error", {}).get("details", {})
+        check("CHAOS_MEMORY nothing runs: low_memory with running_clients 0, registered_clients 0, game_processes 0",
+              sc.get("error", {}).get("code") == "low_memory" and d.get("running_clients") == 0 and d.get("registered_clients") == 0 and d.get("game_processes") == 0, sc)
+        # Three game processes started by other sessions, not registered (still starting); one of them is registered after all, plus a registered fake.
+        # Issue #8 (live chaos test): every game starts about 2 helper processes of the same executable; they are not games (stand-ins
+        # started with GMCP_FAKE_CHILDREN=2 do the same: 3 games, 6 helpers).
+        procs = [sp.Popen([exe], stdout=sp.DEVNULL, stderr=sp.DEVNULL, env=dict(os.environ, GMCP_FAKE_CHILDREN="2")) for _ in range(3)]
+        time.sleep(1.5)
+        S["srv"].extra_instances = [{"id": "reg-1", "pid": procs[0].pid, "port": 1, "mode": "client", "state": "running"},
+                                    {"id": "reg-2", "pid": 4000001, "port": 1, "mode": "client", "state": "running"}]
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
+        e = sc.get("error", {}); d = e.get("details", {})
+        check("CHAOS_MEMORY 3 unregistered-or-not game processes + 1 fake registered one: running_clients 4 (union), registered_clients 2, game_processes 3",
+              e.get("code") == "low_memory" and d.get("running_clients") == 4 and d.get("registered_clients") == 2 and d.get("game_processes") == 3, sc)
+        check("CHAOS_MEMORY the helper processes a game starts (same executable, parent is a game) are not counted: 3 games with 6 helpers read 3",
+              d.get("game_processes") == 3, d)
+        check("CHAOS_MEMORY the message gives both numbers", "2 registered" in e.get("message", "") and "3 game processes" in e.get("message", ""), e)
+        check("CHAOS_MEMORY nothing started", S["started"]() == [], S["started"]())
+    finally:
+        for p in procs:
+            sp.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)  # the helpers too (a killed game leaves them)
+        S["close"]()
+
+
+def live_cluster(member_pid, coordinator_pid=1):
+    """What a fake coordinator answers to instances_list: two games, one of them the coordinator. `member_pid` should be a
+    process that really lives (or does not, to play a member that died): the bridge checks it before it waits for a hand-over."""
+    return lambda: {"instances": [{"id": "client-1", "pid": coordinator_pid, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True},
+                                  {"id": "client-2", "pid": member_pid, "port": 27082, "mode": "client", "state": "running", "role": "member"}],
+                    "coordinator_id": "client-1"}
+
+
+class DyingListener:
+    """What a coordinator's listener does in its last moments (live 2026-11-20): it still accepts a connection, reads the request,
+    then drops it with no answer (a reset). Stands in for the base port between the process being killed and the port closing."""
+    def __init__(self, port):
+        self.s = socket.socket(); self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.s.bind(("127.0.0.1", port)); self.s.listen(16)
+        self.n, self.run = 0, True
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def loop(self):
+        while self.run:
+            try: c, _ = self.s.accept()
+            except OSError: return
+            self.n += 1
+            try: c.recv(65536)
+            except OSError: pass
+            try:
+                c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                c.close()
+            except OSError: pass
+
+    def stop(self):
+        self.run = False
+        # On Linux close() alone does not wake a thread blocked in accept(), and the listening socket (so the port) stays
+        # open until it returns: shutdown() first (the accept then fails and the loop ends).
+        try: self.s.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+        try: self.s.close()
+        except OSError: pass
+
+
+def case_chaos_relay():
+    """Issue #6 (chaos test of the hand-over, live 2026-11-20), BUG-1: a call in flight when the coordinator dies is not
+    "game_not_running": the target game lives and the call may have run (relay_lost, maybe_executed). instances_launch polls
+    the client before it reports a map failure (a map_load whose answer was lost, the map loaded)."""
+    print("== CHAOS_RELAY: a call lost in flight during a hand-over", flush=True)
+    env0 = isolated_config(with_token=True)
+    env0["GMOD_MCP_HANDOVER_WAIT_S"] = "4"
+    env0["GMOD_MCP_FP7137_WORKAROUND"] = "0"
+    me = os.getpid()
+    # 1. Another game lives (seen in instances_list): the connection breaks mid-call (the answer never comes).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.map_load_hook = lambda a: time.sleep(1.0)
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "map_load", "arguments": {"instance": "client-2", "map": "gm_construct"}}, 30)
+    res = (r or {}).get("result", {}); sc = res.get("structuredContent", {}); e = sc.get("error", {}); d = e.get("details", {})
+    check("CHAOS_RELAY a call lost in flight while another game lives: relay_lost, isError, not game_not_running",
+          res.get("isError") and e.get("code") == "relay_lost", r)
+    check("CHAOS_RELAY ... retry_after_s and maybe_executed: true in details, and the message says the call may have run",
+          d.get("maybe_executed") is True and d.get("retry_after_s", 0) > 0 and "may have" in e.get("message", "") and "Start the game" not in e.get("message", ""), e)
+    check("CHAOS_RELAY ... answered at once (no wait for a hand-over: it would repeat a call that may have run)", time.time() - t0 < 3.5, time.time() - t0)
+    check("CHAOS_RELAY ... the text twin is the same JSON", json_equal(res["content"][0]["text"], sc), res)
+    srv.stop(); b.close()
+    # 2. No other game known to live: the same cut is a closed game (unchanged).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version())
+    b = Bridge(port, env0)
+    srv.map_load_hook = lambda a: time.sleep(1.0)
+    r = b.req("tools/call", {"name": "map_load", "arguments": {"map": "gm_construct"}}, 30)
+    sc = (r or {}).get("result", {}).get("structuredContent", {})
+    check("CHAOS_RELAY nothing else known to live: a connection cut mid-call is still game_not_running", sc.get("error", {}).get("code") == "game_not_running", r)
+    srv.stop(); b.close()
+    # 5. Issue #6 (BUG-2): a FRESH call while the dying listener still accepts: the connection is made, then reset before any answer.
+    # Nothing ran: it is the same as a refused connection, ridden out until the next game takes the base port (here after 1.6 s).
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop()
+    dying = DyingListener(port)
+    new = {}
+    def takeover():
+        time.sleep(1.6); dying.stop(); time.sleep(0.2)
+        new["srv"] = FakeServer(port, version=bridge_version())
+    threading.Thread(target=takeover, daemon=True).start()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    res = (r or {}).get("result", {})
+    check("CHAOS_RELAY BUG-2: a fresh call reset by the dying listener is ridden out and answered by the next coordinator",
+          dying.n >= 1 and not res.get("isError") and res.get("structuredContent", {}).get("args", {}).get("instance") == "client-2" and 1.4 < time.time() - t0 < 5,
+          {"hits": dying.n, "took": time.time() - t0, "r": r})
+    b.close()
+    if "srv" in new: new["srv"].stop()
+    # ... but a call that was already running for a while (not fresh) when the connection broke is relay_lost, not retried (case 1).
+    # 6. No other game known to live: a reset on a fresh call is a closed game, said at once (unchanged).
+    port = free_port()
+    dying = DyingListener(port)
+    b = Bridge(port, env0)
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {}}, 25)
+    check("CHAOS_RELAY BUG-2: a fresh call reset with no other game known: game_not_running at once", "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close(); dying.stop()
+    # 7. Issue #6 (BUG-3): the last other games are gone (the member's process died with the coordinator): nobody can take the role
+    # over. The bridge knew two games a moment ago, but no process of them lives: game_not_running at once, not 30 s of coordinator_changing.
+    member = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(member.pid)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop(); member.kill(); member.wait()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("CHAOS_RELAY BUG-3: the other games' processes are all gone: game_not_running at once (no coordinator_changing)",
+          "game_not_running" in json.dumps(r) and "coordinator_changing" not in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
+    # 8. A list that shows one instance only (the others closed) forgets the hand-over memory, even when a process of the earlier list lives.
+    port = free_port()
+    srv = FakeServer(port, version=bridge_version()); srv.instances_answer = live_cluster(me)
+    b = Bridge(port, env0)
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.instances_answer = lambda: {"instances": [{"id": "client-1", "pid": me, "port": 27081, "mode": "client", "state": "running", "role": "coordinator", "self": True}], "coordinator_id": "client-1"}
+    b.req("tools/call", {"name": "instances_list", "arguments": {}})
+    srv.stop()
+    t0 = time.time()
+    r = b.req("tools/call", {"name": "echo", "arguments": {"instance": "client-2"}}, 25)
+    check("CHAOS_RELAY BUG-3: a list showing one instance resets the hand-over memory: game_not_running at once", "game_not_running" in json.dumps(r) and time.time() - t0 < 2.5, (time.time() - t0, r))
+    b.close()
+    if os.name != "nt":
+        print("   (the launch scenarios are Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_RELAY stand-in game built next to the bridge", False)
+        return
+    # 3. instances_launch {map}: the client's map_load answer is lost, the map loaded (status says it, after a loading phase).
+    S = chaos_session()
+    S["srv"].map_load_hook = lambda a: time.sleep(1.0)
+    polls = {"n": 0}
+    def status(a):
+        polls["n"] += 1
+        return {"map": "gm_construct" if polls["n"] >= 3 else "", "loading": polls["n"] < 3}
+    S["srv"].status_answer = status
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "d1", "timeout_s": 60, "game_dir": S["game"], "map": "gm_construct"})
+    inst = (sc.get("instances") or [{}])[0]
+    check("CHAOS_RELAY instances_launch: a map_load answer lost while the client loaded the map: reported as loaded (status polled until loading ended)",
+          err is not True and inst.get("map") == "gm_construct" and "map_error" not in inst and polls["n"] >= 3, {"polls": polls["n"], "sc": sc})
+    S["close"]()
+    # 4. The client did not load it (not loading, another map): the failure is reported, as relay_lost.
+    S = chaos_session()
+    S["srv"].map_load_hook = lambda a: time.sleep(1.0)
+    S["srv"].status_answer = lambda a: {"map": "gm_other", "loading": False}
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "d1", "timeout_s": 60, "game_dir": S["game"], "map": "gm_construct"})
+    inst = (sc.get("instances") or [{}])[0]
+    me_err = inst.get("map_error", {})
+    check("CHAOS_RELAY instances_launch: the client reports another map and is not loading: map_error relay_lost (maybe_executed), map null",
+          err is True and inst.get("map") is None and me_err.get("code") == "relay_lost" and me_err.get("details", {}).get("maybe_executed") is True, sc)
+    S["close"]()
+
+
+def case_chaos_maps():
+    """Issue #7 follow-up (live chaos test 2026-11-20): "at most 2 maps at a time" was per call. Two launches of 2 clients each, plus a
+    map_load, had 5 games loading at once. The cap is now global: every map load of every bridge (instances_launch {map} and map_load)
+    registers in the shared FP7137 state and waits while 2 others are registered (fake game server counting concurrent loads,
+    stand-in games, Windows)."""
+    print("== CHAOS_MAPS: at most 2 maps load at a time across every bridge", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("CHAOS_MAPS stand-in game built next to the bridge", False)
+        return
+    import shutil
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    launch_args = lambda **kw: dict({"count": 2, "owner": "maps", "timeout_s": 120, "game_dir": game, "map": "gm_x"}, **kw)
+    for off in (False, True):
+        port, env, srv = fp_setup(settle_ms=1500, workaround="0" if off else None, hold={"*": 1.5})
+        env.update(GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+        a, b, c = Bridge(port, env), Bridge(port, env), Bridge(port, env)
+        rid_a = fp_call(a, "instances_launch", launch_args(), 120)
+        rid_b = fp_call(b, "instances_launch", launch_args(), 120)
+        end = time.time() + 60
+        while not srv.map_log and time.time() < end: time.sleep(0.05)
+        rid_c = fp_call(c, "map_load", {"map": "gm_y", "timeout_s": 120}, 120)
+        res_a, sc_a = fp_result(a, rid_a, 120)
+        res_b, sc_b = fp_result(b, rid_b, 120)
+        res_c, sc_c = fp_result(c, rid_c, 60)
+        tag = "CHAOS_MAPS kill switch off: " if off else "CHAOS_MAPS "
+        check(tag + "every call succeeded (2 + 2 + 1 loads)", not res_a.get("isError") and not res_b.get("isError") and not res_c.get("isError") and len(srv.map_log) == 5,
+              {"a": sc_a.get("error"), "b": sc_b.get("error"), "c": sc_c.get("error"), "loads": len(srv.map_log)})
+        if off:
+            check(tag + "the loads overlap beyond 2 (no cap)", srv.map_max >= 3, srv.map_max)
+        else:
+            check(tag + "never more than 2 maps loading at the same time (two launches and a map_load, three bridges)", srv.map_max == 2, srv.map_max)
+        for x in (a, b):
+            x.req("tools/call", {"name": "instances_close", "arguments": {"all": True}}, 30)
+        for x in (a, b, c): x.close()
+        srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+
+
+def case_chaos_job():
+    """Issue #8 (live chaos test): a bridge killed with taskkill /F (or TerminateProcess) used to leave its keep:false clients running
+    forever (nothing runs in a killed process). The launched keep:false clients now live in a job object that closes with the bridge
+    (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE): the game and the helper processes it started (the real game has about 2) end with it. A
+    keep:true client is NOT in the job and survives (stand-in game that starts children, Windows)."""
+    print("== CHAOS_JOB: keep:false clients end with a bridge that was killed, keep:true ones do not", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_JOB stand-in game built next to the bridge", False)
+        return
+    import shutil
+    def run(keep):
+        cdir = tempfile.mkdtemp(prefix="gmcp-chaos-kids-")
+        S = chaos_session(extra_env={"GMCP_FAKE_CHILDREN": "2", "GMCP_FAKE_CHILD_PID_DIR": cdir})
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "job", "timeout_s": 30, "game_dir": S["game"], "keep": keep})
+        game_pids = S["started"]()
+        end = time.time() + 10
+        while len(os.listdir(cdir)) < 2 and time.time() < end: time.sleep(0.1)
+        kids = [int(open(os.path.join(cdir, f)).read() or 0) for f in os.listdir(cdir)]
+        everyone = game_pids + kids
+        out = {"ok": not err and len(game_pids) == 1 and len(kids) == 2 and all(alive(p) for p in everyone), "sc": sc, "pids": everyone}
+        S["b"].p.kill()  # TerminateProcess: no clean exit, no chance to close anything
+        S["b"].p.wait(10)
+        time.sleep(2.0)
+        out["alive"] = [alive(p) for p in everyone]
+        for p in everyone:
+            if alive(p): subprocess.run(["taskkill", "/F", "/PID", str(p)], capture_output=True)
+        S["srv"].stop()
+        shutil.rmtree(S["game"], ignore_errors=True); shutil.rmtree(S["work"], ignore_errors=True); shutil.rmtree(cdir, ignore_errors=True)
+        return out
+    o = run(False)
+    check("CHAOS_JOB a keep:false client and its 2 helper processes ran before the bridge was killed", o["ok"], o)
+    check("CHAOS_JOB the bridge was killed (TerminateProcess): the client and its helper processes ended with it", o["ok"] and not any(o["alive"]), o)
+    o = run(True)
+    check("CHAOS_JOB a keep:true client and its 2 helper processes ran before the bridge was killed", o["ok"], o)
+    check("CHAOS_JOB ... and they are still running after it (not in the job object)", o["ok"] and all(o["alive"]), o)
+
+
+def case_chaos_close():
+    """Issue #8 (live chaos test): instances_close {owner} listed a pid that had already quit as `closed`. A client that is gone
+    before the call is `already_gone` (nothing was closed), for this session's clients and for another session's keep:true test client
+    (stand-in games, fake game server, Windows)."""
+    print("== CHAOS_CLOSE: instances_close reports what was already gone", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_CLOSE stand-in game built next to the bridge", False)
+        return
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-close-")
+    trigger = os.path.join(work, "go")
+    dead = fp_dead_pid()
+    # A client of this session quit by itself (clean exit) before instances_close; another one still runs; a foreign test client's
+    # process (another session, keep: true) is gone too, and a third one lives.
+    live_foreign = subprocess.Popen([os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        S = chaos_session(extra_env={"GMCP_FAKE_TRIGGER": trigger, "GMCP_FAKE_EXIT": "0", "GMCP_FAKE_DUMP": "0"},
+                          extra_instances=[{"id": "gone-9", "pid": dead, "port": 1, "mode": "client", "state": "running", "owner": "other", "test_client": True},
+                                           {"id": "live-9", "pid": live_foreign.pid, "port": 1, "mode": "client", "state": "running", "owner": "other", "test_client": True}])
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "mine", "timeout_s": 30, "game_dir": S["game"]})
+        mine = S["started"]()[0]
+        open(trigger, "w").close()
+        end = time.time() + 10
+        while alive(mine) and time.time() < end: time.sleep(0.1)
+        check("CHAOS_CLOSE the client quit by itself before the close", not alive(mine), mine)
+        sc, err = S["call"]("instances_close", {"owner": "mine"}, 30)
+        ag = sc.get("already_gone", [])
+        check("CHAOS_CLOSE this session's client that had already quit: already_gone {pid, instance, owner}, not closed, no error",
+              sc.get("closed") == [] and [(x.get("pid"), x.get("owner")) for x in ag] == [(mine, "mine")] and ag[0].get("instance") == "fake-%d" % mine and err is not True, sc)
+        sc, err = S["call"]("instances_close", {"owner": "other"}, 30)
+        closed, ag = sc.get("closed", []), sc.get("already_gone", [])
+        time.sleep(0.5)
+        check("CHAOS_CLOSE another session's test client whose process is gone: already_gone (launched_by_other_session), the live one is closed",
+              [x.get("pid") for x in closed] == [live_foreign.pid] and [x.get("pid") for x in ag] == [dead] and ag[0].get("instance") == "gone-9"
+              and ag[0].get("launched_by_other_session") is True and not alive(live_foreign.pid), sc)
+        S["close"]()
+    finally:
+        try: live_foreign.kill()
+        except OSError: pass
+        import shutil; shutil.rmtree(work, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
     for c in [a for a in args if a != "--serial"] or DEFAULT:
         t_case = time.time()
         CASES[c]()
+        if ERROR_AUDIT["seen"]:
+            check("CODEMODE (issue 3) [%s] every isError result (%d seen: %s) is exactly one JSON object {error:{code,message}} (e.detail works)" %
+                  (c, ERROR_AUDIT["seen"], ", ".join(sorted(ERROR_AUDIT["codes"]))), not ERROR_AUDIT["bad"], ERROR_AUDIT["bad"][:3])
+        cleanup_made()
         print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
 else:
     # Several cases: each in its own process, all at once (they use their own ports, configs and stand-in games), so

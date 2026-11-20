@@ -7,6 +7,14 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
 
 - `src/*.cpp|h` — the module. Entry point `module.cpp` (`gmod13_open/close`), MCP layer `mcp.cpp`, tools `tools_*.cpp`,
   engine access `realms.cpp` / `netaddr.cpp` / `luaapi.cpp`, OS-specific code only in `src/platform/`.
+- `src/enginejpeg.*` — `screenshot` without a client realm: the engine's own `jpeg` command. Pure and game-free (source decision,
+  parsing of the `Wrote '...'` console line, path validation, the capture sequence with the game injected through `enginejpeg::Io`);
+  the tool wiring is `engine_jpeg_shot` in `tools_world.cpp`. It deletes the file the engine named and nothing else: keep every
+  path through `check_rel_path` (`screenshots/<one name>.jpg`).
+- `src/layout.*` — slot checks: the pure decisions (from the code bytes behind a vtable slot) and the `status.layout_check` verdicts.
+  **Never call a fixed vtable slot of an engine interface, or trust a fixed offset, without a check there** (docs/REVERSE.md, "Slot
+  checks"): add the shape check, test it with the real bytes (`tests/native/slot_fixtures.h`, regenerate with
+  `tests/native/tools/gen_slot_fixtures.py`), and turn off only the feature that needs it when it is not recognized.
 - `src/lua/*.lua` — Lua runtime injected into each realm, embedded into the DLL at build time
   (`cmake/embed_lua.cmake`, alphabetical order).
 - `src/installer.cpp` — the main-menu loader block the module writes into `garrysmod/lua/menu/menu.lua`.
@@ -19,6 +27,10 @@ gmod-mcp is a native Garry's Mod module (C++17) that embeds an MCP server and dr
 
 - **English only**: code, comments, log messages, tool descriptions, docs.
 - **No AI attribution** in commits (no `Co-Authored-By`, no session links).
+- **GitHub issues**: a commit that fully fixes an issue ends its message with `Fixes #N` (GitHub closes the issue when
+  it reaches `main`); a commit that only covers part of it says `Refs #N`. A test written for an issue names it in a
+  comment next to the test (`// Issue #N: ...`, `# Issue #N: ...`) and in its `docs/TESTS.md` row, so the issue, the
+  fix and the test point at each other.
 - **Conformance fixtures live only in `tests/conformance/`**, and only the `gmod-mcp-conformance-host` executable links
   them. `src/` never calls `mcp::set_request_hooks` (a test-only seam for the conformance host; only its declaration and
   definition in `src/mcp.h` / `src/mcp.cpp` may name it). `tests/conformance/check_fixtures_absent.py` enforces both in CI,
@@ -57,11 +69,26 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   # dependencies are fetched and 
 cmake --build build --config Release
 ```
 
+In a fresh git worktree, skip the dependency download by pointing CMake at the sources another build already fetched.
+On Windows, run it from a shell where `vcvars64.bat` was called (MSVC on the PATH):
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DFETCHCONTENT_SOURCE_DIR_HTTPLIB=<other>/build/_deps/httplib-src \
+  -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=<other>/build/_deps/nlohmann_json-src \
+  -DFETCHCONTENT_SOURCE_DIR_JSON_SCHEMA_VALIDATOR=<other>/build/_deps/json_schema_validator-src \
+  -DFETCHCONTENT_SOURCE_DIR_GARRYSMOD_COMMON=<other>/build/_deps/garrysmod_common-src
+```
+
+Tests: `build/gmod-mcp-coretests`, `build/gmod-mcp-unittests`, then
+`python tests/bridge/test_bridge.py build/gmod-mcp-bridge[.exe]` (about 80 s, cases run in parallel).
+
 1. Quit the game (the DLL is locked while it runs).
 2. Copy `build/gmsv_mcpagent_win64.dll` to `garrysmod/lua/bin/` and `loader/mcpagent_boot.lua` to
    `garrysmod/lua/autorun/server/`.
-3. Start the game with `-mcp -windowed -condebug` (launching `gmod_win64.exe` directly needs the environment variables
-   `SteamAppId=4000` and `SteamGameId=4000`).
+3. Start the game with `-mcp -windowed -condebug`. Launched directly, the 64-bit game (`bin\win64\gmod.exe`;
+   `gmod_win64.exe` at the root on older installs; the root `gmod.exe` is 32-bit) needs the game folder as working
+   directory and the environment variables `SteamAppId=4000` and `SteamGameId=4000`.
 4. Drive it through the MCP endpoint (`http://127.0.0.1:27080/mcp`, token in `%APPDATA%\gmod-mcp\token`), e.g. with curl.
    `events_wait {types:["menu_ready"], cursor:0}` returns as soon as the module is up.
 5. Update `docs/TESTS.md` (scenario, expected result, last result and date) for any behavior you change.

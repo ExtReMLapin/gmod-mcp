@@ -10,11 +10,11 @@
       "name": "gmod-mcp",
       "source": {
         "source": "archive",
-        "sha256": "ee17f24eaf813f413a51bdb26e45cb36c670e59619328add4c3c80a8fcdb457c",
-        "url": "https://github.com/ExtReMLapin/gmod-mcp/releases/download/v0.3.5/gmod-mcp-plugin.zip"
+        "sha256": "b554291b8e748f19df45f94f9052df859446e112fe62a7f8ab04fb697a57e2f2",
+        "url": "https://github.com/ExtReMLapin/gmod-mcp/releases/download/v0.3.6/gmod-mcp-plugin.zip"
       },
       "description": "gmod-mcp for Claude Code: the MCP server for Garry's Mod (a bridge that stays connected while the game is closed, test clients on demand), the module for the game, and the skill that installs, starts and updates it.",
-      "version": "0.3.5"
+      "version": "0.3.6"
     }
   ]
 }

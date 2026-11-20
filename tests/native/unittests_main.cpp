@@ -3,10 +3,20 @@
 
 void test_crashguard();
 void test_ljdump();
+void test_fp7137();  // FP7137
+void test_mdmp();
+void test_uiinput();
+void test_enginejpeg();
+void test_platform();
 
 int main() {
     test_crashguard();
     test_ljdump();
+    test_fp7137();  // FP7137
+    test_mdmp();
+    test_uiinput();
+    test_enginejpeg();
+    test_platform();
     std::printf("unittests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

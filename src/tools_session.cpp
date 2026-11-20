@@ -4,9 +4,11 @@
 #include <thread>
 
 #include "agent.h"
+#include "coordinator.h"
 #include "events.h"
 #include "jobs.h"
 #include "log.h"
+#include "lua_mount.h"
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
@@ -41,6 +43,7 @@ static json map_load_tool(const json &args) {
 }
 
 static json disconnect_tool(const json &args) {
+    if (agent::config().mode != agent::Mode::Client) return agent::err("unsupported", "disconnect: client mode only (a dedicated server has no menu to return to)");
     std::unique_lock<std::mutex> lk(g_lifecycle, std::try_to_lock);
     if (!lk.owns_lock()) return agent::err("busy", "another map_load/disconnect is in progress");
     return disconnect_impl(args);
@@ -55,6 +58,9 @@ static json map_load_impl(const json &args) {
     if (!ex["result"].value("exists", false)) return agent::err("not_found", "map not found: maps/" + map + ".bsp");
     if (args.contains("maxplayers") && agent::config().mode == agent::Mode::Dedicated)
         return agent::err("invalid_params", "maxplayers cannot be changed at runtime on srcds (launch parameter)");
+    // From here to the answer this map_load is a load in progress for status and instances_list (`loading`), even while it waits for
+    // the menu: the engine has not started the load yet and nothing else says so (live verification of 0.3.7: ~18 s of loading false).
+    agent::MapLoadCall in_flight;
     // Changing maxplayers mid-game: full disconnect first (the engine refuses otherwise).
     if (args.contains("maxplayers") && agent::realm_present(realms::SERVER)) {
         json sv = agent::rt(realms::SERVER, "status", json::object(), 5.0);
@@ -76,6 +82,13 @@ static json map_load_impl(const json &args) {
         uint64_t f0 = jobs::frame_count();
         while (jobs::frame_count() < f0 + 30 && since(tw) < 20.0) plat::sleep_ms(10);
     }
+    // Issue #9: a mounted file edited or checked out behind the engine's back may be served from its Lua file cache (seen once
+    // after a git checkout: the old code ran). Empty it before the realms load, as lua_mount does when it sets the folder.
+    bool mount_cache_emptied = false;
+    if (!lua_mount::current().empty()) {
+        json c = jobs::run_on_main([] { return json(lua_mount::empty_cache()); }, 5.0);
+        if (!jobs::is_timeout(c) && c.is_boolean()) mount_cache_emptied = c.get<bool>();
+    }
     uint64_t gs = agent::generation(realms::SERVER), gc = agent::generation(realms::CLIENT);
     uint64_t cursor = events::cursor_now();
     json p{{"map", map}};
@@ -89,7 +102,8 @@ static json map_load_impl(const json &args) {
         if (reqctx::cancelled()) return agent::err("cancelled", "map_load cancelled (the map may keep loading)");
         double left = timeout - since(t0);
         if (left <= 0)
-            return agent::err("timeout", "map not ready after " + std::to_string((int)timeout) + " s",
+            return agent::err("timeout", "map not ready after " + std::to_string((int)timeout) + " s" +
+                                             (lua_mount::current().empty() ? std::string() : ". " + mount_timeout_hint()),
                               json{{"server_available", agent::realm_present(realms::SERVER)},
                                    {"client_available", agent::realm_present(realms::CLIENT)},
                                    {"client_lock", agent::lock_status()}});
@@ -108,6 +122,17 @@ static json map_load_impl(const json &args) {
                 r["duration_s"] = since(t0);
                 r["requested_map"] = map;
                 if (d.value("map", "") != map) r["warning"] = "the loaded map does not match the requested map";
+                // Issue #9: a mounted folder whose files changed since the realms loaded them (edited during the load), or a
+                // realm that did not get the folder: the running code is not what is on disk.
+                json lm = mount_state(mount_realms());
+                if (!lm.is_null()) {
+                    std::string mw = mount_warning(lm);
+                    if (!mw.empty()) {
+                        r["lua_mount"] = lm;
+                        r["warning"] = r.contains("warning") ? r["warning"].get<std::string>() + "; " + mw : mw;
+                    }
+                    if (mount_cache_emptied) r["lua_cache_emptied"] = true;
+                }
                 return ok(r);
             }
         }
@@ -134,7 +159,10 @@ static json disconnect_impl(const json &args) {
 static json quit_tool(const json &) {
     json r = agent::rt(host(), "quit", json::object(), 5.0);
     if (!r.value("ok", false)) return r;
-    return ok(json{{"quitting", true}, {"note", "clean shutdown requested; the MCP server will go away with the process"}});
+    json res{{"quitting", true}, {"note", "clean shutdown requested; the MCP server will go away with the process"}};
+    json lv = coordinator::leaving_note();  // issue #6: the coordinator ends while other instances live
+    if (!lv.is_null()) res.update(lv);
+    return ok(res);
 }
 
 static json terminate_tool(const json &args) {
@@ -144,10 +172,14 @@ static json terminate_tool(const json &args) {
     // Runs from the network thread: works even if the main thread is frozen.
     std::thread([delay] {
         plat::sleep_ms(delay);
+        coordinator::announce_leaving();  // issue #6: the coordinator ends on purpose: the member that takes over must not call it a crash
         plat::terminate_process(1);
     }).detach();
-    return ok(json{{"terminating", true}, {"pid", pid}, {"main_thread_stalled", jobs::seconds_since_last_frame() > 5.0},
-                   {"last_tick_age_s", jobs::seconds_since_last_frame()}});
+    json res{{"terminating", true}, {"pid", pid}, {"main_thread_stalled", jobs::seconds_since_last_frame() > 5.0},
+             {"last_tick_age_s", jobs::seconds_since_last_frame()}};
+    json lv = coordinator::leaving_note();  // issue #6: the coordinator ends while other instances live
+    if (!lv.is_null()) res.update(lv);
+    return ok(res);
 }
 
 static json wait_for_tool(const json &args) {
@@ -157,7 +189,7 @@ static json wait_for_tool(const json &args) {
     double timeout = args.value("timeout_s", 10.0);
     double interval = args.value("interval_s", 0.0);
     std::string code = args["condition"];
-    if (!agent::realm_present(r)) return agent::err("realm_unavailable", std::string("realm ") + realms::name(r) + " unavailable");
+    if (!agent::realm_present(r)) return agent::realm_unavailable_err(r);
     uint64_t gen0 = agent::generation(r);
     int polls = 0;
     for (;;) {
@@ -224,11 +256,28 @@ void register_session() {
                         "realm only. Every Lua state of the previous map is destroyed: its globals, hooks, timers, jobs and debug "
                         "drawings are gone, and the addons' files are loaded again from disk. Changing maxplayers on a running "
                         "game disconnects first (client mode only). Result: {map, gamemode, maxplayers, requested_map, duration_s, "
-                        "server_generation, client_generation, warning?}. Errors: not_found (no maps/<map>.bsp), busy (another "
-                        "map_load/disconnect runs), timeout (with which realms are up), cancelled. IMPORTANT: when your client "
+                        "server_generation, client_generation, warning?, lua_mount?, lua_cache_emptied?}. With a mounted Lua folder (lua_mount) "
+                        "it empties the engine's Lua file cache before loading (lua_cache_emptied), and when the load ends it checks the "
+                        "folder: if its files changed since the realms loaded them (edited during the load) or a realm did not get the folder, "
+                        "`warning` says so and `lua_mount` is the status.lua_mount object. Errors: not_found (no maps/<map>.bsp), busy (another "
+                        "map_load/disconnect runs), timeout (with which realms are up), cancelled. If the game crashes during the load, "
+                        "the call through the coordinator answers client_crashed (dump name in details; relaunch with instances_launch). IMPORTANT: when your client "
                         "runs it as a background MCP task, wait for its result before calling a realm tool: a call made before it "
                         "ends reaches the OLD map's state. Every lua_exec/lua_job result carries the realm's `generation`: equal to "
-                        "server_generation/client_generation = the new map's state. Example: {\"map\": \"gm_construct\"}.",
+                        "server_generation/client_generation = the new map's state. "
+                        // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+                        "Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load "
+                        "ending in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). So a map_load that goes "
+                        "through the bridge (any session, any target instance) first waits while a game is being started "
+                        "(instances_launch) and for 15 s after the last start. A call that waited carries waited_s and waited_reason "
+                        "(and progress; as a task, in statusMessage). If the wait would exceed timeout_s it fails with error "
+                        "launch_in_progress and sends nothing to the game: retry later, or with a larger timeout_s. When another game "
+                        "was loading a map at that moment (started by anything: console, Lua, a script, another session), the result "
+                        "lists it as other_games_loading; it does not delay the load. A launch, however, waits for loads like that. "
+                        "Not held back by the bridge: a game started by hand, and a map change triggered from Lua or the console "
+                        "while a game is being started (changelevel, `map` through console_exec): do not do those. Right after a game starts, the other games "
+                        "can be unreachable for 15-18 s (instance_unreachable, timeouts): expected, wait and retry. "
+                        "Example: {\"map\": \"gm_construct\"}.",
                         json{{"properties",
                               {{"map", {{"type", "string"}, {"minLength", 1}, {"description", "Name without extension, e.g. gm_construct."}}},
                                {"gamemode", {{"type", "string"}, {"description", "Gamemode (e.g. sandbox). Default: unchanged."}}},
@@ -238,14 +287,18 @@ void register_session() {
                         json{{"destructiveHint", true}}, map_load_tool});
     mcp::set_task_support("map_load", "optional");
     mcp::register_tool({"disconnect", "Return to main menu", "Leaves the current map for the main menu (console `disconnect`) and waits until the client and server realms "
-                        "are gone; their Lua states are destroyed. Client mode only (unsupported on srcds). Result: {disconnected, "
+                        "are gone; their Lua states are destroyed. Client only (unsupported on srcds). Result: {disconnected, "
                         "was_in_game, duration_s, realms}. Errors: busy (a map_load runs), timeout.",
                         json{{"properties", {{"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 120}, {"description", "Default 30."}}}}}},
                         json{{"destructiveHint", true}, {"idempotentHint", true}}, disconnect_tool});
     mcp::register_tool({"game_quit", "Quit the game cleanly", "Asks the game to quit cleanly (console `quit`): it saves its config (cfg/config.cfg, video settings) and exits; "
-                        "the MCP server of this instance goes away with it. For test clients started by instances_launch, use "
-                        "instances_close instead (a clean quit writes their small window size into the user's video settings). "
-                        "Result: {quitting: true}.",
+                        "the MCP server of this instance goes away with it. For test clients started by instances_launch, prefer "
+                        "instances_close (it kills the process: nothing is saved, and the exit is short); game_quit is safe on them "
+                        "too: before quitting, the module gives the archived convars their command line changed (fps_max, "
+                        "fps_max_nofocus, snd_mute_losefocus, and those named by instances_launch commands or launch_args) the user's values from cfg/config.cfg, or their defaults when the file "
+                        "has no line. "
+                        "On a dedicated server the console `quit` is blocked from server Lua: on Linux the module then ends the process itself with SIGTERM (the server's own clean shutdown, half a second after the answer); where that is not possible (Windows srcds) the error is `blocked` and nothing quits. "
+                        "Result: {quitting: true}; on the coordinator while other instances live, also coordinator_moved: true, remaining_instances and a warning (they elect a new coordinator).",
                         json::object(), json{{"destructiveHint", true}}, quit_tool});
     mcp::register_tool({"game_terminate", "Kill the game immediately",
                         "Kills this game process at once (no config saved, no clean shutdown), from the network thread, so it works "
@@ -265,7 +318,7 @@ void register_session() {
                         json{{"properties",
                               {{"realm", realm_prop("Evaluation realm (default server).")},
                                {"condition", {{"type", "string"}, {"description", "Lua expression or block with return, e.g. 'IsValid(Entity(1)) and Entity(1):Alive()'."}}},
-                               {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Max wait in seconds (default 10)."}}},
+                               {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Max wait in seconds (default 10)."}}},
                                {"interval_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 60}, {"description", "Seconds between evaluations (default 0 = every frame)."}}}}},
                              {"required", {"condition"}}},
                         RO, wait_for_tool});
@@ -275,7 +328,7 @@ void register_session() {
                         "renders fewer frames in timeout_s (frozen, minimized with a low fps_max_nofocus). A light test client runs "
                         "at 20 fps: 20 frames = 1 s.",
                         json{{"properties", {{"n", {{"type", "integer"}, {"minimum", 1}, {"maximum", 100000}, {"description", "Number of frames to wait."}}},
-                                             {"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600}, {"description", "Max wait in seconds (default 30)."}}}}},
+                                             {"timeout_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 3600}, {"description", "Max wait in seconds (default 30)."}}}}},
                              {"required", {"n"}}},
                         RO, wait_frames_tool});
 }

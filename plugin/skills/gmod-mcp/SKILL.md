@@ -25,13 +25,23 @@ Once the server is connected, its own instructions (sent by the server) take ove
 ## 1. Find out where things stand
 
 1. **One `gmod` server only.** The plugin provides it. An older install may also have a manual entry: if
-   `claude mcp get gmod` shows an `http://127.0.0.1:27080/mcp` server, tell the user it duplicates the plugin's and
-   remove it with their agreement (`claude mcp remove gmod`, adding `--scope` if it lives in another scope).
-2. **Is a game listening?** Any HTTP answer means yes (401 without the token is the expected one):
+   `claude mcp get gmod` shows an `http://127.0.0.1:27080/mcp` server, tell the user it duplicates the plugin's (the
+   plugin does not replace it: both stay and every tool is listed twice) and remove it with their agreement
+   (`claude mcp remove gmod`, adding `-s user` if it lives in the user scope; a local-scope entry only from the folder
+   it was added in).
+2. **Is a game listening?** Look at the answer, not only at whether there is one. gmod-mcp answers a request without the
+   token with **401** and the header `X-Gmod-Mcp`; another program on the port answers something else (404, 403, a
+   page...):
 
    ```bash
-   curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:27080/mcp     # 401 = up, 000 = nothing listening
+   curl -s -i -X POST http://127.0.0.1:27080/mcp | head -5   # 401 + X-Gmod-Mcp = up, connection refused = nothing listening
    ```
+
+   - 401 with `X-Gmod-Mcp` (a module older than the header sends 401 with a JSON body `{"error":{"code":"unauthorized"...`):
+     the game is up.
+   - Any other status, or a 401 without that header or body: possibly **another program on the port**, not the game
+     (`port_conflict` in the bridge's answers means the same). See "When it still does not answer".
+   - Nothing listening (`000`, connection refused): no game.
 
    On Windows PowerShell, call `curl.exe`, not `curl`.
 3. **Is the module installed?** In the game folder (see below):
@@ -51,16 +61,22 @@ Once the server is connected, its own instructions (sent by the server) take ove
 Steam must be running and logged in. If it is not, start it (`steam.exe` / `steam`) and wait until it is ready; never
 kill it.
 
-**Windows** (64-bit game, `gmod_win64.exe` at the root of the game folder). Start it directly; the two variables are
-required, otherwise the game stops with "No appID found":
+**Windows** (64-bit game). The 64-bit executable is `<game folder>\bin\win64\gmod.exe` on current x86-64 installs, or
+`<game folder>\gmod_win64.exe` on older ones: use whichever exists. Start it directly with the game folder as working
+directory; the two variables are required, otherwise the game stops with "No appID found":
 
 ```powershell
 $env:SteamAppId = "4000"; $env:SteamGameId = "4000"
-Start-Process -FilePath "<game folder>\gmod_win64.exe" -WorkingDirectory "<game folder>" `
+$exe = "<game folder>\gmod_win64.exe"
+if (-not (Test-Path $exe)) { $exe = "<game folder>\bin\win64\gmod.exe" }
+Start-Process -FilePath $exe -WorkingDirectory "<game folder>" `
   -ArgumentList "-mcp -windowed -w 1280 -h 720 -novid -condebug +engine_no_focus_sleep 0 +snd_mute_losefocus 0"
 ```
 
-If `gmod_win64.exe` is missing, the game is on 32-bit binaries: tell the user (the module is 64-bit only) and stop.
+The `gmod.exe` at the root of the game folder is the 32-bit game on the x86-64 branch: do not start it. To tell the
+two apart, read the PE header: the 2 bytes at offset `e_lfanew + 4` (the 4-byte value at offset 0x3C) are `64 86`
+for 64-bit (machine 0x8664) and `4C 01` for 32-bit (0x014C). If neither a 64-bit `gmod_win64.exe` nor a 64-bit
+`bin\win64\gmod.exe` exists, the game is on 32-bit binaries: tell the user (the module is 64-bit only) and stop.
 
 **Linux**, or as a fallback on Windows: `steam -applaunch 4000 -mcp -windowed -novid +engine_no_focus_sleep 0
 +snd_mute_losefocus 0` (on Windows, `"<Steam>\steam.exe" -applaunch 4000 ...`). Steam adds the user's own launch options.
@@ -70,7 +86,7 @@ If `gmod_win64.exe` is missing, the game is on 32-bit binaries: tell the user (t
 - **Very first start after an install**: add `+map gm_construct`. The module installs its main-menu loader during that
   first map load; later starts need no map (the server is up at the main menu).
 
-Then wait for the server: check the URL from section 1 every 2 seconds, for up to 2 minutes (the first start and a map
+Then wait for the server: check the URL from section 1 every 2 seconds (a 401 with `X-Gmod-Mcp` means up; another answer is not that), for up to 2 minutes (the first start and a map
 load take longer). Run the wait in the background or in one bounded loop, not as many separate calls.
 
 **When it answers**: call the `gmod` tools again. The bridge notices the game within 2 seconds and Claude Code
@@ -87,8 +103,33 @@ frame cap, no `+map`), waits until each answers, loads the map with `map_load`, 
 pass `instance` to every tool, or `instance_select` to make one the session's default (with several games running,
 calls without `instance` are refused with `ambiguous_instance`). Close them with `instances_close`; they also close
 when the session ends. Its description lists the measured cost per client and the limits (memory is what runs out
-first).
+first). It also takes `fps_max` / `fps_max_nofocus` (0 = no cap, or 10 to 1000: timing-sensitive tests and perf
+measurements need more than the preset's 20/30 fps), `commands` (console commands run on each client once it answers,
+before the map loads, e.g. `["fps_max 300", "snd_mute_losefocus 0"]`) and `launch_args` (extra engine options, one token
+per element: `["-noborder", "+cl_showfps", "1"]`). Refused with `invalid_params` naming the option: `quit`/`exit`, anything
+that connects, map changes (use `map`) and what gmod-mcp sets itself (`-multirun`, `-mcp*`, `-w`/`-h`, window mode,
+`-dxlevel`, `-condebug`, `-game`). Archived convars these change are given back to the user's value before a clean quit
+(module of the same release). Launch options are listed on the Valve Developer Community,
+[Command line options](https://developer.valvesoftware.com/wiki/Command_line_options), and the Garry's Mod wiki
+(`wiki_search`); console commands and convars with `api_search` and `concommand_list`.
 
+<!-- FP7137: agent-facing text A1-A3, see docs/FP7137.md -->
+- **Launches and map loads.** Starting a game makes every other running GMod release its GPU resources for 2-10 s, and a
+  map load ending in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). The bridge therefore
+  serialises `instances_launch` and `map_load` for every session using it: `map_load` waits while a game is being started
+  and for 15 s after the last start, `instances_launch` waits while any game loads a map, and `instances_launch {map}`
+  loads its maps after that delay, and at most 2 maps load at a time across every session (`instances_launch {map}` and `map_load` alike: a third waits). A call that waited carries `waited_s` and `waited_reason` (and progress). If the
+  wait would exceed `timeout_s`, it fails with `launch_in_progress` (map_load) or `map_load_in_progress` (launch) and
+  nothing was started: retry later or with a larger `timeout_s`. `instances_launch` also waits for a map load the bridge did
+  not start (console `map` / `changelevel`, Lua, a script talking to the game: every game reports `loading` in
+  `instances_list`; `waited_reason` starts with `map_load_outside_bridge`), and `map_load` lists such games as
+  `other_games_loading`. The bridge cannot hold back a game started by hand, or a console/Lua map load started while a
+  launch is creating its processes: do not do those while other games load or launch. Right after a game starts, the other games can be unreachable for 15-18 s (`instance_unreachable`,
+  timeouts): expected, wait and retry (`client_crashed` is the signal for a dead one). Order: launch all the clients you
+  need in ONE `instances_launch`, then work; do not interleave launches with map loads across sessions.
+  The game on the base port is the coordinator (`instances_list`: `role`, `coordinator_id`): closing it (`instances_close`, `game_quit`) moves
+  the role to another game within about 3 s; calls then answer the retryable `coordinator_changing` (the bridge already retries for 10 s).
+  Do not close a game you did not start, and close the coordinator last.
 - **With sub-agents**: they all share one bridge, so one session. Never use `instance_select` (its default would apply
   to every sub-agent's calls) and never `instances_close {all: true}` (it would close the others' clients). Tell each
   sub-agent in its brief to launch with an `owner` label of its own, pass `instance` on every call, and close with
@@ -109,9 +150,9 @@ first).
   client; `Entity:GetName`/`SetName` are server-only); `EyePos()`/`EyeAngles()` are only reliable inside rendering
   hooks (use `LocalPlayer():EyePos()` in a `lua_job`).
 
-- **Tell the user before launching**: Garry's Mod saves the window size of these clients as its own video setting, so
-  their next normal start opens at that size until they set their resolution back in the video options. Closing the
-  clients does not undo it.
+- The launched clients carry `-dxlevel 95`, so they neither read nor write the user's video settings (resolution,
+  anti-aliasing). Without that option, a client started with `-w`/`-h` overwrites them: if you start a client yourself
+  (Linux, or by hand), add `-dxlevel 95` and tell the user.
 - If the tool cannot find the game, pass `game_dir` (see "Finding the game folder" above).
 - On Linux, start extra clients by hand with `-multirun` and load maps with `map_load` and the client's `instance`
   (not `+map`: a game that loads a map while another window has the focus can grab the mouse).
@@ -147,8 +188,12 @@ original is saved as `menu.lua.mcpagent.bak`; the game console command `mcpagent
    sounds playing for sound tests. `-windowed` is a preference, so the terminal stays reachable. Do not edit Steam's
    files to set them: tell the user.
 
-If `gmod-mcp-bridge` is not found, the plugin is an old version without the bridge: ask the user to update it
-(`/plugin`, Marketplaces, update gmod-mcp) and restart Claude Code.
+If `gmod-mcp-bridge` is not found, the plugin is an old version without the bridge: ask the user to update it and
+restart Claude Code. Updating by hand takes both commands, in this order, in a shell:
+`claude plugin marketplace update gmod-mcp`, then `claude plugin update gmod-mcp@gmod-mcp` (the second one alone says
+"already at the latest version" while Claude Code's copy of the marketplace is stale). Then restart Claude Code, or
+`/reload-plugins`. Auto-update is off for third-party marketplaces, and no `claude plugin` subcommand turns it on: the
+user does it in `/plugin`, Marketplaces, gmod-mcp, Enable auto-update.
 
 **Other MCP clients** (not Claude Code): in the game console, `mcpagent_setup` prints an HTTP configuration with the
 token. The bridge also works for them as a stdio server: the command `gmod-mcp-bridge` (from the plugin, or from the
@@ -198,6 +243,23 @@ game also running, each has its own port and the one holding 27080 relays to the
 call `instances_list`, then pass `instance` (`srcds-<pid>`) to any tool. Calls without `instance` are refused with
 `ambiguous_instance` while several games run.
 
+**A game crashed.** A call to an instance whose process died answers `client_crashed` (`server_crashed` for srcds) with
+`details.dump` (the minidump file name under `crashes/` in the game folder, or null) and `details.exit_code`; `instances_list`
+shows it as `state: "crashed"` for an hour. Relaunch a client with `instances_launch` and rerun what it was doing; the dump
+is for a human, not for you. `instance_gone` means a normal exit (quit, `game_terminate`), `instance_unreachable` a game that
+runs but does not answer. A call in flight to a client that dies is answered at once (not at its own timeout), and the answer
+carries `details.memory` (free commit and RAM) with a warning when memory is low: out of memory is a likely cause.
+
+**A game is hung, or the machine is out of memory.** `instances_list` gives every instance `stalled_s` (main thread blocked for
+that many seconds) and `fps_low_s` (frame rate under 10 fps for that long: what you measured meanwhile is suspect). A game
+whose main thread is blocked for 60 s (180 s during a map load), or that stopped sending heartbeats while its process runs,
+is `state: "hung"`: close it (`instances_close {pids}` / `game_terminate`) and relaunch, do not wait for it. A call in flight
+to a frozen process fails with `instance_hung` after 30 s of silence. `instances_launch` refuses with `low_memory` when the
+free commit (virtual memory) or RAM cannot hold the clients (about 1.6 GB of commit and 1.2 GB of RAM each, plus 1 GB of
+commit for the machine): close clients you do not use or start fewer; `ignore_low_memory: true` starts anyway. A harness
+must treat `low_memory`, `instance_hung`, `client_crashed`, `instance_gone`, `instance_unreachable` and `game_not_running`
+as infrastructure problems, not as failed tests.
+
 **Joining it from the local game**: `connect <this machine's LAN address>:27015` (in `console_exec`, or the game
 console). A GMod dedicated server ignores connections from `127.0.0.1`, so use the LAN address (`ipconfig` /
 `ip addr`). The client realm stays available because the server runs on this machine.
@@ -234,6 +296,10 @@ guide's "Reporting frictions" section (resource `mcpagent://guide`). In short:
 - No `[mcpagent]` line at all on the very first start: the module only loads with a map; start again with
   `+map gm_construct`.
 - The process is running but the URL gives `000`: wait for the main menu or the map load to finish.
-- Another program holds port 27080: the module takes the next free one (the `active:` line names it). The bridge
-  only talks to the base port: ask the user to set the `GMOD_MCP_PORT` environment variable to that port and restart
-  Claude Code, or better, to free port 27080.
+- **Another program holds port 27080** (the bridge's tools answer `port_conflict`, the console says "port 27080 is held by
+  another program", or the check in section 1 gets an answer that is not 401 + `X-Gmod-Mcp`): the module takes the
+  next free port (the `active:` line names it), but the bridge only talks to the base port. Find the program:
+  `Get-NetTCPConnection -LocalPort 27080 | Select-Object OwningProcess` then `Get-Process -Id <pid>` (Windows
+  PowerShell), `ss -ltnp 'sport = :27080'` (Linux). Never kill it yourself: tell the user what it is. Then either
+  free port 27080, or ask the user to set the `GMOD_MCP_PORT` environment variable to the game's port and restart
+  Claude Code (`port_conflict` names that port when a gmod-mcp answers on one of the next 15).

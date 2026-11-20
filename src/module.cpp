@@ -8,11 +8,13 @@
 #include "events.h"
 #include "http_server.h"
 #include "installer.h"
+#include "launch_opts.h"
 #include "lua_mount.h"
 #include "jobs.h"
 #include "log.h"
 #include "luaapi.h"
 #include "mcp.h"
+#include "netaddr.h"
 #include "platform/platform.h"
 #include "realms.h"
 #include "resources.h"
@@ -96,6 +98,11 @@ static bool start(lua_State *L) {
         return false;
     }
     auto &cfg = agent::config();
+    cfg.test_client = util::has_flag(args, "-mcp_test_client");
+    cfg.owner = launchopts::decode_owner(util::flag_value(args, "-mcp_owner", ""));  // issue #8 (G3): the launching bridge's owner label, carried in the heartbeat
+    cfg.return_focus = cfg.test_client ? launchopts::parse_return_focus(util::flag_value(args, "-mcp_return_focus", "")) : 0;  // never for the user's own game
+    // Issue #10: convars instances_launch {commands, launch_args, fps_max} may change; only names are kept (checked again here).
+    cfg.restore_convars = launchopts::join_list(launchopts::parse_restore_list(util::flag_value(args, "-mcp_restore_convars", "")));
     bool menu = global_true(L, "MENU_DLL");
     bool server = global_true(L, "SERVER");
     g_bootstrap = false;
@@ -165,6 +172,12 @@ static bool start(lua_State *L) {
 
     tools::register_all();
 
+    // The fixed vtable slots and offsets the module relies on are checked once, now (layout.h): a slot the game build moved turns off
+    // the feature that needs it, with a reason in `status` (layout_check) and one log line here, instead of calling another function.
+    realms::verify_layout();
+    lua_mount::verify_layout(cfg.mode == agent::Mode::Dedicated);
+    netaddr::verify_layout(cfg.mode == agent::Mode::Client);
+
     // -mcp_lua_mount "<folder>": a test client started on a worktree's code (instances_launch {lua_mount}).
     // The game's own command line is ANSI (tier0): a folder with characters outside the code page would arrive damaged.
     // The process's wide command line (UTF-8) is exact; the game's copy stays the fallback.
@@ -173,7 +186,9 @@ static bool start(lua_State *L) {
     if (!ov.empty()) {
         std::string root, oerr, why;
         if (!lua_mount::normalize_root(ov, root, oerr)) logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());
-        else if (!(oerr = lua_mount::refuse_inside_game(root, cfg.game_dir)).empty()) logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());
+        else if (!(oerr = lua_mount::refuse_mount(root, cfg.game_dir, util::has_flag(args, "-mcp_lua_mount_allow_shadow") ||
+                                                  util::has_flag(util::split_args(plat::process_command_line()), "-mcp_lua_mount_allow_shadow"))).empty())
+            logx::warn("-mcp_lua_mount ignored: %s", oerr.c_str());
         else if (!lua_mount::supported(&why)) logx::warn("-mcp_lua_mount ignored: %s", why.c_str());
         else {
             nlohmann::json r = lua_mount::set(root, false);
@@ -296,6 +311,7 @@ EXPORT int gmod13_close(lua_State *L) {
     if (!g_started) return 0;
     if (agent::config().mode == agent::Mode::Client && L == g_host_L) {
         // Menu state closing = game shutting down.
+        coordinator::say_goodbye();
         coordinator::stop();
         events::stop_watchdog();
         httpsrv::stop();

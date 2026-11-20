@@ -1,13 +1,18 @@
 // Tools: world (entities, players, bots, traces), rendering (screenshots, debug draw), sound, performance.
 #include <chrono>
+#include <cmath>
 
 #include "agent.h"
+#include "console.h"
+#include "enginejpeg.h"
 #include "jobs.h"
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
+#include "reqctx.h"
 #include "tasks.h"
 #include "tools.h"
+#include "util.h"
 
 namespace tools {
 
@@ -49,15 +54,85 @@ static json capture(int realm, const json &req) {
     }
 }
 
-static json screenshot_tool(const json &a) {
-    if (agent::config().mode != agent::Mode::Client) return agent::err("unsupported", "no renderer in srcds mode");
-    // The menu state has no render.Capture: at the main menu, screenshots are not available (defined behavior).
-    if (!agent::realm_present(realms::CLIENT))
-        return agent::err("realm_unavailable", "screenshots need the client realm: load a map first (the main menu cannot be captured)");
-    return capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality"}));
+// Screenshot without a client realm (main menu, a VGUI2 dialog, a loading screen): the engine's own `jpeg` command (sent through the
+// menu state, like a console command blocked from Lua), then the file it names in its console line is read and deleted
+// (src/enginejpeg.cpp). The engine writes it at the backbuffer's size, which is the space ui_click's coordinates are read on. It
+// needs neither the client realm nor the render hook, and it works while other windows cover the game.
+static std::function<std::string(std::string &)> g_test_sender;
+void set_engine_jpeg_sender_for_tests(std::function<std::string(std::string &code)> fn) { g_test_sender = std::move(fn); }
+
+static json engine_jpeg_shot(const json &a) {
+    enginejpeg::Io io;
+    io.game_dir = agent::config().game_dir;
+    io.timeout_s = 4.0;
+    io.poll_ms = 15;
+    io.cursor_now = [] { return console::cursor_now(); };
+    io.read_lines = [](uint64_t &cursor) {
+        std::string err;
+        console::ReadResult r = console::read(cursor, 500, "", err);
+        std::vector<std::string> out;
+        for (const auto &l : r.lines) out.push_back(l.text);
+        cursor = r.next_cursor;
+        return out;
+    };
+    io.send = [](std::string &code) -> std::string {
+        json r = agent::rt(realms::MENU, "engine_cmd", json{{"cmd", "jpeg"}}, 3.0);
+        if (r.value("ok", false)) return "";
+        code = r.contains("error") ? r["error"].value("code", "capture_failed") : "capture_failed";
+        return r.contains("error") ? r["error"].value("message", "the jpeg command was not sent") : "the jpeg command was not sent";
+    };
+    if (g_test_sender) io.send = g_test_sender;
+    io.sleep_ms = [](int ms) { plat::sleep_ms(ms); };
+    io.cancelled = [] { return reqctx::cancelled(); };
+    enginejpeg::Capture c = enginejpeg::capture(io);
+    if (!c.ok) {
+        json details = json::object();
+        if (!c.file.empty()) details["file"] = c.file;
+        return agent::err(c.code, c.message, details.empty() ? json() : details);
+    }
+    json res = {{"format", "jpeg"}, {"w", c.w}, {"h", c.h}, {"screen_w", c.w}, {"screen_h", c.h}, {"method", "engine_jpeg"},
+                {"bytes", c.data.size()}, {"file", c.file}, {"file_deleted", c.deleted}, {"capture_ms", std::round(c.capture_ms)}};
+    // The engine's picture is returned as it is: its size, format and quality are its own.
+    json ignored = json::array();
+    if (a.value("format", "jpeg") != "jpeg") ignored.push_back("format");
+    if (a.contains("w")) ignored.push_back("w");
+    if (a.contains("h")) ignored.push_back("h");
+    if (a.contains("quality")) ignored.push_back("quality");
+    if (!ignored.empty()) {
+        res["ignored"] = ignored;
+        res["note"] = "source engine_jpeg returns the engine's own JPEG at the game's screen size and quality (jpeg_quality); these arguments were not applied";
+    }
+    if (!c.warning.empty()) res["warning"] = c.warning;
+    json out = {{"ok", true}, {"result", res}};
+    out["image"] = json{{"data", util::base64_encode(c.data)}, {"mimeType", "image/jpeg"}};
+    return out;
+}
+
+json take_screenshot(const json &a) {
+    enginejpeg::SourceFacts f;
+    f.requested = a.value("source", "auto");
+    f.client_mode = agent::config().mode == agent::Mode::Client;
+    f.client_realm_present = agent::realm_present(realms::CLIENT);
+    f.client_allowed = agent::lock_status().value("client_allowed", false);
+    enginejpeg::SourceChoice c = enginejpeg::choose_source(f);
+    if (!c.code.empty()) return agent::err(c.code, c.message);
+    json r = c.source == enginejpeg::Source::Render ? capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality"})) : engine_jpeg_shot(a);
+    if (r.value("ok", false)) r["result"]["source"] = enginejpeg::source_name(c.source);
+    return r;
+}
+
+static json screenshot_tool(const json &a) { return take_screenshot(a); }
+
+// A tool that draws or renders needs the client realm and the renderer: a dedicated server has neither, whatever the map. The answer
+// comes first and gives nothing to chase (no map_load: a map never gives a srcds a client realm).
+static json srcds_refusal(const char *tool) {
+    if (agent::config().mode == agent::Mode::Client) return nullptr;
+    return agent::err("unsupported", std::string(tool) + " needs the client realm and the renderer: a dedicated server (srcds) has neither");
 }
 
 static json screenshot_from_tool(const json &a) {
+    json refused = srcds_refusal("screenshot_from");
+    if (!refused.is_null()) return refused;
     if (!agent::realm_present(realms::CLIENT)) return agent::err("realm_unavailable", "screenshot_from needs a loaded map (client realm)");
     bool custom_size = a.contains("w") || a.contains("h");
     if (custom_size) {
@@ -111,7 +186,7 @@ void register_world() {
                         "\"*door*\", \"models/props_c17/*\"). near + radius keep the entities whose position is within radius "
                         "of near (ents.FindInSphere), sorted nearest first, each with `distance`. Result: {entities: [{id, class, "
                         "model, name (targetname, if any), nick (players), pos [x,y,z], ang [p,y,r], distance?}], count (all "
-                        "matches), truncated (count > limit)}. id is the entity index: pass it to ent_info, ent_fire, ent_remove. "
+                        "matches), truncated (count > limit)}. id is the entity index: pass it to ent_info, ent_fire, ent_remove (a clientside-only entity, ClientsideModel and the like, has id -1: no tool can address it, see `note`; use lua_exec in the client realm). A number the game cannot hold (NaN, infinity) reads null. "
                         "Server realm by default; the client realm only sees networked entities (and no targetnames). Example: "
                         "{\"class\": \"func_door*\", \"near\": [0, 0, 64], \"radius\": 1024, \"limit\": 10}.") + kNeedsMap,
                         json{{"properties", {{"class", {{"type", "string"}, {"description", "Class glob, case-insensitive, e.g. prop_physics or prop_*."}}},
@@ -234,21 +309,38 @@ void register_render() {
                 {"quality", {{"type", "integer"}, {"minimum", 1}, {"maximum", 100}, {"description", "JPEG quality (default 90)."}}},
                 {"w", {{"type", "integer"}, {"minimum", 16}, {"maximum", 3840}, {"description", "Width in pixels (default: the game window's)."}}},
                 {"h", {{"type", "integer"}, {"minimum", 16}, {"maximum", 2160}, {"description", "Height in pixels (default: the game window's)."}}}};
+    json shot_args = img;
+    shot_args["source"] = {{"type", "string"}, {"enum", {"auto", "render", "engine_jpeg"}},
+                           {"description", "auto (default): the render capture when a map is loaded, the engine's jpeg command otherwise. render: the "
+                                           "engine's render capture (client realm only). engine_jpeg: the engine's own `jpeg` console command, with or "
+                                           "without a map (format, w, h and quality do not apply to it)."}};
     mcp::register_tool({"screenshot", "Take a screenshot",
-                        "Captures what the local player sees and returns it as an MCP image (plus {format, w, h, screen_w, screen_h, "
-                        "method, bytes}). Game client with a loaded map only: error realm_unavailable at the main menu (the menu "
-                        "cannot be captured) and unsupported on srcds. Without w/h: the game window as it is, HUD included "
-                        "(method backbuffer). With w/h: the player's view rendered again at that size, without HUD or view model "
-                        "(method render_target). A minimized or frozen game gives timeout after 10 s. debug_draw primitives are "
-                        "visible. Example: {\"w\": 1280, \"h\": 720, \"format\": \"png\"}.",
-                        json{{"properties", img}}, json{{"readOnlyHint", true}}, screenshot_tool});
+                        "Client only (unsupported on srcds). Captures what the game shows and returns it as an MCP image (plus {source, format, w, h, screen_w, screen_h, "
+                        "method, bytes}). Two sources, chosen by `source` (auto by default). render: what the local player sees, "
+                        "drawn by the engine; needs a loaded map (client realm); without w/h it is the game window as it is, HUD "
+                        "included (method backbuffer), with w/h the player's view rendered again at that size, without HUD or view "
+                        "model (method render_target); debug_draw primitives are visible; a minimized or frozen game gives timeout "
+                        "after 10 s. engine_jpeg: the engine's own `jpeg` console command, the only way to see the main menu, a VGUI2 "
+                        "dialog (\"Disconnected by the server\") or a loading screen, when there is no client realm. It is the engine's own "
+                        "capture, so it works while other windows cover the game, takes no focus and does not touch the window. The "
+                        "engine writes the picture to garrysmod/screenshots/<name>.jpg and prints the name in its console; the module "
+                        "reads exactly that file and deletes it (and nothing else; result file, file_deleted, and a warning with the "
+                        "path if the file could not be deleted). The image is the game's screen size (the space ui_click coordinates "
+                        "are read on) as a JPEG at the engine's own quality (convar jpeg_quality, not changed): format, w, h and quality "
+                        "are not applied and, when given, are listed in `ignored`. A picture the user takes with their own jpeg command "
+                        "in the same instant can be mistaken for it. One capture at a time. Errors: realm_unavailable (source render "
+                        "without a map), unsupported (srcds), client_locked, capture_timeout (no `Wrote` line from the engine within "
+                        "4 s: game minimized or frozen, or the console capture is off), capture_failed (the file named by the engine "
+                        "could not be taken; it is left in place and named). Example: {\"w\": 1280, \"h\": 720, \"format\": \"png\"} with a "
+                        "map, or {\"source\": \"engine_jpeg\"} at the main menu.",
+                        json{{"properties", shot_args}}, json{{"readOnlyHint", true}}, screenshot_tool});
     json from = img;
     from["pos"] = vec_schema("Camera position, " + std::string(VEC) + ".");
     from["ang"] = vec_schema("Camera angles [pitch, yaw, roll] in degrees.");
     from["fov"] = {{"type", "number"}, {"minimum", 1}, {"maximum", 179}, {"description", "Field of view in degrees (default 90)."}};
     mcp::register_tool({"screenshot_from", "Screenshot from a viewpoint",
                         "Captures the scene from an arbitrary camera (pos, ang, fov) and returns it as an MCP image; the player does "
-                        "not move. Game client with a loaded map only. Without w/h: a temporary CalcView hook moves the view for 3 "
+                        "not move. Client only (unsupported on srcds), with a loaded map. Without w/h: a temporary CalcView hook moves the view for 3 "
                         "frames, the window is captured, then the hook is removed (result method calcview, camera_restored: true "
                         "when the player's view is back). With w/h: rendered into an off-screen target of that size (method "
                         "render_target), the view is not touched. The local player's body is drawn (it is not the camera). "
@@ -257,9 +349,10 @@ void register_render() {
                         json{{"properties", from}, {"required", {"pos", "ang"}}}, json{{"readOnlyHint", true}}, screenshot_from_tool});
     json prim = {{"type", "object"},
                  {"properties",
-                  {{"type", {{"type", "string"}, {"enum", {"line", "box", "sphere", "text"}}}},
-                   {"from", vec_schema("line: start point.")},
-                   {"to", vec_schema("line: end point.")},
+                  {{"type", {{"type", "string"}, {"enum", {"line", "arrow", "box", "sphere", "text"}}}},
+                   {"from", vec_schema("line / arrow: start point.")},
+                   {"to", vec_schema("line / arrow: end point (the arrow head).")},
+                   {"head", {{"type", "number"}, {"minimum", 0}, {"description", "arrow: head length in units (default a quarter of the length, at most 16)."}}},
                    {"pos", vec_schema("box: origin of mins/maxs; sphere: center; text: position.")},
                    {"ang", vec_schema("box: rotation [p,y,r] (default 0,0,0).")},
                    {"mins", vec_schema("box: corner relative to pos (default [-8,-8,-8]).")},
@@ -274,7 +367,7 @@ void register_render() {
                  {"required", {"type"}},
                  {"additionalProperties", false}};
     mcp::register_tool({"debug_draw", "Draw debug primitives",
-                        "Draws 3D lines, wireframe boxes, wireframe spheres and text in the game world, in the client realm (a map "
+                        "Client only (unsupported on srcds: it draws in the client realm, a dedicated server has none). Draws 3D lines, arrows (a line with a head at `to`), wireframe boxes, wireframe spheres and text in the game world, in the client realm (a map "
                         "must be loaded), visible on screen and in screenshot/screenshot_from. They add up across calls and expire "
                         "after `duration` seconds of game time (0 = until debug_clear or the next map). Nothing changes in the "
                         "game itself. Result: {added, active, expire_in_s}. Example: {\"primitives\": [{\"type\": \"line\", "
@@ -285,10 +378,16 @@ void register_render() {
                                              {"duration", {{"type", "number"}, {"minimum", 0}, {"description", "Lifetime in seconds of game time (default 10; 0 = until debug_clear)."}}}}},
                              {"required", {"primitives"}}},
                         json{{"destructiveHint", false}},
-                        [](const json &a) { return agent::rt(realms::CLIENT, "debug_draw", pass(a, {"primitives", "duration"})); }});
-    mcp::register_tool({"debug_clear", "Clear debug primitives", "Removes every primitive drawn by debug_draw (client realm). Result: {cleared: count}.", json::object(),
+                        [](const json &a) {
+                            json refused = srcds_refusal("debug_draw");
+                            return refused.is_null() ? agent::rt(realms::CLIENT, "debug_draw", pass(a, {"primitives", "duration"})) : refused;
+                        }});
+    mcp::register_tool({"debug_clear", "Clear debug primitives", "Client only (unsupported on srcds). Removes every primitive drawn by debug_draw (client realm). Result: {cleared: count}.", json::object(),
                         json{{"destructiveHint", false}, {"idempotentHint", true}},
-                        [](const json &) { return agent::rt(realms::CLIENT, "debug_clear", json::object()); }});
+                        [](const json &) {
+                            json refused = srcds_refusal("debug_clear");
+                            return refused.is_null() ? agent::rt(realms::CLIENT, "debug_clear", json::object()) : refused;
+                        }});
 
     // Sound.
     mcp::register_tool({"sound_emit", "Emit a sound",

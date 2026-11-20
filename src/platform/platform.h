@@ -28,11 +28,31 @@ std::string process_exe_name();
 // Path of the current working directory.
 std::string current_directory();
 
+// Asks this process to end cleanly, callable from any thread: `delay_ms` later (so the answer of a tool goes out first) it
+// gets SIGTERM, which srcds handles as its own clean shutdown. False when the platform has no such path (nothing is scheduled).
+bool request_quit(int delay_ms);
+
 // Immediate process termination, callable from any thread.
 [[noreturn]] void terminate_process(int code);
 
 // Start stamp of a process (changes when a pid is reused): 0 = no such process, 1 = alive but unreadable.
 uint64_t process_start_stamp(uint32_t pid);
+
+// A handle on another process that outlives it: once the process has ended, its exit code and end time can still be read
+// (and its pid cannot be mistaken for another process). Windows only; elsewhere open returns nullptr.
+struct ProcInfo {
+    bool exited = false;
+    uint32_t exit_code = 0;  // valid when exited
+    double start_unix = 0;   // seconds since the Unix epoch, 0 = unknown
+    double exit_unix = 0;    // valid when exited, 0 = unknown
+};
+void *process_watch_open(uint32_t pid);                                       // nullptr: no such process, no access, or unsupported
+bool process_watch_query(void *watch, ProcInfo &out, int wait_ms = 0);         // waits up to wait_ms for the process to end
+void process_watch_close(void *watch);
+
+// Memory of the machine (issue #8): free commit (what a new process can still reserve: RAM + page file; Windows
+// ullAvailPageFile) and free RAM, in MB. Windows only: false elsewhere (lowmem::current() reads /proc/meminfo on Linux).
+bool memory_status(uint64_t &free_commit_mb, uint64_t &free_ram_mb);
 
 // Platform identifier ("win64", "linux64", "osx64").
 const char *platform_tag();
@@ -70,5 +90,46 @@ int process_has_foreground();
 // Sends WM_ACTIVATE(WA_INACTIVE) to this process's main game window, as Windows does when another window takes the
 // focus. Returns false if no such window was found (or on other platforms).
 bool send_focus_lost();
+// The foreground window as {handle, owning process id}; false when there is none (or not supported).
+struct Foreground {
+    unsigned long long hwnd = 0;
+    unsigned pid = 0;
+};
+bool foreground_window(Foreground &out);
+// Giving the foreground back (see launchopts::decide_return_focus): the facts about the window the bridge named, and the call that gives
+// it the foreground. Only ever called from a test client. `usable` is false for a window of this process, a hidden or a minimized one.
+void focus_target_state(unsigned long long hwnd, bool &exists, bool &usable);
+bool return_focus_to(unsigned long long hwnd);  // SetForegroundWindow, true when that window is the foreground one afterwards
+// Close guard (Windows only; false elsewhere and when no game window exists yet): subclasses this process's main game
+// window so that a close request (the X button, Alt+F4, the taskbar: WM_SYSCOMMAND SC_CLOSE or WM_CLOSE) first calls
+// `before` on the window's thread. When `before` returns true the request is held back and posted again `delay_ms`
+// later from a helper thread (so it goes through even if the game is frozen); otherwise it goes through at once.
+// Installed once; later calls return true without doing anything.
+bool install_close_guard(bool (*before)(), int delay_ms);
+
+// Window messages for ui_click / ui_key (Windows only; the pure part is src/uiinput.h). The game's main window is found
+// by its process; messages are POSTED to it (never SetCursorPos/SendInput/SetForegroundWindow: the user's real cursor and
+// focus are not touched).
+struct UiWindow {
+    bool found = false;
+    bool minimized = false;
+    bool unicode = true;
+    uint64_t hwnd = 0;
+    int client_w = 0, client_h = 0;  // GetClientRect (title bar and borders excluded)
+    int origin_x = 0, origin_y = 0;  // the client area's top-left in screen coordinates
+    int dpi = 96;                    // GetDpiForWindow
+    std::string dpi_awareness;       // unaware | system | per_monitor | unknown
+    std::string window_class;        // the engine's is "Valve001"
+};
+bool ui_supported();  // true on Windows
+bool ui_window(UiWindow &out);  // false: no visible top-level window of this process
+// Posts one message to `hwnd` (refused unless it is a window of this process). `err` says why not.
+bool ui_post(uint64_t hwnd, unsigned msg, unsigned long long wparam, long long lparam, std::string &err);
+unsigned ui_scan_code(unsigned vk);  // MapVirtualKey; 0 elsewhere
+// The system ANSI code page (GetACP; 0 elsewhere) and whether one code point (UTF-32) goes through it unchanged: a
+// WideCharToMultiByte round trip without best-fit (the engine narrows every typed WM_CHAR that way). True for all when the
+// code page is UTF-8 and everywhere but Windows.
+unsigned ui_ansi_code_page();
+bool ui_ansi_keeps(unsigned cp);
 
 }  // namespace plat

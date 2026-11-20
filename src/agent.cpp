@@ -9,12 +9,16 @@
 #include "console.h"
 #include "events.h"
 #include "installer.h"
+#include "coordinator.h"
 #include "jobs.h"
+#include "launch_opts.h"
+#include "loadflag.h"
 #include "log.h"
 #include "luaapi.h"
 #include "netaddr.h"
 #include "platform/platform.h"
 #include "realms.h"
+#include "lua_mount.h"
 #include "util.h"
 
 using nlohmann::json;
@@ -36,9 +40,56 @@ static bool g_menu_ready_sent = false;
 static std::mutex g_map_mu;
 static std::string g_map;
 
+// FP7137 (issue #7): "a map is loading", sent with every heartbeat so the bridge can hold a launch back while any game
+// loads a map, whatever started it. See loadflag.h and docs/FP7137.md.
+static std::mutex g_loading_mu;  // FP7137
+static loadflag::Tracker g_loading;  // FP7137
+static double mono_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }  // FP7137
+static void loading_set(loadflag::Tracker::Source src, bool on, bool restart = false) {  // FP7137
+    bool changed;  // FP7137
+    {  // FP7137
+        std::lock_guard<std::mutex> lk(g_loading_mu);  // FP7137
+        changed = g_loading.set(src, on, mono_s(), restart);  // FP7137
+    }  // FP7137
+    if (changed) coordinator::wake();  // FP7137: tell the coordinator now, not at the next heartbeat (2 s)
+}  // FP7137
+// Issue #8: tells the tracker whether a server Lua state exists (every frame): a server state that opened and closed between
+// two pump runs (`map x` then `disconnect`) is otherwise never seen to end, and the flag stayed on for minutes.
+static void loading_note_server_state(bool present) {
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lk(g_loading_mu);
+        changed = g_loading.note_server_state(present, mono_s());
+    }
+    if (changed) coordinator::wake();
+}
+// Issue #8 (live check I-C1): what is going on behind the menu's loading screen, fed with every menu poll (see loadflag.h).
+static void loading_note_menu_context(bool engaged) {
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lk(g_loading_mu);
+        changed = g_loading.note_menu_context(engaged, mono_s());
+    }
+    if (changed) coordinator::wake();
+}
+bool map_loading_stuck() {
+    std::lock_guard<std::mutex> lk(g_loading_mu);
+    return g_loading.menu_stuck(mono_s());
+}
+bool map_loading(double *since_s) {  // FP7137
+    std::lock_guard<std::mutex> lk(g_loading_mu);  // FP7137
+    double now = mono_s();  // FP7137
+    if (since_s) *since_s = g_loading.since_s(now);  // FP7137
+    return g_loading.active(now);  // FP7137
+}  // FP7137
+
+MapLoadCall::MapLoadCall() { loading_set(loadflag::Tracker::Call, true); }
+MapLoadCall::~MapLoadCall() { loading_set(loadflag::Tracker::Call, false); }
+
 static std::atomic<uint64_t> g_map_load_seq{0};
 static std::map<uint64_t, std::string> g_load_maps;  // map load -> map name (filled once map_loaded knows it)
 void note_map_load_start(const std::string &map) {
+    loading_set(loadflag::Tracker::Server, true, true);  // FP7137: a new server state = a map load begins (console, Lua, map_load...)
     std::lock_guard<std::mutex> lk(g_map_mu);
     g_load_maps[++g_map_load_seq] = map;
     while (g_load_maps.size() > 1000) g_load_maps.erase(g_load_maps.begin());
@@ -103,6 +154,15 @@ json err(const std::string &code, const std::string &message, json extra) {
     json e{{"code", code}, {"message", message}};
     if (!extra.is_null()) e["details"] = extra;
     return json{{"ok", false}, {"error", e}};
+}
+
+json realm_unavailable_err(int realm) {
+    std::string name = realms::name(realm);
+    if (g_cfg.mode != Mode::Dedicated) return err("realm_unavailable", "realm " + name + " unavailable (not loaded)");
+    json d{{"mode", "srcds"}, {"realm", name}};
+    if (realm != realms::SERVER)
+        return err("realm_unavailable", "realm " + name + " unavailable in srcds mode: a dedicated server only has the 'server' realm (use realm 'server')", d);
+    return err("realm_unavailable", "realm server unavailable (not loaded): a dedicated server has it once its map is loaded, and not for a moment between two maps", d);
 }
 
 json lock_status() {
@@ -172,6 +232,19 @@ static int native_uptime(lua_State *L) {
     return 1;
 }
 
+// native.user_config() -> string | nil: the text of garrysmod/cfg/config.cfg as it is on disk right now. Only on a test
+// client (-mcp_test_client). The Lua file library cannot read it (file.Read "GAME" answers nil for cfg/config.cfg).
+static int native_user_config(lua_State *L) {
+    const auto &A = lua::api();
+    std::string text;
+    if (!plat::read_file(g_cfg.game_dir + "/cfg/config.cfg", text) || text.size() > (4u << 20)) {
+        A.pushnil(L);
+        return 1;
+    }
+    A.pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
 // native.compile(code, chunkname) -> function | nil, message
 static int native_compile(lua_State *L) {
     const auto &A = lua::api();
@@ -215,8 +288,8 @@ static int native_setup_info(lua_State *L) {
     s += "gmod-mcp is listening on " + url + " (this instance: port " + std::to_string(c.port) + ").\n";
     s += "Claude Code - install the plugin (it stays connected while the game is closed), in Claude Code:\n\n";
     s += "  /plugin marketplace add ExtReMLapin/gmod-mcp\n  /plugin install gmod-mcp@gmod-mcp\n\n";
-    s += "  or, without the plugin, in a terminal (then restart Claude Code or use /mcp):\n\n";
-    s += "  claude mcp add --transport http gmod " + url + " --header \"Authorization: Bearer " + c.token + "\"\n\n";
+    s += "  or, without the plugin, in a terminal (--scope user: every folder, not just this one; then restart Claude Code or use /mcp):\n\n";
+    s += "  claude mcp add --scope user --transport http gmod " + url + " --header \"Authorization: Bearer " + c.token + "\"\n\n";
     s += "Other MCP clients (Streamable HTTP), e.g. .mcp.json:\n\n";
     s += "  {\"mcpServers\": {\"gmod\": {\"type\": \"http\", \"url\": \"" + url + "\", \"headers\": {\"Authorization\": \"Bearer " +
          c.token + "\"}}}}\n\n";
@@ -248,6 +321,17 @@ static int native_engine_cmd(lua_State *L) {
     A.pushnil(L);
     A.pushstring(L, e.empty() ? "unavailable in srcds mode" : e.c_str());
     return 2;
+}
+
+// native.request_quit(delay_ms) -> true | false  (srcds only, server state): game_quit on a dedicated server. The console
+// `quit` is blocked from server Lua there, so the module ends the process itself, delay_ms after the tool's answer went out.
+// False when the platform has no clean way (Windows).
+static int native_request_quit(lua_State *L) {
+    const auto &A = lua::api();
+    double ms = A.tonumber(L, 1);
+    int delay = ms >= 0 && ms <= 10000 ? (int)ms : 500;
+    A.pushboolean(L, g_cfg.mode == Mode::Dedicated && plat::request_quit(delay) ? 1 : 0);
+    return 1;
 }
 
 // native.report(channel, json)
@@ -311,6 +395,10 @@ static bool inject(int realm, lua_State *L, std::string &e) {
             A.setfield(L, -2, "uninstall");
         }
     }
+    if (realm == realms::SERVER && g_cfg.mode == Mode::Dedicated) {
+        A.pushcclosure(L, native_request_quit, 0);
+        A.setfield(L, -2, "request_quit");
+    }
     if (realm == realms::MENU) {
         A.pushcclosure(L, native_engine_cmd, 0);
         A.setfield(L, -2, "engine_cmd");
@@ -321,6 +409,16 @@ static bool inject(int realm, lua_State *L, std::string &e) {
     A.setfield(L, -2, "mode");
     A.pushstring(L, g_cfg.version.c_str());
     A.setfield(L, -2, "version");
+    if (g_cfg.test_client) {
+        A.pushboolean(L, 1);
+        A.setfield(L, -2, "test_client");
+        A.pushcclosure(L, native_user_config, 0);
+        A.setfield(L, -2, "user_config");
+        if (!g_cfg.restore_convars.empty()) {  // Issue #10
+            A.pushstring(L, g_cfg.restore_convars.c_str());
+            A.setfield(L, -2, "restore_convars");
+        }
+    }
     A.pushnumber(L, (double)(g_gen[realm].load() + 1));
     A.setfield(L, -2, "generation");
     A.setfield(L, lua::GLOBALSINDEX, "__mcpagent_native");
@@ -351,6 +449,7 @@ static void ensure_runtime(int realm, lua_State *L) {
     if (inject(realm, L, e)) {
         g_gen[realm]++;
         g_injected[realm] = true;
+        lua_mount::note_realm_loaded(realm);  // Issue #9: a new Lua state loaded its files (with the mounted folder or not)
         logx::info("runtime injected into realm %s (generation %llu)", realms::name(realm),
                    (unsigned long long)g_gen[realm].load());
         events::publish("runtime_injected", json{{"realm", realms::name(realm)}, {"generation", g_gen[realm].load()}});
@@ -423,6 +522,7 @@ static void check_map_loaded() {
     }
     if (fc - settle_since < 15) return;
     g_map_loaded_key = key;
+    loading_set(loadflag::Tracker::Server, false);  // FP7137: the load is over (the loading screen is gone, the realms are ready)
     json r = call_runtime(realms::SERVER, "status", json::object());
     json st = r.value("ok", false) ? r["result"] : json::object();
     {
@@ -484,6 +584,43 @@ static void check_focus() {
     }
 }
 
+// A test client takes the foreground window when it starts and keeps it (live, x86-64 branch: the user's terminal lost the focus at every launch).
+// instances_launch records the foreground window before it starts the client (-mcp_return_focus); once this client's own window is the foreground
+// window, hand the foreground back to that window. The process that owns the foreground is allowed to do it. Never for a game that is not a test
+// client, and never more than a few times, so a window the user gives the focus to on purpose later is left alone.
+static void check_return_focus() {
+    static const auto t0 = std::chrono::steady_clock::now();
+    static bool stopped = false;
+    static int returns = 0;
+    if (stopped || !g_cfg.test_client || g_cfg.return_focus == 0) return;
+    launchopts::FocusFacts f;
+    f.test_client = g_cfg.test_client;
+    f.target = g_cfg.return_focus;
+    plat::focus_target_state(f.target, f.target_exists, f.target_usable);
+    plat::UiWindow w;
+    f.game_window_found = plat::ui_window(w);
+    f.game_is_foreground = plat::process_has_foreground() == 1;
+    double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    switch (launchopts::decide_return_focus(f, returns, elapsed)) {
+        case launchopts::FocusAction::Stop: stopped = true; return;
+        case launchopts::FocusAction::Wait: return;
+        case launchopts::FocusAction::Return: break;
+    }
+    ++returns;
+    bool ok = plat::return_focus_to(f.target);
+    logx::info("this test client had the foreground window: %s it back to the window the launch recorded (try %d)", ok ? "gave" : "could not give", returns);
+    events::publish("focus_returned", json{{"ok", ok}, {"try", returns}});
+}
+
+static bool g_close_guard = false;
+
+// The window's close request, on the main thread: queues the convar restore. True when something was queued: the
+// request is then held back for a few frames so the engine runs the commands before it shuts down.
+static bool on_close_request() {
+    json r = call_runtime(realms::MENU, "restore_convars", json::object());
+    return r.value("ok", false) && r["result"].value("restored", 0) > 0;
+}
+
 void pump(lua_State *host) {
     // Re-entrancy guard: user code run by a job may call __mcpagent_pump() itself.
     static bool in_pump = false;
@@ -511,6 +648,7 @@ void pump(lua_State *host) {
                     std::lock_guard<std::mutex> lk(g_map_mu);
                     g_map.clear();
                 }
+                loading_set(loadflag::Tracker::Server, false);  // FP7137: nothing left to load
                 events::publish("disconnected", json::object());
             }
         }
@@ -522,7 +660,18 @@ void pump(lua_State *host) {
         ensure_runtime(r, L);
         if (r != realms::MENU && fc % 10 == 0) poll_ready(r);
     }
+    loading_note_server_state(realms::state(realms::SERVER) != nullptr);  // issue #8
     if (fc % 10 == 0) check_map_loaded();
+    // FP7137 (issue #7): the engine's own idea of "loading" (the loading screen), so a load is seen from its first frame
+    // even when it was started from the console.
+    if (g_cfg.mode == Mode::Client && fc % 5 == 0 && realms::state(realms::MENU)) {  // FP7137
+        json idle = call_runtime(realms::MENU, "menu_idle", json::object());  // FP7137
+        if (idle.value("ok", false)) {  // FP7137
+            loading_set(loadflag::Tracker::Menu, idle["result"].value("loading", false));  // FP7137
+            // Issue #8: a loading screen with no realm, not connected and no load starting is the engine's stuck state, not a load.
+            loading_note_menu_context(realms::state(realms::SERVER) || realms::state(realms::CLIENT) || idle["result"].value("in_game", false));
+        }
+    }  // FP7137
     if (fc % 30 == 0) deliver_notice();
     tick_lua_jobs();
     // Refreshes the lock state (for status) even without a client call.
@@ -530,15 +679,19 @@ void pump(lua_State *host) {
         client_allowed();
         check_focus();
     }
+    if (g_cfg.mode == Mode::Client && g_cfg.test_client && jobs::frame_count() % 5 == 0) check_return_focus();
+    // A test client (-mcp_test_client) gives the user's values back to the archived convars its command line changed
+    // before the window is closed (the engine saves them at shutdown; see restore_test_client_convars in 30_session.lua).
+    if (g_cfg.test_client && g_cfg.mode == Mode::Client && !g_close_guard && fc % 30 == 0)
+        g_close_guard = plat::install_close_guard(on_close_request, 400);
     jobs::pump(50.0);
 }
 
 json call_runtime(int realm, const std::string &tool, const json &args) {
     if (realm < 0 || realm >= realms::COUNT) return err("invalid_realm", "unknown realm");
-    if (g_cfg.mode == Mode::Dedicated && realm != realms::SERVER)
-        return err("realm_unavailable", std::string("realm ") + realms::name(realm) + " unavailable in srcds mode");
+    if (g_cfg.mode == Mode::Dedicated && realm != realms::SERVER) return realm_unavailable_err(realm);
     lua_State *L = realms::state(realm);
-    if (!L) return err("realm_unavailable", std::string("realm ") + realms::name(realm) + " unavailable (not loaded)");
+    if (!L) return realm_unavailable_err(realm);
     if (realm == realms::CLIENT) {
         std::string why;
         if (!client_allowed(&why)) return err("client_locked", why);

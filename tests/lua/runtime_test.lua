@@ -282,6 +282,27 @@ r = call("lua_exec", { code = "return 1 +" })
 check(not r.ok and r.error.code == "lua_syntax_error", "syntax error")
 r = call("lua_exec", { code = "\\239\\187\\191return 1" })
 check(r.ok or (not r.ok and r.error.code == "lua_syntax_error"), "BOM at the start: clean answer")
+-- Live verification of 0.3.7: code with a "\\u0041" escape (LuaJIT 2.1 only knows "\\u{41}") came back as an empty result instead of a syntax error.
+-- Every way the compiler can say "no" must come back as lua_syntax_error with the message: the plain error, the escape, and a compiler that
+-- answers with something that is not a function (no message, or the message as the first value, as CompileString does).
+r = call("lua_exec", { code = 'return "\\u0041"' })
+check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message:find("escape", 1, true), "an invalid unicode escape is a syntax error")
+check(r.error and r.error.details and r.error.details.line == 1, "its line is reported")
+r = call("lua_exec", { code = 'return "\\u{41}"' })
+check(r.ok and r.result.values[1] == "A", "\\u{41} is fine")
+do
+	local old = __mcpagent_native.compile
+	__mcpagent_native.compile = function() return nil end
+	r = call("lua_exec", { code = "return 1" })
+	check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message ~= "nil" and #r.error.message > 10, "compiler answering nothing: a syntax error with a message")
+	__mcpagent_native.compile = function() return "bad:1: boom" end
+	r = call("lua_exec", { code = "return 1" })
+	check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message == "bad:1: boom", "compiler answering the message first: a syntax error")
+	__mcpagent_native.compile = function() return false, "bad:2: nope" end
+	r = call("lua_exec", { code = "return 1" })
+	check(not r.ok and r.error.code == "lua_syntax_error" and r.error.message == "bad:2: nope" and r.error.details.line == 2, "false + message")
+	__mcpagent_native.compile = old
+end
 r = call("lua_exec", {})
 check(not r.ok and r.error.code == "invalid_params", "missing code")
 r = call("no_such_tool", {})
@@ -395,6 +416,163 @@ check(rk.ok and rk.result.state == "done" and type(rk.result.reports[1]) == "tab
 local rc = run_job({ code = "for i = 1, 1100 do job:report(i) end return 1" })
 check(rc.ok and #rc.result.reports == 1000 and rc.result.reports_dropped == 100, "report count cap")
 
+-- Test client (launched by the bridge): the archived convars its command line changed (fps_max...) are given back to the
+-- user's values, read from cfg/config.cfg at that moment, before a clean quit; a convar without a line there gets its default.
+do
+	local cfg_text = table.concat({
+		"unbindall", 'bind "a" "+attack"', '// fps_max "1"', 'name "someone"', 'fps_max "240"', "FPS_MAX_NOFOCUS 60",
+		'snd_mute_losefocus "1"', 'fps_max "144"', "" }, "\r\n")
+	local m = A.parse_config_values(cfg_text)
+	check(m.fps_max == "144", "config.cfg: the last line of a convar wins")
+	check(m.fps_max_nofocus == "60" and m.snd_mute_losefocus == "1", "config.cfg: names are case-insensitive, unquoted values read")
+	check(m.name == "someone" and m["//"] == nil and m.bind == nil, "config.cfg: comments and binds are not convars")
+	check(next(A.parse_config_values("")) == nil and next(A.parse_config_values(nil)) == nil, "config.cfg: empty or missing file")
+
+	local state = { fps_max = { "20", "300" }, fps_max_nofocus = { "20", "60" }, engine_no_focus_sleep = { "0", "50" },
+		snd_mute_losefocus = { "0", "1" } }
+	local function get(n) return state[n] and { current = state[n][1], default = state[n][2] } end
+	local names = { "fps_max", "fps_max_nofocus", "engine_no_focus_sleep", "snd_mute_losefocus" }
+	local plan = A.plan_convar_restore(names, 'fps_max "240"\nsnd_mute_losefocus "1"\nengine_no_focus_sleep "bad;x"\n', get)
+	local got = {}
+	for _, c in ipairs(plan) do got[c.name] = c.value end
+	check(got.fps_max == "240" and got.snd_mute_losefocus == "1", "plan: the user's value from config.cfg")
+	check(got.fps_max_nofocus == "60", "plan: no line in config.cfg: the convar's default")
+	check(got.engine_no_focus_sleep == "50", "plan: an unsafe value in config.cfg is ignored, the default is used")
+	check(#plan == 4, "plan: four changes")
+	plan = A.plan_convar_restore({ "fps_max", "nope" }, 'fps_max "20"', get)
+	check(#plan == 0, "plan: nothing to do when the convar already has the user's value; unknown convars skipped")
+
+	-- Wiring: game_quit and console_exec quit/exit on a test client; nothing changes on a user's own game.
+	local log, files = {}, { ["cfg/config.cfg"] = 'fps_max "240"\nsnd_mute_losefocus "1"\n' }
+	local old_rcc, old_gci, old_cmd = RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand
+	RunConsoleCommand = function(...) log[#log + 1] = table.concat({ ... }, " ") end
+	game.ConsoleCommand = function(c) log[#log + 1] = "GAME:" .. c end
+	__mcpagent_native.user_config = function() return files["cfg/config.cfg"] end
+	GetConVar_Internal = function(n)
+		local st = state[n]
+		if not st then return nil end
+		return { GetString = function() return st[1] end, GetDefault = function() return st[2] end, GetName = function() return n end }
+	end
+	local q = call("quit", {})
+	check(q.ok and #log == 1 and log[1] == "GAME:quit\n", "user's own game: quit only: " .. table.concat(log, "|"))
+	log = {}
+	__mcpagent_native.test_client = true
+	q = call("quit", {})
+	local joined = table.concat(log, "|")
+	check(q.ok and q.result.restored == 4, "test client: quit reports the restored convars")
+	check(log[#log] == "GAME:quit\n" and #log == 5, "test client: four restores, then quit: " .. joined)
+	check(joined:find("fps_max 240", 1, true) and joined:find("fps_max_nofocus 60", 1, true)
+		and joined:find("engine_no_focus_sleep 50", 1, true) and joined:find("snd_mute_losefocus 1", 1, true), "test client: the user's values: " .. joined)
+	log = {}
+	check(call("console_exec", { cmd = "quit" }).ok and log[#log] == "GAME:quit\n" and #log == 5, "console_exec quit restores first: " .. table.concat(log, "|"))
+	log = {}
+	call("console_exec", { cmd = "exit" })
+	check(#log == 5 and log[#log] == "GAME:exit\n", "console_exec exit restores first")
+	log = {}
+	local rc = call("restore_convars", {})
+	check(rc.ok and rc.result.restored == 4 and #log == 4, "restore_convars (window close) restores without quitting: " .. table.concat(log, "|"))
+	-- The main menu's Quit button (RunGameUICommand "quit") on a test client.
+	log = {}
+	local old_gui, old_eng = RunGameUICommand, __mcpagent_native.engine_cmd
+	RunGameUICommand = function(c) log[#log + 1] = "GUI:" .. tostring(c) end
+	__mcpagent_native.engine_cmd = function(l) log[#log + 1] = "ENG:" .. l return true end
+	check(A.wrap_menu_quit() and not A.wrap_menu_quit(), "menu quit: wrapped once")
+	RunGameUICommand("quit")
+	check(#log == 5 and log[1] == 'ENG:fps_max "240"' and log[5] == "ENG:quit", "menu quit button: restores, then quits through the console path: " .. table.concat(log, "|"))
+	log = {}
+	RunGameUICommand("openserverbrowser")
+	check(#log == 1 and log[1] == "GUI:openserverbrowser", "other gameui commands pass through")
+	RunGameUICommand, __mcpagent_native.engine_cmd, A.quit_wrapped = old_gui, old_eng, nil
+	log = {}
+	call("console_exec", { cmd = "echo hi" })
+	check(#log == 1 and log[1] == "GAME:echo hi\n", "other commands do not restore")
+	__mcpagent_native.test_client = nil
+	__mcpagent_native.user_config = nil
+	RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand = old_rcc, old_gci, old_cmd
+end
+
+-- Linux finding LF-1: on srcds game.ConsoleCommand("quit") is blocked from server Lua (the engine's own blacklist), so
+-- game_quit answered quitting:true and nothing quit. When the engine says `quit` is blocked, the runtime asks the module to
+-- end the process (native.request_quit), and answers an error when there is no way to quit: never "requested" for nothing.
+do
+	local log = {}
+	local old_cmd, old_blocked, old_req = game.ConsoleCommand, IsConCommandBlocked, __mcpagent_native.request_quit
+	game.ConsoleCommand = function(c) log[#log + 1] = "GAME:" .. c end
+	IsConCommandBlocked = function(c) return c == "quit" or c == "exit" end
+	__mcpagent_native.request_quit = nil
+	local q = call("quit", {})
+	check(not q.ok and q.error.code == "blocked" and #log == 0, "quit blocked, no native way: an error, nothing sent: " .. J.encode(q))
+	__mcpagent_native.request_quit = function(ms) log[#log + 1] = "SIG:" .. tostring(ms) return true end
+	q = call("quit", {})
+	check(q.ok and q.result.requested == true and q.result.via == "signal" and #log == 1 and log[1]:find("^SIG:") ~= nil,
+		"quit blocked: the module ends the process: " .. J.encode(q) .. table.concat(log, "|"))
+	log = {}
+	__mcpagent_native.request_quit = function() log[#log + 1] = "SIG" return false end
+	q = call("quit", {})
+	check(not q.ok and q.error.code == "blocked" and #log == 1, "the module cannot quit: an error, not requested:true: " .. J.encode(q))
+	log = {}
+	IsConCommandBlocked = function() return false end
+	q = call("quit", {})
+	check(q.ok and q.result.via == "server" and #log == 1 and log[1] == "GAME:quit\n", "quit not blocked: console command as before")
+	game.ConsoleCommand, IsConCommandBlocked, __mcpagent_native.request_quit = old_cmd, old_blocked, old_req
+end
+
+-- Issue #10: instances_launch {commands, launch_args, fps_max} can change any archived convar, not only the four the launch
+-- itself sets. The bridge lists the names on the command line (-mcp_restore_convars a,b); the module hands the list to the
+-- runtime as native.restore_convars and the restore covers them too.
+do
+	local base = A.test_client_convars
+	__mcpagent_native.restore_convars = nil
+	check(#A.test_client_convar_names() == #base, "Issue #10: no extra list: only the built-in convars")
+	__mcpagent_native.restore_convars = "cl_showfps,FPS_MAX,bad name,cl_drawhud;x,mat_vsync,,CL_SHOWFPS"
+	local names = A.test_client_convar_names()
+	local seen = {}
+	for _, n in ipairs(names) do seen[n] = (seen[n] or 0) + 1 end
+	check(#names == #base + 2 and seen.cl_showfps == 1 and seen.mat_vsync == 1 and seen.fps_max == 1,
+		"Issue #10: extra names are added once, lower case, the built-in ones stay: " .. table.concat(names, ","))
+	check(not seen["bad name"] and not seen["cl_drawhud;x"], "Issue #10: a name that is not a plain convar name is dropped")
+	check(#A.test_client_convars == #base, "Issue #10: the built-in list is not modified by the extras")
+
+	-- Wiring: a convar listed by the bridge goes back to the user's value; one that is not archived is left alone.
+	local log, files = {}, { ["cfg/config.cfg"] = 'cl_showfps "0"\nmat_vsync "1"\n' }
+	local old_rcc, old_gci, old_cmd = RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand
+	local state = { cl_showfps = { "3", "0", 128 }, mat_vsync = { "1", "0", 128 }, sv_cheats = { "1", "0", 0 }, cl_drawhud = { "0", "1", 0 } }
+	RunConsoleCommand = function(...) log[#log + 1] = table.concat({ ... }, " ") end
+	game.ConsoleCommand = function(c) log[#log + 1] = "GAME:" .. c end
+	__mcpagent_native.user_config = function() return files["cfg/config.cfg"] end
+	GetConVar_Internal = function(n)
+		local st = state[n]
+		if not st then return nil end
+		return { GetString = function() return st[1] end, GetDefault = function() return st[2] end, GetName = function() return n end,
+			GetFlags = function() return st[3] end }
+	end
+	__mcpagent_native.test_client = true
+	__mcpagent_native.restore_convars = "cl_showfps,mat_vsync,sv_cheats"
+	local rc = call("restore_convars", {})
+	local joined = table.concat(log, "|")
+	check(rc.ok and rc.result.restored == 1 and log[1] == "cl_showfps 0", "Issue #10: the listed archived convar gets the user's value back: " .. joined)
+	check(not joined:find("sv_cheats", 1, true) and not joined:find("mat_vsync", 1, true),
+		"Issue #10: a convar that is not archived, or already at the user's value, is not touched: " .. joined)
+	__mcpagent_native.test_client, __mcpagent_native.restore_convars, __mcpagent_native.user_config = nil, nil, nil
+	RunConsoleCommand, GetConVar_Internal, game.ConsoleCommand = old_rcc, old_gci, old_cmd
+end
+
+-- Issue #9: lua_inspect of a function gives where it was defined (source, linedefined, lastlinedefined), so the C side
+-- can add the real disk path and whether the file came from the mounted folder. A table or a C function gets no source.
+do
+	local chunk = assert(loadstring("local function f()\n  return 1\nend\nreturn f", "@lua/pba/sv_relay.lua"))
+	__issue9_fn = chunk()
+	local ri = call("lua_inspect", { expr = "__issue9_fn" })
+	check(ri.ok and ri.result.type == "function", "Issue #9: inspect of a function: type")
+	check(ri.ok and ri.result.source == "@lua/pba/sv_relay.lua" and ri.result.linedefined == 1 and ri.result.lastlinedefined == 3,
+		"Issue #9: inspect of a function: source and lines")
+	ri = call("lua_inspect", { expr = "print" })
+	check(ri.ok and ri.result.source == nil, "Issue #9: a C function has no source")
+	ri = call("lua_inspect", { expr = "{}" })
+	check(ri.ok and ri.result.source == nil, "Issue #9: a table has no source")
+	__issue9_fn = nil
+end
+
 -- A second Lua state (new map): reload the runtime with another generation. Its ids differ from the first state's.
 local function new_state(generation)
 	__mcpagent = {}
@@ -411,6 +589,138 @@ check(gen_b.ok and gen_b.result.id:match("^server%-g8%-%d+$") ~= nil, "new state
 check(gen_b.result.id ~= old_id, "same sequence number, different state: different ids")
 local stale = call("job_poll", { id = old_id })
 check(not stale.ok and stale.error.code == "not_found", "the new state does not know the old state's id")
+
+-- Issue #11: RunConsoleCommand of a command the engine blocks from Lua does nothing without a word; lua_exec / lua_job
+-- now report it (blocked_console_commands + warning), only for the commands that really are blocked.
+local ran = {}
+local real_rcc = function(cmd, ...) ran[#ran + 1] = cmd end
+RunConsoleCommand = real_rcc
+IsConCommandBlocked = function(c) return c == "fps_max" or c == "volume_sfx" end
+r = call("lua_exec", { code = "RunConsoleCommand('fps_max', '30') RunConsoleCommand('sv_gravity', '500') RunConsoleCommand('fps_max', '40') return 1" })
+check(r.ok and type(r.result.blocked_console_commands) == "table" and #r.result.blocked_console_commands == 1
+	and r.result.blocked_console_commands[1] == "fps_max", "lua_exec reports the blocked command once")
+check(r.ok and type(r.result.warning) == "string" and r.result.warning:find("fps_max", 1, true) and r.result.warning:find("console_exec", 1, true),
+	"lua_exec warning names the command and the tool that works")
+check(#ran == 3 and ran[2] == "sv_gravity", "the calls still reach RunConsoleCommand")
+check(RunConsoleCommand == real_rcc, "RunConsoleCommand is put back after the call")
+r = call("lua_exec", { code = "RunConsoleCommand('sv_gravity', '500') return 1" })
+check(r.ok and r.result.blocked_console_commands == nil and r.result.warning == nil, "no field when nothing was blocked")
+r = call("lua_exec", { code = "RunConsoleCommand('volume_sfx', '0') error('boom')" })
+check(not r.ok and RunConsoleCommand == real_rcc, "RunConsoleCommand is put back after an error")
+r = run_job({ code = "RunConsoleCommand('fps_max', '30') job:frames(1) RunConsoleCommand('volume_sfx', '1') RunConsoleCommand('fps_max', '30') return 1" })
+check(r.ok and r.result.state == "done" and type(r.result.blocked_console_commands) == "table" and #r.result.blocked_console_commands == 2
+	and type(r.result.warning) == "string" and r.result.warning:find("volume_sfx", 1, true), "lua_job reports the blocked commands of all its resumes")
+check(RunConsoleCommand == real_rcc, "RunConsoleCommand is put back between a job's resumes")
+r = run_job({ code = "RunConsoleCommand('sv_gravity', '1') return 1" })
+check(r.ok and r.result.blocked_console_commands == nil, "lua_job: no field when nothing was blocked")
+IsConCommandBlocked = nil
+r = call("lua_exec", { code = "RunConsoleCommand('fps_max', '30') return 1" })
+check(r.ok and r.result.blocked_console_commands == nil, "without IsConCommandBlocked (older game) nothing is claimed")
+
+-- Issue #3 (live fuzz): debug_draw had no "arrow" primitive. A.arrow_segments(from, to) is the shaft plus two head wings
+-- as plain {x,y,z} pairs (the render hook turns them into lines): the shaft ends at the tip, the wings start at the tip
+-- and lie behind it, a zero-length arrow has no head, and a vertical arrow still gets wings.
+do
+	local segs = A.arrow_segments({ x = 0, y = 0, z = 0 }, { x = 100, y = 0, z = 0 })
+	check(type(segs) == "table" and #segs == 3, "arrow: shaft and two wings")
+	local s0 = segs[1]
+	check(s0.a.x == 0 and s0.b.x == 100 and s0.b.y == 0, "arrow: the shaft goes from the start to the tip")
+	local w1, w2 = segs[2], segs[3]
+	check(w1.a.x == 100 and w2.a.x == 100 and w1.b.x < 100 and w2.b.x < 100, "arrow: wings start at the tip and lie behind it")
+	check(w1.b.y == -w2.b.y and w1.b.y ~= 0, "arrow: wings are symmetric around the shaft")
+	local v = A.arrow_segments({ x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 100 })
+	check(#v == 3 and (v[2].b.x ~= 0 or v[2].b.y ~= 0), "arrow: a vertical arrow still has a head")
+	local z = A.arrow_segments({ x = 5, y = 5, z = 5 }, { x = 5, y = 5, z = 5 })
+	check(#z == 1, "arrow: zero length has no head")
+	local nan = A.arrow_segments({ x = 0, y = 0, z = 0 }, { x = 0 / 0, y = 0, z = 0 })
+	check(#nan == 1, "arrow: a non-finite tip draws the shaft only")
+end
+
+-- Issue #3 (live fuzz): a clientside-only entity (ClientsideModel) has EntIndex -1 in ents_find, and ent_info refuses ids
+-- below 0, so the agent had no handle: ents_find now says so in `note`. A non-finite number is written as JSON null.
+do
+	local fake_ents = {
+		{ EntIndex = 5, class = "prop_physics" },
+		{ EntIndex = -1, class = "class C_PhysPropClientside" },
+	}
+	local function mk(d)
+		local e = { d = d }
+		function e:EntIndex() return d.EntIndex end
+		function e:GetClass() return d.class end
+		function e:GetPos() return { x = 1, y = 2, z = 3 } end
+		function e:GetAngles() return { p = 0, y = 0, r = 0 } end
+		function e:GetModel() return "models/props_c17/oildrum001.mdl" end
+		function e:IsPlayer() return false end
+		function e:IsValid() return true end
+		return e
+	end
+	IsValid = function(e) return e ~= nil end
+	local list = {}
+	for i, d in ipairs(fake_ents) do list[i] = mk(d) end
+	ents = { GetAll = function() return list end }
+	local f = assert(loadfile(dir .. "/60_world.lua"))
+	f()
+	r = call("ents_find", {})
+	check(r.ok and r.result.count == 2 and r.result.entities[2].id == -1, "ents_find: a clientside entity has id -1")
+	check(type(r.result.note) == "string" and r.result.note:find("clientside", 1, true) and r.result.note:find("-1", 1, true)
+		and r.result.note:find("lua_exec", 1, true), "ents_find: id -1 is explained in a note (no ent_info handle)")
+	r = call("ents_find", { class = "prop_physics" })
+	check(r.ok and r.result.count == 1 and r.result.note == nil, "ents_find: no note when every entity has an index")
+	-- A NaN or infinite number is written as null (the output schemas accept null for every number).
+	local enc = J.encode({ pos = J.array({ 0 / 0, 1, math.huge, -math.huge }) })
+	check(enc:find("null", 1, true) and not enc:find("nan", 1, true) and not enc:find("inf", 1, true), "non-finite numbers are written as null: " .. enc)
+end
+-- Issue #9 (chaos testing 2026-11-20): mount_probe asks the realm's own file system whether it finds files of the mounted
+-- folder (file.Exists and file.Time with "LUA", which see the mounted folder): the module cannot know it from the folder alone.
+file = { Exists = function(n, p) return p == "LUA" and n == "pba/a.lua" end,
+	Time = function(n, p) if p == "LUA" and n == "pba/a.lua" then return 1234 end return 0 end }
+r = call("mount_probe", { files = { { name = "pba/a.lua" }, { name = "zz/none.lua" } } })
+check(r.ok and #r.result.answers == 2 and r.result.answers[1].exists == true and r.result.answers[1].time == 1234
+	and r.result.answers[2].exists == false and r.result.answers[2].time == nil, "mount_probe answers exists and time per file, in order")
+r = call("mount_probe", { files = "pba/a.lua" })
+check(not r.ok and r.error.code == "invalid_params", "mount_probe: files must be a list")
+r = call("mount_probe", { files = { { name = 5 } } })
+check(not r.ok and r.error.code == "invalid_params", "mount_probe: a file name must be a string")
+local many = {}
+for i = 1, 40 do many[i] = { name = "x" .. i .. ".lua" } end
+r = call("mount_probe", { files = many })
+check(not r.ok and r.error.code == "invalid_params", "mount_probe: at most a few files (it runs on the main thread)")
+file = nil
+r = call("mount_probe", { files = { { name = "pba/a.lua" } } })
+check(not r.ok, "mount_probe without a file library is an error, not a guess")
+
+-- ui_click / ui_key: the state the DLL reads before it posts input (menu: game UI, loading, backbuffer size; client: cursor).
+do
+	local realm_before = A.realm
+	local old = { gui = gui, vgui = vgui, ScrW = ScrW, ScrH = ScrH, IsInLoading = IsInLoading, IsInGame = IsInGame }
+	ScrW, ScrH = function() return 1280 end, function() return 720 end
+	gui = { IsGameUIVisible = function() return true end }
+	vgui = { CursorVisible = function() return false end }
+	IsInLoading, IsInGame = function() return false end, function() return true end
+	A.realm = "menu"
+	r = call("ui_state", {})
+	check(r.ok and r.result.realm == "menu" and r.result.game_ui == true and r.result.loading == false and r.result.in_game == true
+		and r.result.scr_w == 1280 and r.result.scr_h == 720 and r.result.cursor == nil, "ui_state (menu): game UI, loading, backbuffer size")
+	gui = { IsGameUIVisible = function() return nil end }
+	r = call("ui_state", {})
+	check(r.ok and r.result.game_ui == false, "ui_state (menu): a nil from IsGameUIVisible is false")
+	IsInLoading = function() return true end
+	check(call("ui_state", {}).result.loading == true, "ui_state (menu): loading screen")
+	A.realm = "client"
+	r = call("ui_state", {})
+	check(r.ok and r.result.cursor == false and r.result.game_ui == nil and r.result.scr_w == 1280, "ui_state (client): cursor hidden")
+	vgui = { CursorVisible = function() return true end }
+	check(call("ui_state", {}).result.cursor == true, "ui_state (client): cursor visible (a Derma popup is open)")
+	-- An older build without these functions: no field, no error.
+	gui, vgui, ScrW, ScrH, IsInLoading, IsInGame = nil, nil, nil, nil, nil, nil
+	r = call("ui_state", {})
+	check(r.ok and r.result.cursor == nil and r.result.scr_w == nil, "ui_state (client): missing APIs give no field")
+	A.realm = "menu"
+	r = call("ui_state", {})
+	check(r.ok and r.result.game_ui == nil and r.result.loading == false and r.result.in_game == false, "ui_state (menu): missing APIs give no field")
+	A.realm = realm_before
+	gui, vgui, ScrW, ScrH, IsInLoading, IsInGame = old.gui, old.vgui, old.ScrW, old.ScrH, old.IsInLoading, old.IsInGame
+end
 
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

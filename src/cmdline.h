@@ -16,6 +16,12 @@ std::string command_name(const std::string &statement);
 // True when one of the statements is `connect` and it is not the only statement (connect must be alone on its line).
 bool connect_not_alone(const std::vector<std::string> &statements);
 
+// True for a statement that must not run while this game hosts a map: `killserver` disconnects the local client and
+// switches the network to single-player at once, but the engine shuts the server down only later (host state). When
+// a frame runs several server ticks (low fps, e.g. a test client at fps_max 20), the next tick sends a snapshot from a
+// half-torn server and the game crashes (engine.dll+0x2069e0, see docs/REVERSE.md). console_exec leaves the game first.
+bool leave_game_first(const std::string &statement);
+
 // Names (lower case) of the commands the engine reported as unknown in these console lines
 // (the engine prints: Unknown command "name").
 std::vector<std::string> unknown_commands(const std::vector<std::string> &lines);

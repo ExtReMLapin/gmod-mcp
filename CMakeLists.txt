@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(gmod_mcp VERSION 0.3.5 LANGUAGES CXX)
+project(gmod_mcp VERSION 0.3.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -107,7 +107,8 @@ add_custom_command(
   COMMENT "Building the bridge's offline snapshot")
 
 # --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
-add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H})
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/lowmem.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/launch_opts.cpp src/cmdline.cpp src/next_call.cpp src/mdmp.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
+  src/bridge/fp7137.cpp)  # FP7137: the launch/map_load lock, see docs/FP7137.md
 target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)
 if(MSVC)
@@ -120,8 +121,19 @@ else()
 endif()
 
 # --- Native unit tests (no game): run by the CI ---
-add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES})
+add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/test_platform.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES}
+  tests/native/test_fp7137.cpp src/bridge/fp7137.cpp
+  tests/native/test_mdmp.cpp src/mdmp.cpp  # FP7137: its tests and the code they test; mdmp: the minidump reader
+  tests/native/test_uiinput.cpp src/uiinput.cpp  # ui_click / ui_key: the pure part
+  tests/native/test_enginejpeg.cpp src/enginejpeg.cpp)  # screenshot through the engine's jpeg command: the pure part and the capture sequence
 target_include_directories(gmod-mcp-unittests PRIVATE src)
+if(NOT WIN32)
+  # A shared object without SONAME that the platform test loads by full path (see tests/native/test_platform.cpp).
+  add_library(gmod-mcp-testlib SHARED tests/native/testlib.cpp)
+  set_target_properties(gmod-mcp-testlib PROPERTIES NO_SONAME ON PREFIX "" OUTPUT_NAME gmcp_testlib)
+  add_dependencies(gmod-mcp-unittests gmod-mcp-testlib)
+endif()
+target_link_libraries(gmod-mcp-unittests PRIVATE nlohmann_json::nlohmann_json)  # FP7137: fp7137.h includes nlohmann/json
 if(MSVC)
   target_compile_options(gmod-mcp-unittests PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)
   target_compile_definitions(gmod-mcp-unittests PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
@@ -134,9 +146,10 @@ endif()
 add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
 
 # Module helpers that need no game (links the module's sources like the snapshot generator).
-add_executable(gmod-mcp-coretests tests/native/test_core.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
 target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
+target_compile_definitions(gmod-mcp-coretests PRIVATE GMOD_MCP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")  # tests/schema/results.json
 if(MSVC)
   target_compile_options(gmod-mcp-coretests PRIVATE /utf-8 /EHsc /permissive- /wd4100 /wd4996)
   target_compile_definitions(gmod-mcp-coretests PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)

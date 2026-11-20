@@ -16,14 +16,16 @@ function H.lua_exec(args)
 	local t0 = SysTime()
 	local ok, res, err, tb, exceeded = A.run_budget(fn, budget)
 	local dt = (SysTime() - t0) * 1000
-	local output = A.capture_end()
+	local output, blocked = A.capture_end()
 	if not ok then
 		if A.is_fail(err) then A.fail(err.code, err.message, err.details) end
 		A.fail(exceeded and "budget_exceeded" or "lua_error", tostring(err),
 			{ traceback = tb, output = output, duration_ms = dt })
 	end
-	return A.serialize_values(res, opts, { output = output, duration_ms = dt, chunk_bytes = #code, chunkname = chunk,
+	local out = A.serialize_values(res, opts, { output = output, duration_ms = dt, chunk_bytes = #code, chunkname = chunk,
 		budget_s = budget, generation = A.generation })
+	out.blocked_console_commands, out.warning = A.blocked_fields(blocked)
+	return out
 end
 
 function H.lua_inspect(args)
@@ -46,6 +48,13 @@ function H.lua_inspect(args)
 		out.count = count
 		out.keys = keys
 		out.truncated = count > limit
+	end
+	if type(v) == "function" then
+		-- Where it was defined: the C side adds the real disk path and whether the file came from the mounted folder (Issue #9).
+		local info = debug.getinfo(v, "S")
+		if info and info.what ~= "C" then
+			out.source, out.linedefined, out.lastlinedefined = info.source, info.linedefined, info.lastlinedefined
+		end
 	end
 	local mt = getmetatable(v)
 	if mt ~= nil then
@@ -96,6 +105,23 @@ function H.chunk_dump(args)
 	local out = {}
 	out.dump, out.encoding = encode_dump(string.dump(f))
 	return out
+end
+
+-- Issue #9: does this realm's file system find files of the mounted folder? The module hands over a few names (as file.Exists
+-- takes them, from the "LUA" path: no lua/ prefix); file.Time tells which copy answered (the folder's file time is known).
+function H.mount_probe(args)
+	local files = args.files
+	if type(files) ~= "table" or #files > 8 then A.fail("invalid_params", "files: expected a list of at most 8 {name}") end
+	if type(file) ~= "table" or type(file.Exists) ~= "function" or type(file.Time) ~= "function" then
+		A.fail("unsupported", "this realm has no file library")
+	end
+	local answers = J.array({})
+	for i, f in ipairs(files) do
+		if type(f) ~= "table" or type(f.name) ~= "string" then A.fail("invalid_params", "files[" .. i .. "].name: expected a string") end
+		local exists = file.Exists(f.name, "LUA") and true or false
+		answers[#answers + 1] = { exists = exists, time = exists and file.Time(f.name, "LUA") or nil }
+	end
+	return { answers = answers }
 end
 
 -- Realm-specific status.

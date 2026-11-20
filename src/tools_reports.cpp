@@ -35,7 +35,7 @@ void register_reports() {
          json{{"properties",
                {{"types", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Types to wait for (empty = all)."}}},
                 {"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Cursor (next_cursor from a previous call)."}}},
-                {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Max wait (default 30)."}}},
+                {"timeout_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Max wait (default 30)."}}},
                 {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 1000}, {"description", "Max number of events (default 100)."}}}}}},
          RO, events_wait_tool});
     mcp::register_tool(
@@ -51,7 +51,7 @@ void register_reports() {
                {{"channel", {{"type", "string"}, {"description", "Channel name."}}},
                 {"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Cursor (default 0 = from the start of the buffer)."}}},
                 {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}, {"description", "Default 500."}}},
-                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"description", "Max wait if nothing new (default 0)."}}}}},
+                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Max wait if nothing new (default 0)."}}}}},
               {"required", {"channel"}}},
          RO, reports_read_tool});
     mcp::register_tool({"reports_channels", "List report channels",

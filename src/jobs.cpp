@@ -1,5 +1,7 @@
 #include "jobs.h"
 
+#include "health.h"
+
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -26,9 +28,11 @@ static std::deque<std::shared_ptr<Pending>> g_queue;
 static std::atomic<uint64_t> g_frames{0};
 static std::atomic<int64_t> g_last_frame_ns{0};
 static std::mutex g_fmu;
-static double g_ft[256] = {0};
+// Times (seconds, steady clock) at which the last frames ended: the frame rate is counted over a time window (health.h), so
+// the history must reach back kFpsWindowS seconds even at 1000 fps.
+static const size_t kFrameRing = 4096;
+static double g_ft[kFrameRing] = {0};
 static size_t g_ft_n = 0, g_ft_i = 0;
-static Clock::time_point g_prev_frame{};
 
 json run_on_main(Fn fn, double timeout_s) {
     auto p = std::make_shared<Pending>();
@@ -96,17 +100,20 @@ void cancel_all() {
     g_queue.clear();
 }
 
+static double steady_s() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
+
+void on_frame_at(double t_s) {
+    std::lock_guard<std::mutex> lk(g_fmu);
+    g_ft[g_ft_i] = t_s;
+    g_ft_i = (g_ft_i + 1) % kFrameRing;
+    if (g_ft_n < kFrameRing) g_ft_n++;
+}
+
 void on_frame() {
     auto now = Clock::now();
     g_frames++;
     g_last_frame_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
-    std::lock_guard<std::mutex> lk(g_fmu);
-    if (g_prev_frame.time_since_epoch().count() != 0) {
-        g_ft[g_ft_i] = std::chrono::duration<double>(now - g_prev_frame).count();
-        g_ft_i = (g_ft_i + 1) % 256;
-        if (g_ft_n < 256) g_ft_n++;
-    }
-    g_prev_frame = now;
+    on_frame_at(std::chrono::duration<double>(now.time_since_epoch()).count());
 }
 
 uint64_t frame_count() { return g_frames.load(); }
@@ -118,17 +125,30 @@ double seconds_since_last_frame() {
     return (double)(now - last) / 1e9;
 }
 
-json frame_stats() {
-    std::lock_guard<std::mutex> lk(g_fmu);
-    if (g_ft_n == 0) return json{{"fps", nullptr}, {"frametime_avg_ms", nullptr}, {"frametime_max_ms", nullptr}, {"samples", 0}};
-    double sum = 0, mx = 0;
-    for (size_t i = 0; i < g_ft_n; ++i) {
-        sum += g_ft[i];
-        if (g_ft[i] > mx) mx = g_ft[i];
+json frame_stats_at(double now_s) {
+    std::vector<double> ts;  // oldest first
+    {
+        std::lock_guard<std::mutex> lk(g_fmu);
+        ts.reserve(g_ft_n);
+        size_t first = g_ft_n < kFrameRing ? 0 : g_ft_i;
+        for (size_t k = 0; k < g_ft_n; ++k) ts.push_back(g_ft[(first + k) % kFrameRing]);
     }
-    double avg = sum / (double)g_ft_n;
-    return json{{"fps", avg > 0 ? 1.0 / avg : 0.0}, {"frametime_avg_ms", avg * 1000.0}, {"frametime_max_ms", mx * 1000.0},
-                {"samples", g_ft_n}};
+    // Frame times of the last 256 frames: average and worst.
+    double sum = 0, mx = 0;
+    size_t samples = 0;
+    for (size_t k = ts.size() > 257 ? ts.size() - 256 : 1; k < ts.size(); ++k) {
+        double d = ts[k] - ts[k - 1];
+        sum += d;
+        if (d > mx) mx = d;
+        ++samples;
+    }
+    if (samples == 0) return json{{"fps", nullptr}, {"frametime_avg_ms", nullptr}, {"frametime_max_ms", nullptr}, {"samples", 0}};
+    double fps = health::fps_over_window(ts, now_s, health::kFpsWindowS);
+    double avg = sum / (double)samples;
+    return json{{"fps", fps >= 0 ? json(fps) : json(nullptr)}, {"frametime_avg_ms", avg * 1000.0}, {"frametime_max_ms", mx * 1000.0},
+                {"samples", samples}, {"fps_window_s", health::kFpsWindowS}};
 }
+
+json frame_stats() { return frame_stats_at(steady_s()); }
 
 }  // namespace jobs

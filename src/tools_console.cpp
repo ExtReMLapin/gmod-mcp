@@ -1,9 +1,11 @@
 // Tools: console_exec, console_read, errors_since, errors_clear, convar_get, convar_set, concommand_list.
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <memory>
 #include <regex>
 #include <set>
+#include <vector>
 
 #include "agent.h"
 #include "cmdline.h"
@@ -100,9 +102,24 @@ static json console_exec_tool(const json &args) {
     }
     json sent = json::array();
     std::string via_all;
+    bool left_game = false;
     for (const auto &st : stmts) {
         std::string via;
-        json res = send_statement(r, st, via);
+        int sr = r;
+        // Crash on killserver: run on a hosted map at low fps it crashes the game (cmdline::leave_game_first). Leave the
+        // map first (disconnect waits until both realms are gone); killserver then only resets the network mode.
+        if (client && cmdline::leave_game_first(st) &&
+            (agent::realm_present(realms::SERVER) || agent::realm_present(realms::CLIENT))) {
+            json d = mcp::call_tool("disconnect", json{{"instance", agent::config().instance_id}});
+            if (d.value("isError", false)) {
+                json details = d["structuredContent"];
+                if (!sent.empty()) details["already_sent"] = sent;
+                return agent::err("busy", "could not leave the current game before " + cmdline::command_name(st), details);
+            }
+            left_game = true;
+        }
+        if (left_game && sr != realms::MENU && !agent::realm_present(sr)) sr = realms::MENU;  // that realm is gone now
+        json res = send_statement(sr, st, via);
         if (!res.value("ok", false)) {
             if (sent.empty()) return res;
             json e = res;  // earlier statements already ran: say which
@@ -115,6 +132,7 @@ static json console_exec_tool(const json &args) {
     json out = json{{"cmd", cmd}, {"realm", realms::name(r)}, {"via", via_all}};
     if (stmts.size() > 1) out["statements"] = sent;
     if (via_all == "engine") out["blocked_in_lua"] = true;
+    if (left_game) out["left_game_first"] = true;
     wait_frames(frames, 5.0);
     std::string e;
     // connect: wait for the outcome and report it, so the agent knows at once (a failure also opens a native game dialog
@@ -263,11 +281,48 @@ static json errors_since_tool(const json &args) {
     bool only_current = args.value("since_map_load", false);
     std::string realm = args.contains("realm") ? args["realm"].get<std::string>() : "";
     bool has_realm = args.contains("realm");
+    // Issue #11: group_by "message" reads everything kept from the cursor (the store holds at most 2000), then `limit` caps the groups.
+    bool grouped = args.value("group_by", "") == "message";
+    size_t limit = args.value("limit", 100);
     // The filters apply while reading, so `limit` counts the errors kept and next_cursor stays exact.
-    json r = console::errors_since(args.value("cursor", (uint64_t)0), args.value("limit", 100), [&](const json &e) {
+    json r = console::errors_since(args.value("cursor", (uint64_t)0), grouped ? (size_t)1 << 30 : limit, [&](const json &e) {
         if (has_realm && e.value("realm", "") != realm) return false;
         return !only_current || e.value("map_load", (uint64_t)0) == cur_load;
     });
+    if (grouped) {
+        std::vector<json> groups;
+        std::map<std::string, size_t> index;
+        for (const auto &e : r["errors"]) {
+            std::string msg = e.value("message", "");
+            auto it = index.find(msg);
+            if (it == index.end()) {
+                index[msg] = groups.size();
+                groups.push_back(json{{"message", msg}, {"count", 0}, {"first_seq", e.value("seq", 0)}, {"first_time", e.value("time", 0.0)},
+                                      {"realms", json::array()}, {"stack", e.value("stack", json::array())}});
+                it = index.find(msg);
+                if (e.contains("addon")) groups[it->second]["addon"] = e["addon"];
+                if (e.contains("addon_id")) groups[it->second]["addon_id"] = e["addon_id"];
+            }
+            json &g = groups[it->second];
+            g["count"] = g["count"].get<int>() + 1;
+            g["last_seq"] = e.value("seq", 0);
+            g["last_time"] = e.value("time", 0.0);
+            std::string m = agent::map_of_load(e.value("map_load", (uint64_t)0));
+            if (!m.empty()) g["map"] = m;
+            std::string realm_e = e.value("realm", "");
+            bool seen = false;
+            for (const auto &x : g["realms"]) seen = seen || x == realm_e;
+            if (!seen) g["realms"].push_back(realm_e);
+        }
+        std::stable_sort(groups.begin(), groups.end(), [](const json &a, const json &b) { return a["count"].get<int>() > b["count"].get<int>(); });
+        r.erase("errors");
+        r["groups_total"] = groups.size();
+        if (groups.size() > limit) groups.resize(limit);
+        r["groups"] = groups;
+        r["map_load"] = cur_load;
+        r["map"] = agent::map_of_load(cur_load);
+        return ok(r);
+    }
     for (auto &e : r["errors"]) {
         std::string m = agent::map_of_load(e.value("map_load", (uint64_t)0));
         if (!m.empty()) e["map"] = m;
@@ -375,8 +430,9 @@ void register_console() {
                         "(gmod-mcp's own log lines left out; the console is shared, so filter with `regex`). An unknown "
                         "command or convar is an error (unknown_command), not a silent no-op. For every convar it set or "
                         "named, `convars` gives the value read back (value, number, and a warning for FCVAR_ARCHIVE "
-                        "convars, which land in the user's config and are shared by every instance). "
-                        "Example: {\"cmd\": \"sv_gravity 600\"}. convar_set refuses archived convars unless persist: true.",
+                        "convars, which land in the user's config and are shared by every instance). `killserver` on a game "
+                        "that hosts a map first leaves it like `disconnect` (left_game_first: true): run in game it can crash "
+                        "the engine. Example: {\"cmd\": \"sv_gravity 600\"}. convar_set refuses archived convars unless persist: true.",
                         json{{"properties", {{"cmd", {{"type", "string"}, {"minLength", 1}, {"description", "Command line, e.g. 'echo hello' or 'sv_gravity 600'."}}},
                                              {"realm", realm_p},
                                              {"wait_frames", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600}, {"description", "Frames to wait before reading the output (default 5)."}}},
@@ -426,11 +482,18 @@ void register_console() {
                         "each error carries map_load (a number that grows with every map load) and map; since_map_load: true "
                         "keeps only the current map's errors, including those raised while it loaded. Result: {errors: [{seq, "
                         "realm, message, stack: [{file, line, function}], addon, addon_id, time, map_load, map}], next_cursor, "
-                        "lost, map_load, map}. Example: {\"cursor\": 0, \"since_map_load\": true}.",
+                        "lost, map_load, map}. A stuck loop can fill the 2000 kept with one message: group_by: \"message\" returns "
+                        "{groups: [{message, count, first_seq, first_time, last_seq, last_time, realms, map, stack, addon}], groups_total, "
+                        "next_cursor, lost, map_load, map} instead, most frequent first. "
+                        "Example: {\"cursor\": 0, \"since_map_load\": true}.",
                         json{{"properties", {{"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Start here (default 0 = the oldest kept error)."}}},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Max errors returned (default 100)."}}},
                                              {"realm", realm_prop("Optional realm filter.")},
-                                             {"since_map_load", {{"type", "boolean"}, {"description", "Only errors of the current map load (default false)."}}}}}},
+                                             {"since_map_load", {{"type", "boolean"}, {"description", "Only errors of the current map load (default false)."}}},
+                                             {"group_by", {{"type", "string"}, {"enum", json::array({"message"})},
+                                                           {"description", "\"message\": one entry per distinct message instead of the list of errors: {groups: [{message, count, first_seq, "
+                                                                           "first_time, last_seq, last_time, realms, map, stack, addon}]} most frequent first (limit caps the groups, "
+                                                                           "groups_total counts them), next_cursor covers every error read."}}}}}},
                         RO, errors_since_tool});
     mcp::register_tool({"errors_clear", "Clear errors", "Forgets the errors kept so far (errors_since then starts empty); cursors keep growing, so an old cursor stays "
                         "valid. Result: {cleared, next_cursor}.", json::object(),

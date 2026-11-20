@@ -20,7 +20,7 @@ std::string instructions() {
     s += "Realms: 'menu' (always present in client mode, survives map changes), 'client' and 'server' (only exist once a map is "
          "loaded, destroyed/recreated on every map change). On srcds, only 'server' exists.\n";
     s += "Typical order: status -> map_load -> lua_exec / ents_find / trace / screenshot... -> errors_since / console_read.\n";
-    s += "Pitfalls: (1) a missing realm returns the 'realm_unavailable' error: load a map; (2) everything is asynchronous on the game "
+    s += "Pitfalls: (1) a missing realm returns the 'realm_unavailable' error: load a map (on srcds there is no menu or client realm to wait for: use realm 'server'; tools that need the client side answer 'unsupported'); (2) everything is asynchronous on the game "
          "side (a console command or a spawn takes effect on the next frame): use wait_for(realm, condition) or wait_frames(n) "
          "instead of guessing; (3) the client realm is locked ('client_locked') if the game is connected to a non-loopback server; "
          "(4) if the game freezes (infinite loop), status reports it and game_terminate remains available; "
@@ -42,7 +42,25 @@ std::string instructions() {
          "Details: lua_job description, prompt write-lua-job.\n";
     s += "Documentation: api_search (ground truth: what actually exists in each realm), wiki_search / wiki_page "
          "(https://wiki.facepunch.com/gmod/). Full guide: resource mcpagent://guide.\n";
-    s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator.\n";
+    // Issue #3: live, Code Mode sessions first read a result as an object; the guide says it too, but only if it is read.
+    s += "Code Mode (calling these tools from a script): a call returns a JSON string, so JSON.parse it (accept an object too); "
+         "an error throws, and e.detail.error.code / e.detail.error.message say why; map_load and long waits return their "
+         "real result in the script (guide section \"Code Mode\").\n";
+    s += "Multi-instance: instances_list; every tool accepts 'instance' to target another instance through the coordinator. "
+         "client_crashed / server_crashed = that game crashed (details.dump names the minidump, for a human): relaunch it with "
+         "instances_launch and rerun what it was doing; instance_gone = it ended normally; instance_hung = frozen with no sign of life "
+         "(close it, relaunch); instances_list state \"hung\" = main thread blocked for 60 s (180 s while loading), stalled_s and fps_low_s "
+         "say how long; instances_launch refuses with low_memory when the machine cannot hold more clients (ignore_low_memory overrides).\n";
+    // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+    s += "Launches and map loads: starting a game makes the other running games release their GPU resources for 2-10 s, and a "
+         "map load ending then crashes that game (engine bug, Facepunch #7137). The bridge makes instances_launch and map_load "
+         "wait for each other (a call that waited reports waited_s / waited_reason; errors map_load_in_progress / "
+         "launch_in_progress: retry later or with a larger timeout_s). instances_launch also waits for a map load the bridge did "
+         "not start (console, Lua, a script talking to the game: every game reports `loading` in instances_list), reason "
+         "map_load_outside_bridge; map_load lists such games as other_games_loading. It cannot hold back a game started by "
+         "hand or a load started by other means during a launch: avoid those. Other games can be unreachable for "
+         "15-18 s after a game starts: wait and retry. Launch all clients in one instances_launch, then work. Guide section "
+         "\"Launches and map loads\".\n";
     s += "Testing a branch of an addon: lua_mount {path: <your worktree>} (or instances_launch {lua_mount}) makes ONE game load "
          "Lua from that folder first; it takes effect at the next map_load, and the engine then names those files "
          "\"@lua/...\". Details: guide section \"Mounted Lua folder\".\n";
@@ -64,7 +82,7 @@ static std::string guide() {
 |---|---|---|
 | menu | always (client mode) | loading maps, console, wiki/HTTP, error capture (OnLuaError) |
 | server | map loaded (singleplayer/listen or srcds) | entities, players, traces, sounds, game logic |
-| client | map loaded and lock allowed | rendering, screenshots, debug_draw, local player state |
+| client | map loaded and lock allowed | rendering, screenshots (the main menu and dialogs too: the engine's jpeg command), debug_draw, local player state |
 
 The client and server states are destroyed and recreated on every map change: keep no references across maps.
 The agent runtime (global table `__mcpagent`) is re-injected automatically.
@@ -149,7 +167,16 @@ Example. The worktree `D:/dev/my-addon-wt` is a copy of the addon installed as `
 
 Refused paths: a relative path, a folder without `lua/` (e.g. `D:/dev`, or a folder holding several addons), a folder
 inside the game folder (`garrysmod/` or an installed addon: the engine already searches it), a path with `"`, `;` or a
-line break.
+line break, a path with non-ASCII characters, a UNC path (`\\server\share`, also `\\localhost\D$`), an extended-length or
+device path (`\\?\D:\x`, `\\.\D:\x`) and a folder holding a file whose full path would pass Windows' 259
+characters (MAX_PATH). The engine accepts all of these into its search paths and then loads nothing from them, so the
+mount would report `active` while the game ran the installed code. For the non-ASCII, UNC and long cases a junction on a
+short local path (`mklink /J C:\gmod-wt "<your folder>"`) is the way out.
+A folder that REPLACES the game's own base Lua is refused too (error `shadows_base_lua`, the files are listed): any .lua of
+the folder's `lua/` that also exists in the game's own `garrysmod/lua/`, or of its `gamemodes/base/` that exists in the game's
+`gamemodes/base/` (e.g. `lua/includes/init.lua`: the client then hangs in its load and `map_load` times out). Move those
+files out of the folder; `allow_shadow: true` (`lua_mount`, `instances_launch`) mounts it anyway. A `map_load` that times out
+with a mount set names the mount in its message: look at `errors_since` and `lua_mount {}`.
 
 When it takes effect: a Lua file is read when something loads it, and the game loads its addons at each map load. So:
 set the folder, then `map_load`. Code already running stays as it was until it is loaded again. Removing it
@@ -177,21 +204,72 @@ Names: the engine names a file of the folder relative to the folder's root. `deb
 `@lua/my_addon/core.lua`, not `@addons/my_addon/lua/my_addon/core.lua` as for the installed addon. Code that identifies
 a caller by its file path sees another name. gmod-mcp's tools use the same names as the engine (`chunkname` overrides).
 
-Editing a file of the folder: there is no autorefresh, saving a file does not reload it. To run an edit:
-`lua_reload {path: "my_addon/core.lua"}` (runs the folder's copy again in its realms; what the file built at load time
-is not reset) or `map_load` for a clean state. Check with `lua_function_source {realm, expr: "MyAddon.Update"}`: it
-compares the running function with the folder's file (`matches_disk`). A `git checkout` in the worktree changes the
-files at once; the running code changes only when it is loaded again.
+Editing a file of the folder: there is no autorefresh, saving a file does not reload it. `status.lua_mount` tells what is
+out of date: `stale_files` lists the folder's .lua files whose time differs from what each realm loaded (modified, added,
+deleted; a `git checkout` that brings an OLDER file counts too), with the realms each runs in; `realms_without_mount`
+names a realm that did not load with the folder in front (the folder was mounted or changed after that realm loaded, or the
+load did not go through it: its code may be another copy than the folder's: `map_load`). `map_load` repeats the
+check when it ends (`warning` and `lua_mount` in its result) and empties the engine's Lua file cache first. To run the edits:
+`lua_reload {mounted_changed: true}` runs again every changed file of the folder in its realms (alphabetical order; deleted
+files and entity/weapon/effect files are listed in `skipped`: `map_load`, or `lua_reload {path}` to force one), or
+`lua_reload {path: "my_addon/core.lua"}` for a single file, or `map_load` for a clean state. A reload re-runs the file: it
+does not undo what the old copy did (hooks or timers under another name, net strings, entities already spawned) and what
+the file built at load time is not reset. If a file fails (a syntax error, a Lua error) `lua_reload {mounted_changed}` answers
+the error `reload_failed` (`isError`): `details` holds the whole `reloaded` list, the other files did run.
+Limit of `stale_files`: it compares file times, not contents. An edit that leaves the file's time as it was (a tool that
+restores the time, or two saves inside the clock's resolution) is not seen, whatever its size; `map_load` still runs the
+new code (the engine reads the files again, and the module empties its Lua cache first). Check with `lua_function_source {realm, expr: "MyAddon.Update"}`.
+
+Which copy a function came from: the source name `@lua/my_addon/core.lua` is the same for the folder's copy and for the
+installed copy (a Workshop addon is named that way too). `lua_function_source` and `lua_inspect` (on a function) say
+which one the realm really ran: `from_mount` (true: the folder; false: the installed copy), `disk` (the real file),
+`mount_has_file` (the folder has a file of that name now) and `provenance`: `mount_in_place_at_load` (the module put the
+folder in front of this realm's Lua path right before the realm loaded, and the file was in the folder at that moment: recorded
+at load time, not guessed from the name), `reloaded_from_mount` (the file was run again from the folder with lua_reload, whether it was loaded in place at load
+or not), `mount_changed_since_load` (the realm loaded it from a folder that is no longer the mounted one: another folder was
+mounted, or none, without a map load; `from_mount` is false, `loaded_from` is that folder and `disk` its copy when it
+still exists: this is what the realm runs until `map_load`), `installed`, `not_on_disk` (inside a .gma), `no_file` (code from lua_exec/RunString). Limit: the engine, not the module,
+reads each file, so `from_mount` comes from the folder's content when the realm loaded, not from a trace of each read.
 
 Typical flow:
 1. `instances_launch {count: 1, owner: "<you>", lua_mount: "D:/dev/my-addon-wt", map: "gm_construct"}` (or, on a client
    you already have: `lua_mount {path}` then `map_load`).
-2. `lua_mount {}`: `lua_mount` is your folder, `base_lua_mounted: true`, the folder heads `search_paths.lsv` and `.lcl`.
+2. `lua_mount {}`: `lua_mount` is your folder and `base_lua_mounted: true` (the server realm finds the base Lua; null before a map is loaded).
 3. `lua_function_source {realm: "server", expr: "MyAddon.Update"}`: `file` is in your folder, `matches_disk: true`.
 4. Edit, then `lua_reload` or `map_load`, then test.
 5. Done: `instances_close {owner}` (or `lua_mount {path: null}` then `map_load`).
 
+Clients started by `instances_launch` carry `-mcp_test_client`. Their command line sets the archived convars `fps_max`,
+`fps_max_nofocus` and `snd_mute_losefocus` (FCVAR_ARCHIVE: a clean quit saves them into `cfg/config.cfg`, which the
+user's own game shares). Before such a client quits cleanly, the module sets each one back to the value `cfg/config.cfg`
+has at that moment (the user's game may have written it since the launch), or to the convar's default when the file has
+no line for it: `game_quit`, a `quit`/`exit` sent with `console_exec`, the main menu's Quit button and the window's close
+button (the X, Alt+F4: the close request is held back 0.4 s while the values are put back) are covered. The same goes for
+the archived convars changed through `instances_launch {fps_max, commands, launch_args}`: the bridge lists their names
+on the command line (`-mcp_restore_convars a,b`) and the module restores those that are archived too (a convar changed
+by `exec` of a cfg file is not tracked). Not covered: a
+`quit` the user types by hand in that client's console, and a process killed from outside (which writes nothing). A
+`convar_set` of one of these three on such a client is reverted at quit too. `instances_close` kills the process:
+nothing is written. The same options on a game you start by hand are not restored: set them back yourself before it quits.
+
+Clients started by `instances_launch` carry `-dxlevel 95`: with it the engine neither reads nor writes the user's video
+settings (resolution, anti-aliasing), so test clients do not change the way the user's own game starts. A client you
+start by hand with `-w`/`-h` does: add `-dxlevel 95` to it.
+
 If `base_lua_mounted` is false, the game's own `lua/` is missing from the server paths: remove the folder at once.
+
+`engine_serves_folder` (in `lua_mount {}` and `status.lua_mount`, once a map is loaded; per realm in `engine_serves`) is the
+engine's own answer, not the module's bookkeeping: the module asks each realm's file system (`file.Exists` and `file.Time`
+with `"LUA"`) for up to three files of the folder and compares the file time with the folder's. `false` means the engine lists
+the folder but serves none of its files: the game runs the installed code, whatever `active` or `loaded_with_mount` say. A
+`warning` says so, `map_load` repeats it, and `instances_launch {lua_mount}` reports that client's mount as `active: false`
+with `error_code: "mount_not_effective"`. `null`: nobody could be asked (no map loaded yet). Remove the folder
+(`lua_mount {path: null}`) and mount a plain local path.
+
+A mounted folder that is renamed, moved or deleted (or whose `lua/` is deleted) serves nothing: `lua_mount {}`, `status.lua_mount`
+and `map_load` then carry `folder_missing: true` and a `mount_folder_missing` warning (no list of "deleted" files), `lua_reload
+{mounted_changed}` answers the error `mount_folder_missing`, and a realm that loaded while the folder was gone is not
+`loaded_with_mount`. Restore the folder (or mount the right one) and `map_load`.
 
 ## Reporting frictions
 The maintainers want to hear about every friction agents meet with gmod-mcp, without making work for the user.
@@ -241,6 +319,154 @@ Resources: `gmod://errors` and `gmod://console` (subscribable), templates `gmod:
 ## Structured errors
 Every tool returns `isError: true` and `{"error": {"code", "message", "details"}}`. Common codes:
 `realm_unavailable`, `client_locked`, `main_thread_timeout`, `invalid_params`, `lua_error`, `timeout`, `not_found`.
+Calls to another instance (`instance` argument) can also fail with: `unknown_instance`, `coordinator_changing` (the game that
+held the directory of instances ended and another is taking the role over, or has not heard from that instance yet: nothing
+was sent, retry after `details.retry_after_s`; the plugin already waits a few seconds before giving it to you), `relay_lost` (the connection to the coordinator broke while the call was in flight and other games run: the call MAY HAVE BEEN EXECUTED, `details.maybe_executed`; check the game's state before repeating a call that is not idempotent), `instance_unreachable` (its process
+runs but does not answer: frozen or busy; `status {instance}`, `game_terminate {instance}`), `instance_gone` (its process
+ended normally: quit, closed or killed on request), `instance_hung` and `client_crashed` / `server_crashed` (see below).
+
+## Reading results
+Every result is one JSON object, sent twice with the same content: `structuredContent` and one text block. Some clients show
+the model only `structuredContent` on success and only the text on an error (`isError: true`), so a hint is always a field
+of that JSON, never prose around it. Every tool declares an `outputSchema` for its success result (an error is not checked against
+it). Every successful result of the game has `answered_by` (the instance that answered). The hint
+fields, all plain sentences for you, present only when they apply:
+- `note`: how to read this result (a caveat, what a value means). `warning`: something is wrong or risky now and what to do.
+- `next`: the call that goes on, as a sentence (`lua_job` start: poll with `lua_job_status`; `instances_list`: how to pick an instance).
+- `next_call`: the same kind of hint as data, `{tool, arguments?, after_s?}`: the call to make next (wait `after_s` seconds first).
+  In an error it is `error.next_call`. It is a suggestion, always next to its prose: check it fits what you are doing. Given for
+  `realm_unavailable` (map_load; on srcds none for the menu and client realms, status for the server realm), `main_thread_timeout` (status), `ambiguous_instance` (instances_list), `client_crashed` and
+  `instance_gone` (instances_launch), `instance_unreachable` (status, later), `budget_exceeded` (the code as a lua_job), a refused
+  launch/map load (`launch_in_progress`, `map_load_in_progress`: the same call later with a larger timeout_s), an argument typo
+  (`invalid_params`: the corrected call), a started `lua_job` (lua_job_status), cut values (the call without the limits) and a
+  wrong `lua_mount` on a launched client.
+- `truncated_note`: values were cut by `depth`/`limit`/`max_string`; they are marked `__type = "truncated"`; raise the limit.
+- `output_note`: the console lines in `output` are shared with the game; `fps_note`: a test client runs at most 20 fps.
+- `version_warning`: the module in the game and the Claude Code plugin have different versions; tell the user.
+- `waited_s` / `waited_reason`: the call waited for another launch or map load (see "Launches and map loads").
+A number the game cannot hold is `null`, never a string: JSON has no NaN or infinity, so a non-finite value (NaN, +-infinity,
+a coordinate or a "1e999" that overflows a double) reads `null` where a number is expected (`distance`, `pos`, `eye_ang`,
+`number` of a convar...). Every number of every `outputSchema` accepts `null` for that reason: treat a null number as
+"not a finite number", not as an error of the call.
+An error is `{"error": {"code", "message", "details"}}`: branch on `code`, read `message` for what to do, `details` holds
+the numbers. When the game is not running the plugin itself answers `game_not_running` in that same shape (`details`: `host`,
+`port`, `reason`); start the game with `-mcp` and call again.
+
+## Code Mode (Claude Code)
+In Claude Code's experimental Code Mode you write JavaScript and call a tool as `await tools["mcp__<server>__<tool>"]({...})`.
+- A success arrives as a string: the JSON of `structuredContent`. `JSON.parse` it, and accept an object too
+  (`typeof r === "string" ? JSON.parse(r) : r`).
+- An error throws. `e.detail` is the parsed error, `{"error": {code, message, details, next_call?}}` (the text of every error of
+  this server is exactly that one JSON object): branch on `e.detail.error.code`. A call refused before it reaches the game
+  (bad arguments, a permission) throws with `e.message` only and no `e.detail`.
+- Long calls (`map_load`, waits of 15 s or more) are answered synchronously to a Code Mode call, so `await map_load(...)` gives
+  the real result. A normal call may be run as a background task; a script would only get a stub for that.
+- At most 10 calls run in parallel in a script. Map loads and launches still go one at a time (the FP7137 lock, see "Launches and
+  map loads"): parallel `map_load` calls queue.
+
+## A game crashed
+`client_crashed` (a client) or `server_crashed` (a dedicated server) means the instance's process ended without a clean
+shutdown. The answer's `details` hold `instance`, `pid`, `dump` (the minidump file name in `crashes/` of the game folder,
+or null when none was found), `exit_code` (when known) and `evidence`. What to do: relaunch a client with
+`instances_launch` (a server must be restarted by whoever runs it); what it held (map, Lua state, running tests) is lost,
+so run the test again. The dump is for a human with a debugger: do not try to read it. When the dump could be read, `details`
+also holds `fault` (where the exception happened, module+offset, e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up to 8
+words of the faulting thread's stack that point into a module, from the stack pointer up: a list of places to look at, not an
+unwound call stack; the first ones are usually the callers): worth quoting in a bug report. A crash that happens only on
+test clients can be timing: they run at `fps_max` 20, so several server ticks run per frame; relaunch with `fps_max: 300`
+(`instances_launch {fps_max}`) and rerun to tell a timing bug (it disappears) from a plain one. A crash is told from a clean quit
+by what the coordinator saw: a goodbye the game sends when it shuts down, a `game_quit`/`game_terminate` sent through it,
+a dump written just before the process ended, then its exit code (0 = quit, 0xC0000005 and other 0xC... = crash). Limits:
+a process killed from outside (Task Manager) with no dump looks like a crash with exit code 1 and `dump: null`; with
+several games crashing together the dump is matched by time only (`dump_matched_by_time_only`). `instances_list` shows
+a crashed instance for an hour as `state: "crashed"` with a `crash` object ({dump, exit_code, evidence, fault, stack_candidates}); a map_load in
+flight when the client died answers `client_crashed` too (through `instances_launch {map}`: in that client's `map_error`).
+A call in flight to an instance that dies is answered at once, not at its own timeout: the coordinator and, for the clients
+it launched, the bridge watch the process. `details.memory` ({free_commit_mb, free_ram_mb}, measured when the crash is
+reported) is added, with a sentence when the free commit is under 4 GB: out of memory is a likely cause (exit code
+0xC000041D, no dump).
+
+## A game is hung, or the machine is out of memory
+- **Hung.** `instances_list` gives every instance `stalled_s` (seconds its main thread has been blocked, 0 when it ticks) and
+  `fps_low_s` (seconds the frame rate has stayed under 10 fps, 0 when fine; not counted while it loads: measurements taken
+  while it is above 0 are suspect). `fps` is counted over the last 3 s. After 60 s of blocked main thread (180 s while a map
+  load is in progress) or of silence from a process that still runs, the entry is `state: "hung"` with a `note`: it will not
+  recover by itself, close it with `instances_close {pids}` (or `game_terminate {instance}`) and relaunch; results measured on
+  it since it stalled are void. `state: "unresponsive"` is the first stage: no heartbeat for 10 s but the process runs.
+  A call in flight to an instance whose process runs but sent no heartbeat for 30 s fails with `instance_hung`
+  (`details`: `instance`, `pid`, `silent_s`), and every later call to it answers `instance_hung` at once for as long as the process lives
+  (`instance_gone` is only for a process that ended); a client whose heartbeats still come keeps the call waiting for its own timeout.
+- **Out of memory.** `instances_launch` checks the machine before starting anything: free commit (virtual memory: RAM plus
+  page file) must cover 1.6 GB per client plus 1 GB for the rest of the machine, free RAM 1.2 GB per client (a measured
+  light client holds about 1.55 GB of commit and 1.2 GB of RAM). Otherwise it fails with `low_memory` and starts nothing:
+  `details` = {free_commit_mb, free_ram_mb, running_clients (every session), per_client_mb, count, needed_commit_mb,
+  needed_ram_mb}. Close clients you no longer use, start fewer, or pass `ignore_low_memory: true`.
+- **Telling infrastructure from test results.** `low_memory`, `instance_hung`, `client_crashed`, `server_crashed`,
+  `instance_gone`, `instance_unreachable`, `coordinator_changing`, `game_not_running` and `port_conflict` are about the
+  machine or the games, never about the code under test: a harness should stop and report them, not count a failed test.
+
+)";
+    // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+    g += R"(
+## Launches and map loads (several games)
+Starting any Garry's Mod process makes every other running game release and restore its GPU resources for 2-10 s; the
+main thread of those games is blocked meanwhile. A game whose map load ends inside that window crashes (engine bug,
+Facepunch garrysmod-issues #7137).
+- **What the bridge does.** It serialises `instances_launch` and `map_load` for every session that uses it (several
+  Claude sessions and sub-agents included). `instances_launch` waits while any game loads a map. `map_load` (any target
+  instance) waits while a game is being started and for 15 s after the last start. `instances_launch {map}` loads its
+  maps after that delay, 2 at a time.
+- **What you see.** A call that waited carries `waited_s` and `waited_reason` in its result (for `instances_launch {map}`:
+  in each `instances[i]`; for a `map_load` run as a task: in its `statusMessage`) and reports progress while it waits.
+  If the wait would go beyond the call's `timeout_s`, the call fails and nothing was started or sent: `map_load_in_progress`
+  (a launch blocked by a map load) or `launch_in_progress` (a map load blocked by a launch or by the 15 s delay). Retry
+  later, or with a larger `timeout_s`.
+- **Loads the bridge did not start.** Every game tells the coordinator when it is loading a map (`loading: true` in
+  `instances_list`, within a fraction of a second of the start), whatever started the load: `map` or `changelevel` in the
+  console, Lua `RunConsoleCommand`, a script talking HTTP to the game, `map_load`. `instances_launch` waits for all of them
+  (`waited_reason` starts with `map_load_outside_bridge`; same `map_load_in_progress` error at the timeout), and `map_load`
+  lists the other games that were loading when it started (`other_games_loading`, it does not wait for them).
+- **What it cannot do.** Hold back a game started by hand (not through `instances_launch`), a game without gmod-mcp (no
+  `-mcp`), or a load started by the console or a script while a launch is already creating its processes or within 15 s
+  after one: the bridge only delays its own calls. Do not do those while other games load or launch.
+- **Unreachable after a launch.** Right after a game starts, the other games can be unreachable for 15-18 s
+  (`instance_unreachable`, timeouts). That is expected: wait and retry. A dead game is `client_crashed`, not a timeout.
+- **Order.** Launch every client you need in ONE `instances_launch` call (with `map` it loads 2 at a time after the
+  settle delay), then work. Avoid interleaving launches with map loads, yours or another session's.
+
+## UI input (ui_click, ui_key)
+For what has no console command: the buttons of VGUI2 dialogs ("Disconnected by the server" > Close), Derma panels, the menu's
+HTML. `ui_click {x, y}` takes the pixel of a `screenshot` image (coordinates are those of the image; pass `screenshot_size`
+when it is not the game window's size, or `coords: "window"` for client-area pixels); `ui_key {key, text}` presses a key and
+types text (Unicode included). Click a text field first, then type. `screenshot_after: true` returns the result of the click.
+- The input is posted to the game's own window (PostMessage): the user's real mouse does not move and no window takes the
+  focus. Windows game client only.
+- Refusals, each its own error code: `unsupported` (srcds, not Windows), `not_a_test_client` (only games started by
+  `instances_launch` accept input; `allow_user_game: true` overrides it), `client_locked`, `loading` (a map is loading),
+  `window_unavailable` (minimized or not found), `cursor_hidden`, `out_of_bounds` (ui_click: outside the image or window).
+- `cursor_hidden`: the game has the mouse (no menu or popup is open), so a click would be game input. The cursor counts as
+  visible when the game menu is up (main menu, ESC menu, a dialog on it: `gui.IsGameUIVisible()`) or, in game, a Derma popup,
+  the context or spawn menu has it (`vgui.CursorVisible()` in the client realm). `console_exec {cmd: "gameui_activate"}`
+  opens the game menu.
+- `ui_key` text: the engine narrows each typed character through the machine's ANSI code page with best-fit (CP1252: accents of
+  western Europe arrive, `ł` becomes `l`, Cyrillic and CJK `?`). A text with such a character is refused (`text_not_representable`,
+  details `code_page` and `characters`) unless `allow_lossy: true`; set it from Lua instead (`lua_exec` in the realm that owns the
+  panel: `entry:SetText("...")` on a DTextEntry; `SetValue` does nothing while the entry has the focus a click gave it). A letter,
+  a digit or space as `key` is typed as a character (`WM_CHAR`), not pressed.
+- `screenshot` works at the main menu, in a dialog and on a loading screen too (no client realm): it uses the engine's own
+  `jpeg` command (`source: "engine_jpeg"`, chosen by itself when no map is loaded), at the size ui_click's coordinates are read
+  on, so read the point on that image and click. `screenshot_after` does the same. See "Screenshots".
+
+## Screenshots
+`screenshot` has two sources (`source`, default `auto`; the result says which one it used). `render`: the engine's capture of
+what the player sees; needs a loaded map (client realm), takes `w`/`h` to render the view again at another size. `engine_jpeg`:
+the engine's own `jpeg` console command; the only way to see the main menu, a VGUI2 dialog ("Disconnected by the server") or a
+loading screen. The engine writes garrysmod/screenshots/<name>.jpg and prints its name in the console; the module reads exactly
+that file and deletes it, and nothing else (`file`, `file_deleted`; a `warning` with the path if the delete failed). It is the
+engine's own capture, so it works while other windows cover the game, takes no focus and does not touch the window. The image is
+a JPEG at the game's screen size (the space ui_click coordinates are read on) and at the engine's own quality (convar
+jpeg_quality, left alone): `format`, `w`, `h` and `quality` are not applied and are listed in `ignored`. No `Wrote` line within
+4 s gives `capture_timeout` (game minimized or frozen); a file that cannot be taken gives `capture_failed` and is left in place.
 
 ## Limits
 - No connection to remote servers; the client realm is refused outside singleplayer/listen/srcds loopback.

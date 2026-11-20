@@ -95,20 +95,155 @@ function H.menu_idle(args)
 	return { loading = (IsInLoading and IsInLoading()) or false, in_game = (IsInGame and IsInGame()) or false }
 end
 
+-- ui_click / ui_key (tools_ui.cpp): what the DLL needs to know before it posts input to the game window.
+--   menu realm:   game_ui = gui.IsGameUIVisible() (the main menu, the ESC menu or a GameUI dialog is up: its cursor is
+--                 always visible), loading, in_game, scr_w/scr_h (ScrW/ScrH: the size the engine renders, which is the size
+--                 of the screenshot image without w/h).
+--   client realm: cursor = vgui.CursorVisible() (a Derma popup, the context or spawn menu... has the cursor).
+-- Every field is optional: a missing API gives no field, never an error.
+function H.ui_state(args)
+	local out = { realm = A.realm }
+	if ScrW and ScrH then
+		out.scr_w, out.scr_h = ScrW(), ScrH()
+	end
+	if A.realm == "menu" then
+		if gui and gui.IsGameUIVisible then out.game_ui = gui.IsGameUIVisible() and true or false end
+		out.loading = (IsInLoading and IsInLoading()) or false
+		out.in_game = (IsInGame and IsInGame()) or false
+	elseif A.realm == "client" then
+		if vgui and vgui.CursorVisible then out.cursor = vgui.CursorVisible() and true or false end
+	end
+	return out
+end
+
 function H.disconnect(args)
 	if A.realm ~= "menu" then A.fail("wrong_realm", "disconnect: requires the menu realm") end
 	RunConsoleCommand("disconnect")
 	return { requested = true }
 end
 
+-- Test clients started by the bridge (instances_launch passes -mcp_test_client; native.test_client) run with archived
+-- convars set on their command line (fps_max...). A clean quit makes the engine write every archived convar into
+-- cfg/config.cfg, which the user's own game shares. Before such a client quits, each one gets back the value the
+-- user's game has in config.cfg at that moment (the user may have changed it since the launch), or the convar's
+-- default when config.cfg has no line for it.
+A.test_client_convars = { "fps_max", "fps_max_nofocus", "engine_no_focus_sleep", "snd_mute_losefocus" }
+
+-- Issue #10: instances_launch {fps_max, commands, launch_args} can change other archived convars. The bridge lists their
+-- names on the command line (-mcp_restore_convars a,b: native.restore_convars, a comma-separated string) and they are
+-- given back like the built-in ones. Built-in names first, then the extra ones (lower case, once each, plain names only).
+function A.test_client_convar_names()
+	local out, seen = {}, {}
+	for _, n in ipairs(A.test_client_convars) do out[#out + 1] = n seen[n] = true end
+	local extra = native.restore_convars
+	if type(extra) == "string" then
+		for n in string.gmatch(extra, "[^,]+") do
+			n = string.lower(n)
+			if string.match(n, "^[%w_%.]+$") and #n <= 64 and not seen[n] then out[#out + 1] = n seen[n] = true end
+		end
+	end
+	return out
+end
+
+-- name -> value for the `name "value"` (or `name value`) lines of a config.cfg text; the last line of a name wins, as
+-- when the engine executes the file. Names are lower case. Binds and aliases are not convars.
+local NOT_CONVARS = { bind = true, unbind = true, alias = true, unbindall = true }
+function A.parse_config_values(text)
+	local out = {}
+	if type(text) ~= "string" then return out end
+	for line in string.gmatch(text, "[^\r\n]+") do
+		local name, rest = string.match(line, "^%s*([%w_%.]+)%s+(.-)%s*$")
+		if name and not NOT_CONVARS[string.lower(name)] then
+			local v = string.match(rest, '^"([^"]*)"') or string.match(rest, "^(%S+)")
+			if v then out[string.lower(name)] = v end
+		end
+	end
+	return out
+end
+
+-- A value that cannot end the command or start another one.
+local function safe_value(v) return type(v) == "string" and v ~= "" and not string.find(v, '[";\r\n]') end
+
+-- The changes to make: {{name, value}, ...}. `get(name)` returns {current, default} or nil (unknown convar).
+function A.plan_convar_restore(names, cfg_text, get)
+	local cfg, plan = A.parse_config_values(cfg_text), {}
+	for _, name in ipairs(names) do
+		local info = get(name)
+		if info then
+			local want = cfg[name]
+			if not safe_value(want) then want = info.default end
+			if safe_value(want) and tostring(info.current) ~= want and tonumber(info.current) ~= tonumber(want) then
+				plan[#plan + 1] = { name = name, value = want }
+			end
+		end
+	end
+	return plan
+end
+
+-- Queues the changes (they run before the `quit` that follows: the console buffer is ordered). Number of changes.
+function A.restore_test_client_convars()
+	if not native.test_client then return 0 end
+	-- Read natively: the Lua file library answers nil for cfg/config.cfg (live test 2026-11-15).
+	local text = native.user_config and native.user_config() or ""
+	local builtin = {}
+	for _, n in ipairs(A.test_client_convars) do builtin[n] = true end
+	local plan = A.plan_convar_restore(A.test_client_convar_names(), text, function(name)
+		local ok, cv = pcall(A.convar, name)
+		if not ok or not cv then return nil end
+		-- A convar the bridge listed (Issue #10) is restored only if archived: only those reach config.cfg. The built-in
+		-- ones always are (as before); GetFlags may be missing on some builds: then the convar is kept.
+		if not builtin[name] then
+			local fok, flags = pcall(function() return cv.GetFlags and cv:GetFlags() end)
+			if fok and type(flags) == "number" and bit.band(flags, 128) == 0 then return nil end
+		end
+		return { current = cv:GetString(), default = cv:GetDefault() }
+	end)
+	for _, c in ipairs(plan) do
+		if native.engine_cmd then native.engine_cmd(c.name .. ' "' .. c.value .. '"') else RunConsoleCommand(c.name, c.value) end
+	end
+	return #plan
+end
+
+-- True when a console line is a clean quit of the game.
+local function is_quit(line)
+	local w = string.lower(string.match(line or "", "^%s*(%S+)") or "")
+	return w == "quit" or w == "exit"
+end
+
+-- The main menu's Quit button calls RunGameUICommand("quit"), which does not pass through the console buffer: on a test
+-- client the call is wrapped so that it restores first and then sends the quit through the same ordered path as game_quit.
+function A.wrap_menu_quit()
+	if not native.test_client or not native.engine_cmd or not RunGameUICommand or A.quit_wrapped then return false end
+	local orig = RunGameUICommand
+	RunGameUICommand = function(cmd, ...)
+		if string.lower(tostring(cmd)) == "quit" then
+			A.restore_test_client_convars()
+			if native.engine_cmd("quit") then return end
+		end
+		return orig(cmd, ...)
+	end
+	A.quit_wrapped = true
+	return true
+end
+if A.realm == "menu" then A.wrap_menu_quit() end
+
+function H.restore_convars(args) return { restored = A.restore_test_client_convars() } end
+
 function H.quit(args)
+	local restored = A.restore_test_client_convars()
 	if A.realm == "menu" then
-		if native.engine_cmd and native.engine_cmd("quit") then return { requested = true, via = "engine" } end
+		if native.engine_cmd and native.engine_cmd("quit") then return { requested = true, via = "engine", restored = restored } end
 		RunGameUICommand("quit")
-		return { requested = true, via = "gameui" }
+		return { requested = true, via = "gameui", restored = restored }
+	end
+	-- srcds: the engine's own blacklist blocks `quit` from server Lua, so game.ConsoleCommand does nothing and the answer would be
+	-- a lie. The module then ends the process itself (SIGTERM: srcds's own clean shutdown); without that, an error.
+	if IsConCommandBlocked and IsConCommandBlocked("quit") then
+		if native.request_quit and native.request_quit(500) then return { requested = true, via = "signal", restored = restored } end
+		A.fail("blocked", "the console command quit is blocked from server Lua and this platform has no other clean way to end a dedicated server: stop it from its own console or with the system's tools (game_terminate ends the process at once, without a clean shutdown)")
 	end
 	game.ConsoleCommand("quit\n")
-	return { requested = true, via = "server" }
+	return { requested = true, via = "server", restored = restored }
 end
 
 -- Condition for wait_for: an expression or a block with return.
@@ -135,6 +270,7 @@ end
 function H.console_exec(args)
 	local parts = split_cmd(args.cmd or "")
 	if #parts == 0 then A.fail("invalid_params", "empty command") end
+	if is_quit(parts[1]) then A.restore_test_client_convars() end
 	if IsConCommandBlocked and IsConCommandBlocked(parts[1]) then return { blocked = true, sent = parts[1] } end
 	-- Menu RunConsoleCommand("connect", "ip:port") fails with "Bad server address": use the engine path instead
 	-- (the DLL has already checked that the target is loopback).
@@ -145,6 +281,7 @@ end
 
 function H.engine_cmd(args)
 	if not native.engine_cmd then A.fail("unsupported", "engine command unavailable in this realm/mode") end
+	if is_quit(args.cmd) then A.restore_test_client_convars() end
 	local ok, err = native.engine_cmd(args.cmd)
 	if not ok then A.fail("engine_error", tostring(err)) end
 	return { sent = args.cmd }

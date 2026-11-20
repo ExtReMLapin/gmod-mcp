@@ -6,6 +6,9 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <fcntl.h>
+#ifdef __linux__
+#include <link.h>
+#endif
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
@@ -19,6 +22,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <chrono>
+#include <thread>
 
 namespace plat {
 
@@ -27,6 +32,32 @@ void *find_loaded_module(const std::vector<std::string> &names) {
         void *h = dlopen(n.c_str(), RTLD_LAZY | RTLD_NOLOAD);
         if (h) return h;
     }
+#ifdef __linux__
+    // A module the game loaded by full path (the dev-branch server's garrysmod/bin/linux64/lua_shared_srv.so: no SONAME, not on
+    // LD_LIBRARY_PATH) cannot be found by its bare name: look through the loaded objects for one with that file name, then
+    // take a handle on it by its full path without loading anything.
+    struct Search {
+        const std::vector<std::string> *names;
+        std::string path;
+    } search{&names, ""};
+    dl_iterate_phdr(
+        [](struct dl_phdr_info *info, size_t, void *data) -> int {
+            auto *s = static_cast<Search *>(data);
+            if (!info->dlpi_name || !info->dlpi_name[0]) return 0;
+            std::string full = info->dlpi_name;
+            size_t slash = full.find_last_of('/');
+            std::string base = slash == std::string::npos ? full : full.substr(slash + 1);
+            for (const auto &n : *s->names) {
+                if (base == n) {
+                    s->path = full;
+                    return 1;
+                }
+            }
+            return 0;
+        },
+        &search);
+    if (!search.path.empty()) return dlopen(search.path.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+#endif
     return nullptr;
 }
 
@@ -77,6 +108,17 @@ std::string current_directory() {
     return getcwd(buf, sizeof buf) ? buf : "";
 }
 
+bool request_quit(int delay_ms) {
+    // srcds shuts down cleanly on SIGTERM (its own handler runs the normal exit path). A thread, not a direct call: the tool's
+    // answer must reach the caller first.
+    pid_t pid = getpid();
+    std::thread([pid, delay_ms] {
+        if (delay_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        kill(pid, SIGTERM);
+    }).detach();
+    return true;
+}
+
 void terminate_process(int code) {
     (void)code;
     kill(getpid(), SIGKILL);
@@ -100,6 +142,11 @@ uint64_t process_start_stamp(uint32_t pid) {
         if (field == 22) return std::strtoull(tok.c_str(), nullptr, 10) + 2;  // never 0 or 1
     return 1;
 }
+
+// No handle that outlives a process that is not our child: exit codes of other processes cannot be read.
+void *process_watch_open(uint32_t) { return nullptr; }
+bool process_watch_query(void *, ProcInfo &, int) { return false; }
+void process_watch_close(void *) {}
 
 bool read_file(const std::string &path, std::string &out) {
     std::ifstream f(path, std::ios::binary);
@@ -197,8 +244,24 @@ std::vector<std::string> local_ipv4_addresses() {
     return out;
 }
 
+// Windows only (GlobalMemoryStatusEx); on Linux lowmem::current() reads /proc/meminfo itself.
+bool memory_status(uint64_t &, uint64_t &) { return false; }
+
 int process_has_foreground() { return -1; }
 bool send_focus_lost() { return false; }
+bool foreground_window(Foreground &) { return false; }
+void focus_target_state(unsigned long long, bool &exists, bool &usable) { exists = usable = false; }
+bool return_focus_to(unsigned long long) { return false; }
+bool install_close_guard(bool (*)(), int) { return false; }
+bool ui_supported() { return false; }
+bool ui_window(UiWindow &) { return false; }
+bool ui_post(uint64_t, unsigned, unsigned long long, long long, std::string &err) {
+    err = "window messages need Windows";
+    return false;
+}
+unsigned ui_scan_code(unsigned) { return 0; }
+unsigned ui_ansi_code_page() { return 0; }
+bool ui_ansi_keeps(unsigned) { return true; }
 
 bool patch_pointer(void **slot, void *value) {
     long page = sysconf(_SC_PAGESIZE);

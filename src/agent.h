@@ -22,6 +22,10 @@ struct Config {
     std::string tmp_dir;   // .../garrysmod/lua/mcpagent_tmp (absolute)
     std::string data_dir;  // .../garrysmod/data/mcpagent (absolute)
     std::string instance_id;
+    bool test_client = false;  // -mcp_test_client: started by the bridge (instances_launch); see native.test_client
+    std::string owner;  // -mcp_owner (issue #8): the instances_launch owner label, carried in the heartbeat so it outlives the launching bridge
+    std::string restore_convars;  // -mcp_restore_convars a,b (Issue #10): more archived convars to give back on a clean quit; see native.restore_convars
+    unsigned long long return_focus = 0;  // -mcp_return_focus <hwnd> (test clients): the window that gets the foreground back; see launchopts::decide_return_focus
     std::string version = GMOD_MCP_VERSION;
 };
 
@@ -67,6 +71,26 @@ void on_server_state_close();
 void server_realm_appeared();
 // Map of a given map load ("" if not known yet).
 std::string map_of_load(uint64_t seq);
+// FP7137 (issue #7): is a map load in progress, whatever started it (console, Lua, map_load)? Readable from any thread.
+// since_s (optional) gets the seconds since the oldest load that still counts. Stops counting a load after 300 s.
+bool map_loading(double *since_s = nullptr);
+// Live verification of 0.3.7: a map_load this module executes counts as a load from its first moment (it waits up to 15 s for the menu,
+// then 30 frames, before the engine starts the load, and `loading` said false meanwhile). RAII in the map_load tool.
+struct MapLoadCall {
+    MapLoadCall();
+    ~MapLoadCall();
+    MapLoadCall(const MapLoadCall &) = delete;
+    MapLoadCall &operator=(const MapLoadCall &) = delete;
+};
+// Issue #8 (live check I-C1): the engine reports a loading screen with nothing behind it (no realm, not connected, no load starting) for
+// longer than a few seconds: its state is stuck; that screen no longer counts as a load. A map_load clears it; `disconnect` does not (checked live).
+bool map_loading_stuck();
+// What status and instances_list say about it.
+inline const char *loading_stuck_note() {
+    return "the engine reports a loading screen (the menu's IsInLoading) but nothing is loading: no server or client realm, not connected, "
+           "no load in progress. It is a stuck engine state (typically after `map` then `disconnect` within a second), not a load, so `loading` is "
+           "false and launches are not held back. map_load clears it; `disconnect` does not.";
+}
 // Queues a one-time notice shown in game to the local player once the client realm is ready (client mode only).
 void notify_player(const std::string &text);
 
@@ -75,5 +99,9 @@ void jobs_wake(int realm);
 
 // Structured error code.
 nlohmann::json err(const std::string &code, const std::string &message, nlohmann::json extra = nullptr);
+// The `realm_unavailable` error of a realm that cannot be used now. On a dedicated server (srcds) the answer says so and carries
+// details {mode: "srcds", realm}: the menu and client realms never exist there ("use 'server'"), and a missing server realm is the
+// gap between two maps. In client mode: "realm X unavailable (not loaded)", the map is not loaded yet.
+nlohmann::json realm_unavailable_err(int realm);
 
 }  // namespace agent

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -40,7 +41,14 @@
 
 #include "argcheck.h"
 #include "bridge_snapshot.h"
+#include "crashinfo.h"
+#include "lowmem.h"
+#include "gamedir.h"
+#include "launch_opts.h"  // Issue #10
+#include "fp7137.h"  // FP7137
+#include "gmod_mcp_reply.h"
 #include "mcp_protocol.h"
+#include "next_call.h"
 #include "platform/platform.h"
 #include "lua_mount.h"
 #include "util.h"
@@ -167,6 +175,8 @@ enum class Link { Unknown, Up, Down };
 std::atomic<Link> g_link{Link::Unknown};
 std::mutex g_why_mu;
 std::string g_why;  // why the game is unreachable
+std::atomic<bool> g_conflict{false};  // issue #5: the base port is held by a program that is not gmod-mcp (g_why says what answered)
+std::atomic<int> g_found_port{0};     // issue #5: a gmod-mcp found on a later port while in conflict (0: none, or not looked for yet)
 std::atomic<bool> g_initialized{false};
 std::atomic<bool> g_listed{false};      // the client has fetched at least one list
 std::atomic<bool> g_served_offline{false};  // the bridge answered with an offline list or description
@@ -178,7 +188,29 @@ std::string why_down() {
     return g_why;
 }
 
+// The port_conflict error (issue #5): another program answers on the port, so the game is not "not running": it may be
+// running fine, on another port.
+std::string port_conflict_text() {
+    std::string port = std::to_string(g_port);
+    return "127.0.0.1:" + port + " is held by another program, not by gmod-mcp (" + why_down() + ")" +
+           (g_found_port ? "; a gmod-mcp answers on 127.0.0.1:" + std::to_string(g_found_port) + ": set GMOD_MCP_PORT=" + std::to_string(g_found_port) : "") +
+           ". Find it: Get-NetTCPConnection -LocalPort " + port + " (Windows PowerShell) or ss -ltnp 'sport = :" + port +
+           "' (Linux). Free the port, or set the GMOD_MCP_PORT environment variable to the port the game took (its "
+           "console line `[mcpagent] active: ... http://127.0.0.1:<port>/mcp` says which) and restart the MCP client. "
+           "See the README section \"Configuration\" and the gmod-mcp skill section \"When it still does not answer\".";
+}
+
+// The code of the error answered when the game cannot be reached.
+const char *unreachable_code() { return g_conflict ? "port_conflict" : "game_not_running"; }
+
+// What the server instructions say first while the game cannot be reached.
+std::string offline_prefix() {
+    if (g_conflict) return "port_conflict: the game may be running, but this bridge cannot reach it. " + port_conflict_text() + "\n\n";
+    return "The game is not running right now: start it with -mcp; the tools come back by themselves.\n\n";
+}
+
 std::string not_running_text() {
+    if (g_conflict) return "port_conflict: " + port_conflict_text();
     return "Garry's Mod is not reachable on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
            "). Start the game with the -mcp launch option (the gmod-mcp skill knows how); the tools come back by "
            "themselves once it answers, no reconnection needed.";
@@ -188,11 +220,17 @@ std::string not_running_text() {
 // A request in flight: cancelling it closes its HTTP connection right away, even while the stream is silent.
 struct Inflight {
     std::atomic<bool> cancelled{false};
+    std::atomic<bool> process_ended{false};  // issue #8: the launched client this call waits on died: the connection was cut to answer at once
     bool legacy = true;  // a request of a pre-2026-07-28 era (cancellation is also forwarded as a notification)
     std::mutex mu;
     httplib::Client *cli = nullptr;
     void cancel() {
         cancelled = true;
+        std::lock_guard<std::mutex> lk(mu);
+        if (cli) cli->stop();
+    }
+    void abort_for_process_end() {
+        process_ended = true;
         std::lock_guard<std::mutex> lk(mu);
         if (cli) cli->stop();
     }
@@ -220,10 +258,16 @@ bool is_modern(const json &msg) {
            p["_meta"][kMetaVersion].is_string();
 }
 
+const double kFreshLossS = 0.5;  // issue #6: a connection that breaks sooner than this, with no answer, is a dying listener
+
 struct Relay {
     bool reached = false;  // false: game unreachable (why in g_why)
+    bool refused = false;  // unreachable because the connection was never made (refused, or no answer to the connect): nothing was sent
+    bool lost = false;     // issue #6: the connection was made, then broke before a complete answer: the game may have run the call
+    bool lost_fresh = false;  // ... within kFreshLossS of the send and with nothing of an answer: the listener that accepted it was dying
     int status = 0;
     json response;         // final JSON-RPC response (null for notifications)
+    bool aborted = false;  // issue #8: cut because the launched client the call waited on died (reached is true: the game itself is fine)
 };
 
 void set_down(const std::string &why) {
@@ -231,7 +275,47 @@ void set_down(const std::string &why) {
         std::lock_guard<std::mutex> lk(g_why_mu);
         g_why = why;
     }
+    g_conflict = false;
+    g_found_port = 0;
     g_link = Link::Down;
+}
+
+// Issue #5: the port answers, but not as gmod-mcp. Looks at the next ports for a real gmod-mcp (the module takes the next
+// free one when the base port is busy) so that the message can name it. Returns its port, or 0. Slow (a refused loopback
+// connection can take 300 ms on Windows): runs on a background thread, see probe_next_ports.
+int find_gmod_mcp_port(const std::string &token) {
+    for (int p = g_port + 1; p <= g_port + 15 && p <= 65535; ++p) {
+        httplib::Client c("127.0.0.1", p);
+        c.set_connection_timeout(0, 300000);
+        c.set_read_timeout(1, 0);
+        c.set_write_timeout(1, 0);
+        auto r = c.Post("/mcp", httplib::Headers{{"Authorization", "Bearer " + token}},
+                        R"({"jsonrpc":"2.0","id":"gmod-mcp-bridge-port-probe","method":"ping"})", "application/json");
+        if (r && gmcp::is_gmod_mcp_reply(r->has_header(gmcp::kSignatureHeader), r->body)) return p;
+    }
+    return 0;
+}
+
+// At most one probe at a time, at most every 10 s: the answer is read by the next error message.
+void probe_next_ports(const std::string &token) {
+    static std::atomic<bool> running{false};
+    static std::atomic<long long> last_ms{-100000};
+    long long now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now - last_ms < 10000 || running.exchange(true)) return;
+    last_ms = now;
+    std::thread([token] {
+        int p = find_gmod_mcp_port(token);
+        if (g_conflict) g_found_port = p;
+        running = false;
+    }).detach();
+}
+
+void set_port_conflict(int status, const std::string &token) {
+    int found = g_found_port;  // what the last probe found stays while the conflict lasts
+    set_down("it answered HTTP " + std::to_string(status) + " without the gmod-mcp signature");
+    g_found_port = found;
+    g_conflict = true;
+    probe_next_ports(token);
 }
 
 using NoteFn = std::function<void(const json &)>;
@@ -321,10 +405,16 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
         return true;
     };
     std::string payload = msg.dump(-1, ' ', false, json::error_handler_t::replace);
+    const auto t_sent = std::chrono::steady_clock::now();
     if (cancel) {
         std::lock_guard<std::mutex> lk(cancel->mu);
         if (cancel->cancelled) {
             r.reached = true;
+            return r;
+        }
+        if (cancel->process_ended) {
+            r.reached = true;
+            r.aborted = true;
             return r;
         }
         cancel->cli = &cli;
@@ -334,7 +424,7 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
     bool was_up = g_link == Link::Up;
     auto res = cli.Post("/mcp", h, payload, "application/json", receiver);
     for (int delay_ms : {100, 300}) {
-        if (res || !was_up || res.error() != httplib::Error::Connection || decided || (cancel && cancel->cancelled)) break;
+        if (res || !was_up || res.error() != httplib::Error::Connection || decided || (cancel && (cancel->cancelled || cancel->process_ended))) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
         res = cli.Post("/mcp", h, payload, "application/json", receiver);
     }
@@ -347,7 +437,17 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
             r.reached = true;  // we closed it ourselves
             return r;
         }
+        if (cancel && cancel->process_ended) {  // issue #8: we cut it because the client it waited on died
+            r.reached = true;
+            r.aborted = true;
+            return r;
+        }
         auto e = res.error();
+        r.refused = e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout;
+        r.lost = e == httplib::Error::Read || e == httplib::Error::Write;  // issue #6
+        // Issue #6 (BUG-2): a coordinator that was just killed still accepts a connection for a moment, then drops it. When that
+        // happens at once and nothing came back, the call never ran: it counts as a refused connection (ridden out).
+        r.lost_fresh = r.lost && !decided && std::chrono::duration<double>(std::chrono::steady_clock::now() - t_sent).count() < kFreshLossS;
         if (e == httplib::Error::Connection || e == httplib::Error::ConnectionTimeout)
             set_down("nothing listening: the game is closed or was started without -mcp");
         else
@@ -356,12 +456,22 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
     }
     r.reached = true;
     r.status = res->status;
+    // Issue #5: who answered? gmod-mcp signs its answers (older modules: JSON body). Anything else is a foreign program.
+    const bool ours = gmcp::is_gmod_mcp_reply(res->has_header(gmcp::kSignatureHeader), body);
+    const bool stream = res->get_header_value("Content-Type").find("text/event-stream") != std::string::npos;
+    if (!ours && !stream && (res->status >= 400 || !body.empty())) {
+        r.reached = false;
+        set_port_conflict(res->status, token);
+        return r;
+    }
     if (res->status == 401) {
         r.reached = false;
         set_down("the game rejected the token in " + g_dir + "/token");
         return r;
     }
     g_link = Link::Up;
+    g_conflict = false;
+    g_found_port = 0;
     if (!sse && !body.empty()) {
         try {
             json m = json::parse(body);
@@ -401,6 +511,28 @@ bool feedback_offers_on() {
     std::string s = v;
     for (auto &c : s) c = (char)std::tolower((unsigned char)c);
     return !(s == "false" || s == "0" || s == "no" || s == "off");
+}
+
+// Issue #3 (Claude Code Code Mode): GMOD_MCP_TASKS=off (default "auto", any other value too). Claude Code declares the
+// 2026-07-28 Tasks extension in the capabilities of every call, also for the calls a Code Mode script makes, and the game
+// then answers map_load and long waits with a task: the script only gets a "moved to the background" stub. With "off" the
+// bridge does not forward that extension, so the game never starts a task on its own.
+bool server_tasks_off() {
+    const char *v = std::getenv("GMOD_MCP_TASKS");
+    if (!v) return false;
+    std::string s = v;
+    for (auto &c : s) c = (char)std::tolower((unsigned char)c);
+    return s == "off";
+}
+
+// Removes the Tasks extension from the client capabilities of a 2026-07-28 request (the other capabilities and
+// extensions stay).
+void strip_tasks_extension(json &msg) {
+    if (!server_tasks_off() || !msg.contains("params") || !msg["params"].is_object()) return;
+    json &p = msg["params"];
+    if (!p.contains("_meta") || !p["_meta"].is_object() || !p["_meta"].contains(kMetaCaps) || !p["_meta"][kMetaCaps].is_object()) return;
+    json &caps = p["_meta"][kMetaCaps];
+    if (caps.contains("extensions") && caps["extensions"].is_object()) caps["extensions"].erase("io.modelcontextprotocol/tasks");
 }
 
 std::string patch_feedback(std::string text) {
@@ -484,13 +616,46 @@ std::string version_warning() {
            "into the game).";
 }
 
-// Adds the warning to a tools/call result: first text item and structuredContent.version_warning.
+// Adds the warning to a tools/call result as the field structuredContent.version_warning. The text block that is the
+// JSON of structuredContent (what the module sends) is rewritten with the same field, put first so that it is read
+// first. A result without structuredContent whose first text block is a JSON object (an error such as a cancelled
+// task) gets the field inside that object. Issue #3 (Code Mode): Claude Code builds `e.detail` of a thrown error with
+// JSON.parse only when the whole error text starts with `{`, so a JSON text is never given a prose block in front of it.
+// Any other result keeps its text and gets the warning as a prose block before it.
 void add_version_warning(json &result) {
     std::string w = version_warning();
     if (w.empty() || !result.is_object()) return;
     if (!result.contains("content") || !result["content"].is_array()) result["content"] = json::array();
-    result["content"].insert(result["content"].begin(), json{{"type", "text"}, {"text", w}});
-    if (result.contains("structuredContent") && result["structuredContent"].is_object()) result["structuredContent"]["version_warning"] = w;
+    json &content = result["content"];
+    bool rewritten = false;
+    if (result.contains("structuredContent") && result["structuredContent"].is_object()) {
+        json &sc = result["structuredContent"];
+        for (json &c : content) {
+            if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
+            if (json::parse(c["text"].get<std::string>(), nullptr, false) == sc) {
+                std::string body = sc.dump(-1, ' ', false, json::error_handler_t::replace);  // {...} without the warning
+                c["text"] = "{\"version_warning\":" + json(w).dump(-1, ' ', false, json::error_handler_t::replace) +
+                            (body.size() > 2 ? "," + body.substr(1) : "}");
+                rewritten = true;
+            }
+            break;  // only the first text block can be the JSON
+        }
+        sc["version_warning"] = w;
+    }
+    if (!rewritten) {
+        for (json &c : content) {
+            if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
+            json body = json::parse(c["text"].get<std::string>(), nullptr, false);
+            if (body.is_object()) {  // only the first text block can be the JSON
+                std::string text = body.dump(-1, ' ', false, json::error_handler_t::replace);
+                c["text"] = "{\"version_warning\":" + json(w).dump(-1, ' ', false, json::error_handler_t::replace) +
+                            (text.size() > 2 ? "," + text.substr(1) : "}");
+                rewritten = true;
+            }
+            break;
+        }
+    }
+    if (!rewritten) content.insert(content.begin(), json{{"type", "text"}, {"text", w}});
 }
 
 json local_result(const json &msg, json r) {
@@ -699,11 +864,14 @@ void announce_lists_changed() {
 
 // --- The bridge's own tools: test clients it launches and closes, and the session's default instance. They live in
 // the bridge because it runs before any game does (the module cannot start the first one) and holds one session.
+struct EndSlot;
 struct Launched {
     uint32_t pid = 0;
     std::string id;
     std::string owner;  // free label given at launch (a sub-agent's name): instances_close {owner} closes only those
     bool keep = false;
+    std::string root;  // game folder it was started from (where its crash dumps go)
+    std::shared_ptr<EndSlot> slot;  // how it ended, worked out once (shared by the copies of this record)
 #ifdef _WIN32
     HANDLE h = nullptr;
 #endif
@@ -714,6 +882,86 @@ std::mutex g_default_mu;
 std::string g_default_instance;
 std::mutex g_itools_mu;
 std::set<std::string> g_instance_tools;  // game tools that take an `instance` argument
+
+// --- Coordinator hand-over (issue #6) ---
+// The game on the base port is the coordinator. When it ends while other games live, another takes the port over within a
+// few seconds (module side); meanwhile nothing answers on the base port, then the new coordinator answers the retryable
+// coordinator_changing for an instance that has not re-registered yet. The bridge rides both out for a few seconds, but
+// only when other instances are known to live: with the only game closed a call must say game_not_running at once.
+double g_handover_wait_s = 10.0;  // GMOD_MCP_HANDOVER_WAIT_S overrides it (tests)
+std::atomic<int64_t> g_multi_seen_ms{0};
+
+int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() + 1; }
+
+std::mutex g_peers_mu;
+bool g_peers_known = false;           // the last list that showed several games named their members
+std::vector<uint32_t> g_peer_pids;    // their pids (0 = unknown): the running games other than the coordinator, who would take its role over
+
+// instances_list answer: several live instances seen now means a coordinator change is worth waiting for; a list that shows one
+// game (or none) means there is nothing to wait for (issue #6). A list of a coordinator that has just changed is incomplete: ignored.
+void note_instances(const json &sc) {
+    if (!sc.is_object() || !sc.contains("instances") || !sc["instances"].is_array() || sc.value("coordinator_changing", false)) return;
+    int running = 0;
+    std::string coord = sc.value("coordinator_id", "");
+    std::vector<uint32_t> members;
+    for (const auto &e : sc["instances"])
+        if (e.is_object() && e.value("state", "running") == "running") {
+            ++running;
+            if (e.value("role", "") != "coordinator" && e.value("id", "") != coord) members.push_back(e.value("pid", 0u));
+        }
+    std::lock_guard<std::mutex> lk(g_peers_mu);
+    if (running >= 2) {
+        g_multi_seen_ms = steady_ms();
+        g_peers_known = true;
+        g_peer_pids = members;
+    } else {
+        g_multi_seen_ms = 0;
+        g_peers_known = false;
+        g_peer_pids.clear();
+    }
+}
+
+// Issue #6 (BUG-3): does a game that could take the coordinator role over still run? Unknown (no list seen) counts as yes.
+bool peers_may_live() {
+    std::lock_guard<std::mutex> lk(g_peers_mu);
+    if (!g_peers_known) return true;
+    for (uint32_t pid : g_peer_pids)
+        if (pid == 0 || plat::process_start_stamp(pid) != 0) return true;
+    return false;
+}
+
+// A client this session launched, that answered once, still runs.
+bool launched_client_alive() {
+    std::lock_guard<std::mutex> lk(g_launch_mu);
+    for (const auto &l : g_launched) {
+        if (l.id.empty()) continue;
+#ifdef _WIN32
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_TIMEOUT) return true;
+#endif
+    }
+    return false;
+}
+
+bool handover_expected() {
+    if (launched_client_alive()) return true;
+    int64_t t = g_multi_seen_ms.load();
+    if (t == 0 || steady_ms() - t >= 30000) return false;
+    if (peers_may_live()) return true;
+    g_multi_seen_ms = 0;  // issue #6 (BUG-3): the games that could take the role over are gone: nothing to wait for
+    return false;
+}
+
+// The result of a tool call is the retryable coordinator_changing: *retry_after gets the advised delay.
+bool coordinator_changing_result(const json &result, double *retry_after) {
+    if (!result.is_object()) return false;
+    const json &sc = result.contains("structuredContent") ? result["structuredContent"] : json();
+    if (!sc.is_object() || !sc.contains("error") || !sc["error"].is_object() || sc["error"].value("code", "") != "coordinator_changing") return false;
+    const json &d = sc["error"].contains("details") ? sc["error"]["details"] : json();
+    if (retry_after) {
+        *retry_after = d.is_object() && d.contains("retry_after_s") && d["retry_after_s"].is_number() ? d["retry_after_s"].get<double>() : 1.0;
+    }
+    return true;
+}
 
 void learn_instance_tools(const json &tools) {
     if (!tools.is_array()) return;
@@ -742,31 +990,100 @@ json bridge_tools() {
          "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, waits until it answers, "
          "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
          "Returns their instance ids and pids: pass an id as `instance` on every call. "
+         "Without keep: true they end with this bridge session (when it ends, the clients it started are closed, also when the bridge is killed: "
+         "they run in a job object that dies with it); with keep: true they "
+         "outlive it, and a later session closes them by `owner` (below) or by pid / game_terminate. "
          "They close when this session ends unless keep is true; close them earlier with instances_close (not game_quit: "
-         "a clean quit writes their window size over the user's own config). Sub-agents of one Claude Code session share "
+         "it keeps their exit short; a clean quit is safe too, see the convar note below). Sub-agents of one Claude Code session share "
          "this bridge: give each one's clients an `owner` label and close them with instances_close {owner}, never "
-         "{all: true}, which would close the other sub-agents' clients too. The game is found through Steam; pass "
-         "game_dir (the folder holding gmod_win64.exe) if it is elsewhere. Windows only for now.\n"
+         "{all: true}, which would close the other sub-agents' clients too. The `owner` label goes to the game (-mcp_owner) and "
+         "back in its heartbeat: instances_list shows `owner` on every instance whichever bridge session launched it, and "
+         "instances_close {owner} also closes keep: true test clients of an EARLIER session that carry that label (only test "
+         "clients started by instances_launch, never the user's own game or an instance without the tag). The game is found through Steam; pass "
+         "game_dir (the folder holding gmod_win64.exe or bin/win64/gmod.exe) if it is elsewhere. Windows only for now.\n"
          "Presets: 'light' (default: 640x360, 20 fps; for most tests, NOT for performance measurements: the 20 fps cap "
          "hides per-frame cost) and 'normal' (640x360, 30 fps; for rendering checks, screenshots and frame-time sensitive "
          "tests). sound: false (-nosound) changes what the engine reports about sounds: SoundDuration of compressed "
          "(ADPCM) WAV files differs (0.49 s instead of 1.24 s seen); keep sound on for sound tests.\n"
+         // Issue #10
+         "Pass-through options (checked before anything starts; a refused one is invalid_params naming it): fps_max and "
+         "fps_max_nofocus (integers: 0 = no cap, or 10 to 1000) replace the preset's frame cap (fps_max_nofocus follows "
+         "fps_max when only that one is given): timing-sensitive tests give different verdicts at 20, 45 and 300 fps, and "
+         "perf measurements need more than 30. commands: console commands run on each client once it answers, before `map` "
+         "loads, one at a time in order, e.g. [\"fps_max 300\", \"snd_mute_losefocus 0\"] (a `;` splits a line as in the console); "
+         "refused: quit and exit (close with instances_close), connect, retry, redirect and connect_lobby (gmod-mcp never "
+         "connects to a server) and map changes (map, changelevel, load: use `map`). Each result is in "
+         "instances[i].commands [{cmd, ok, error?}]; a command that fails makes the call isError, the others still run. "
+         "launch_args: extra engine command-line tokens, one per array element (a printable ASCII word without spaces, quotes "
+         "or `;`), e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]; a `+name value` token runs a console command at startup. "
+         "Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, -width, -height and the window-mode options, "
+         "-dxlevel, -condebug, -game), +connect and the other connecting or map-loading commands. -nosound is the same as "
+         "sound: false. Archived convars changed this way (fps_max, a `+convar` token, a command such as `cl_showfps 1` or "
+         "`toggle snd_mute_losefocus`) are given back to the user's value before a clean quit like the frame cap (needs the "
+         "module of this release in the game folder: an older module restores only fps_max, fps_max_nofocus, "
+         "engine_no_focus_sleep and snd_mute_losefocus; a convar changed by `exec` of a cfg file is not tracked). "
+         "Where the options are listed: command-line options, Valve Developer Community \"Command line options\" "
+         "(https://developer.valvesoftware.com/wiki/Command_line_options) and, for the GMod-specific ones, the Garry's Mod "
+         "wiki (wiki_search \"command line\"); console commands and convars: api_search and concommand_list on a running "
+         "client.\n"
          "All clients share the game folder with the user's own game: same addons, cfg, data/ and cookies (sv.db/cl.db). "
-         "A test that writes cookies, data files or archived convars changes the user's game too: clean up after it.\n"
-         "Tell the user beforehand: the game saves the window size of these clients as its own video setting, so their next "
-         "normal start of Garry's Mod opens at that size until they set their resolution back in the video options.\n"
+         "A test that writes cookies, data files or archived convars changes the user's game too: clean up after it. "
+         "The frame cap and the focus options these clients start with (fps_max, fps_max_nofocus, snd_mute_losefocus) are "
+         "archived convars: the module gives each one the user's value from cfg/config.cfg (its default when the file has "
+         "no line) before the client quits cleanly (game_quit, console quit, the Quit button, the window's close button; "
+         "not a `quit` the user types by hand in that client's console), so none of them leaks into the user's config. "
+         "Closing with instances_close kills the process and writes nothing.\n"
+         "Video settings: the clients start with -dxlevel 95, so the engine neither reads nor writes the user's stored video "
+         "mode (resolution, anti-aliasing): the user's own game keeps its resolution.\n"
          "Measured cost per client on gm_construct (16-core PC, the game and its 4 browser subprocesses): light about 19% "
-         "of one core and 1.5 GB of RAM; normal 24% and 1.5 GB. Eight clients: about 1.5 cores and 12 GB. Memory is the "
-         "limit, not CPU. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
+         "of one core, 1.55 GB of commit (virtual memory) and 1.2 GB of RAM; normal 24% and the same memory. Eight clients: "
+         "about 1.5 cores and 12 GB. Memory is the limit, not CPU: a machine out of commit makes every game crash "
+         "(0xC000041D, no dump), so before starting anything this call checks the free commit and free RAM and refuses with "
+         "the error low_memory {details: free_commit_mb, free_ram_mb, running_clients (all sessions: the "
+         "registered instances, this bridge's clients and every process of the game's executable, so clients another session started "
+         "that have not registered yet count), registered_clients, game_processes, per_client_mb, count, "
+         "needed_commit_mb, needed_ram_mb} when they do not cover the clients asked for (1.6 GB of commit each plus 1 GB "
+         "for the rest of the machine, 1.2 GB of RAM each); nothing is started then. Close clients you no longer use "
+         "(instances_close), start fewer, or pass ignore_low_memory: true to start anyway. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
          "size barely matters, and a client narrower than 640 pixels crashes while loading a map (integer division by zero "
          "in client.dll at client Lua startup: seen at 480x270 and 320x240; it only survived with the HUD turned off). "
          "-textmode and lower graphics settings were measured: no real gain (and graphics settings would be saved into the "
          "user's own), so neither is offered.\n"
-         "Result: {instances: [{instance, pid, port, owner?, map? (or map: null + map_error)}], game_dir, found_by, preset, "
-         "keep, fps_max, fps_note, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
-         "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. Example: "
+         "Result: {instances: [{instance, pid, port, owner?, commands? [{cmd, ok, error?}], map? (or map: null + map_error)}], game_dir, found_by, preset, "
+         "keep, fps_max, fps_max_nofocus, fps_note, launch_args?, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
+         "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. A client that "
+         "crashed during startup or its map load is reported as client_crashed (startup: the whole call's error; map load: that "
+         "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. "
+         "With count > 1 the other clients of the call are not closed when one dies at startup: the error lists the ones still "
+         "running in details.still_running [{pid, state: answering or still starting, instance?}] and a top-level warning; "
+         "close them (instances_close) or use them. When the clients started but a map, a startup command or the lua_mount did not work, "
+         "the call is isError with the whole result above plus error {code: launch_incomplete, message}. Example: "
          "{\"count\": 2, \"map\": \"gm_construct\", \"owner\": \"fork-a\"}, then pass each returned instance id as "
-         "`instance`."},
+         "`instance`.\n"
+         // FP7137 (git grep FP7137: agent-facing text A1-A3, see docs/FP7137.md)
+         "Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load that "
+         "ends in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). So the bridge serialises "
+         "the launches and map loads that go through it, from any session: this call first waits while any game loads a "
+         "map, and with `map` the maps load after a 15 s settle delay, 2 at a time across every session (a map_load of another session counts). \"Any game\" includes loads the bridge did "
+         "not start (console `map`, changelevel, Lua RunConsoleCommand, a script talking to the game): every game reports "
+         "when it is loading a map (instances_list `loading`), and waited_reason then starts with map_load_outside_bridge. "
+         "A call that waited reports waited_s and "
+         "waited_reason (and progress when your client sent a progress token). If the wait would exceed timeout_s it fails "
+         "with error map_load_in_progress and starts nothing: retry later, or with a larger timeout_s. Not covered: a game "
+         "started by hand (not by this call) and a load that begins while a launch is already creating its processes "
+         "(only launches and map_load calls of the bridge wait, a load started by other means is never held back).\n"
+         // Issue #8 (chaos test G1)
+         "A client that is frozen (instances_list state unresponsive or hung: suspended, crash dialog, a load that never ends) keeps "
+         "a new client from registering (engine FP7137 handshake), so a launch beside it ends with `0 of N clients answered`: "
+         "before starting anything this call refuses with peer_unhealthy {details.unhealthy: [{instance, pid, state}]}, naming "
+         "the way out (instances_close {pids} for a client this session started, game_terminate {instance} for any), unless "
+         "ignore_unhealthy: true; a timeout also names the stuck peers it saw meanwhile (details.unhealthy_peers).\n"
+         "When a program that is not gmod-mcp holds the base port (port_conflict, see status), the launch is refused up front with the fix "
+         "(GMOD_MCP_PORT) and nothing is started: the clients would register on the next port, where this bridge cannot see them.\n"
+         "Right after a game starts, the other games can be unreachable for 15-18 s (instance_unreachable or timeouts): "
+         "expected, wait and retry; it is not a dead game (client_crashed is the signal for a dead one).\n"
+         "Order: launch all the clients you need in ONE call (with `map`, they load 2 at a time after the settle delay), "
+         "then work. Do not interleave launches with map loads, yours or another session's."},
         {"inputSchema",
          {{"type", "object"},
           {"properties",
@@ -775,14 +1092,27 @@ json bridge_tools() {
             {"maxplayers", {{"type", "integer"}, {"minimum", 1}, {"maximum", 128}, {"description", "For map_load (default 1: singleplayer)."}}},
             {"preset", {{"type", "string"}, {"enum", json::array({"light", "normal"})}, {"description", "Default light."}}},
             {"sound", {{"type", "boolean"}, {"description", "Keep sound on (default true). false saves CPU when sound does not matter."}}},
+            {"fps_max", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000},  // Issue #10
+                         {"description", "Frame cap of these clients (fps_max): 0 = no cap, or 10 to 1000. Default: the preset's (light 20, normal 30). Given back to the user's value on a clean quit."}}},
+            {"fps_max_nofocus", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000},  // Issue #10
+                                 {"description", "Frame cap when the window has no focus (fps_max_nofocus): 0 = no cap, or 10 to 1000. Default: the same as fps_max."}}},
+            {"commands", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 256}}},  // Issue #10
+                          {"description", "Console commands run on each client once it answers, before `map` loads, e.g. [\"fps_max 300\", \"snd_mute_losefocus 0\"]. quit, exit, connect and map changes are refused. Archived convars they change are given back on a clean quit."}}},
+            {"launch_args", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 160}}},  // Issue #10
+                             {"description", "Extra engine command-line tokens, one per element, e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]. Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, window mode, -dxlevel, -condebug, -game), +connect, +map. Options: https://developer.valvesoftware.com/wiki/Command_line_options"}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
-            {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
+            {"ignore_unhealthy", {{"type", "boolean"}, {"description", "Start even when a running client is unresponsive or hung (error peer_unhealthy otherwise: a frozen client keeps a new one from registering, so the launch would time out). Default false."}}},
+            {"ignore_low_memory", {{"type", "boolean"}, {"description", "Start even when the free memory does not cover the clients asked for (error low_memory otherwise). Default false: a machine out of memory crashes every game on it."}}},
+            {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task), also on their command line and in instances_list; instances_close {owner} then closes only them, even from a later bridge session when keep is true."}}},
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
                          {"description", "Absolute folder whose Lua these clients load before every addon's (e.g. your git worktree of "
                                          "the addon: its root or its lua/ folder). Applies from their first map load; see lua_mount. "
-                                         "The result then reports what each engine really has (instances[i].lua_mount.active); a mount "
-                                         "that is not active is isError with a warning. Windows only."}}},
-            {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe), if Steam does not know it."}}},
+                                         "Each engine is asked what it really has BEFORE any map loads (instances[i].lua_mount.active); a missing mount is "
+                                         "applied again, and a client that still has none gets no map (map_error lua_mount_not_active, "
+                                         "isError, warning). Windows only."}}},
+            {"allow_shadow", {{"type", "boolean"}, {"description", "With lua_mount: accept a folder that replaces files of the game's own base Lua "
+                                                                                 "(lua/includes/init.lua...). Refused by default (shadows_base_lua): such a client hangs in its load."}}},
+            {"game_dir", {{"type", "string"}, {"description", "Game folder (holding gmod_win64.exe or bin/win64/gmod.exe), if Steam does not know it."}}},
             {"timeout_s", {{"type", "number"}, {"minimum", 10}, {"maximum", 900}, {"description", "Max wait for all of them, map included (default 180)."}}}}},
           {"additionalProperties", false}}},
         {"annotations", {{"title", "Launch test clients"}, {"readOnlyHint", false}, {"destructiveHint", false}, {"openWorldHint", false}}}};
@@ -792,17 +1122,22 @@ json bridge_tools() {
         {"description",
          "Closes clients this session started with instances_launch, at once and without writing their config, by "
          "instance id, by pid (also for a client that never answered, e.g. gmod-mcp did not load in it) or by owner label. "
-         "Other games (the user's own, another session's) are refused: close those only if the user asks, with "
-         "game_terminate. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
-         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], refused?: [ids, pids or "
-         "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error only when nothing was "
-         "closed. Example: {\"owner\": \"fork-a\"}."},
+         "By id, pid or all, only this bridge session's clients: other games (the user's own, another session's) are refused, close "
+         "those only if the user asks, with game_terminate. By owner label it also closes keep: true test clients of an earlier "
+         "session (a bridge restarted, another agent) that carry that label (instances_list shows it as `owner`; closed[i]."
+         "launched_by_other_session is true), but never a game that is not a test client or one without the tag. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
+         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], already_gone?: [{pid, instance?, owner?}] (processes that had ended before the call: nothing was closed), refused?: [ids, pids or "
+         "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error (code refused, the same fields beside it) only when nothing was "
+         "closed. Closing the client that is the coordinator (the game on the base port, see instances_list: role, "
+         "coordinator_warning) while other games live moves that role: the answer says so (closed[i].was_coordinator, "
+         "coordinator_moved_to, warning) and calls of other agents answer coordinator_changing for a few seconds. "
+         "Example: {\"owner\": \"fork-a\"}."},
         {"inputSchema",
          {{"type", "object"},
           {"properties",
            {{"instances", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Instance ids to close."}}},
             {"pids", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"description", "Process ids to close (as returned by instances_launch)."}}},
-            {"owner", {{"type", "string"}, {"description", "Close every client launched with this owner label."}}},
+            {"owner", {{"type", "string"}, {"description", "Close every client launched with this owner label, including keep: true test clients of an earlier bridge session that carry it."}}},
             {"all", {{"type", "boolean"}, {"description", "Close every client this session started, other sub-agents' included."}}}}},
           {"additionalProperties", false}}},
         {"annotations", {{"title", "Close test clients"}, {"readOnlyHint", false}, {"destructiveHint", true}, {"openWorldHint", false}}}};
@@ -813,7 +1148,7 @@ json bridge_tools() {
          "Makes `instance` this session's default: tool calls without an `instance` argument go to it (useful with several "
          "games running, where they would otherwise be refused as ambiguous). null clears it. Lasts until the session ends. "
          "Do not use it with sub-agents: they all share this session, so a default set by one applies to every other's "
-         "calls too (they would act on its game). Pass `instance` on every call instead. Result: {default_instance, previous}. The id is not checked: an unknown one makes later calls fail with unknown_instance."},
+         "calls too (they would act on its game). Pass `instance` on every call instead. Result: {default_instance, previous}. An id that instances_list does not show is refused (unknown_instance, the default stays); when the list cannot be read the id is accepted with a warning."},
         {"inputSchema",
          {{"type", "object"},
           {"properties", {{"instance", {{"type", json::array({"string", "null"})}, {"description", "Instance id (see instances_list), or null."}}}}},
@@ -827,13 +1162,96 @@ bool is_bridge_tool(const std::string &name) { return name == kLaunchName || nam
 
 json tool_text(json structured, bool error);
 
+// How a client this session launched ended: this bridge holds its process handle, so the exit code and end time are known
+// exactly, whatever the coordinator saw. Worked out once (a dump is given to one process only).
+struct EndSlot {
+    std::mutex mu;
+    bool done = false;
+    crashinfo::Verdict verdict;
+    uint32_t exit_code = 0;
+    double ended_unix = 0;
+};
+std::mutex g_claimed_mu;
+std::set<std::string> g_claimed_dumps;
+
+// True when the launched client's process has exited (then `v`, `code` and `ended` are filled).
+// `wait_ms`: how long to wait for a process that has not ended yet. A crash closes the game's sockets before the process object is
+// signalled, so a call that just failed on a broken connection asks again after a moment (issue #8).
+bool launched_end(const Launched &l, crashinfo::Verdict &v, uint32_t &code, double &ended, int wait_ms = 0) {
+#ifdef _WIN32
+    if (!l.slot) return false;
+    std::lock_guard<std::mutex> lk(l.slot->mu);
+    if (!l.slot->done) {
+        plat::ProcInfo pi;
+        if (!l.h || !plat::process_watch_query((void *)l.h, pi, wait_ms) || !pi.exited) return false;
+        crashinfo::Facts f;
+        f.exit_known = true;
+        f.exit_code = pi.exit_code;
+        f.exit_unix = pi.exit_unix;
+        f.start_unix = pi.start_unix;
+        f.last_seen_unix = pi.exit_unix;
+        f.now_unix = pi.exit_unix;
+        std::vector<crashinfo::Dump> dumps = crashinfo::list_dumps(crashinfo::dump_dirs(l.root + "/garrysmod"));
+        std::lock_guard<std::mutex> ck(g_claimed_mu);
+        l.slot->verdict = crashinfo::judge(f, dumps, g_claimed_dumps);
+        crashinfo::read_dump_facts(crashinfo::dump_dirs(l.root + "/garrysmod"), l.slot->verdict);  // issue #8: the faulting module and the stack's callers
+        if (!l.slot->verdict.dump.empty()) g_claimed_dumps.insert(l.slot->verdict.dump);
+        l.slot->exit_code = pi.exit_code;
+        l.slot->ended_unix = pi.exit_unix;
+        l.slot->done = true;
+    }
+    v = l.slot->verdict;
+    code = l.slot->exit_code;
+    ended = l.slot->ended_unix;
+    return true;
+#else
+    (void)l; (void)v; (void)code; (void)ended; (void)wait_ms;
+    return false;
+#endif
+}
+
+double unix_now() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
+
+// The error object for a launched client that crashed ({code, message, details}), or null when it still runs or ended normally.
+json launched_crash_error(const Launched &l, int wait_ms = 0) {
+    crashinfo::Verdict v;
+    uint32_t code = 0;
+    double ended = 0;
+    if (!launched_end(l, v, code, ended, wait_ms) || v.cause != crashinfo::Cause::Crashed) return json();
+    double ago = std::max(0.0, unix_now() - ended);
+    json details{{"instance", l.id.empty() ? json(nullptr) : json(l.id)}, {"pid", l.pid}, {"dump", v.dump.empty() ? json(nullptr) : json(v.dump)},
+                 {"evidence", v.evidence}, {"exit_code", code}};
+    crashinfo::add_fault_details(details, v);  // issue #8: fault, stack_candidates
+    std::string message = crashinfo::crash_message("client", l.id.empty() ? "started by this session" : l.id, l.pid, ago, v, true, code);
+    lowmem::annotate_crash(lowmem::current(), details, message);  // issue #8: free memory now, and a hint when it is low
+    return json{{"code", crashinfo::crash_code("client")}, {"message", message}, {"details", details}};
+}
+
 // instances_list, completed by the bridge: the owner label of each client it launched, the clients it launched that
 // never answered (gmod-mcp not loaded, still starting), and an optional owner filter. `sc` is the game's answer
 // (or an empty list when no game answers).
-json annotate_instances(json sc, const json &args) {
+json annotate_instances(json sc, const json &args, bool from_game = true) {
     std::string want = args.value("owner", "");
     std::set<uint32_t> listed;
     json kept = json::array();
+    if (from_game) note_instances(sc);
+    json coord_warning;  // issue #6: the coordinator is a client this session launched, and other instances depend on it
+    {
+        int running = 0;
+        for (const auto &e : sc.value("instances", json::array()))
+            if (e.is_object() && e.value("state", "running") == "running") ++running;
+        std::lock_guard<std::mutex> lk(g_launch_mu);
+        for (const auto &e : sc.value("instances", json::array())) {
+            if (!e.is_object() || e.value("role", "") != "coordinator" || running < 2) continue;
+            for (const auto &l : g_launched)
+                if (l.pid == e.value("pid", 0u)) {
+                    coord_warning = e.value("id", "?") + " is the coordinator (it holds the directory of instances and relays the calls to the others) and " +
+                                    (l.owner.empty() ? "was launched by this session" : "was launched with owner \"" + l.owner + "\"") +
+                                    ": closing it (instances_close, game_quit) moves the role to another instance, and calls with `instance` answer "
+                                    "coordinator_changing for a few seconds. Close the other clients first, or expect the pause.";
+                }
+        }
+    }
     std::lock_guard<std::mutex> lk(g_launch_mu);
     for (auto e : sc.value("instances", json::array())) {
         uint32_t pid = e.value("pid", 0u);
@@ -852,7 +1270,21 @@ json annotate_instances(json sc, const json &args) {
         if (listed.count(l.pid)) continue;
         if (!want.empty() && l.owner != want) continue;
 #ifdef _WIN32
-        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) continue;  // exited
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) {  // exited: shown when it crashed (a clean quit just goes)
+            crashinfo::Verdict v;
+            uint32_t code = 0;
+            double ended = 0;
+            if (launched_end(l, v, code, ended) && v.cause == crashinfo::Cause::Crashed) {
+                json e = crashinfo::crashed_entry(l.id.empty() ? "pid-" + std::to_string(l.pid) : l.id, "client", l.pid,
+                                                  std::max(0.0, unix_now() - ended), v, true, code);
+                e["launched_by_this_session"] = true;
+                if (!l.owner.empty()) e["owner"] = l.owner;
+                json mem = lowmem::memory_json(lowmem::current());  // issue #8
+                if (!mem.is_null()) e["crash"]["memory"] = mem;
+                sc["instances"].push_back(e);
+            }
+            continue;
+        }
 #endif
         json x{{"pid", l.pid}, {"note", "launched by this session, not answering: still starting, or gmod-mcp did not load in it "
                                         "(see garrysmod/data/mcpagent/last_crash.txt). instances_close {pids} closes it."}};
@@ -861,6 +1293,7 @@ json annotate_instances(json sc, const json &args) {
     }
     if (!silent.empty()) sc["launched_not_answering"] = silent;
     if (!want.empty()) sc["owner_filter"] = want;
+    if (coord_warning.is_string()) sc["coordinator_warning"] = coord_warning;
     return sc;
 }
 
@@ -871,14 +1304,77 @@ json tool_text(json structured, bool error) {
 json tool_error(const std::string &code, const std::string &message) {
     return tool_text(json{{"error", {{"code", code}, {"message", message}}}}, true);
 }
+// A call refused because another launch or map load is in progress (FP7137): the same call a little later, with room to wait
+// (the settle delay after a game starts is 15 s). `args` is the call's arguments, `fallback_timeout_s` its default timeout.
+json retry_later(json refused, const std::string &tool, const json &args, double fallback_timeout_s) {
+    json a = args.is_object() ? args : json::object();
+    double old = a.contains("timeout_s") && a["timeout_s"].is_number() ? a["timeout_s"].get<double>() : fallback_timeout_s;
+    a["timeout_s"] = std::min(900.0, std::max(60.0, 2 * old));
+    next_call::attach(refused, next_call::make(tool, a, 15));
+    return refused;
+}
+
+// The answer to a tool call while the game is unreachable: the module's error shape, as text and structuredContent.
+json not_running_error() {
+    return tool_text(json{{"error", {{"code", unreachable_code()},
+                                     {"message", not_running_text()},
+                                     {"details", {{"host", "127.0.0.1"}, {"port", g_port}, {"reason", why_down()}}}}}},
+                     true);
+}
+
+// Calls `again` while the coordinator role moves (see the hand-over notes above), for at most g_handover_wait_s: nothing
+// listening on the base port while other instances live, or an answer that is coordinator_changing (nothing was
+// executed in either case, so repeating the call is safe). If nothing came back by then, an unreachable game becomes the
+// retryable coordinator_changing instead of game_not_running; an answer that is still coordinator_changing is returned as is.
+Relay ride_out_handover(Relay r, const std::function<Relay()> &again, const std::atomic<bool> *cancelled, const json &id) {
+    auto t0 = std::chrono::steady_clock::now();
+    auto waited = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    for (;;) {
+        double retry = 1.0;
+        bool wait = false;
+        if (!r.reached && r.lost && !r.lost_fresh && !r.refused && handover_expected()) {
+            // Issue #6: the call was in flight when the coordinator went away while other games live. The target game may well
+            // have run it (a map load, a Lua job): repeating it here could run it twice, and game_not_running would be a lie.
+            json e{{"error", {{"code", "relay_lost"},
+                              {"message", "the connection to the coordinator (the game on port " + std::to_string(g_port) + ") broke while this call was in flight, "
+                                          "and other games are running: the coordinator role is moving. The call MAY HAVE BEEN EXECUTED by its target game (a map "
+                                          "load or a Lua job may have started or finished): check the game's state (status, instances_list, lua_job_status) before "
+                                          "repeating a call that is not idempotent. The game itself is not closed; calls work again within a few seconds."},
+                              {"details", {{"retry_after_s", 3.0}, {"maybe_executed", true}}}}}};
+            r.reached = true;
+            r.status = 200;
+            r.response = rpc_result(id, tool_text(e, true));
+            return r;
+        }
+        if (!r.reached) wait = (r.refused || r.lost_fresh) && handover_expected();
+        else if (r.response.is_object() && r.response.contains("result")) wait = coordinator_changing_result(r.response["result"], &retry);
+        if (!wait) return r;
+        if (waited() >= g_handover_wait_s || (cancelled && cancelled->load())) {
+            if (!r.reached) {
+                json e{{"error", {{"code", "coordinator_changing"},
+                                  {"message", "the coordinator (the game on port " + std::to_string(g_port) + ") stopped answering while other instances "
+                                              "live, and none has taken the role over yet (waited " + std::to_string((int)waited()) + " s). Retry in a few seconds; " +
+                                              (r.lost_fresh ? "the call was cut at once, before any answer: it most likely did not run." : "nothing was sent to the game.")},
+                                  {"details", {{"retry_after_s", 3.0}, {"waited_s", std::round(waited() * 10) / 10}}}}}};
+                r.reached = true;
+                r.status = 200;
+                r.response = rpc_result(id, tool_text(e, true));
+            }
+            return r;
+        }
+        double nap = std::min(std::max(retry, 0.3), 1.0);
+        for (double t = 0; t < nap && !(cancelled && cancelled->load()); t += 0.05) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        r = again();
+    }
+}
 
 // A tool of the game, called by the bridge itself (legacy era, no stream). Returns its structuredContent, or
 // {"error": ...} when the game is unreachable or the call failed.
 json game_call(const std::string &tool, json args, double timeout_s) {
     json m{{"jsonrpc", "2.0"}, {"id", "gmod-mcp-bridge-internal"}, {"method", "tools/call"},
            {"params", {{"name", tool}, {"arguments", std::move(args)}}}};
-    Relay r = relay(m, timeout_s);
-    if (!r.reached) return json{{"error", {{"code", "game_not_running"}, {"message", why_down()}}}};
+    Relay r = ride_out_handover(relay(m, timeout_s), [&] { return relay(m, timeout_s); }, nullptr, m["id"]);
+    if (!r.reached) return json{{"error", {{"code", unreachable_code()}, {"message", g_conflict ? port_conflict_text() : why_down()}}}};
     if (!r.response.contains("result")) return json{{"error", {{"code", "rpc_error"}, {"message", r.response.value("error", json::object()).value("message", "no result")}}}};
     return r.response["result"].value("structuredContent", json::object());
 }
@@ -889,19 +1385,14 @@ std::string parent_of(std::string p) {
     return s == std::string::npos ? p : p.substr(0, s);
 }
 
-bool file_is(const std::string &p) {
-    std::error_code ec;
-    return std::filesystem::is_regular_file(std::filesystem::u8path(p), ec);
-}
-
 // The game folder: the argument, then what the module reported (status: game_dir), then Steam's libraries.
 [[maybe_unused]] std::string find_game_root(const std::string &arg, std::string &how) {
     auto ok = [](std::string d) {
         while (!d.empty() && (d.back() == '/' || d.back() == '\\')) d.pop_back();
         std::string low = d;
         for (auto &c : low) c = (char)std::tolower((unsigned char)c);
-        if (low.size() >= 9 && low.compare(low.size() - 9, 9, "garrysmod") == 0 && !file_is(d + "/gmod_win64.exe")) d = parent_of(d);
-        return file_is(d + "/gmod_win64.exe") ? d : std::string();
+        if (low.size() >= 9 && low.compare(low.size() - 9, 9, "garrysmod") == 0 && gamedir::find_game_exe(d).empty()) d = parent_of(d);
+        return gamedir::find_game_exe(d).empty() ? std::string() : d;
     };
     if (!arg.empty()) {
         how = "game_dir argument";
@@ -944,10 +1435,12 @@ bool file_is(const std::string &p) {
     return "";
 }
 
+thread_local double g_fp7137_progress_offset = 0;  // FP7137: progress already reported while waiting for the lock
+
 [[maybe_unused]] void progress(const json &token, double done, double total, const std::string &message) {
     if (token.is_null()) return;
-    json p{{"progressToken", token}, {"progress", done}, {"message", message}};
-    if (total > 0) p["total"] = total;
+    json p{{"progressToken", token}, {"progress", done + g_fp7137_progress_offset}, {"message", message}};  // FP7137
+    if (total > 0) p["total"] = total + g_fp7137_progress_offset;  // FP7137
     out(json{{"jsonrpc", "2.0"}, {"method", "notifications/progress"}, {"params", p}});
 }
 
@@ -968,18 +1461,7 @@ std::wstring utf8_to_wide(const std::string &s) {
 // answered (its structuredContent, or {"error"} when the call failed). The mount counts as active only when the
 // engine reports the requested folder; the answer's base_lua_mounted false means the client cannot run its base Lua.
 [[maybe_unused]] json lua_mount_verdict(const std::string &requested, const json &answer) {
-    auto same = [](std::string a, std::string b) {
-        auto norm = [](std::string &x) {
-            for (auto &c : x) {
-                if (c == '/') c = '\\';
-                else if ((unsigned char)c < 0x80) c = (char)std::tolower((unsigned char)c);
-            }
-            while (x.size() > 3 && x.back() == '\\') x.pop_back();
-        };
-        norm(a);
-        norm(b);
-        return !a.empty() && a == b;
-    };
+    auto same = [](const std::string &a, const std::string &b) { return lua_mount::same_path(a, b); };
     json v{{"requested", requested}, {"active", false}, {"base_lua_mounted", nullptr}};
     if (!answer.is_object() || answer.contains("error")) {
         json e = answer.is_object() && answer.contains("error") ? answer["error"] : json("no usable answer from the game");
@@ -991,6 +1473,23 @@ std::wstring utf8_to_wide(const std::string &s) {
     json engine = answer.value("lua_mount", json());
     if (engine.is_string() && same(engine.get<std::string>(), requested)) {
         v["active"] = true;
+        if (answer.value("folder_missing", false)) {  // Issue #9: renamed or deleted since it was mounted
+            v["active"] = false;
+            v["error_code"] = "mount_folder_missing";
+            v["error"] = "mount_folder_missing: the mounted folder (or its lua/) does not exist any more: the game serves nothing from it";
+            return v;
+        }
+        // Issue #9: the engine lists the folder, but its file system may not be able to read it (UNC, junction, long path...):
+        // the game then asks the module's own bookkeeping, not the file system, and runs the installed code.
+        if (answer.contains("engine_serves_folder") && answer["engine_serves_folder"].is_boolean()) {
+            v["engine_serves_folder"] = answer["engine_serves_folder"];
+            if (answer["engine_serves_folder"] == json(false)) {
+                v["active"] = false;
+                v["error_code"] = "mount_not_effective";
+                v["error"] = "mount_not_effective: the engine lists the folder but its file system serves none of the files it was asked "
+                             "for (a path it cannot read: UNC, junction, over-long or non-ASCII), so the game runs the installed addon's code";
+            }
+        }
     } else {
         v["engine_lua_mount"] = engine.is_string() ? engine : json(nullptr);
         v["error"] = engine.is_string() ? "the engine has another folder mounted: " + engine.get<std::string>()
@@ -999,6 +1498,141 @@ std::wstring utf8_to_wide(const std::string &s) {
     }
     return v;
 }
+
+// FP7137 (issue #7): ids of the games that report a map load in progress (the `loading` flag each module sends with its
+// heartbeat), whatever started the load: the console, Lua, a script talking to the game, a bridge. `except` is skipped.
+std::vector<std::string> fp7137_loading_games(const std::string &except = "") {  // FP7137
+    std::vector<std::string> ids;  // FP7137
+    // Live verification of 0.3.7: with no game this was a second refused connection (about 1 s on Windows) before the call's own: map_load
+    // answered game_not_running after 3 s, status after 1 s. The last call said nothing listens: there is nothing to ask (a game that started
+    // since only goes unreported for this call: the link is refreshed by the call itself).
+    if (g_link == Link::Down) return ids;
+    json lst = game_call("instances_list", json::object(), 3);  // FP7137: an unreachable game is an error object: no ids
+    if (!lst.is_object() || !lst.contains("instances") || !lst["instances"].is_array()) return ids;  // FP7137
+    for (const auto &in : lst["instances"])  // FP7137
+        if (in.is_object() && in.value("loading", false) && in.value("state", "running") == "running" && in.value("id", "") != except)  // FP7137
+            ids.push_back(in.value("id", "?"));  // FP7137
+    return ids;  // FP7137
+}  // FP7137
+
+// Issue #8 (chaos test G1): the running instances whose main thread or whole process is stuck (state "unresponsive" or "hung").
+// A frozen client keeps the engine from letting a new client register (FP7137 handshake): a launch then times out with
+// "0 of 1 clients answered". [{instance, pid, state}]
+json unhealthy_peers(const json &lst) {
+    json out = json::array();
+    if (!lst.is_object() || !lst.contains("instances") || !lst["instances"].is_array()) return out;
+    for (const auto &e : lst["instances"]) {
+        if (!e.is_object()) continue;
+        std::string st = e.value("state", "");
+        if (st != "unresponsive" && st != "hung") continue;
+        out.push_back(json{{"instance", e.value("id", "?")}, {"pid", e.value("pid", 0u)}, {"state", st}});
+    }
+    return out;
+}
+
+std::string describe_unhealthy(const json &peers) {
+    std::string t;
+    for (const auto &u : peers) t += (t.empty() ? "" : ", ") + u.value("instance", std::string("?")) + " (pid " + std::to_string(u.value("pid", 0u)) + ") is " + u.value("state", std::string("?"));
+    return t;
+}
+
+#ifdef _WIN32
+// Issue #8 (chaos test G4): pids of the games running this game's executable (any session's client, registered with the
+// directory or still starting). Matched by the full image path (case-insensitive), so another copy of the game is not counted.
+// Each game also starts helper processes of the same executable (`--type=renderer`, `--type=utility`: about 4 on a live game, 2 on a
+// light one), which are not games and each hold memory of their own to a small degree only: a process whose parent is itself a
+// process of the game (created before it: the pid may have been reused) is left out. Seen live: 14 processes for 3 games.
+std::set<uint32_t> game_process_pids(const std::string &exe) {
+    std::set<uint32_t> out;
+    std::map<uint32_t, uint32_t> parent;
+    auto norm = [](std::wstring w) {
+        for (auto &c : w) c = c == L'/' ? L'\\' : (wchar_t)towlower(c);
+        return w;
+    };
+    auto created = [](uint32_t pid) -> uint64_t {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) return 0;
+        FILETIME c{}, e{}, k{}, u{};
+        uint64_t t = GetProcessTimes(h, &c, &e, &k, &u) ? (((uint64_t)c.dwHighDateTime << 32) | c.dwLowDateTime) : 0;
+        CloseHandle(h);
+        return t;
+    };
+    std::wstring want = norm(utf8_to_wide(exe));
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return out;
+    PROCESSENTRY32W e{};
+    e.dwSize = sizeof e;
+    for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e)) {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, e.th32ProcessID);
+        if (!h) continue;
+        wchar_t buf[2048];
+        DWORD n = 2048;
+        if (QueryFullProcessImageNameW(h, 0, buf, &n) && norm(std::wstring(buf, n)) == want) {
+            out.insert(e.th32ProcessID);
+            parent[e.th32ProcessID] = e.th32ParentProcessID;
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    std::set<uint32_t> games;
+    for (uint32_t pid : out) {
+        auto pp = parent.find(pid);
+        bool helper = false;
+        if (pp != parent.end() && out.count(pp->second) && pp->second != pid) {
+            uint64_t tp = created(pp->second), tc = created(pid);
+            helper = tp != 0 && tc != 0 && tp <= tc;  // the parent is a game process that started first: this is its helper
+        }
+        if (!helper) games.insert(pid);
+    }
+    return games;
+}
+#endif
+
+#ifdef _WIN32
+// Issue #8 (live chaos test): the clients this session launches without keep live in a job object that dies with the bridge
+// (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE), so a bridge killed by TerminateProcess / taskkill /F (which runs no exit code) no longer
+// leaves them running for ever. The game starts helper processes of its own executable: they join the job (children inherit it; no
+// breakaway flag is set, and the client is created suspended so that no child can start before it is in the job). Clients started
+// with keep: true are not put in it. Null when the job could not be created (the clients are then started as before).
+HANDLE client_job() {
+    static HANDLE job = [] {
+        HANDLE j = CreateJobObjectW(nullptr, nullptr);
+        if (!j) return (HANDLE) nullptr;
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info, sizeof info)) {
+            CloseHandle(j);
+            return (HANDLE) nullptr;
+        }
+        return j;
+    }();
+    return job;
+}
+
+// Issue #6: a map_load whose answer never came (the connection to the coordinator broke while the role moved): the client may have
+// loaded the map anyway (seen live: maps loaded with the lua_mount active while instances_launch reported game_not_running).
+// Polls its status until it is not loading any more. Returns {map} when it sits on `map`, null when it does not, or when it ended.
+json recover_lost_map_load(const Launched &l, const std::string &map, double budget_s) {
+    auto t0 = std::chrono::steady_clock::now();
+    int idle = 0;  // consecutive readings that say "not loading, another map"
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < budget_s) {
+        if (l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0) return json();
+        json st = game_call("status", json{{"instance", l.id}}, 10);
+        if (!st.is_object() || st.contains("error")) {
+            idle = 0;  // the answer itself may be lost again: look again
+        } else if (st.value("loading", false)) {
+            idle = 0;
+        } else if (st.contains("map") && st["map"].is_string() && st["map"].get<std::string>() == map) {
+            return json{{"map", map},
+                        {"note", "the answer to map_load was lost (the coordinator role moved while it ran); the client reports the map loaded"}};
+        } else if (++idle >= 2) {
+            return json();
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return json();
+}
+#endif
 
 json launch_tool(const json &args, const json &token) {
 #ifndef _WIN32
@@ -1012,6 +1646,25 @@ json launch_tool(const json &args, const json &token) {
     double timeout = args.value("timeout_s", 180.0);
     std::string map = args.value("map", "");
     std::string owner = args.value("owner", "");
+    // Issue #10: pass-through options, checked before anything starts (the schema already checked the types and bounds).
+    int fps_cap = preset == "normal" ? 30 : 20, fps_cap_nofocus = fps_cap;
+    bool fps_custom = args.contains("fps_max") || args.contains("fps_max_nofocus");
+    for (const char *key : {"fps_max", "fps_max_nofocus"}) {
+        if (!args.contains(key)) continue;
+        std::string fe = launchopts::fps_error(args[key], key);
+        if (!fe.empty()) return tool_error("invalid_params", fe);
+    }
+    if (args.contains("fps_max")) fps_cap = fps_cap_nofocus = (int)std::lround(args["fps_max"].get<double>());  // the unfocused cap follows...
+    if (args.contains("fps_max_nofocus")) fps_cap_nofocus = (int)std::lround(args["fps_max_nofocus"].get<double>());  // ...unless given
+    std::vector<std::string> startup_cmds, extra_args;
+    if (args.contains("commands")) {
+        std::string ce = launchopts::check_commands(args["commands"], startup_cmds);
+        if (!ce.empty()) return tool_error("invalid_params", ce);
+    }
+    if (args.contains("launch_args")) {
+        std::string ae = launchopts::check_launch_args(args["launch_args"], extra_args);
+        if (!ae.empty()) return tool_error("invalid_params", ae);
+    }
     // Checked before anything starts: a bad folder must not leave clients behind.
     std::string mount_root;
     if (args.contains("lua_mount") && args["lua_mount"].is_string() && !args["lua_mount"].get<std::string>().empty()) {
@@ -1019,45 +1672,142 @@ json launch_tool(const json &args, const json &token) {
         if (!lua_mount::normalize_root(args["lua_mount"].get<std::string>(), mount_root, oerr)) return tool_error("invalid_params", "lua_mount: " + oerr);
     }
     std::string how, root = find_game_root(args.value("game_dir", ""), how);
-    if (root.empty())
-        return tool_error("game_not_found", "Garry's Mod not found (" + how + "): pass game_dir, the folder holding gmod_win64.exe (the gmod-mcp skill explains how to find it)");
+    if (root.empty()) {
+        // Issue #4: the 64-bit game is gmod_win64.exe at the root (older installs) or bin/win64/gmod.exe (current ones).
+        std::string given = args.value("game_dir", "");
+        return tool_error("game_not_found", "Garry's Mod not found (" + how + "): pass game_dir, the folder holding gmod_win64.exe or bin/win64/gmod.exe (the gmod-mcp skill explains how to find it)" +
+                                                (given.empty() ? "" : "; " + gamedir::missing_exe_message(given)));
+    }
     if (!mount_root.empty()) {
-        std::string inside = lua_mount::refuse_inside_game(mount_root, root + "/garrysmod");
-        if (!inside.empty()) return tool_error("invalid_params", "lua_mount: " + inside);
+        std::string code, inside = lua_mount::refuse_mount(mount_root, root + "/garrysmod", args.value("allow_shadow", false), &code);
+        if (!inside.empty()) return tool_error(code, "lua_mount: " + inside);
+    }
+    json peers_list = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
+    // Issue #5 (live verification of 0.3.7): a program that is not gmod-mcp holds the base port. The module takes the next free port, which
+    // this bridge never looks at (every call goes through the base port): the clients would start, never be seen and the launch would fail
+    // `timeout` after its whole budget. Refused up front, nothing started, with the way out.
+    if (g_conflict && peers_list.is_object() && peers_list.value("error", json::object()).value("code", "") == "port_conflict") {
+        for (int i = 0; i < 25 && !g_found_port; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));  // the probe of the next ports runs in the background
+        return tool_error("port_conflict", "instances_launch refused: " + port_conflict_text() + " Nothing was started: a client launched now would register with whatever answers on that port, "
+                                                          "and this bridge could not see it.");
+    }
+    // Issue #8 (chaos test G1): a frozen client blocks a new one from registering: refuse up front, with the way out.
+    if (!args.value("ignore_unhealthy", false)) {
+        json bad = unhealthy_peers(peers_list);
+        if (!bad.empty()) {
+            std::string pids;
+            for (const auto &u : bad) pids += (pids.empty() ? "" : ", ") + std::to_string(u.value("pid", 0u));
+            return tool_text(json{{"error", {{"code", "peer_unhealthy"},
+                                            {"message", "a running client is stuck: " + describe_unhealthy(bad) + ". A client frozen as a whole (or mid-load) keeps a new client from "
+                                                        "registering (engine FP7137 handshake): the launch would time out with `0 of N clients answered`. Close it first "
+                                                        "(instances_close {pids: [" + pids + "]} for a client this session started, or game_terminate {instance}), or pass "
+                                                        "ignore_unhealthy: true to start anyway. Nothing was started."},
+                                            {"details", {{"unhealthy", bad}}}}}},
+                             true);
+        }
+    }
+    // Issue #8: memory first. A machine out of commit crashes every game on it (11 clients, 1.8 GB free: all died, no dump).
+    {
+        lowmem::Memory mem = lowmem::current();
+        if (mem.known && !args.value("ignore_low_memory", false)) {
+            std::set<uint32_t> alive;
+            for (const auto &e : peers_list.value("instances", json::array()))
+                if (e.is_object() && e.value("state", "") != "crashed" && e.value("mode", "client") != "srcds") alive.insert(e.value("pid", 0u));
+            {
+                std::lock_guard<std::mutex> lk(g_launch_mu);
+                for (const auto &l : g_launched)
+                    if (l.h && WaitForSingleObject(l.h, 0) == WAIT_TIMEOUT) alive.insert(l.pid);
+            }
+            alive.erase(0u);
+            // Issue #8 (chaos test G4): clients other sessions started that have not registered yet are not in the directory: count the
+            // game's processes too (the union by pid, so a registered one is not counted twice), and report both numbers.
+            int registered = (int)alive.size();
+            std::string gexe = gamedir::find_game_exe(root);
+            std::set<uint32_t> procs = gexe.empty() ? std::set<uint32_t>() : game_process_pids(gexe);
+            alive.insert(procs.begin(), procs.end());
+            lowmem::Verdict lv = lowmem::check_launch(mem, count, (int)alive.size(), false, registered, (int)procs.size());
+            if (lv.refuse) return tool_text(json{{"error", {{"code", "low_memory"}, {"message", lv.message}, {"details", lv.details}}}}, true);
+        }
     }
     // Fixed option set (no free arguments). The light preset comes from measurements of what actually saves CPU and
     // memory per client.
-    std::string opts = "-multirun -mcp -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
-    if (preset == "normal") opts += " -w 640 -h 360 +fps_max 30 +fps_max_nofocus 30";
-    // No graphics options: the video ones (-dxlevel, mat_*) are saved into the user's own settings, for little gain.
-    else opts += " -w 640 -h 360 +fps_max 20 +fps_max_nofocus 20";  // narrower than 640 crashes the client
+    // -mcp_test_client marks the game as one of ours: the module gives the archived convars below back to the user's
+    // values before a clean quit (they would otherwise be saved into the config.cfg the user's own game shares).
+    std::string opts = "-multirun -mcp -mcp_test_client -windowed -novid +engine_no_focus_sleep 0 +snd_mute_losefocus 0";
+    // Issue #10: the preset's frame cap, or the one requested. Narrower than 640 crashes the client.
+    opts += " -w 640 -h 360 +fps_max " + std::to_string(fps_cap) + " +fps_max_nofocus " + std::to_string(fps_cap_nofocus);
+    // The engine writes the video mode (HKCU\Software\Valve\Source\garrysmod\Settings: ScreenWidth, ScreenHeight,
+    // ScreenMSAA, ...) at startup and at exit, which would overwrite the user's own resolution with 640x360. Both
+    // writes are skipped when -dxlevel is on the command line (engine.dll, read-only disassembly 2026-11-15), and with
+    // it the stored settings are not read either. 95 is the level the engine itself keeps on current hardware
+    // (DXLevel_V1 = 0x5f), so rendering is unchanged. No graphics option other than that one is added (mat_* convars
+    // are archived into cfg/config.cfg, shared with the user's game, for little gain).
+    opts += " -dxlevel 95";
     if (!sound) opts += " -nosound";
     // The folder was checked: no quote or line break can end the argument.
-    if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"";
+    if (!mount_root.empty()) opts += " -mcp_lua_mount \"" + mount_root + "\"" + (args.value("allow_shadow", false) ? " -mcp_lua_mount_allow_shadow" : "");
+    // Issue #10: the extra tokens (validated: no space, quote or ';'), after ours so that a `+convar` of theirs wins; then the
+    // names of the convars they and the commands may change, which the module gives back to the user's values before a
+    // clean quit (an older module ignores this option).
+    for (const auto &t : extra_args) opts += " " + t;
+    // Issue #8 (chaos test G3): the owner label rides on the command line (encoded: no space, quote or ';') and in the module's
+    // heartbeat, so instances_list names it and a later bridge session can close this client by owner even with keep: true.
+    if (!owner.empty()) opts += " -mcp_owner " + launchopts::encode_owner(owner);
+    std::vector<std::string> restore = launchopts::restore_names(startup_cmds, extra_args);
+    if (!restore.empty()) opts += " -mcp_restore_convars " + launchopts::join_list(restore);
     SetEnvironmentVariableA("SteamAppId", "4000");
     SetEnvironmentVariableA("SteamGameId", "4000");
-    std::string exe = root + "\\gmod_win64.exe";
+    std::string exe = gamedir::find_game_exe(root);  // Issue #4: gmod_win64.exe or bin/win64/gmod.exe
     for (auto &c : exe)
         if (c == '/') c = '\\';
+    // FP7137: wait while a map loads in any game (shared lock), then hold the launch slot while the processes are created.
+    fp7137::Gate fp_gate;  // FP7137
+    fp_gate.enter(fp7137::Kind::Launch, "launch", timeout, 60, nullptr, [&](double w, const std::string &why) { progress(token, w, 0, why); }, [] { return fp7137_loading_games(); });  // FP7137 (issue #7: also waits for loads no bridge saw)
+    if (!fp_gate.ok()) return retry_later(fp_gate.error_result(), "instances_launch", args, 180.0);  // FP7137
+    if (fp_gate.waited_s() > 0) g_fp7137_progress_offset = fp_gate.waited_s() + 1;  // FP7137
     std::vector<Launched> started;
+    unsigned long long return_target = 0;  // the foreground window before the first start: the clients give the foreground back to it
     for (int i = 0; i < count; ++i) {
-        std::string cmd = "\"" + exe + "\" " + opts;
+        // A test client takes the foreground window when it starts: tell it which window had it, so it hands it back once its own window is up.
+        // The foreground window of a client this launch just started (it has not handed it back yet) is not a target: keep the earlier one.
+        std::string client_opts = opts;
+        {
+            plat::Foreground fg;
+            bool have = plat::foreground_window(fg);
+            bool ours = false;
+            for (const auto &l : started) ours = ours || (have && l.pid == fg.pid);
+            return_target = launchopts::pick_return_target(have ? fg.hwnd : 0, ours, return_target);
+            std::string t = launchopts::format_return_focus(return_target);
+            if (!t.empty()) client_opts += " -mcp_return_focus " + t;
+        }
+        std::string cmd = "\"" + exe + "\" " + client_opts;
         std::wstring wcmd = utf8_to_wide(cmd), wdir = utf8_to_wide(root);
         STARTUPINFOW si{};
         si.cb = sizeof si;
+        si.dwFlags = STARTF_USESHOWWINDOW;  // the first ShowWindow of the client shows its window without activating it (it does not take the foreground)
+        si.wShowWindow = SW_SHOWNOACTIVATE;
         PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, 0, nullptr, wdir.c_str(), &si, &pi)) {
+        HANDLE job = keep ? nullptr : client_job();  // issue #8: ends with the bridge unless keep: true
+        if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
             for (auto &l : started) TerminateProcess(l.h, 0);
             return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(GetLastError()) + ") for " + exe);
         }
+        if (job) {
+            AssignProcessToJobObject(job, pi.hProcess);  // a failure (a parent job that forbids nesting): the client just runs without the guard
+            ResumeThread(pi.hThread);
+        }
         CloseHandle(pi.hThread);
+        fp_gate.note_started();  // FP7137
         Launched l;
         l.pid = pi.dwProcessId;
         l.h = pi.hProcess;
         l.keep = keep;
         l.owner = owner;
+        l.root = root;
+        l.slot = std::make_shared<EndSlot>();
         started.push_back(l);
     }
+    fp_gate.release();  // FP7137: the settle delay counts from the last start, the slot is no longer needed
     {
         std::lock_guard<std::mutex> lk(g_launch_mu);
         for (auto &l : started) g_launched.push_back(l);
@@ -1067,18 +1817,55 @@ json launch_tool(const json &args, const json &token) {
     auto t0 = std::chrono::steady_clock::now();
     auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
     json found = json::object();
-    while ((int)found.size() < count && elapsed() < timeout) {
+    std::map<std::string, json> seen_unhealthy;  // issue #8 (G1): peers that were stuck while this launch waited
+    // Issue #5: the base port taken by a program that is not gmod-mcp while the clients start: they cannot be seen (the module took the next
+    // port), so waiting the whole budget is pointless: gives up after kConflictGiveUpS of conflict and names it in the timeout error.
+    const double kConflictGiveUpS = 10.0;
+    double conflict_since = -1;
+    while ((int)found.size() < count && elapsed() < timeout && !(conflict_since >= 0 && elapsed() - conflict_since > kConflictGiveUpS)) {
         json lst = game_call("instances_list", json::object(), 5);
+        if (g_conflict) {
+            if (conflict_since < 0) conflict_since = elapsed();
+        } else {
+            conflict_since = -1;
+        }
+        note_instances(lst);
+        for (const auto &u : unhealthy_peers(lst)) seen_unhealthy[u.value("instance", std::string("?"))] = u;
         for (const auto &in : lst.value("instances", json::array()))
             for (auto &l : started)
-                if (in.value("pid", 0u) == l.pid && !found.contains(std::to_string(l.pid))) {
+                if (in.value("pid", 0u) == l.pid && in.value("state", "") != "crashed" && !found.contains(std::to_string(l.pid))) {
                     found[std::to_string(l.pid)] = in;
                     l.id = in.value("id", "");
                     progress(token, (double)found.size(), count, l.id + " answers");
                 }
         for (auto &l : started)
-            if (WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0 && !found.contains(std::to_string(l.pid)))
-                return tool_error("launch_failed", "client pid " + std::to_string(l.pid) + " exited during startup (Steam not running? see garrysmod/console.log)");
+            if (WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0 && !found.contains(std::to_string(l.pid))) {
+                // Issue #8 (chaos test G2): the siblings of this call that still run are not closed: name them, so the caller does not leak them.
+                json alive_sibs = json::array();
+                std::string sib_text;
+                for (auto &o : started) {
+                    if (&o == &l || WaitForSingleObject(o.h, 0) != WAIT_TIMEOUT) continue;
+                    bool answered = found.contains(std::to_string(o.pid));
+                    json x{{"pid", o.pid}, {"state", answered ? "answering" : "still starting"}};
+                    std::string iid = answered ? found[std::to_string(o.pid)].value("id", "") : o.id;
+                    if (!iid.empty()) x["instance"] = iid;
+                    alive_sibs.push_back(x);
+                    sib_text += (sib_text.empty() ? "" : ", ") + std::string("pid ") + std::to_string(o.pid) + (iid.empty() ? "" : " (" + iid + ")") + " " + x["state"].get<std::string>();
+                }
+                json ce = launched_crash_error(l);
+                if (ce.is_null())
+                    ce = json{{"code", "launch_failed"}, {"message", "client pid " + std::to_string(l.pid) + " exited during startup (Steam not running? see garrysmod/console.log)"}};
+                json res_err{{"error", ce}};
+                if (!alive_sibs.empty()) {
+                    if (!ce.contains("details") || !ce["details"].is_object()) ce["details"] = json::object();
+                    ce["details"]["still_running"] = alive_sibs;
+                    res_err["error"] = ce;
+                    res_err["warning"] = "the other client(s) of this call are NOT closed and keep running: " + sib_text +
+                                         ". Close them with instances_close {pids: [...]}" + (owner.empty() ? "" : " or instances_close {owner: \"" + owner + "\"}") +
+                                         " (or use them), or they leak.";
+                }
+                return tool_text(res_err, true);
+            }
         if ((int)found.size() < count) std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     {
@@ -1092,76 +1879,201 @@ json launch_tool(const json &args, const json &token) {
         for (auto &l : started)
             if (!found.contains(std::to_string(l.pid))) silent.push_back(l.pid);
             else answered.push_back(json{{"instance", l.id}, {"pid", l.pid}});
-        return tool_text(json{{"error", {{"code", "timeout"},
-                                         {"message", std::to_string(found.size()) + " of " + std::to_string(count) +
-                                                         " clients answered within " + std::to_string((int)timeout) +
-                                                         " s (still starting, or gmod-mcp did not load in them: see "
-                                                         "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
-                                                         "the silent ones with instances_close {pids}."}}},
+        json stuck = json::array();
+        for (auto &kv : seen_unhealthy) stuck.push_back(kv.second);
+        std::string stuck_note = stuck.empty() ? "" : " A running client was stuck meanwhile: " + describe_unhealthy(stuck) +
+                                                          " (a frozen client keeps a new one from registering, engine FP7137 handshake): close it with instances_close {pids} or game_terminate {instance}.";
+        json terr{{"code", "timeout"},
+                  {"message", std::to_string(found.size()) + " of " + std::to_string(count) +
+                                  " clients answered within " + std::to_string((int)std::min(timeout, elapsed() + 0.5)) +
+                                  " s (still starting, or gmod-mcp did not load in them: see "
+                                  "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
+                                  "the silent ones with instances_close {pids}." + stuck_note +
+                                  (g_conflict ? " port_conflict: " + port_conflict_text() + " The silent clients may be running fine on another port; this bridge cannot see them until the port is sorted out." : "")}};
+        if (!stuck.empty()) terr["details"] = json{{"unhealthy_peers", stuck}};
+        return tool_text(json{{"error", terr},
                               {"silent_pids", silent}, {"answered", answered},
-                              {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)}},
+                              {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)},
+                              {"lua_mount_note", mount_root.empty() ? json(nullptr)
+                                                                    : json("the clients that did not answer keep running with -mcp_lua_mount; none was checked or loaded a map. Once one answers "
+                                                                           "(instances_list), check it with lua_mount {instance} before map_load, or close it (instances_close {pids})")}},
                          true);
     }
-    // Maps, all at once.
+    // The requested mount is only a request: ask each engine what it really has (the module logs and ignores a folder it
+    // cannot apply) BEFORE any map loads, and apply it again where it is missing. A client that still has none gets no map
+    // (a test must never run on the installed addon's code without the agent knowing: issue #6).
+    std::vector<json> mount_res(started.size());
+    std::vector<char> mount_ok(started.size(), 1);
+    json mount_problems = json::array();
+    json mount_fix;  // next_call for the first client whose mount is wrong (issue #3)
+    if (!mount_root.empty()) {
+        progress(token, 0, count, "checking the Lua mount of each client before the map loads");
+        std::vector<std::thread> th;
+        for (size_t i = 0; i < started.size(); ++i)
+            th.emplace_back([&, i] {
+                const std::string iid = started[i].id;
+                json v = lua_mount_verdict(mount_root, game_call("lua_mount", json{{"instance", iid}}, 20));
+                if (!v.value("active", false)) {
+                    json ap = game_call("lua_mount", json{{"instance", iid}, {"path", mount_root}}, 30);
+                    json v2 = lua_mount_verdict(mount_root, ap);
+                    if (v2.value("active", false)) v2["reapplied"] = true;
+                    else if (v.contains("error")) v2["first_check_error"] = v["error"];
+                    v = v2;
+                }
+                mount_res[i] = v;
+            });
+        for (auto &t : th) t.join();
+        for (size_t i = 0; i < started.size(); ++i) {
+            const json &v = mount_res[i];
+            mount_ok[i] = v.value("active", false);
+            if (!v.value("active", false)) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active")));
+        }
+    }
+    // Issue #10: the startup commands, on every client, before any map loads. One thread per client, the commands of a
+    // client in order; a failing command is reported and the next ones still run.
+    std::vector<json> cmd_res(started.size(), json::array());
+    bool commands_ok = true;
+    if (!startup_cmds.empty()) {
+        progress(token, count, count, "running " + std::to_string(startup_cmds.size()) + " startup command(s) on each client");
+        std::vector<std::thread> th;
+        for (size_t i = 0; i < started.size(); ++i)
+            th.emplace_back([&, i] {
+                for (const auto &c : startup_cmds) {
+                    json r = game_call("console_exec", json{{"cmd", c}, {"instance", started[i].id}, {"wait_frames", 2}}, 30);
+                    json e{{"cmd", c}, {"ok", !r.contains("error")}};
+                    if (r.contains("error")) e["error"] = r["error"];
+                    cmd_res[i].push_back(e);
+                }
+            });
+        for (auto &t : th) t.join();
+        for (const auto &arr : cmd_res)
+            for (const auto &e : arr) commands_ok = commands_ok && e.value("ok", false);
+    }
+    // Maps: at most 2 at a time (per call here, and across every bridge through the gate), after the settle delay (FP7137: was all at once).
     json results = json::array();
     std::vector<json> map_res(started.size());
     if (!map.empty()) {
         progress(token, 0, count, "loading " + map);
-        std::vector<std::thread> th;
-        for (size_t i = 0; i < started.size(); ++i)
-            th.emplace_back([&, i] {
+        fp7137::for_each_limited(started.size(), [&](size_t i) {  // FP7137: at most 2 at a time (was one thread per client, all at once)
+                if (!mount_ok[i]) {
+                    map_res[i] = json{{"error", {{"code", "lua_mount_not_active"},
+                                                 {"message", "map " + map + " not loaded: the Lua mount " + mount_root + " is not active on this client (" +
+                                                                 mount_res[i].value("error", std::string("unknown")) + "), the tests would run the installed addon's code"}}}};
+                    return;
+                }
+                fp7137::Gate fp_map;  // FP7137: after the settle delay, never while another launch starts a game
+                fp_map.enter(fp7137::Kind::MapLoad, "map:" + map, std::max(30.0, timeout - elapsed()), timeout + 10, nullptr, nullptr);  // FP7137
+                if (!fp_map.ok()) {  // FP7137
+                    map_res[i] = fp_map.error_result()["structuredContent"];  // FP7137
+                    return;  // FP7137
+                }
                 json a{{"map", map}, {"instance", started[i].id}, {"timeout_s", std::max(30.0, timeout - elapsed())}};
                 if (args.contains("maxplayers")) a["maxplayers"] = args["maxplayers"];
                 map_res[i] = game_call("map_load", a, std::max(40.0, timeout - elapsed() + 10));
-            });
-        for (auto &t : th) t.join();
-    }
-    // The requested mount is only a request: ask each engine what it really has (the module logs and ignores a folder
-    // it cannot apply), so a test never runs on the installed addon's code without the agent knowing.
-    std::vector<json> mount_res(started.size());
-    json mount_problems = json::array();
-    if (!mount_root.empty()) {
-        progress(token, count, count, "checking the Lua mount of each client");
+                if (fp_map.waited_s() >= 0.05) map_res[i]["fp7137_waited"] = json{{"waited_s", std::round(fp_map.waited_s() * 10) / 10}, {"waited_reason", fp_map.reason()}};  // FP7137
+        });  // FP7137
+        // A client that died during its load: say it crashed (the game's answer is only that nothing answers).
+        // Issue #8: when the answer says nothing answers (the connection broke), the process object may be signalled a moment
+        // later than the socket closes: wait for it before concluding the client lives.
+        for (size_t i = 0; i < started.size(); ++i)
+            if (map_res[i].contains("error") && mount_ok[i]) {
+                std::string code = map_res[i]["error"].is_object() ? map_res[i]["error"].value("code", "") : "";
+                bool broken = code == "game_not_running" || code == "port_conflict" || code == "instance_gone" || code == "instance_unreachable" ||
+                              code == "coordinator_changing" || code == "relay_error" || code == "rpc_error" || code == "relay_lost";
+                json ce = launched_crash_error(started[i], broken ? 2500 : 0);
+                if (!ce.is_null()) {
+                    map_res[i] = json{{"error", ce}};
+                } else if (broken && !started[i].id.empty()) {
+                    // Issue #6: the answer was lost (the coordinator moved while the load ran), the load may have gone through: ask the client.
+                    json ok = recover_lost_map_load(started[i], map, std::max(10.0, timeout - elapsed()));
+                    if (!ok.is_null()) map_res[i] = ok;
+                }
+            }
+        // With the map loaded the engine's server Lua paths exist: look again, for the base Lua (a mounted folder that hides
+        // the game's own lua/ makes a client unusable).
         std::vector<std::thread> th;
         for (size_t i = 0; i < started.size(); ++i)
-            th.emplace_back([&, i] { mount_res[i] = lua_mount_verdict(mount_root, game_call("lua_mount", json{{"instance", started[i].id}}, 20)); });
+            if (!mount_root.empty() && mount_ok[i] && !map_res[i].contains("error"))
+                th.emplace_back([&, i] {
+                    json v = lua_mount_verdict(mount_root, game_call("lua_mount", json{{"instance", started[i].id}}, 20));
+                    if (mount_res[i].value("reapplied", false)) v["reapplied"] = true;
+                    mount_res[i] = v;
+                });
         for (auto &t : th) t.join();
+    }
+    if (!mount_root.empty())
         for (size_t i = 0; i < started.size(); ++i) {
             const json &v = mount_res[i];
-            if (!v.value("active", false)) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active")));
-            else if (v.value("base_lua_mounted", json()) == json(false))
+            if (!v.value("active", false)) {
+                if (mount_ok[i]) mount_problems.push_back(started[i].id + ": " + v.value("error", std::string("not active after the map load")));
+                if (mount_fix.is_null()) mount_fix = next_call::make("lua_mount", json{{"path", mount_root}, {"instance", started[i].id}});
+            } else if (v.value("base_lua_mounted", json()) == json(false)) {
                 mount_problems.push_back(started[i].id + ": the game's own lua/ folder is missing from its server Lua paths (base Lua not mounted)");
+                if (mount_fix.is_null()) mount_fix = next_call::make("lua_mount", json{{"path", nullptr}, {"instance", started[i].id}});  // remove it
+            }
         }
-    }
-    bool all_ok = mount_problems.empty();
+    bool all_ok = mount_problems.empty() && commands_ok;
     for (size_t i = 0; i < started.size(); ++i) {
         const json &in = found[std::to_string(started[i].pid)];
         json e{{"instance", started[i].id}, {"pid", started[i].pid}, {"port", in.value("port", 0)}};
         if (!owner.empty()) e["owner"] = owner;
         if (!mount_root.empty()) e["lua_mount"] = mount_res[i];
+        if (!startup_cmds.empty()) e["commands"] = cmd_res[i];  // Issue #10
         if (!map.empty()) {
             bool ok = !map_res[i].contains("error");
             all_ok = all_ok && ok;
             e["map"] = ok ? json(map) : json(nullptr);
             if (!ok) e["map_error"] = map_res[i]["error"];
+            if (map_res[i].contains("fp7137_waited")) e.update(map_res[i]["fp7137_waited"]);  // FP7137
+            if (ok && map_res[i].contains("note")) e["map_note"] = map_res[i]["note"];  // issue #6: the answer was lost, the client has the map
         }
         results.push_back(e);
     }
-    int fps_cap = preset == "normal" ? 30 : 20;
+    // Issue #10: what the clients really run at (the preset's, or the requested frame cap).
+    auto cap_text = [](int v) { return v == 0 ? std::string("no cap") : std::to_string(v) + " fps"; };
+    std::string fps_note =
+        !fps_custom ? "these clients run at most " + std::to_string(fps_cap) + " fps (fps_max, also when unfocused): "
+                      "per-frame costs and frame-to-frame behaviour differ from a normal game; pass fps_max to instances_launch "
+                      "(or convar_set fps_max) for timing work"
+                    : "frame cap set by the fps_max / fps_max_nofocus options: " + cap_text(fps_cap) + " (fps_max), " +
+                      cap_text(fps_cap_nofocus) + " when unfocused (fps_max_nofocus); the preset's cap (light 20, normal 30) is "
+                      "replaced. A command or launch_args can change it again";
     json res{{"instances", results}, {"game_dir", root}, {"found_by", how}, {"preset", preset}, {"keep", keep},
-             {"fps_max", fps_cap},
+             {"fps_max", fps_cap}, {"fps_max_nofocus", fps_cap_nofocus},
              {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)},
-             {"fps_note", "these clients run at most " + std::to_string(fps_cap) + " fps (fps_max, also when unfocused): "
-                          "per-frame costs and frame-to-frame behaviour differ from a normal game; raise it with "
-                          "convar_set fps_max for timing work"},
+             {"fps_note", fps_note},
              {"next", "Pass `instance` to target one, or instance_select to make one the default; instances_close when done."}};
+    if (!extra_args.empty()) res["launch_args"] = extra_args;  // Issue #10
     if (!mount_problems.empty()) {
         std::string w = "lua_mount " + mount_root + " is NOT active on every client: ";
         for (size_t i = 0; i < mount_problems.size(); ++i) w += (i ? "; " : "") + mount_problems[i].get<std::string>();
         res["warning"] = w + ". Tests on these clients would run the installed addon's code (or no usable Lua): fix it with "
                              "lua_mount {path, instance} then map_load, or close them (instances_close).";
     }
-    return tool_text(res, !all_ok);
+    if (!commands_ok) {  // Issue #10
+        std::string w = "a startup command failed on at least one client (see instances[].commands): the clients are not in the state `commands` asked for";
+        res["warning"] = res.contains("warning") ? json(res["warning"].get<std::string>() + " " + w) : json(w);
+    }
+    if (!mount_fix.is_null()) res["next_call"] = mount_fix;
+    if (!all_ok) {
+        // Issue #3 (Code Mode): an isError result always carries {"error": {"code", "message"}} (Claude Code throws the text as
+        // e.detail). Here the clients did start: the instances stay in the result, and the error says what did not work.
+        std::string why;
+        auto add = [&why](const std::string &t) { why += (why.empty() ? "" : "; ") + t; };
+        for (const auto &mp : mount_problems) add(mp.get<std::string>());
+        if (!commands_ok) add("a startup command failed (instances[].commands)");
+        for (const auto &e : results)
+            if (e.contains("map_error")) {
+                const json &me = e["map_error"];
+                add(e.value("instance", std::string("a client")) + ": map " + map + " not loaded" +
+                    (me.is_object() && me.contains("code") ? ": " + me.value("code", std::string()) : ""));
+            }
+        res["error"] = json{{"code", "launch_incomplete"},
+                            {"message", "the clients were started (see instances), but not everything you asked for worked: " + (why.empty() ? std::string("see instances[]") : why)}};
+    }
+    json fp_res = tool_text(res, !all_ok);  // FP7137
+    fp_gate.annotate(fp_res);  // FP7137
+    return fp_res;  // FP7137
 #endif
 }
 
@@ -1174,6 +2086,7 @@ json close_tool(const json &args) {
         return tool_error("invalid_params", "pass instances: [ids], pids: [pids], owner: \"label\" or all: true");
     std::vector<Launched> todo;
     json refused = json::array();
+    bool owner_local_match = false;
     {
         std::lock_guard<std::mutex> lk(g_launch_mu);
         if (all) {
@@ -1198,40 +2111,186 @@ json close_tool(const json &args) {
             if (!owner.empty()) {
                 bool any = false;
                 while (take([&](const Launched &l) { return l.owner == owner; })) any = true;
-                if (!any) refused.push_back("owner:" + owner);
+                owner_local_match = any;
             }
         }
     }
+    // Issue #8 (chaos test G3): keep:true test clients of an earlier bridge session carry the owner in their heartbeat (-mcp_owner):
+    // those that are test clients (-mcp_test_client) and carry exactly this tag are closed too. Never a game that is not a test
+    // client (the user's own), never one without the tag.
+    std::vector<json> foreign;
+    std::string not_test_clients;
+    if (!owner.empty() && !all) {
+        json lst = game_call("instances_list", json::object(), 5);
+        std::set<uint32_t> mine;
+        for (const auto &l : todo) mine.insert(l.pid);
+        {
+            std::lock_guard<std::mutex> lk(g_launch_mu);
+            for (const auto &l : g_launched) mine.insert(l.pid);  // another owner's client of this session: not ours to take here
+        }
+        for (const auto &e : lst.value("instances", json::array())) {
+            if (!e.is_object() || e.value("owner", "") != owner || mine.count(e.value("pid", 0u)) || e.value("pid", 0u) == 0) continue;
+            std::string st = e.value("state", "running");
+            if (st == "crashed" || e.value("mode", "client") == "srcds") continue;
+            if (e.value("test_client", false) != true) {
+                refused.push_back(e.value("id", "?"));
+                not_test_clients += (not_test_clients.empty() ? "" : ", ") + e.value("id", std::string("?"));
+                continue;
+            }
+            foreign.push_back(e);
+        }
+        if (!owner_local_match && foreign.empty() && not_test_clients.empty()) refused.push_back("owner:" + owner);
+    } else if (!owner.empty() && !owner_local_match) {
+        refused.push_back("owner:" + owner);
+    }
+    // Issue #6: which of them is the coordinator while other instances live? Its end moves the role: say so.
+    std::string coordinator_before;
+    int others_alive = 0;
+    {
+        bool any_id = false;
+        for (auto &l : todo) any_id = any_id || !l.id.empty();
+        if (any_id) {
+            json lst = game_call("instances_list", json::object(), 5);
+            coordinator_before = lst.value("coordinator_id", "");
+            std::set<std::string> ending;
+            for (auto &l : todo) ending.insert(l.id);
+            for (const auto &e : lst.value("instances", json::array()))
+                if (e.is_object() && e.value("state", "running") == "running" && !ending.count(e.value("id", ""))) ++others_alive;
+        }
+    }
+    bool coordinator_ended = false;
     json closed = json::array();
+    json already_gone = json::array();  // issue #8: processes that had ended before this call: nothing was closed
     for (auto &l : todo) {
-        if (!l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
+        bool gone = false;
 #ifdef _WIN32
-        if (WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
+        gone = l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0;
+#endif
+        if (!gone && !l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
+#ifdef _WIN32
+        if (!gone && WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
         CloseHandle(l.h);
 #endif
         json c{{"pid", l.pid}};
         if (!l.id.empty()) c["instance"] = l.id;
         if (!l.owner.empty()) c["owner"] = l.owner;
+        if (gone) {
+            already_gone.push_back(c);
+            std::lock_guard<std::mutex> lk(g_default_mu);
+            if (g_default_instance == l.id) g_default_instance.clear();
+            continue;
+        }
+        if (!l.id.empty() && l.id == coordinator_before && others_alive > 0) {
+            c["was_coordinator"] = true;
+            coordinator_ended = true;
+        }
         closed.push_back(c);
         std::lock_guard<std::mutex> lk(g_default_mu);
         if (g_default_instance == l.id) g_default_instance.clear();
     }
+    for (const auto &e : foreign) {
+        std::string id = e.value("id", "");
+        uint32_t pid = e.value("pid", 0u);
+        bool gone = false;
+#ifdef _WIN32
+        HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
+        gone = !h || WaitForSingleObject(h, 0) == WAIT_OBJECT_0;  // issue #8: the list still shows it (a game that just quit)
+        if (gone) {
+            if (h) CloseHandle(h);
+            h = nullptr;
+        }
+#endif
+        if (!gone) game_call("game_terminate", json{{"instance", id}}, 5);
+#ifdef _WIN32
+        if (h) {
+            if (WaitForSingleObject(h, 3000) != WAIT_OBJECT_0) TerminateProcess(h, 0);
+            CloseHandle(h);
+        }
+#endif
+        (gone ? already_gone : closed).push_back(json{{"pid", pid}, {"instance", id}, {"owner", owner}, {"launched_by_other_session", true}});
+        std::lock_guard<std::mutex> lk(g_default_mu);
+        if (g_default_instance == id) g_default_instance.clear();
+    }
     json res{{"closed", closed}};
+    if (!already_gone.empty()) {
+        res["already_gone"] = already_gone;
+        res["note"] = "already_gone: the process had ended before this call (it quit or crashed by itself): nothing was closed for it";
+    }
+    if (coordinator_ended) {
+        // The others elect a new coordinator within about a second of the port being released: say who took the role.
+        std::set<std::string> gone;
+        for (const auto &c : closed) gone.insert(c.value("instance", ""));
+        std::string moved_to;
+        auto t0 = std::chrono::steady_clock::now();
+        while (moved_to.empty() && std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < g_handover_wait_s + 2) {
+            json lst = game_call("instances_list", json::object(), 5);
+            std::string id = lst.value("coordinator_id", "");
+            if (!id.empty() && !gone.count(id)) moved_to = id;
+            else std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        for (auto &c : res["closed"])
+            if (c.value("was_coordinator", false)) c["coordinator_moved_to"] = moved_to.empty() ? json(nullptr) : json(moved_to);
+        res["warning"] = "a closed client was the coordinator (the directory of instances): " +
+                         (moved_to.empty() ? std::string("no other instance has taken the role over yet (calls answer coordinator_changing; retry in a few seconds)")
+                                           : "the role moved to " + moved_to + " (it re-registers the others within seconds: calls with `instance` may answer coordinator_changing, retryable)") +
+                         ". Other agents' calls were interrupted for that time.";
+    }
     if (!refused.empty()) {
         res["refused"] = refused;
         res["why_refused"] = "not started by this session (or already closed): close a game this session did not start only if the user asks (game_terminate)";
+        if (!not_test_clients.empty())
+            res["why_refused"] = res["why_refused"].get<std::string>() + ". " + not_test_clients + (owner.empty() ? "" : " carries owner \"" + owner + "\"") +
+                                 " but is not a test client (not started by instances_launch): never closed by owner";
     }
-    return tool_text(res, !refused.empty() && closed.empty());
+    bool nothing_closed = !refused.empty() && closed.empty();
+    // Issue #3 (Code Mode): an error result always carries {"error": {"code", "message"}} (the text of an isError result is
+    // thrown by Claude Code as e.detail); the other fields stay for the callers that read them.
+    if (nothing_closed) res["error"] = json{{"code", "refused"}, {"message", res.value("why_refused", std::string("nothing was closed"))}};
+    return tool_text(res, nothing_closed);
 }
 
 json select_tool(const json &args) {
+    const json &v = args.contains("instance") ? args["instance"] : json();
+    std::string want = v.is_string() ? v.get<std::string>() : "";
+    std::string unchecked;  // why the id could not be checked
+    if (!want.empty()) {
+        // Issue #3: an id the directory does not list used to be accepted, and every later call then failed with
+        // unknown_instance. Checked before taking the lock (game_call talks to the game). A game this session just
+        // started may not have registered yet: its id is known from the launch.
+        bool launched = false;
+        {
+            std::lock_guard<std::mutex> lk(g_launch_mu);
+            for (const auto &l : g_launched) launched = launched || l.id == want;
+        }
+        json lst = launched ? json::object() : game_call("instances_list", json::object(), 3);
+        if (!launched) {
+            if (lst.is_object() && lst.contains("instances") && lst["instances"].is_array()) {
+                json known = json::array();
+                bool found = false;
+                for (const auto &in : lst["instances"])
+                    if (in.is_object() && in.contains("id") && in["id"].is_string()) {
+                        known.push_back(in["id"]);
+                        found = found || in["id"] == want;
+                    }
+                if (!found) {
+                    json err = tool_error("unknown_instance", "no instance '" + want + "' (known: " + (known.empty() ? std::string("none") : known.dump()) +
+                                                              "): the default was not changed. instances_list shows the ids.");
+                    err["structuredContent"]["error"]["details"] = json{{"instance", want}, {"known", known}};
+                    err["content"][0]["text"] = err["structuredContent"].dump();
+                    return err;
+                }
+            } else {
+                unchecked = "the id was not checked: the list of instances could not be read (the game may be unreachable); an unknown id makes later calls fail with unknown_instance";
+            }
+        }
+    }
     std::lock_guard<std::mutex> lk(g_default_mu);
     std::string prev = g_default_instance;
-    const json &v = args.contains("instance") ? args["instance"] : json();
-    g_default_instance = v.is_string() ? v.get<std::string>() : "";
-    return tool_text(json{{"default_instance", g_default_instance.empty() ? json(nullptr) : json(g_default_instance)},
-                          {"previous", prev.empty() ? json(nullptr) : json(prev)}},
-                     false);
+    g_default_instance = want;
+    json out{{"default_instance", g_default_instance.empty() ? json(nullptr) : json(g_default_instance)},
+             {"previous", prev.empty() ? json(nullptr) : json(prev)}};
+    if (!unchecked.empty()) out["warning"] = unchecked;
+    return tool_text(out, false);
 }
 
 // Closes the clients this session launched (unless kept), when the session ends.
@@ -1247,6 +2306,43 @@ void close_launched_on_exit() {
 }
 
 void probe_module_version();
+
+// FP7137: the wait before a map_load goes to the game (lock shared with launches), reported to the client as progress.
+void fp7137_gate_map_load(fp7137::Gate &gate, const json &msg, const std::atomic<bool> &cancelled) {
+    json a = params_of(msg).value("arguments", json::object());
+    double t = a.is_object() && a.contains("timeout_s") && a["timeout_s"].is_number() ? a["timeout_s"].get<double>() : 180.0;
+    std::string map = a.is_object() && a.contains("map") && a["map"].is_string() ? a["map"].get<std::string>().substr(0, 64) : "";
+    json token = params_of(msg).value("_meta", json::object()).value("progressToken", json());
+    std::string target = a.is_object() && a.contains("instance") && a["instance"].is_string() ? a["instance"].get<std::string>() : "";  // FP7137 (issue #7)
+    gate.enter(fp7137::Kind::MapLoad, "map:" + map, t, t + 10, &cancelled, [&](double w, const std::string &why) { progress(token, w, 0, why); },
+               [target] { return fp7137_loading_games(target); });  // FP7137 (issue #7): other games loading are reported, not waited for
+}
+
+// FP7137: after the game answered: say how long the call waited, and keep the slot until a background task ends.
+// The slot is given back before the answer goes out, so a client that reads the answer never sees it still held.
+void fp7137_finish_map_load(fp7137::Gate &gate, Relay &r, const json &msg) {
+    if (!r.reached || !r.response.is_object() || !r.response.contains("result") || !r.response["result"].is_object()) {
+        gate.release();
+        return;
+    }
+    json &res = r.response["result"];
+    gate.annotate(res);
+    json &task = res.contains("task") && res["task"].is_object() ? res["task"] : res;  // legacy: result.task, modern: the result
+    if (!task.contains("taskId") || !task["taskId"].is_string()) {
+        gate.release();
+        return;
+    }
+    std::string id = task["taskId"].get<std::string>();
+    if (gate.waited_s() >= 0.05) task["statusMessage"] = "waited " + std::to_string((int)gate.waited_s()) + " s before the load started: " + gate.reason();
+    json meta = params_of(msg).value("_meta", json());
+    gate.release_when_done([id, meta] {
+        json p{{"taskId", id}};
+        if (meta.is_object()) p["_meta"] = meta;
+        json m{{"jsonrpc", "2.0"}, {"id", "gmod-mcp-bridge-fp7137"}, {"method", "tasks/get"}, {"params", p}};
+        Relay t = relay(m, 20);
+        return t.reached && t.response.contains("result") && t.response["result"].value("status", "") == "working";
+    });
+}
 
 void handle_bridge_tool(const json &msg) {
     json p = params_of(msg);
@@ -1285,6 +2381,63 @@ void add_bridge_tools(json &result) {
     for (const auto &t : bridge_tools()) result["tools"].push_back(t);
 }
 
+// A call for an instance this session launched, while nothing answers on the base port: if that client crashed, say so
+// (the coordinator that would have told is the crashed game itself, or is gone).
+json launched_answer(const json &fwd) {
+    json args = params_of(fwd).value("arguments", json::object());
+    if (!args.is_object() || !args.contains("instance") || !args["instance"].is_string()) return json();
+    std::string id = args["instance"].get<std::string>();
+    std::lock_guard<std::mutex> lk(g_launch_mu);
+    for (const auto &l : g_launched) {
+        if (l.id.empty() || l.id != id) continue;
+        json ce = launched_crash_error(l, 2500);  // issue #8: the connection broke, the process object follows a moment later
+        if (!ce.is_null()) return tool_text(json{{"error", ce}}, true);
+        crashinfo::Verdict v;
+        uint32_t code = 0;
+        double ended = 0;
+        if (launched_end(l, v, code, ended))
+            return tool_text(json{{"error", {{"code", "instance_gone"},
+                                             {"message", crashinfo::quit_message(l.id, l.pid, std::max(0.0, unix_now() - ended), v.evidence.empty() ? "clean exit" : v.evidence[0])}}}},
+                             true);
+    }
+    return json();
+}
+
+#ifdef _WIN32
+// Issue #8: while a call for a client this session launched is in flight, watches that client's process: when it ends the
+// connection is cut (the coordinator that relays the call may be the dead game, or an older module that does not watch) and
+// the caller gets the crash answer at once instead of waiting for the call's own timeout.
+struct ProcessWatch {
+    std::atomic<bool> stop{false};
+    std::thread th;
+    HANDLE dup = nullptr;
+    ProcessWatch(const json &fwd, const std::shared_ptr<Inflight> &cancel) {
+        json args = params_of(fwd).value("arguments", json::object());
+        if (!args.is_object() || !args.contains("instance") || !args["instance"].is_string()) return;
+        std::string id = args["instance"].get<std::string>();
+        {
+            std::lock_guard<std::mutex> lk(g_launch_mu);
+            for (const auto &l : g_launched)
+                if (!l.id.empty() && l.id == id && l.h) DuplicateHandle(GetCurrentProcess(), l.h, GetCurrentProcess(), &dup, SYNCHRONIZE, FALSE, 0);
+        }
+        if (!dup) return;
+        th = std::thread([this, cancel] {
+            while (!stop) {
+                if (WaitForSingleObject(dup, 200) == WAIT_OBJECT_0) {
+                    if (!stop) cancel->abort_for_process_end();
+                    return;
+                }
+            }
+        });
+    }
+    ~ProcessWatch() {
+        stop = true;
+        if (th.joinable()) th.join();
+        if (dup) CloseHandle(dup);
+    }
+};
+#endif
+
 void handle_request(const json &msg) {
     json id = msg["id"];
     std::string method = msg.value("method", "");
@@ -1311,6 +2464,7 @@ void handle_request(const json &msg) {
         return;
     }
     json fwd = msg;
+    if (method == "tools/call") strip_tasks_extension(fwd);  // Issue #3: GMOD_MCP_TASKS=off
     if (tool == "instances_list" && fwd["params"].contains("arguments") && fwd["params"]["arguments"].is_object())
         fwd["params"]["arguments"].erase("owner");
     if (!tool.empty() && takes_instance(tool)) {
@@ -1326,15 +2480,44 @@ void handle_request(const json &msg) {
         std::lock_guard<std::mutex> lk(g_cancel_mu);
         g_cancel[key] = cancel;
     }
+    fp7137::Gate fp_gate;  // FP7137
+    if (tool == "map_load") fp7137_gate_map_load(fp_gate, fwd, cancel->cancelled);  // FP7137
+    if (!fp_gate.ok()) {  // FP7137: cancelled while waiting, or the wait would outlast the call's timeout
+        { std::lock_guard<std::mutex> lk(g_cancel_mu); g_cancel.erase(key); }  // FP7137
+        if (!fp_gate.aborted()) out(local_result(msg, retry_later(fp_gate.error_result(), tool, params_of(fwd).value("arguments", json::object()), 180.0)));  // FP7137
+        return;  // FP7137
+    }
     bool is_list = method == "tools/list" || method == "prompts/list" || method == "resources/list" || method == "resources/templates/list";
     // No idle limit on client requests: a tool call or tasks/result may stay silent for a long time. The client ends
     // them by cancelling (the bridge then closes the HTTP request).
-    Relay r = relay(fwd, kNoIdleLimit, cancel, [](const json &m) { out(m); });
+    const double fp_shift = fp_gate.waited_s() > 0 ? fp_gate.waited_s() + 1 : 0;  // FP7137: keep progress increasing
+    auto do_relay = [&] {
+        return relay(fwd, kNoIdleLimit, cancel, [fp_shift](const json &m) {  // FP7137 (capture)
+            json n = m;  // FP7137
+            if (fp_shift > 0 && n.value("method", "") == "notifications/progress" && n.contains("params") && n["params"].is_object() && n["params"].contains("progress") && n["params"]["progress"].is_number()) n["params"]["progress"] = n["params"]["progress"].get<double>() + fp_shift;  // FP7137
+            out(n);
+        });
+    };
+#ifdef _WIN32
+    std::unique_ptr<ProcessWatch> watch;
+    if (method == "tools/call" && tool != "game_quit" && tool != "game_terminate") watch = std::make_unique<ProcessWatch>(fwd, cancel);  // issue #8: those two end the process on purpose
+#endif
+    Relay r = do_relay();
+    if (method == "tools/call" && !cancel->cancelled && !r.aborted) r = ride_out_handover(std::move(r), do_relay, &cancel->cancelled, id);  // issue #6
+#ifdef _WIN32
+    watch.reset();
+#endif
     {
         std::lock_guard<std::mutex> lk(g_cancel_mu);
         g_cancel.erase(key);
     }
+    if (tool == "map_load") fp7137_finish_map_load(fp_gate, r, fwd);  // FP7137
     if (cancel->cancelled) return;  // cancelled by the client: no response (late answers are dropped too)
+    if (r.aborted) {  // issue #8: the launched client this call waited on died
+        json a = launched_answer(fwd);
+        out(local_result(msg, a.is_null() ? tool_error("instance_gone", "the client this call was waiting for ended") : a));
+        return;
+    }
 
     if (method == "initialize" || method == "server/discover") {
         json res;
@@ -1380,16 +2563,14 @@ void handle_request(const json &msg) {
             res = json{{"serverInfo", snap["serverInfo"]}, {"instructions", snap.value("instructions", offline_instructions())},
                        {"capabilities", snap.value(method == "initialize" ? "capabilities_legacy" : "capabilities_modern", json::object())}};
             if (method == "server/discover") res["supportedVersions"] = snap.value("supportedVersions", all_versions());
-            res["instructions"] = "The game is not running right now: start it with -mcp; the tools come back by themselves.\n\n" +
-                                  res["instructions"].get<std::string>();
+            res["instructions"] = offline_prefix() + res["instructions"].get<std::string>();
         } else if (!res.is_object()) {
             res = json{{"capabilities", json::object()},
                        {"serverInfo", {{"name", "gmod-mcp"}, {"version", kBridgeVersion}}},
                        {"instructions", offline_instructions()}};
             if (method == "server/discover") res["supportedVersions"] = all_versions();
         } else if (res.contains("instructions") && res["instructions"].is_string()) {
-            res["instructions"] = "The game is not running right now: start it with -mcp; the tools come back by themselves.\n\n" +
-                                  res["instructions"].get<std::string>();
+            res["instructions"] = offline_prefix() + res["instructions"].get<std::string>();
         }
         if (method == "server/discover") res["ttlMs"] = 0;  // do not keep this offline answer
         if (method == "initialize") {
@@ -1412,6 +2593,12 @@ void handle_request(const json &msg) {
                 learn_instance_tools(stored.value("tools", json::array()));
                 add_bridge_tools(r.response["result"]);
             }
+        }
+        if (!tool.empty()) {  // issue #6: a call for another instance that was answered: several games live
+            const json &fa = params_of(fwd).value("arguments", json::object());
+            if (fa.is_object() && fa.contains("instance") && fa["instance"].is_string() && r.response.contains("result") &&
+                !r.response["result"].value("isError", false))
+                g_multi_seen_ms = steady_ms();
         }
         if (tool == "instances_list" && r.response.contains("result") && !r.response["result"].value("isError", false)) {
             json &res = r.response["result"];
@@ -1450,14 +2637,14 @@ void handle_request(const json &msg) {
         out(local_result(msg, json::object()));
     } else if (method == "tools/call" && tool == "instances_list") {
         json sc{{"instances", json::array()},
-                {"note", "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
-                         "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
-        out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object())), false)));
+                {"note", g_conflict ? "no game instance reachable: port_conflict: " + port_conflict_text()
+                                    : "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
+                                          "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
+        out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object()), false), false)));  // the bridge's own empty list: not a reading of the games
+    } else if (method == "tools/call" && !launched_answer(fwd).is_null()) {
+        out(local_result(msg, launched_answer(fwd)));
     } else if (method == "tools/call") {
-        json text{{"type", "text"}, {"text", not_running_text()}};
-        out(local_result(msg, json{{"content", json::array({text})},
-                                   {"structuredContent", {{"error", {{"code", "game_not_running"}, {"message", not_running_text()}}}}},
-                                   {"isError", true}}));
+        out(local_result(msg, not_running_error()));
     } else {
         out(rpc_error(id, err::kInternalError, not_running_text()));
     }
@@ -1595,6 +2782,7 @@ int main(int argc, char **argv) {
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
     if (const char *p = std::getenv("GMOD_MCP_PORT")) g_port = std::atoi(p);
+    if (const char *p = std::getenv("GMOD_MCP_HANDOVER_WAIT_S")) g_handover_wait_s = std::max(0.0, std::atof(p));
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--port" && i + 1 < argc) g_port = std::atoi(argv[++i]);
@@ -1610,6 +2798,7 @@ int main(int argc, char **argv) {
     }
     if (g_port <= 0 || g_port > 65535) g_port = 27080;
     g_dir = plat::user_config_dir() + "/gmod-mcp";
+    fp7137::set_dir(g_dir);  // FP7137
     cache_load();
     learn_instance_tools(snapshot().value("tools_legacy", json::array()));
     if (g_watch_parent) watch_parent();

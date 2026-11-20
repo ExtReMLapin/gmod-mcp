@@ -8,14 +8,18 @@
 namespace tools {
 
 static json lua_mount_tool(const json &args) {
+    // The engine's file system is not reached on a dedicated server: say so before anything else (nothing to chase).
+    if (agent::config().mode != agent::Mode::Client)
+        return agent::err("unsupported", "the Lua mount is not supported on a dedicated server (srcds): use it on a game client (instances_launch {lua_mount})");
     bool set = args.contains("path");
     std::string root;
     // The path is checked first, on any platform, before touching the game's main thread.
     if (set && args["path"].is_string() && !args["path"].get<std::string>().empty()) {
         std::string e;
         if (!lua_mount::normalize_root(args["path"].get<std::string>(), root, e)) return agent::err("invalid_params", e);
-        e = lua_mount::refuse_inside_game(root, agent::config().game_dir);
-        if (!e.empty()) return agent::err("invalid_params", e);
+        std::string code;
+        e = lua_mount::refuse_mount(root, agent::config().game_dir, args.value("allow_shadow", false), &code);
+        if (!e.empty()) return agent::err(code, e);
     }
     std::string why;
     if (!lua_mount::supported(&why)) return agent::err("unsupported_platform", why);
@@ -24,6 +28,22 @@ static json lua_mount_tool(const json &args) {
     if (jobs::is_timeout(r))
         return agent::err("main_thread_timeout", "the main thread did not respond in time (map loading, freeze or infinite loop?)");
     if (r.is_object() && r.contains("__error")) return agent::err("internal", r["__error"].get<std::string>());
+    // Issue #9: with a map loaded, ask each realm's file system whether it really serves the folder (the engine takes paths
+    // it cannot read into its search paths without a word).
+    if (r.is_object() && r.value("ok", false) && r["result"].is_object() && r["result"].value("lua_mount", json()).is_string()) {
+        std::string mounted = r["result"]["lua_mount"].get<std::string>();
+        json es = lua_mount::folder_present(mounted) ? mount_engine_serves(mount_realms()) : json::object();
+        if (!lua_mount::folder_present(mounted)) {  // renamed or deleted since it was mounted
+            r["result"]["folder_missing"] = true;
+            std::string w = mount_warning(json{{"folder_missing", true}, {"path", mounted}});
+            r["result"]["warning"] = r["result"].contains("warning") ? r["result"]["warning"].get<std::string>() + " " + w : w;
+        }
+        r["result"].update(es);
+        if (es.contains("engine_serves_folder") && es["engine_serves_folder"] == json(false)) {
+            std::string w = mount_warning(json{{"engine_serves", es["engine_serves"]}, {"engine_serves_folder", false}});
+            r["result"]["warning"] = r["result"].contains("warning") ? r["result"]["warning"].get<std::string>() + " " + w : w;
+        }
+    }
     return r;
 }
 
@@ -41,14 +61,17 @@ void register_lua_mount() {
          "addons/my_addon/lua/my_addon/core.lua; D:/dev/my-addon-wt/gamemodes/<gm>/... are gamemode files; "
          "materials/, sound/, models/ and everything outside lua/ and gamemodes/ are not mounted. "
          "IT TAKES EFFECT AT THE NEXT MAP LOAD: call map_load right after (code already running stays "
-         "until loaded again). No autorefresh: after an edit, lua_reload {path} or map_load; check with "
-         "lua_function_source. The engine names the folder's files from the folder's root (debug.getinfo source "
+         "until loaded again). No autorefresh: status.lua_mount.stale_files lists the folder's files that changed since "
+         "each realm loaded them; lua_reload {mounted_changed: true} runs them again (or lua_reload {path}, or map_load); "
+         "lua_function_source / lua_inspect of a function say which copy it came from (from_mount, disk). The engine names the folder's files from the folder's root (debug.getinfo source "
          "\"@lua/my_addon/x.lua\", not \"@addons/my_addon/lua/my_addon/x.lua\"). Only Lua (not materials, sounds, "
          "data/). `path`: the addon's root or its lua/ folder, absolute; null removes it (from the next map load); "
          "omitted: the current folder and the engine's Lua search paths (lsv = server, lcl = client). If the result "
-         "says base_lua_mounted: false, remove the folder at once. A test client can start with one: instances_launch "
+         "says base_lua_mounted: false, remove the folder at once. engine_serves_folder (with a map loaded) is what the game's own "
+         "file system says: false means it lists the folder but finds none of its files (a path it cannot read), so the game runs "
+         "the installed code whatever else says mounted: a warning names the way out. A test client can start with one: instances_launch "
          "{lua_mount}. empty_cache (default true) empties the engine's Lua file cache. Windows game clients only "
-         "(unsupported_platform on Linux; refused on a dedicated server). Full guide: resource mcpagent://guide, "
+         "(unsupported_platform on Linux; client only, unsupported on srcds). Full guide: resource mcpagent://guide, "
          "section \"Mounted Lua folder\".",
          json{{"properties",
                {{"path", {{"type", json::array({"string", "null"})},
@@ -56,7 +79,9 @@ void register_lua_mount() {
                                          "(e.g. \"D:/dev/my-addon-wt\"), or that lua/ folder itself (same result). Must be "
                                          "outside the game folder. null or \"\" unmounts it (from the next map load). Omit "
                                          "it to read the current state."}}},
-                {"empty_cache", {{"type", "boolean"}, {"description", "Empty the engine's Lua file cache after the change (default true)."}}}}}},
+                {"empty_cache", {{"type", "boolean"}, {"description", "Empty the engine's Lua file cache after the change (default true)."}}},
+                {"allow_shadow", {{"type", "boolean"}, {"description", "Mount a folder that replaces files of the game's own base Lua (lua/includes/init.lua...) "
+                                                                         "anyway. Refused by default (error shadows_base_lua): such a folder made a client hang in its load."}}}}}},
          json{{"destructiveHint", false}, {"idempotentHint", true}}, lua_mount_tool});
 }
 

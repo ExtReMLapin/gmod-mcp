@@ -1,7 +1,10 @@
 #include "mcp.h"
+#include "next_call.h"
+#include "output_schemas.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -56,7 +59,10 @@ void register_tool(Tool t) {
     if (t.annotations.is_null()) t.annotations = json::object();
     t.annotations["title"] = t.title;
     if (!t.annotations.contains("openWorldHint")) t.annotations["openWorldHint"] = false;
-    if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
+    if (t.output_schema.is_null()) {
+        t.output_schema = output_schema_for(t.name);  // the declared shape (output_schemas.cpp), else the permissive default
+        if (t.output_schema.is_null()) t.output_schema = kDefaultOutputSchema;
+    }
     t.validator = std::make_shared<nlohmann::json_schema::json_validator>();
     t.validator->set_root_schema(s);
     g_index[t.name] = g_tools.size();
@@ -112,38 +118,118 @@ static bool is_subsequence(const std::string &needle, const std::string &hay) {
     return i == needle.size();
 }
 
+// Issue #11: names an agent writes for an argument whose accepted name is not close in spelling ("wait: false" for
+// lua_job's `async`; the edit distance alone answered 'jit'). `opposite`: the meaning is the reverse, so a boolean is inverted.
+struct Synonym {
+    const char *unknown, *accepted;
+    bool opposite;
+};
+static const Synonym kSynonyms[] = {{"wait", "async", true},      {"await", "async", true},       {"blocking", "async", true},
+                                    {"synchronous", "async", true}, {"sync", "async", true},      {"nowait", "async", false},
+                                    {"no_wait", "async", false},  {"background", "async", false}, {"detach", "async", false},
+                                    {"detached", "async", false}, {"nonblocking", "async", false}, {"non_blocking", "async", false}};
+static const Synonym *synonym_for(const json &props, const std::string &u) {
+    for (const auto &s : kSynonyms)
+        if (u == s.unknown && props.contains(s.accepted)) return &s;
+    return nullptr;
+}
+
+// Live verification of 0.3.7: an argument that sounds like another one but means something else gets a note instead of a suggestion
+// (console_exec {timeout_s} matched connect_timeout_s, which only waits for the outcome of `connect`).
+struct ArgNote {
+    const char *tool, *arg, *note;
+};
+static const ArgNote kArgNotes[] = {
+    {"console_exec", "timeout_s",
+     "console_exec does not wait for a command to finish, it only waits wait_frames frames (default 5) before reading the console; "
+     "connect_timeout_s is the wait of `connect` alone. To wait for an outcome use console_wait {regex, timeout_s}, wait_for or events_wait."}};
+static const ArgNote *arg_note(const std::string &tool, const std::string &arg) {
+    for (const auto &n : kArgNotes)
+        if (tool == n.tool && arg == n.arg) return &n;
+    return nullptr;
+}
+
+// The accepted argument closest to an unknown one ("" when none is close).
+static std::string closest_argument(const json &props, const std::string &u) {
+    if (const Synonym *s = synonym_for(props, u)) return s->accepted;
+    std::string best;
+    size_t best_d = 4;
+    for (auto p = props.begin(); p != props.end(); ++p) {
+        const std::string &k = p.key();
+        size_t d = edit_distance(u, k);
+        if (k.find(u) != std::string::npos || u.find(k) != std::string::npos) d = std::min<size_t>(d, 1);
+        // Abbreviation: the accepted name's letters appear in order in the unknown one ("cmd" in "command").
+        if (k.size() >= 2 && is_subsequence(k, u)) d = std::min<size_t>(d, 2);
+        if (d < best_d) best_d = d, best = k;
+    }
+    return best;
+}
+
 // The validator's message alone ("unexpected instance additional property") rarely tells an agent what to send: name
-// the unknown and missing arguments, suggest the closest accepted name, and list what the tool accepts.
-static std::string argument_hint(const Tool &t, const json &value) {
+// the unknown and missing arguments and suggest the closest accepted name (empty when the arguments are all known and present).
+static std::string unknown_and_missing(const Tool &t, const json &value) {
     const json &props = t.input_schema["properties"];
     std::string out;
     if (value.is_object()) {
         for (auto it = value.begin(); it != value.end(); ++it) {
             if (props.contains(it.key())) continue;
-            std::string best;
-            size_t best_d = 4;
-            for (auto p = props.begin(); p != props.end(); ++p) {
-                const std::string &k = p.key(), &u = it.key();
-                size_t d = edit_distance(u, k);
-                if (k.find(u) != std::string::npos || u.find(k) != std::string::npos) d = std::min<size_t>(d, 1);
-                // Abbreviation: the accepted name's letters appear in order in the unknown one ("cmd" in "command").
-                if (k.size() >= 2 && is_subsequence(k, u)) d = std::min<size_t>(d, 2);
-                if (d < best_d) best_d = d, best = k;
+            if (const ArgNote *n = arg_note(t.name, it.key())) {
+                out += " Unknown argument '" + it.key() + "'. " + n->note;
+                continue;
             }
+            std::string best = closest_argument(props, it.key());
             out += " Unknown argument '" + it.key() + "'" + (best.empty() ? "." : " (did you mean '" + best + "'?).");
+            if (const Synonym *s = synonym_for(props, it.key()))
+                if (s->opposite) out += " Note: '" + best + "' means the opposite of '" + it.key() + "' ('" + it.key() + "': false is '" + best + "': true).";
         }
     }
     json req = t.input_schema.value("required", json::array());
     for (const auto &r : req)
         if (!value.is_object() || !value.contains(r.get<std::string>())) out += " Missing required argument '" + r.get<std::string>() + "'.";
+    return out;
+}
+
+// What the tool accepts.
+static std::string accepted_list(const Tool &t) {
+    const json &props = t.input_schema["properties"];
     std::string list;
     for (auto p = props.begin(); p != props.end(); ++p) {
         if (!list.empty()) list += ", ";
         list += p.key();
         if (p.value().contains("type") && p.value()["type"].is_string()) list += " (" + p.value()["type"].get<std::string>() + ")";
     }
-    out += " Accepted arguments: " + list + ".";
-    return out;
+    return " Accepted arguments: " + list + ".";
+}
+
+// The call with each unknown argument renamed to its closest accepted name, when that makes it valid (else null).
+static json corrected_call(const Tool &t, const json &value) {
+    if (!value.is_object()) return nullptr;
+    const json &props = t.input_schema["properties"];
+    json fixed = json::object();
+    bool renamed = false;
+    for (auto it = value.begin(); it != value.end(); ++it) {
+        if (props.contains(it.key())) {
+            fixed[it.key()] = it.value();
+            continue;
+        }
+        std::string best = closest_argument(props, it.key());
+        if (best.empty() || value.contains(best) || fixed.contains(best) || arg_note(t.name, it.key())) return nullptr;
+        const Synonym *syn = synonym_for(props, it.key());
+        if (syn && syn->opposite) {
+            if (!it.value().is_boolean()) return nullptr;  // only a boolean can be inverted
+            fixed[best] = !it.value().get<bool>();
+        } else {
+            fixed[best] = it.value();
+        }
+        renamed = true;
+    }
+    if (!renamed) return nullptr;
+    try {
+        t.validator->validate(fixed);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+    return next_call::make(t.name, fixed);
 }
 
 static std::string validate_tool(const Tool &t, const json &value) {
@@ -152,7 +238,11 @@ static std::string validate_tool(const Tool &t, const json &value) {
     } catch (const std::exception &e) {
         std::string what = e.what();
         while (!what.empty() && (std::isspace((unsigned char)what.back()) || what.back() == '.')) what.pop_back();
-        return "invalid arguments: " + what + "." + argument_hint(t, value);
+        // The part that tells what to send comes first: the validator's own words start with the whole argument object and its
+        // JSON path, and a client that shows the start of a long message (or cuts it) hid the name of the unknown argument.
+        std::string named = unknown_and_missing(t, value);
+        if (named.empty()) return "invalid arguments: " + what + "." + accepted_list(t);
+        return "invalid arguments:" + named + accepted_list(t) + " Validator: " + what + ".";
     }
     return "";
 }
@@ -196,12 +286,25 @@ bool instance_independent(const std::string &tool) {
     return false;
 }
 
+static json call_tool_raw(const std::string &name, const json &args_in);
+
+// The result of a tool call, with `next_call` where its hint names a next step (see next_call.h).
 json call_tool(const std::string &name, const json &args_in) {
+    json r = call_tool_raw(name, args_in);
+    next_call::annotate(r, name, args_in.is_null() ? json::object() : args_in);
+    return r;
+}
+
+static json call_tool_raw(const std::string &name, const json &args_in) {
     const Tool *t = find_tool(name);
     if (!t) return to_call_result(agent::err("unknown_tool", "unknown tool: " + name));
     json args = args_in.is_null() ? json::object() : args_in;
     std::string verr = validate_tool(*t, args);
-    if (!verr.empty()) return to_call_result(agent::err("invalid_params", verr));
+    if (!verr.empty()) {
+        json bad = to_call_result(agent::err("invalid_params", verr));
+        next_call::attach(bad, corrected_call(*t, args));
+        return bad;
+    }
     if (args.contains("instance") && !t->local_only) {
         std::string inst = args["instance"].get<std::string>();
         args.erase("instance");
@@ -260,6 +363,7 @@ struct Ctx {
     json client_caps = json::object();
     int http_status = 200;
     const Emit *emit = nullptr;  // SSE response stream, if any
+    bool code_mode = false;      // Issue #3: the call comes from a Claude Code "Code Mode" script (see from_code_mode)
 };
 
 struct Prepared {
@@ -281,10 +385,33 @@ static bool client_supports_elicitation(const Ctx &c) {
     return c.era == tasks::Era::Modern && c.client_caps.is_object() && c.client_caps.contains("elicitation");
 }
 
+// Issue #3: a call made by a Claude Code "Code Mode" script. Claude Code puts the id of the call in
+// params._meta["claudecode/toolUseId"]; for a call made by a script it starts with "repl_" (a normal call: "toolu_").
+static bool from_code_mode(const json &params) {
+    if (!params.contains("_meta") || !params["_meta"].is_object()) return false;
+    const json &m = params["_meta"];
+    return m.contains("claudecode/toolUseId") && m["claudecode/toolUseId"].is_string() &&
+           m["claudecode/toolUseId"].get<std::string>().rfind("repl_", 0) == 0;
+}
+
+// Issue #3: GMOD_MCP_TASKS=off turns the server-chosen tasks off (default and any other value: "auto"). The module reads
+// the environment of the game process; the bridge, which Claude Code starts with its own environment, also honors it by
+// not forwarding the Tasks extension (src/bridge/bridge.cpp).
+static bool server_tasks_off() {
+    const char *v = std::getenv("GMOD_MCP_TASKS");
+    if (!v) return false;
+    std::string s = v;
+    for (auto &ch : s) ch = (char)std::tolower((unsigned char)ch);
+    return s == "off";
+}
+
 // Server-side decision (Tasks extension): always for map_load; other "optional" tools only for an explicit wait of at
-// least 15 s.
-static bool server_wants_task(const Tool &t, const json &args) {
+// least 15 s. Never for a call made by a Code Mode script (the script would only get a "moved to the background" stub and
+// the real result would go to the model: `await map_load(...)` followed by more code would break) and never when the
+// operator turned server-chosen tasks off (GMOD_MCP_TASKS=off).
+static bool server_wants_task(const Tool &t, const json &args, const Ctx &c) {
     if (t.task_support.empty() || t.task_support == "forbidden") return false;
+    if (c.code_mode || server_tasks_off()) return false;
     if (t.name == "map_load") return true;
     for (const char *k : {"timeout_s", "duration_s", "wait_s"})
         if (args.contains(k) && args[k].is_number() && args[k].get<double>() >= 15.0) return true;
@@ -517,7 +644,7 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
         json a = params.value("arguments", json::object());
         if (a.is_null()) a = json::object();
         bool legacy_task = c.era == tasks::Era::Legacy && params.contains("task") && params["task"].is_object();
-        bool modern_task = client_supports_tasks(c) && server_wants_task(*t, a);
+        bool modern_task = client_supports_tasks(c) && server_wants_task(*t, a, c);
         if (legacy_task && (t->task_support.empty() || t->task_support == "forbidden"))
             return rpc_error(id, err::kMethodNotFound, "tool " + name + " does not support task execution (execution.taskSupport absent)");
         if (legacy_task || modern_task) {
@@ -669,6 +796,7 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
     Ctx &c = p->ctx;
     std::string hv = header(headers, "mcp-protocol-version");
     json meta = params.value("_meta", json::object());
+    c.code_mode = from_code_mode(params);
     std::string mv = meta.is_object() ? meta.value(mcpproto::kMetaProtocolVersion, "") : "";
     bool is_modern = hv == kModernVersion || !mv.empty();
     if (is_modern) {
@@ -733,7 +861,7 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
         const Tool *t = find_tool(params["name"]);
         json a = params.value("arguments", json::object());
         if (!a.is_object()) a = json::object();
-        bool task = (c.era == tasks::Era::Legacy && params.contains("task")) || (t && client_supports_tasks(c) && server_wants_task(*t, a));
+        bool task = (c.era == tasks::Era::Legacy && params.contains("task")) || (t && client_supports_tasks(c) && server_wants_task(*t, a, c));
         bool progress = meta.is_object() && meta.contains("progressToken");
         if (t && !task && (progress || !t->task_support.empty())) p->stream_candidate = true;
     }

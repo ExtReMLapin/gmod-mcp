@@ -1,5 +1,479 @@
 # Changelog
 
+## 0.3.7
+
+Works with the x86-64 build of Garry's Mod of 2026-11-19 (new install layout, moved engine interface slots, every
+fixed slot now checked before use), and with Claude Code's Code Mode. Adds ui_click / ui_key, screenshots without a
+map, launch options for test clients and hung / crashed / low-memory reporting; makes the coordinator hand-over,
+the map-load lock and lua_mount hold under live chaos tests with several agents; fixes dedicated servers (Linux and
+Windows) so a first call never sends the model into a loop.
+
+### Features
+
+- **The fixed vtable slots and offsets are verified before they are used.** The module called `ILuaShared` slots 6, 9 and 17,
+  `IVEngineClient` slots 7 and 72 and `INetChannelInfo` slot 1 by fixed index, and trusted two struct offsets of the Lua state, with
+  only the `IFileSystem` layout read from the code (the 5 or 9 slot `IAppSystem`). A game update that moves a slot would have made it
+  call another function. Each one is now checked once per process against the code behind it (`src/layout.*`: the shape of the
+  function, never exact bytes, so a recompiled build still passes): `GetLuaInterface` is the plain read of the realm array, `MountLua`
+  calls `MountLuaAdd` for `"lua"` and `"gamemodes"`, `MountLuaAdd` and `UnMountLua` tail-call the file system (and their slots must
+  agree with the `IFileSystem` layout that was read), `EmptyCache` walks the file cache, `ClientCmd` hands its text to the command
+  buffer, `GetNetChannelInfo` returns a global and the net channel's `GetAddress` formats the remote address (and returns short
+  printable text). A slot that is not recognized turns off only the feature that needs it, with the reason: no realms (`realm_unavailable`),
+  `lua_mount` refused (`interface_missing`, the failed slots named; `empty_cache` alone is refused when slot 17 is the one), the blocked
+  console commands not sent, and the client lock **fails safe** (no address: the client realm stays locked). `status.layout_check`
+  reports `ifilesystem`, `iluashared`, `ivengineclient`, `inetchannelinfo` and `lua_offsets` (`ok`, `state`: `verified`, `pending` until
+  the first use, `refused`, `not_applicable` on Linux and on a dedicated server; `reason`; the per-slot verdicts and counters), and a
+  refused interface is logged once at load. Tested against the real bytes of two builds of each engine library.
+- **`ui_click` and `ui_key`: click and type into a test client's UI.** Some UI has no console command: a VGUI2 dialog such as
+  "Disconnected by the server", a Derma panel, a button of the menu's HTML. `ui_click {x, y, button?, double?, wheel?, coords?,
+  screenshot_size?, wait_frames?, screenshot_after?}` posts `WM_MOUSEMOVE`, then the button down and up (double: down, up,
+  double-click, up) a frame apart, or one `WM_MOUSEWHEEL`; `ui_key {key?, text?, wait_frames?, screenshot_after?}` posts a key
+  (named keys, f1..f12; enter, tab, backspace and escape as key down, `WM_CHAR`, key up; a letter, a digit or space as the one
+  `WM_CHAR` of the character, like `text`: the game's message loop turns a posted key down into its own `WM_CHAR` from the real
+  keyboard layout, so key down plus `WM_CHAR` typed "aa" and "5(" on AZERTY) and/or `text` as `WM_CHAR` (256 characters at most). The engine narrows
+  every typed `WM_CHAR` through the machine's ANSI code page with best-fit substitutions (live, CP1252: an accent of western Europe
+  arrives, `ł` becomes `l`, `α` `a`, Cyrillic and CJK `?`; `WM_UNICHAR`, IME characters and `VK_PACKET` are ignored, so there is no
+  other way in): a text with such a character is refused with `text_not_representable` (before anything is typed; `details`
+  `code_page` and `characters`) unless `allow_lossy: true`, and the message points to `lua_exec` in the realm that owns the panel
+  (`DTextEntry:SetText`; `SetValue` does nothing while the entry has the keyboard focus). The clipboard is never used. Coordinates are pixels of the `screenshot` image by default (`screenshot_size` converts from
+  an image of another size, `coords: "window"` gives client-area pixels); the title bar is never part of them, and a client
+  area that differs from the backbuffer the engine renders (DPI scaling) is scaled. The messages go to the game's own main window with
+  `PostMessage`: the user's real cursor does not move and no window takes the focus (never `SetCursorPos`, `SendInput` or
+  `SetForegroundWindow`). Each refusal has its own code: `unsupported` (srcds, not Windows), `not_a_test_client` (only games
+  started by `instances_launch` accept input; `allow_user_game: true` overrides it), `client_locked`, `loading`,
+  `window_unavailable` (minimized or not found), `cursor_hidden` (the game has the mouse: no menu, dialog or popup is open) and
+  `out_of_bounds`; `cursor_hidden` and `loading` carry a `next_call`. The result lists what was sent, the point in client pixels,
+  the window size, DPI and scale, and with `screenshot_after` the image like `screenshot`.
+- **`screenshot` works at the main menu, in a dialog and on a loading screen.** Without a loaded map there is no client realm, so
+  the engine's render capture had nothing to run in (`realm_unavailable`), and a VGUI2 dialog such as "Disconnected by the
+  server" could not be seen at all. `screenshot` now uses the engine's own `jpeg` console command when no client realm exists,
+  and keeps the render capture when one does. (Windows Graphics Capture was tried first: it returns an all-white image for this
+  game's window, covered or not, so it is not used.) The new `source` argument (`auto` by default, `render`, `engine_jpeg`) forces
+  one, and the result says which one it used (`source`). The module sends `jpeg` through the engine path `console_exec` uses for
+  commands blocked from Lua, waits (4 s at most, `capture_timeout`) for the console line the engine prints,
+  `Wrote 'screenshots/<name>.jpg': ... (WxH) ...`, taken after a console cursor read just before sending, reads exactly that file
+  under `garrysmod/` and deletes it, and nothing else: the path must be `screenshots/<one name>.jpg` (no `..`, no other folder,
+  no link), the file must not be older than the command, and a file that cannot be read stays where it is and is named in a
+  `capture_failed` error; one that cannot be deleted is returned all the same with a `warning` that names its path. The result
+  has `file` and `file_deleted`. It is the engine's own capture, so it works while other windows cover the game and takes no
+  focus. The image is a JPEG at the backbuffer's size (the space `ui_click` reads), at the engine's own quality (the `jpeg_quality`
+  convar, which is archived and left alone): `format`, `w`, `h` and `quality` are not applied there and are listed in `ignored`.
+  One capture at a time. `ui_click` and `ui_key` `screenshot_after` use the same fallback (they used to answer
+  `screenshot_note`). `screenshot_from` still needs a map.
+- **`lua_job {wait: false}` is suggested as `async`** (issue #11). The unknown-argument message answered "did you mean
+  'jit'?" for `wait` (the closest spelling). A small synonym table (`wait`, `await`, `sync`, `blocking`, `nowait`,
+  `background`, `detach`...) now points to `async` when the tool has it. `wait` and `async` are opposites, so the message says
+  so and the corrected `next_call` inverts a boolean (`wait: false` becomes `async: true`); a `wait` that is not a boolean gets
+  the suggestion without a corrected call.
+- **Long waits accept up to an hour** (issue #11). `wait_for`, `wait_frames`, `events_wait`, `reports_read {wait_s}` and
+  `lua_job_status {wait_s}` took at most 600 s (`console_wait` already took 3600), so a long series needed chained calls. They
+  now take 3600 s. The coordinator's relay of a call to another instance waited at most 900 s for the answer and would have cut
+  a long wait on a test client at 15 minutes: it now waits 3700 s. The MCP client's own tool-call timeout is not ours to change
+  (Claude Code: `MCP_TOOL_TIMEOUT`).
+- **`lua_exec` and `lua_job` report a `RunConsoleCommand` the engine blocked** (issue #11). The engine ignores
+  `RunConsoleCommand("fps_max", ...)` (and the other commands on its Lua blacklist) without a word, so an agent believed it had
+  changed the frame cap. While the code runs, the runtime now notes the calls that `IsConCommandBlocked` refuses; the result
+  carries `blocked_console_commands` and a `warning` pointing at `console_exec` / `convar_set`. Only calls made by the code
+  itself while it runs are seen (a job: during each of its resumes); a command refused for another reason is not.
+- **`fields` says when it projected nothing** (issue #11). On `lua_exec`, `lua_exec_file`, `lua_job` and `lua_job_status`,
+  `fields` only keeps keys of returned tables; when the value was a JSON string (`util.TableToJSON`), a number or an
+  array, the whole result came back with no word. The result now carries `fields_note` saying so and what to return instead.
+- **`errors_since {group_by: "message"}`** (issue #11). One entry per distinct message (`message`, `count`, `first_seq`,
+  `first_time`, `last_seq`, `last_time`, `realms`, `map`, `stack`, `addon`), most frequent first, instead of up to 2000
+  mostly identical errors; `limit` caps the groups (`groups_total` counts them) and `next_cursor` covers every error read.
+  The default output is unchanged.
+- **The mounted Lua folder tells which copy ran, what is out of date, and reloads on demand** (issue #9).
+  `lua_function_source` and `lua_inspect` (on a function) return `from_mount`, the real `disk` path, `mount_has_file`
+  and `provenance` (`mount_in_place_at_load`, `reloaded_from_mount`, `installed`, `not_on_disk`, `no_file`): the engine names a
+  mounted file `@lua/x.lua`, the same as the installed copy, so the name alone could not tell. The module records, when the
+  hook puts the folder in front of a realm's Lua path, the folder's files and their times, and uses that, not the name.
+  `status.lua_mount` lists `stale_files` (files whose time differs from what each realm loaded: modified, added, deleted; an
+  older time after a `git checkout` counts) with the realms each runs in, and `realms_without_mount`; `map_load` empties the
+  engine's Lua file cache first when a folder is mounted and warns when the check finds something. `lua_reload
+  {mounted_changed: true}` runs every changed file again in its realms and reports them per realm; entity, weapon and
+  effect files and deleted files are listed in `skipped`. A reload re-runs the file: it does not undo what the old copy did.
+
+- **`instances_launch` passes frame caps, startup commands and extra engine options to the clients it starts** (issue #10).
+  `fps_max` and `fps_max_nofocus` (0 = no cap, or 10 to 1000) replace the preset's frame cap, so a test that needs 45 or
+  300 fps no longer has to change the archived `fps_max` with `console_exec` after the launch; the result reports
+  `fps_max`, `fps_max_nofocus` and `fps_note`. `commands` runs console commands on each client once it answers, before
+  its map loads (`instances[].commands` reports each one; a failure makes the call `isError`). `launch_args` adds engine
+  command-line tokens (`["-noborder", "+cl_showfps", "1"]`). Everything is checked before a client starts: `quit`/`exit`,
+  `connect`/`retry`/`redirect`/`connect_lobby`, map changes (use `map`), and the options gmod-mcp sets itself
+  (`-multirun`, `-mcp*`, `-w`, `-h`, `-width`, `-height`, window-mode options, `-dxlevel`, `-condebug`, `-game`) are refused
+  with `invalid_params` naming the offender, and a token with a space, quote, `;` or non-ASCII character is refused too
+  (the bridge builds a command line). The archived convars these options change are given back to the user's value
+  before a clean quit like the frame cap already was: the bridge lists their names to the module on the command line
+  (`-mcp_restore_convars`) and the module restores those that are archived (a convar changed by `exec` of a cfg file is not
+  tracked; a module older than this release restores only its four built-in convars). The tool description, the guide, the
+  skill and the README say where the options are listed (Valve Developer Community "Command line options", the Garry's Mod
+  wiki, `api_search`, `concommand_list`).
+- **Hints are data as well as prose** (issue #3). Where a hint names the next call, the result also carries it as
+  `next_call: {tool, arguments?, after_s?}` (inside `error` for an error), next to the unchanged prose: a missing realm
+  (`map_load`), a frozen main thread (`status`), a crashed or ended game (`instances_launch`), a launch or map load refused
+  while another game starts or loads (the same call, later, with a larger `timeout_s`), an argument typo (the corrected call),
+  a started `lua_job` (`lua_job_status`), cut values (the call without the limits), a `lua_mount` a launched client lacks. In
+  an offline eval (14 payloads, haiku and sonnet, 3 runs) the first call the model made was the right one 83-86 % of the time
+  without it and 93-100 % with it, at about 22 more tokens per payload (`tests/eval/hint_eval.py`).
+- **Every tool declares its `outputSchema`** (the shape of a success result; types, `required` only where every path sets the
+  field, extra fields allowed). Clients that validate results (the MCP SDK in Claude Code) can now rely on it. Results are
+  checked against it in the unit tests (`tests/schema/results.json`).
+- The guide has a "Reading results" section: where hints live and what each hint field means.
+- **Hung, crashed and memory-starved clients are reported** (issue #8). `instances_list` gives every instance `stalled_s` (seconds
+  its main thread has been blocked) and `fps_low_s` (seconds under 10 fps, not counted while loading), and `state: "hung"`
+  after 60 s of blocked main thread (180 s during a map load) with the advice to close and relaunch; an instance whose
+  heartbeats stopped while its process lives stays listed (`unresponsive`, then `hung`) instead of vanishing after 10 s.
+  A call in flight to an instance that dies answers `client_crashed` at once (the coordinator and, for the clients it
+  launched, the bridge watch the process), and a call to a frozen process fails with `instance_hung` after 30 s without
+  heartbeat. A client that died during its map load is `client_crashed` in `map_error`, not `game_not_running`. `instances_launch`
+  checks the free commit and RAM before starting anything and refuses with `low_memory` (`free_commit_mb`, `free_ram_mb`,
+  `running_clients`, `per_client_mb`) under 1.6 GB of commit and 1.2 GB of RAM per client (measured: a light client holds
+  1.55 GB of commit); `ignore_low_memory: true` overrides it. A crash report carries `details.memory` and a hint when memory is low.
+
+### Fixes
+
+- **A model's first call on a dedicated server (srcds) is no longer sent in a loop** (issue #3, live on a Linux srcds). The client and
+  menu realms never exist on srcds, yet every `realm_unavailable` answered `next_call: map_load`, a dead end (a map never gives a
+  srcds a client realm, and `map_load` itself runs through the server realm). `lua_exec`, `lua_exec_file`, `lua_check`,
+  `lua_inspect` and `lua_function_source` also defaulted to the menu realm, so `lua_exec {code}` with no realm failed on srcds with
+  "realm menu unavailable in srcds mode". Now: those tools default to the server realm on srcds (the menu in client mode, as before);
+  a client or menu realm asked for by name says to use `server` and gives no `next_call` (`error.details` is `{mode: "srcds", realm}`);
+  the server realm of a srcds, missing only between two maps, points at `status`; `screenshot_from`, `debug_draw`, `debug_clear`,
+  `disconnect` and `lua_mount` answer `unsupported` first on srcds (like `screenshot`, `ui_click` and `ui_key`), and their
+  descriptions say "unsupported on srcds"; `lua_reload` runs a shared file in the server realm only and refuses a client-only file
+  with `unsupported`. Client mode is unchanged.
+
+- **A game closed on purpose is no longer reported as crashed when it was the coordinator** (issue #6, live with four agents in parallel).
+  `instances_close` ended the client that held the base port with `game_terminate` (exit code 1). Only a member that says goodbye, or
+  one the coordinator relayed `game_quit`/`game_terminate` to, is known to end on purpose; the coordinator itself told nobody. The
+  member that took the role over turned it into a tombstone from the directory it kept, with no reason for the end, and an exit
+  code of 1 without a dump is judged a crash: another agent's `instances_list` showed it `crashed` ("relaunch...") and a call for it
+  answered `client_crashed`. A coordinator that ends on purpose (`game_terminate`, or the game closing: `game_quit`, the menu's Quit)
+  now tells every member first (`/internal/leaving`, parallel, short timeouts); the members note it, and the tombstone made at the
+  take-over is a goodbye: the instance is simply gone (`instance_gone`, not listed). A notice that comes after the take-over marks the
+  tombstone and has it judged again. A coordinator that really crashes is still reported `crashed`. Tested with three real node
+  processes (`test_coordinator_closed_cluster`: red first, `client_crashed` and listed `crashed` after a `game_terminate` of the
+  coordinator).
+- **Code Mode (Claude Code's experimental mode where the model writes JavaScript): long calls are answered in place** (Issue #3).
+  Claude Code marks the calls a script makes (`_meta["claudecode/toolUseId"]` starts with `repl_`). The game answered `map_load`
+  and waits of 15 s or more with a background task to those calls too, and the script only got a "moved to the background" stub
+  (`await map_load(...)` followed by more code broke); they are now answered in place. A new setting, the environment variable
+  `GMOD_MCP_TASKS=off` (default `auto`), turns the tasks the server chooses off for every client: set it for Claude Code (the
+  bridge then does not forward the Tasks extension to the game) or for the game (the module reads it too). A client that asks for a
+  task itself (the 2025-11-25 form) still gets one.
+
+- **Every error text is one JSON object, so `e.detail` works in Code Mode** (Issue #3). Claude Code throws the text of an error
+  result and gives the script `e.detail` (the parsed JSON) only when that whole text starts with `{`. The version-mismatch warning
+  was a prose block in front of an error without `structuredContent` (it is now a field `version_warning` inside the JSON), and two
+  results of the bridge were `isError` with no `error` object: `instances_close` when nothing was closed (now `error.code:
+  "refused"`) and `instances_launch` when the clients started but a map, a startup command or the `lua_mount` failed (now
+  `error.code: "launch_incomplete"`; the whole result is still there). Checked on every error path the bridge tests drive.
+
+- **A test client no longer keeps the user's foreground** (live, x86-64 branch). Every client `instances_launch` started became the foreground
+  window and kept it, so the user's terminal lost the focus at each launch. The bridge now starts the client with a window shown without
+  activation (`STARTF_USESHOWWINDOW`, `SW_SHOWNOACTIVATE`: three launches in a row and a launch of two, 0 of 1,216 samples taken during the
+  launches differed from the window the user had) and records the foreground window before each start, passing it as
+  `-mcp_return_focus <decimal window handle>`. If the client still ends up in front (a game started by hand with the option: the
+  engine took it 0.4 s after the start), the module of a test client (`-mcp_test_client` only, never the user's own game) gives the foreground
+  back with `SetForegroundWindow` once its window is the foreground one (allowed: the foreground process does it), at most 3 times and
+  during the first 3 minutes, so a window the user focuses on purpose later is left alone; a target that is gone, hidden or minimized is
+  not used. A later client of the same launch keeps the user's window as target instead of the earlier client's. The option's value is
+  validated (plain decimal, 1 to 4294967295). Event `focus_returned`.
+- **`ui_click` loses a click now and then while the game is the foreground window** (live, x86-64 branch). In front, the engine also
+  reads the real cursor (nowhere near the posted point), and a click posted as one move then a press was lost about one time in five
+  (11 of 60 on a test client in front; none in the background, 10 of 10). With the game in front `ui_click` now posts the move three times,
+  a frame apart, before the press (0 of 90 lost). The real cursor is never moved (no `SetCursorPos`, no `SendInput`).
+- **`instances_list` carries `silent_s` on every entry** (live verification of 0.3.7). A frozen member showed `state: "unresponsive"` and
+  `stalled_s` but no `silent_s`, which only the `instance_hung` error had. Every entry now has `silent_s`, the seconds since its last
+  heartbeat (0 for this game, rounded to 0.1 s, like the error's), and the `instances_list` result schema describes the entries
+  (`state`, `heartbeat_age_s`, `silent_s`, `stalled_s`, `fps_low_s`, `loading`).
+- **An unknown argument is named at the start of the `invalid_params` message** (live verification of 0.3.7). `console_exec {cmd,
+  timeout_s}` was refused with a message that began with the validator's own words (`At  of {...} - validation failed...`), so a client
+  that showed or cut the start of it never saw the name. The message now starts with `invalid arguments: Unknown argument '...'` (and
+  `Missing required argument`), then the accepted list, the validator's words last; a wrong type keeps the validator's words first.
+  `console_exec` has no wait budget (it waits `wait_frames` frames; `connect_timeout_s` is the wait of `connect` alone): `timeout_s`
+  says so and points to `console_wait`, `wait_for` and `events_wait`, instead of suggesting `connect_timeout_s`.
+- **Whatever the compiler answers that is not a function is a `lua_syntax_error`** (live verification of 0.3.7: `lua_exec` code with a
+  `"\u0041"` escape, invalid in LuaJIT 2.1 which only knows `"\u{41}"`, came back as an empty result once). `A.compile` now
+  returns a function or `nil` and a message in every case: a compiler that gives the message as its first value (as `CompileString`
+  does) or nothing at all no longer reaches the code that runs the chunk. The plain case already answered `lua_syntax_error` with the
+  message and line in the Lua runtime tests; the live empty result could not be reproduced outside the game.
+- **`loading` is true while a `map_load` is waiting to start the load** (live verification of 0.3.7). `map_load` first waits for the
+  menu to be idle (up to 15 s on a client whose loading screen is stuck) and 30 frames before the engine starts the load; `status` and
+  `instances_list` said `loading: false` for those ~18 s, so a launch or another `map_load` was not held back. The call itself now
+  counts as a load from its first moment to its answer, whatever the engine does (and a stuck loading screen is not reported as
+  `loading_stuck` while it runs).
+- **`map_load` with no game answers as fast as `status`**. It answered `game_not_running` after 2-3 s instead of 1 s: before the call itself,
+  the bridge asked the directory which other games were loading (to report them), a second refused connection. It no longer asks
+  once a call has found nothing listening.
+- **A crash answer says where the dump's exception happened** (issue #8, live verification). `client_crashed` / `server_crashed` named
+  the minidump and nothing else. The module now reads it (exception record, the faulting thread's stack pointer and stack memory, the
+  module list) and `details` and the `instances_list` crash entry carry `fault` (e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up
+  to 8 stack words that point into a module, from the stack pointer up). The guide adds that a crash only on test clients may be
+  timing (`fps_max` 20 runs several server ticks per frame): retry with `fps_max: 300` to tell.
+- **`instances_launch` under a foreign-held base port** (issue #5, live verification). Every call already answered `port_conflict` when a
+  program that is not gmod-mcp holds the base port, but `instances_launch` started its clients (which take the next free port, where the
+  bridge never looks) and waited its whole budget to fail `timeout` "gmod-mcp did not load in them". It now refuses up front with
+  `port_conflict` (the fix, `GMOD_MCP_PORT`, and the gmod-mcp found on the next port when there is one) and starts nothing; when the port
+  is taken while a launch waits, it gives up after 10 s and the `timeout` error names the conflict.
+- **A frozen but live instance keeps answering `instance_hung`** (issue #8, live chaos test). The first call to a member that stopped
+  heartbeating (frozen as a whole) answered `instance_hung`, every later one `instance_gone` in 0.2 s although the process still
+  ran: the member had been dropped from the directory and the tombstone assumed it was gone. `instance_gone` now means the process
+  ended; a live silent one answers `instance_hung` (details `pid`, `silent_s`) with how to close it.
+- **A stuck loading screen is not a load** (issue #8, live check I-C1). After `map gm_flatgrass` then `disconnect` within a second the
+  engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
+  300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no
+  connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
+  false, `status` and `instances_list` say `loading_stuck: true` with the way out (a `map_load` clears it; `disconnect` does not, checked live). A real load,
+  even a minute-long one with its realm present, is never cut.
+- **`game_quit` on a dedicated server really quits (Linux) or says it cannot.** On srcds the console `quit` is blocked from server Lua
+  (the engine's own blacklist), so `game_quit` answered `{quitting: true}` and the server kept running. The runtime now checks
+  `IsConCommandBlocked("quit")`: when blocked, the module ends the process itself with SIGTERM half a second after the answer (the
+  server's own clean shutdown, `via: "signal"`); where it cannot (Windows srcds) the answer is the error `blocked`, never
+  `quitting: true` for nothing. `game_terminate` was already working on Linux (checked live).
+- **The Linux module loads on the dev-branch server.** `plat::find_loaded_module` only tried `dlopen(bare name, RTLD_NOLOAD)`, but the
+  dev branch loads `lua_shared_srv.so` by full path from `garrysmod/bin/linux64` (no SONAME, not on `LD_LIBRARY_PATH`), so the module
+  never found the Lua library and stayed inactive. It now also walks the loaded objects (`dl_iterate_phdr`) for one with a matching
+  file name and takes a handle on it by its full path.
+- **`lua_mount` file times on libstdc++ < 13** (Linux, GCC 11/12). The file system clock of those libraries counts from the year 2174, so every
+  current file time is a negative tick count, and `unix_seconds_of` took negative as unknown: the engine-serves probes then expected no
+  time and a copy with another time was reported as served. Unknown is now an explicit marker (`kUnknownTime`), not a sign.
+- **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
+  the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
+  do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;
+  the next tick of the same frame sends a snapshot from the half-torn server. `console_exec` now leaves the map first (as
+  `disconnect` does, `left_game_first: true` in the result) and then runs `killserver`, which only resets the network mode.
+- **A success result never fails an outputSchema because of a non-finite number** (issue #3, live fuzz). `trace` and
+  `trace_through` with a huge end point, `players_list` / `player_set` after an overflowing or NaN eye angle, `ents_find` with a
+  NaN origin and `convar_get` / `convar_set` with "1e999" answered `null` where the schema said `number`, which the MCP SDK in
+  Claude Code rejects as a whole. Every number of every outputSchema now accepts `null` (a test walks all schemas), and the guide
+  says a non-finite number reads `null`.
+- **`instance_select` refuses an unknown id** (`unknown_instance`, with the known ids; the default stays). When the list of
+  instances cannot be read the id is accepted with a warning.
+- **`ents_find` explains id -1** (clientside-only entities have no index: no tool can address them) in a `note`.
+- **`wiki_page` / `wiki_search` try the client and server realms** when the menu realm has no HTTP function, and say which
+  realms were tried when none has.
+- **`debug_draw` accepts `{type: "arrow", from, to, head?}`**.
+- **Health reporting found wrong by live chaos tests** (issue #8). (1) A client frozen as a whole kept the figures of its last
+  heartbeat in `instances_list` (`fps 19`, main thread ticking, `last_tick_age_s 0.05`) for the whole freeze: while the heartbeat
+  is stale the entry reads `fps 0`, `main_thread_stalled true` and `last_tick_age_s` as old as the silence, and the last raw
+  figures stay under `last_heartbeat`. (2) `map x` then `disconnect` at once left `loading: true` for minutes (every
+  `instances_launch` then failed with `map_load_in_progress`) while `status` said false: the server Lua state had opened and
+  closed between two pump runs, so nothing switched the load flag off. The pump now drops the flag once no server state
+  exists, the server source alone counts 30 s at most once the loading screen is down (it was 300), and `status.loading` is the
+  same flag as the list. (3) `instances_launch` refuses with `peer_unhealthy` while a running client is `unresponsive` or `hung`
+  (a frozen client keeps a new one from registering, so the launch timed out with `0 of 1 clients answered`), unless
+  `ignore_unhealthy: true`, and a timeout names the stuck peers. (4) With `count > 1`, a client that dies at startup no longer
+  leaves its siblings unmentioned: the error lists those still running and warns they are not closed. (5) The `owner` label
+  now travels with the game (`-mcp_owner`, heartbeat): `instances_list` shows it on every instance and
+  `instances_close {owner}` closes `keep: true` test clients of an earlier bridge session (never a game that is not a test
+  client, never one without the tag). (6) `low_memory` counts the game's processes, not only registered instances, and reports
+  `registered_clients` and `game_processes`.
+- **`lua_mount` no longer reports a mount that loads nothing** (issue #9, found by live chaos testing). The module said `active`
+  and `loaded_with_mount` from its own bookkeeping for folders the engine takes into its search paths but cannot read. UNC
+  paths (also `\\localhost\D$\...`), extended-length paths (`\\?\D:\...`) and roots whose files pass MAX_PATH are now refused
+  with the reason, and with a map loaded each realm's file system is asked for a few of the folder's files:
+  `engine_serves_folder` / `engine_serves` in `lua_mount {}`, `status.lua_mount` and `map_load` (a warning when false), and
+  `instances_launch {lua_mount}` reports such a client `active: false` with `error_code: "mount_not_effective"`.
+  A folder renamed or deleted (or only its `lua/`) is reported (`folder_missing`, `mount_folder_missing`) instead of an empty
+  "all current" state, and `lua_reload {mounted_changed}` answers `mount_folder_missing`. A folder that replaces the game's own
+  base Lua (`lua/includes/init.lua`: the client hung and `map_load` timed out after 180 s) is refused with `shadows_base_lua`
+  and the files listed, unless `allow_shadow: true`; a `map_load` timeout with a mount set names the mount. After the mounted
+  folder changes without a map load, a function that ran from the old folder reports `provenance: "mount_changed_since_load"`
+  with its old copy as `disk`; a file loaded in place and then reloaded is `reloaded_from_mount`. A 30000-file mount no longer
+  costs seconds per `status`, `lua_reload {mounted_changed}` or `map_load` (one cheap scan instead of one slow scan per
+  realm: 5000 files 1064 ms -> 16 ms). The warning for a realm without a load record no longer claims it ran the installed
+  files. Smaller: stored paths compare like Windows does (trailing dot, case), a junction into the game folder is refused,
+  unmount removes the `gamemodes` paths even when that folder is gone, and a failing file in
+  `lua_reload {mounted_changed}` is an error result (`reload_failed`, details hold the whole result).
+- **`lua_mount` works again on the x86-64 build of Garry's Mod of 2026-11-19** (issue #9). That build added four slots to
+  the engine's `IAppSystem` interface, so every `IFileSystem` slot moved by four: the module's `AddSearchPath` and
+  `RemoveSearchPath` calls landed on two functions that do nothing, and the mounted folder was silently never searched
+  (the hook ran, the folder's autorun did not). The old `GetSearchPath` slot became `RemoveAllSearchPaths`: the one call
+  the module made wiped every search path, and the next load of a new model blocked the game for good (that call was
+  already removed). The module now reads the layout from the engine's code and refuses the mount, with a message, when it
+  matches no known build; `lua_mount` reports `fs_first_slot` (5 on older builds, 9 now).
+- **`fps` in `instances_list` and `status` is counted over the last 3 s** (issue #8, found with issue #11 item 2): it was the
+  mean of the last 256 frames, so a client that ran at 2 fps through a map load kept reporting about 2 fps for minutes
+  after it ran at 20 again, and read the rate from before while its main thread was blocked. It reads 0 when blocked.
+- **The current x86-64 install of Garry's Mod is found** (issue #4). It has no `gmod_win64.exe`: the 64-bit game is
+  `bin\win64\gmod.exe`, and the `gmod.exe` at the root of the game folder is the 32-bit one. `instances_launch` now looks
+  for `gmod_win64.exe` at the root, then for `bin\win64\gmod.exe`, prefers the file whose PE header says x86-64, never
+  starts a 32-bit one, and starts the game with the game folder as working directory. The `game_not_found` message names
+  both paths. The skill no longer tells an agent to give up when `gmod_win64.exe` is missing: it gives the
+  `bin\win64\gmod.exe` start command and how to tell a 32-bit executable from a 64-bit one.
+- **A foreign program on the base port is no longer reported as a stopped game or a token problem** (issue #5). When
+  another program held port 27080, the tools failed with `the game answered HTTP 403 without a JSON-RPC response`, the
+  server instructions said the game was not running, the game's log blamed the token and the skill took any HTTP answer
+  for a running game. Now the module signs every HTTP answer with an `X-Gmod-Mcp` header (modules before this version are
+  recognised by the JSON body of their 401). The bridge answers `port_conflict` (tool errors, server instructions,
+  `instances_list` note) when the base port answers without that signature: it names the port, how to find the program
+  (`Get-NetTCPConnection -LocalPort`, `ss -ltnp`) and `GMOD_MCP_PORT`, and looks in the background for a gmod-mcp on the
+  next 15 ports to name the value to set. A gmod-mcp 401 stays "rejected the token". In the module, a coordinator link
+  to a foreign program is `foreign` in `status` (`coordinator_link`) with a log line saying the port is held by another
+  program; `refused` (token) is only for a real gmod-mcp coordinator. The skill checks for `401` plus the header, and
+  explains how to find and handle the program.
+- **Map loads the bridge does not see no longer crash a game that is being started** (issue #7, Garry's Mod issue 7137).
+  The launch/`map_load` lock only knew the calls that went through a bridge: a map loaded from the console (`map`,
+  `changelevel`), from Lua (`RunConsoleCommand`) or by a script talking HTTP straight to a game was not serialised against
+  `instances_launch`, and a launch starting while it ended could crash it. Every game now reports `loading` (a map load in
+  progress, whatever started it) with its heartbeat, sent at once when a load starts or ends, and `instances_list` shows it.
+  `instances_launch` waits while any game loads (`waited_s`, `waited_reason` starting with `map_load_outside_bridge`; at the
+  call's `timeout_s` it fails with `map_load_in_progress` and starts nothing). `map_load` does not wait for such loads but
+  lists the other games that were loading when it started (`other_games_loading`). Still not covered: a game you start by
+  hand, a game without gmod-mcp, and a console or Lua map load started while a launch is creating its processes (the bridge
+  only delays its own calls). Everything is tagged `FP7137` and obeys `GMOD_MCP_FP7137_WORKAROUND=0` (see
+  `docs/FP7137.md`); the agent-facing texts (server instructions, `instances_launch` / `map_load` descriptions, guide,
+  skill, README) say so.
+- **A call lost in flight while the coordinator moves is `relay_lost`, not `game_not_running`** (issue #6, live chaos test).
+  When the coordinator died with a call in flight and other games were running, the call answered `game_not_running`
+  ("Start the game with -mcp") although its target game lived and the action had happened (a map load completed, a Lua job
+  kept running). It now answers the retryable `relay_lost` (`details.retry_after_s`, `details.maybe_executed: true`): the call
+  may have run, check the state before repeating one that is not idempotent. `instances_launch {map}` asks the client for its
+  `status` after a lost `map_load` answer and reports the map loaded (`map_note`) when it sits on it, instead of `map: null`.
+- **A call made in the first moments after the coordinator died is ridden out** (issue #6, live chaos test). The dying
+  coordinator's listener still accepts a connection for a fraction of a second, then drops it; only a refused connect counted
+  as "coordinator gone", so such a call (and the first calls of bridges that had launched no client) answered
+  `game_not_running`. A connection that breaks within 0.5 s with nothing of an answer now counts as refused: with other
+  games known to live the bridge waits for the next coordinator like for any hand-over.
+- **No wait for a hand-over that cannot happen** (issue #6, live chaos test). After the last games closed, other bridges
+  answered `coordinator_changing` for up to 30 s (a call waited 10 s) because "several games live" stayed in their memory for
+  30 s. The bridge now remembers which processes could take the coordinator role over (the members of the last list that
+  showed several games) and answers `game_not_running` at once when none lives any more, or when a later list shows a single
+  game.
+- **A game killed together with the coordinator is reported as gone, not `unknown_instance`** (issue #6, live chaos test).
+  The new coordinator had never heard from a member that died with the old one: calls for it blocked 7-8 s on
+  `coordinator_changing`, then answered `unknown_instance`. Heartbeat answers now carry the directory of instances (the
+  coordinator included); the member that takes the base port over keeps a tombstone for every instance it does not hear from,
+  and a call for one whose process ended answers `instance_gone` / `client_crashed` at once, with the same reasons as always
+  (exit code, dump). A crashed old coordinator is now listed as `crashed` like any other crashed instance.
+- **At most 2 maps load at a time across every bridge** (issue #7, live chaos test). The limit of 2 was per call: two
+  `instances_launch {count: 2, map}` plus a `map_load` had 5 games loading at once. Every map load of every bridge now
+  registers in the shared FP7137 state and waits while 2 others are registered (`map_load_in_progress` at the timeout; the
+  kill switch lifts it).
+- **A killed bridge no longer leaves its `keep: false` clients running** (issue #8, live chaos test). `taskkill /F` on a
+  bridge ran no exit code, so the test clients it had launched ran for ever. On Windows they are now started in a job object
+  that closes with the bridge (`KILL_ON_JOB_CLOSE`), helper processes of the game included; `keep: true` clients stay out of it.
+- **`low_memory` counts games, not their helper processes** (issue #8, live chaos test). The `game_processes` figure counted
+  every process running the game's executable; each game starts helper processes of the same executable (`--type=renderer`,
+  `--type=utility`), so it was about 3 times too high and could refuse a launch the machine could take. A process whose parent
+  is a game process that started before it is a helper and is no longer counted.
+- **`instances_close` says `already_gone` for a process that had already ended** (issue #8, live chaos test). `{owner}`
+  listed a pid that had quit before the call as `closed`. Such pids (a client of this session that quit by itself, another
+  session's test client whose process is gone) are now in `already_gone`, with a note, and nothing is sent to them.
+- **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
+  directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
+  `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for
+  three failed heartbeats). Members now try to take the base port over at their first failed heartbeat (the bind only
+  succeeds when nobody holds it), the new coordinator asks every other port of the range to re-register at once, and
+  for 8 s it answers the retryable `coordinator_changing` (with `retry_after_s`) instead of `unknown_instance`
+  for an instance that has not registered yet. The directory is complete again about 3 s after the coordinator ended
+  (about 10 s before). The bridge waits for the new coordinator (up to 10 s) and retries `coordinator_changing`, but
+  only when other instances are known to live: with the only game closed a call still says `game_not_running` at once.
+- **`instances_launch {lua_mount}` never leaves a client without the mount.** Each client is asked what its engine has
+  BEFORE any map loads (it was after, so a client without the mount had already loaded the map), a missing mount is applied
+  again with `lua_mount {path}`, and a client that still has none gets no map (`map_error` `lua_mount_not_active`, isError).
+  An answer lost to a coordinator change while checking is waited out. A launch that times out says its silent clients keep
+  running and must be checked with `lua_mount {instance}` before any `map_load`.
+- **Closing the coordinator says so.** `instances_list` names it (`coordinator_id`, `role`) and warns when it is a client
+  of this session (`coordinator_warning`); `instances_close` reports `was_coordinator` and `coordinator_moved_to`;
+  `game_quit` / `game_terminate` on the coordinator add `coordinator_moved`, `remaining_instances` and a warning.
+- **A call with the game not running answers in the module's error shape.** `game_not_running` is now
+  `{"error": {code, message, details: {host, port, reason}}}` as the only text block and as `structuredContent` (it was prose
+  next to the JSON). The version-mismatch warning is a field of the result's JSON (first key of the text) instead of a prose
+  block in front of it, so the text stays the JSON of `structuredContent` (what code-mode hosts parse).
+
+### Docs
+
+- **A "Code Mode" section in the README and the guide, and one line in the server instructions** (Issue #3; live, 2 of 4
+  Code Mode sessions first read a result as an object before reading the guide): a result arrives as a JSON string (`JSON.parse` it), an error
+  throws with `e.detail` = `{error: {code, message, details, next_call?}}`, long calls are answered in place for a script, at most
+  10 calls run in parallel, and map loads are still serialized by the FP7137 lock. `GMOD_MCP_TASKS` is in the README configuration.
+
+## 0.3.6
+
+Guards against an engine crash when a game starts while another finishes a map load (Garry's Mod issue 7137),
+reports crashed games as such, keeps test clients out of the user's video settings and config, and fixes the install
+steps found by a literal walk-through of the README.
+
+### Features
+
+- **A game that crashed is no longer taken for one that quit** (point 3 of issue #2). A call to an instance whose process
+  ended without a clean shutdown answers `client_crashed` (`server_crashed` for a dedicated server) instead of a timeout,
+  `instance_unreachable` or `instance_gone`, with `details.dump` (the minidump file name in the game folder's `crashes/`,
+  null when none was written), `details.exit_code` and `details.evidence`. `instances_list` keeps a crashed instance for an
+  hour as `state: "crashed"` with a `crash` object (live ones have `state: "running"`), a `map_load` in flight when the
+  client died reports the crash, and `instances_launch` reports a client that crashed at startup or during its map load
+  (`map_error`). A harness can relaunch with `instances_launch`; the dump is for a human.
+  How it decides: a game that shuts down cleanly says goodbye to the coordinator, and `game_quit` / `game_terminate` sent
+  through it count as asked to end; otherwise a dump written in the 20 s before the process ended (matched by time, never
+  given to two instances) means crashed, then the exit code read through a handle the coordinator holds since the instance
+  registered (0 = quit, 0xC0000005 and other 0xC... = crash). Limit: a process killed from outside with no dump
+  (exit code 1) looks like a crash with `dump: null`; when several games crash together, dumps are matched by time only.
+  Dead instances are now noticed when their process ends, not 10 s later. Tool descriptions, the guide, the skill and the
+  README say what the codes mean.
+
+### Fixes
+
+- **`mcpagent_uninstall` did not always restore the original `menu.lua` byte for byte.** When the original had no final
+  line break (also an empty file, or CRLF without a final line break), the installer added one and removal could not
+  tell. The installer now always adds one line break, the block and one line break, and removal takes exactly those
+  away; a file installed by an older version is restored from the backup. A test covers LF, CRLF, mixed endings and
+  files with and without a final line break.
+- `mcpagent_setup` prints `claude mcp add --scope user ...`: without a scope the entry only exists in the folder where
+  the command ran.
+
+- **Test clients no longer leave their frame cap in the user's config.** `instances_launch` starts its clients with
+  `+fps_max 20 +fps_max_nofocus 20 +snd_mute_losefocus 0`. These convars are FCVAR_ARCHIVE (checked on a test client:
+  `fps_max` default 150, `fps_max_nofocus` default 20, `snd_mute_losefocus` default 1; `engine_no_focus_sleep` is not
+  a registered convar in this build), so a clean quit wrote them into `cfg/config.cfg`, which the user's own game shares:
+  a user's `fps_max "240"` became `"20"` after one `game_quit`. The clients now carry `-mcp_test_client` (read by the
+  module as `native.test_client`), and before one quits cleanly the module sets each of those convars back to the value
+  `cfg/config.cfg` has at that moment (read from disk, the user's game may have written it since the launch), or to the
+  convar's default when the file has no line. Covered: `game_quit`, `quit`/`exit` sent with `console_exec` or
+  `engine_cmd`, the main menu's Quit button (`RunGameUICommand("quit")` is wrapped), and the window's close button
+  (X, Alt+F4): the module subclasses the test client's window, queues the restore, holds the close request back 0.4 s
+  and posts it again. Why not a hook at shutdown: the engine writes `config.cfg` before it closes the menu Lua state
+  (`gmod13_close` runs after the write) and the `ShutDown` hook never runs in the menu state (both checked live).
+  Not covered: a `quit` typed by hand in a test client's console, and a game started by hand. `instances_close` kills
+  the process and writes nothing. A client that an older version started and quit may have left `fps_max` 20 in the
+  user's config: set it again.
+- **Test clients no longer overwrite the user's video settings.** `instances_launch` started its clients with
+  `-w 640 -h 360`, and the engine wrote that mode (ScreenWidth, ScreenHeight, ScreenMSAA, ...) into
+  `HKCU\Software\Valve\Source\garrysmod\Settings` at startup and at exit: the user's own game then
+  started at 640x360 without anti-aliasing. Both writes are skipped when `-dxlevel` is on the command line (read in
+  engine.dll, read-only), and the stored settings are then not read either, so the clients now carry `-dxlevel 95`, the
+  level the engine keeps on current hardware. Settings damaged by an earlier version are not repaired: set the
+  resolution again in the video options.
+- **Starting a game could crash another game that was finishing a map load** (Garry's Mod issue 7137, issue #2).
+  Starting any `gmod_win64.exe` makes every other running game release and restore its graphics resources for 2-10 s;
+  a map load ending in that window crashes the game in `shaderapidx9`. The bridges of all your Claude sessions now
+  share a lock: `instances_launch` waits while any game loads a map, and `map_load` waits while a game is being
+  started and for 15 s after the last start. The wait is bounded by the call's `timeout_s` (error `map_load_in_progress`
+  / `launch_in_progress`), reported as progress, and in the result (`waited_s`, `waited_reason`). A game started by
+  hand is not seen. `instances_launch {map}` loads its maps after that delay and at most 2 at a time instead of all at
+  once. Set `GMOD_MCP_FP7137_WORKAROUND=0` to turn it off. Everything is in `src/bridge/fp7137.*` and
+  tagged `FP7137`, to be removed when the engine is fixed: see `docs/FP7137.md`.
+  The `instances_launch` and `map_load` descriptions, the server instructions, the guide, the skill and the README now say it
+  (what waits, `waited_s` / `waited_reason`, the two errors, what the bridge does not see, games unreachable for 15-18 s
+  after a start, launch everything in one call first).
+
+### Docs
+
+- README, from a literal walk through its install steps: updating by hand needs `claude plugin marketplace update
+  gmod-mcp` before `claude plugin update gmod-mcp@gmod-mcp` (alone it answers "already at the latest version"); `claude
+  mcp add` takes `--scope user` (also in the text `mcpagent_setup` prints), otherwise the entry only exists in the
+  folder where it was run; the plugin does not replace a manual `gmod` entry (both stay, tools listed twice: remove it
+  with `claude mcp remove gmod`); the Linux zip is named (`gmod-mcp-linux64.zip`) and the top folder of both zips
+  explained; `mcpagent_setup` and the plugin work with a dedicated server; uninstall keeps `-mcp` until
+  `mcpagent_uninstall` has run, then removes it from the launch options, deletes `menu.lua.mcpagent.bak` and removes the
+  marketplace; auto-update: no `claude plugin` subcommand turns it on (the `/plugin` menu does); the `feedback_offers`
+  opt-out and the "1 userConfig option not yet set" notice; configuration (`GMOD_MCP_PORT` is what works with the
+  plugin, `-mcpport` range, a base port held by another program); manual-path updates; the version warning shows a
+  moment after the game first answers; `lua_function_source` in the tools table; the comparison has its own section; links
+  that broke in the release zip and in the marketplace clone are absolute; the Linux token path honours
+  `XDG_CONFIG_HOME`. The skill carries the update commands and the manual-entry facts.
+
 ## 0.3.5
 
 A crash fix, then the findings of an independent review of everything since 0.3.1, each with a test seen failing

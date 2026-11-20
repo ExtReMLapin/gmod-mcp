@@ -8,8 +8,11 @@
 #include <GarrysMod/Lua/LuaShared.h>
 
 #include "agent.h"
+#include "layout.h"
 #include "log.h"
+#include "luaapi.h"
 #include "platform/platform.h"
+#include "realms.h"
 #include "util.h"
 
 namespace lua_mount {
@@ -30,21 +33,49 @@ void set_current_for_tests(const std::string &root) {
     g_root = root;
 }
 
+bool is_constant_return(const std::vector<uint8_t> &c) {
+    auto at = [&](size_t i) { return i < c.size() ? c[i] : -1; };
+    size_t i = 0;
+    if (at(0) == 0x48) i = 1;  // REX.W: xor rax,rax
+    int op = at(i);
+    if (op == 0xc3) return i == 0;                                        // ret
+    if (op == 0xc2) return i == 0 && c.size() >= 3;                       // ret imm16
+    if ((op == 0x30 || op == 0x32) && i == 0 && at(1) == 0xc0) return at(2) == 0xc3;  // xor al,al; ret
+    if ((op == 0x31 || op == 0x33) && at(i + 1) == 0xc0) return at(i + 2) == 0xc3;    // xor eax,eax (rax); ret
+    if (op == 0xb0 && i == 0) return at(2) == 0xc3;                       // mov al,imm8; ret
+    if (op == 0xb8 && i == 0) return at(5) == 0xc3;                       // mov eax,imm32; ret
+    return false;
+}
+
+int fs_slot_base(const std::vector<uint8_t> &s7, const std::vector<uint8_t> &s8, const std::vector<uint8_t> &s11,
+                 const std::vector<uint8_t> &s12) {
+    if (s7.empty() || s8.empty()) return -1;
+    bool c7 = is_constant_return(s7), c8 = is_constant_return(s8);
+    // 5-slot IAppSystem: 7 AddSearchPath and 8 RemoveSearchPath have a body.
+    if (!c7 && !c8) return 5;
+    // 9-slot IAppSystem (GetDependencies, GetTier, Reconnect, IsSingleton after Shutdown): 7 and 8 return a constant,
+    // and the search path functions at 11 and 12 have a body.
+    if (c7 && c8 && !s11.empty() && !s12.empty() && !is_constant_return(s11) && !is_constant_return(s12)) return 9;
+    return -1;
+}
+
 #ifdef _WIN32
 
-// IFileSystem ("VFileSystem022", filesystem_stdio) primary vtable slots, verified in the x64 Windows binary
-// (docs/REVERSE.md): AddSearchPath 7, RemoveSearchPath 8, GetSearchPath 13. GMod's addType: 0 = before every path.
-constexpr int kAddSearchPath = 7, kRemoveSearchPath = 8, kGetSearchPath = 13;
+// IFileSystem ("VFileSystem022", filesystem_stdio) primary vtable: AddSearchPath and RemoveSearchPath are the 3rd and
+// 4th IFileSystem slots, after IAppSystem's. IAppSystem has 5 slots on older builds and 9 on the x86-64 build of
+// 2026-11-19, so the first IFileSystem slot is read from the code (fs_slot_base, docs/REVERSE.md): 7/8 or 11/12.
+// GMod's addType: 0 = before every path.
+constexpr int kAddSearchPathOfs = 2, kRemoveSearchPathOfs = 3;
 // ILuaShared (LUASHARED003) slot of MountLua in garrysmod_common's LuaShared.h, MSVC layout (one destructor slot).
 constexpr int kMountLua = 9;
 
 using CreateInterfaceFn = void *(*)(const char *, int *);
 using AddFn = void (*)(void *, const char *, const char *, int);
 using RemoveFn = bool (*)(void *, const char *, const char *);
-using GetFn = int (*)(void *, const char *, bool, char *, int);
 using MountLuaFn = void (*)(void *, const char *);
 
 static void *g_fs = nullptr;
+static int g_fs_base = 0;  // first IFileSystem slot (5 or 9), 0 until read, -1 unknown layout
 static GarrysMod::Lua::ILuaShared *g_ls = nullptr;
 static void **g_mount_slot = nullptr;
 static MountLuaFn g_orig_mount = nullptr;
@@ -61,7 +92,52 @@ static void *get_iface(const std::vector<std::string> &names, const char *versio
     return ci(version, &rc);
 }
 
-static bool ensure(std::string &err) {
+static void **vtable(void *obj) { return *static_cast<void ***>(obj); }
+
+// The first bytes of the function at vtable slot `i` of `obj` (empty if unreadable).
+static std::vector<uint8_t> slot_code(void *obj, int i) {
+    void **vt = nullptr, *fn = nullptr;
+    if (!plat::safe_read(obj, &vt, sizeof vt) || !vt || !plat::safe_read(&vt[i], &fn, sizeof fn) || !fn) return {};
+    std::vector<uint8_t> code(16);
+    if (!plat::safe_read(fn, code.data(), code.size())) return {};
+    return code;
+}
+
+// The IFileSystem layout from the code at slots 7, 8, 11, 12, confirmed by what lua_shared itself calls through the same object (the
+// IFileSystem slots its UnMountLua and MountLuaAdd tail-call, layout.h). Published for `status` (layout_check.ifilesystem).
+static std::string g_fs_why;  // why the layout was refused ("" if it was not)
+static int read_fs_slot_base(const layout::IluaShared &ls) {
+    int remove_slot = ls.unmount_lua.ok ? ls.unmount_lua.slot : -1, mark_slot = ls.mount_lua_add.ok ? ls.mount_lua_add.slot : -1;
+    layout::FsLayout l = layout::decide_filesystem(slot_code(g_fs, 7), slot_code(g_fs, 8), slot_code(g_fs, 11), slot_code(g_fs, 12), remove_slot, mark_slot);
+    g_fs_why = l.why;
+    if (l.ok())
+        layout::publish("ifilesystem", layout::State::Verified, "",
+                        json{{"first_slot", l.first_slot}, {"lua_shared_agrees", remove_slot >= 0 && mark_slot >= 0}});
+    else
+        layout::publish("ifilesystem", layout::State::Refused, l.why, json{{"first_slot", -1}});
+    logx::info("Lua mount: IFileSystem slots start at %d%s", l.first_slot, l.ok() ? "" : " (layout not recognized)");
+    return l.ok() ? l.first_slot : -1;
+}
+
+// Why the mount (or the cache emptying) is refused when ILuaShared's slots are not recognized: each failed slot with what did not match.
+static std::string ilua_refusal(const layout::IluaShared &ls, bool cache_only) {
+    std::string why;
+    auto add = [&](const char *name, int slot, const layout::Check &c) {
+        if (!c.ok) why += (why.empty() ? "" : "; ") + std::string("slot ") + std::to_string(slot) + " (" + name + ") " + c.why;
+    };
+    if (cache_only) {
+        add("EmptyCache", 17, ls.empty_cache);
+    } else {
+        add("MountLua", 9, ls.mount_lua);
+        add("MountLuaAdd", 10, ls.mount_lua_add);
+        add("UnMountLua", 11, ls.unmount_lua);
+    }
+    return "this game build's ILuaShared (" GMOD_LUASHARED_INTERFACE ") layout is not recognized (" + why +
+           "): the " + (cache_only ? "cache emptying" : "Lua mount") + " is refused rather than calling an unknown slot (docs/REVERSE.md, \"Slot checks\")";
+}
+
+// need_layout: the caller will call AddSearchPath/RemoveSearchPath and hook MountLua (EmptyCache alone only needs its own slot).
+static bool ensure(std::string &err, bool need_layout = true) {
     if (!g_fs) g_fs = get_iface(plat::filesystem_names(), "VFileSystem022");
     if (!g_ls) g_ls = static_cast<GarrysMod::Lua::ILuaShared *>(get_iface(plat::lua_shared_names(), GMOD_LUASHARED_INTERFACE));
     if (!g_fs)
@@ -70,34 +146,49 @@ static bool ensure(std::string &err) {
                     "it on a game client (instances_launch {lua_mount})"
                   : "IFileSystem (VFileSystem022) not found in filesystem_stdio";
     else if (!g_ls) err = "ILuaShared (" GMOD_LUASHARED_INTERFACE ") not found in lua_shared";
-    return g_fs && g_ls;
+    if (!g_fs || !g_ls) return false;
+    const layout::IluaShared &ls = layout::iluashared(g_ls);
+    if (g_fs_base == 0) g_fs_base = read_fs_slot_base(ls);
+    if (need_layout) {
+        if (!ls.mount_ok()) {
+            err = ilua_refusal(ls, false);
+            return false;
+        }
+        if (g_fs_base < 0) {
+            err = "this game build's IFileSystem (VFileSystem022) layout is not recognized (" + g_fs_why +
+                  "): the Lua mount is refused rather than calling an unknown slot (docs/REVERSE.md, \"Lua mount: search paths\")";
+            return false;
+        }
+    } else if (!ls.cache_ok()) {
+        err = ilua_refusal(ls, true);
+        return false;
+    }
+    return true;
 }
-
-static void **vtable(void *obj) { return *static_cast<void ***>(obj); }
 
 // GMod's addType = (group << 1) | tail bit, groups 0..11 (docs/REVERSE.md). 0 = before every path; 23 = after every path.
 constexpr int kHead = 0, kTail = (11 << 1) | 1;
 static void fs_add(const std::string &path, const char *id, int add_type = kHead) {
-    reinterpret_cast<AddFn>(vtable(g_fs)[kAddSearchPath])(g_fs, path.c_str(), id, add_type);
+    reinterpret_cast<AddFn>(vtable(g_fs)[g_fs_base + kAddSearchPathOfs])(g_fs, path.c_str(), id, add_type);
 }
 static bool fs_remove(const std::string &path, const char *id) {
-    return reinterpret_cast<RemoveFn>(vtable(g_fs)[kRemoveSearchPath])(g_fs, path.c_str(), id);
+    return reinterpret_cast<RemoveFn>(vtable(g_fs)[g_fs_base + kRemoveSearchPathOfs])(g_fs, path.c_str(), id);
 }
-static json fs_paths(const char *id) {
-    static char buf[32768];
-    int n = reinterpret_cast<GetFn>(vtable(g_fs)[kGetSearchPath])(g_fs, id, false, buf, (int)sizeof buf);
-    json out = json::array();
-    if (n <= 0) return out;
-    buf[sizeof buf - 1] = 0;
-    std::string all(buf);
-    size_t start = 0;
-    while (start <= all.size()) {
-        size_t end = all.find(';', start);
-        if (end == std::string::npos) end = all.size();
-        if (end > start) out.push_back(all.substr(start, end - start));
-        start = end + 1;
-    }
-    return out;
+// IFileSystem::GetSearchPath is not called: the base Lua is checked through the server realm instead. (On the x86-64
+// build of 2026-11-19 the old fixed slot 13 was RemoveAllSearchPaths: calling it wiped every search path and the next
+// load of a new model blocked the main thread for good. docs/REVERSE.md.)
+
+// Whether the server realm finds the base Lua (includes/init.lua through its LUA paths): true/false, or null when there
+// is no server realm (main menu) or the check could not run. Main thread only.
+static json base_lua_found() {
+    lua_State *L = realms::state(realms::SERVER);
+    if (!L) return nullptr;
+    std::string out, err;
+    if (!lua::run(L, "return file.Exists('includes/init.lua', 'LUA') and 'yes' or 'no'", "=mcpagent:base_lua", &out, err))
+        return nullptr;
+    if (out == "yes") return true;
+    if (out == "no") return false;
+    return nullptr;
 }
 
 static bool is_dir(const std::string &p) {
@@ -120,7 +211,15 @@ static void hooked_mount(void *self, const char *id) {
     ++g_hook_calls;
     g_hook_ids[id] = g_hook_ids.value(id, 0) + 1;
     std::string root = current();
-    if (!root.empty() && (std::strcmp(id, "lsv") == 0 || std::strcmp(id, "lcl") == 0)) add_lua(root, id);
+    bool sv = std::strcmp(id, "lsv") == 0, cl = std::strcmp(id, "lcl") == 0;
+    if (!root.empty() && (sv || cl)) {
+        add_lua(root, id);
+        // Issue #9: the folder is in front for the Lua this realm loads next: remember what it holds right now.
+        try {
+            record_load_start(sv ? realms::SERVER : realms::CLIENT, root);
+        } catch (...) {
+        }
+    }
     --g_in_hook;
 }
 
@@ -152,33 +251,37 @@ static bool hook(bool on, std::string &err) {
 
 bool supported(std::string *) { return true; }
 
+void verify_layout(bool dedicated) {
+    if (dedicated) {
+        layout::publish("ifilesystem", layout::State::NotApplicable, "dedicated server: the Lua mount is not supported there");
+        return;
+    }
+    std::string err;
+    if (!ensure(err) && !g_fs) layout::publish("ifilesystem", layout::State::Refused, err);
+}
+
+bool empty_cache() {
+    std::string err;
+    if (!ensure(err, false)) return false;
+    g_ls->EmptyCache();
+    return true;
+}
+
 json info() {
     std::string err;
     if (!ensure(err)) return json{{"ok", false}, {"error", {{"code", "interface_missing"}, {"message", err}}}};
     std::string root = current();
     void *cur = nullptr;
     plat::safe_read(&vtable(g_ls)[kMountLua], &cur, sizeof cur);
-    json lsv = fs_paths("lsv");
-    std::string base = util::to_lower(agent::config().game_dir + "/lua/");
-    std::replace(base.begin(), base.end(), '/', '\\');
-    // Only meaningful once the engine has mounted the server Lua paths (a map is loaded or loading): at the main menu
-    // lsv holds at most the mounted folder's own folders.
-    std::string ov = util::to_lower(root);
-    std::replace(ov.begin(), ov.end(), '/', '\\');
-    bool engine_mounted = false, base_ok = false;
-    for (const auto &p : lsv) {
-        std::string l = util::to_lower(p.get<std::string>());
-        if (ov.empty() || l.rfind(ov, 0) != 0) engine_mounted = true;
-        if (l == base) base_ok = true;
-    }
-    if (!engine_mounted) base_ok = true;
+    // null at the main menu (no server realm yet): only meaningful once a map is loaded.
+    json base_ok = base_lua_found();
     json r{{"lua_mount", root.empty() ? json(nullptr) : json(root)},
            {"base_lua_mounted", base_ok},
            {"mount_hook", cur == reinterpret_cast<void *>(&hooked_mount)},
            {"hook_calls", g_hook_calls},
            {"hook_path_ids", g_hook_ids},
-           {"search_paths", {{"lsv", lsv}, {"lcl", fs_paths("lcl")}}}};
-    if (!base_ok)
+           {"fs_first_slot", g_fs_base}};
+    if (base_ok == json(false))
         r["warning"] = "the game's own lua/ folder is missing from the server Lua paths: the game cannot run its base Lua. "
                        "Remove the mounted folder (lua_mount {path: null}) and close this client.";
     return json{{"ok", true}, {"result", r}};
@@ -187,13 +290,16 @@ json info() {
 json set(const std::string &root, bool empty_cache) {
     std::string err;
     if (!ensure(err)) return json{{"ok", false}, {"error", {{"code", "interface_missing"}, {"message", err}}}};
+    if (empty_cache && !layout::iluashared(g_ls).cache_ok())
+        return json{{"ok", false}, {"error", {{"code", "interface_missing"}, {"message", ilua_refusal(layout::iluashared(g_ls), true) + "; mount with empty_cache: false to skip it"}}}};
     std::string old = current();
     json removed = json::object();
     if (!old.empty()) {
-        removed["MOD"] = fs_remove(old, "MOD");
-        for (const char *id : {"lsv", "lcl"}) {
-            removed[std::string(id) + ":lua"] = fs_remove(old + "\\lua", id);
-            if (is_dir(old + "\\gamemodes")) removed[std::string(id) + ":gamemodes"] = fs_remove(old + "\\gamemodes", id);
+        // Every path the mount may have added, whatever is on disk now (a deleted <root>\gamemodes left its paths in lsv/lcl).
+        for (const auto &sp : mount_search_paths(old)) {
+            bool r = fs_remove(sp.path, sp.id.c_str());
+            if (sp.id == "MOD") removed["MOD"] = r;
+            else removed[sp.id + ":" + (sp.path.size() >= 9 && sp.path.compare(sp.path.size() - 9, 9, "gamemodes") == 0 ? "gamemodes" : "lua")] = r;
         }
     }
     {
@@ -246,6 +352,10 @@ json info() {
 }
 
 json set(const std::string &, bool) { return info(); }
+
+bool empty_cache() { return false; }
+
+void verify_layout(bool) {}
 
 #endif
 

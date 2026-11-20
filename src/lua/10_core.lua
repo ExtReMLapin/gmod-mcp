@@ -43,6 +43,28 @@ function A.to_angle(t, name)
 	return Angle(p, y, r)
 end
 function A.vec_out(v) return J.array({ v.x, v.y, v.z }) end
+
+-- debug_draw "arrow": the shaft and two head wings as {a = {x,y,z}, b = {x,y,z}} segments (plain numbers; the render hook
+-- draws them as lines). The head is a quarter of the length, at most 16 units. Zero length or a non-finite end: the shaft only.
+function A.arrow_segments(from, to, head)
+	local segs = { { a = { x = from.x, y = from.y, z = from.z }, b = { x = to.x, y = to.y, z = to.z } } }
+	local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
+	local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+	if not (len > 0 and len < math.huge) then return segs end
+	dx, dy, dz = dx / len, dy / len, dz / len
+	-- side = d x up (or d x forward when d is nearly vertical)
+	local ux, uy, uz = 0, 0, 1
+	if math.abs(dz) > 0.99 then ux, uy, uz = 1, 0, 0 end
+	local sx, sy, sz = dy * uz - dz * uy, dz * ux - dx * uz, dx * uy - dy * ux
+	local sl = math.sqrt(sx * sx + sy * sy + sz * sz)
+	sx, sy, sz = sx / sl, sy / sl, sz / sl
+	local h = head or math.min(len * 0.25, 16)
+	for _, k in ipairs({ 1, -1 }) do
+		segs[#segs + 1] = { a = { x = to.x, y = to.y, z = to.z },
+			b = { x = to.x - dx * h + sx * h * 0.5 * k, y = to.y - dy * h + sy * h * 0.5 * k, z = to.z - dz * h + sz * h * 0.5 * k } }
+	end
+	return segs
+end
 function A.ang_out(a) return J.array({ a.p, a.y, a.r }) end
 
 -- Serializer: any Lua value -> JSON-encodable value.
@@ -188,8 +210,8 @@ end
 
 function A.capture_begin()
 	local buf = {}
-	local saved = { print = print, Msg = Msg, MsgN = MsgN, MsgC = MsgC }
-	local frame = { buf = buf, saved = saved, size = 0, dropped = 0 }
+	local saved = { print = print, Msg = Msg, MsgN = MsgN, MsgC = MsgC, RunConsoleCommand = RunConsoleCommand }
+	local frame = { buf = buf, saved = saved, size = 0, dropped = 0, blocked = {}, blocked_seen = {} }
 	capture_stack[#capture_stack + 1] = frame
 	-- Captured output is capped at 1 MiB (a print loop must not exhaust memory); the rest is counted as dropped.
 	local function add(s)
@@ -212,6 +234,24 @@ function A.capture_begin()
 		add(table.concat(parts))
 		return saved.MsgC(...)
 	end
+	-- Issue #11: the engine ignores RunConsoleCommand for the commands on its Lua blacklist, without a word. Note them
+	-- (IsConCommandBlocked is the engine's own test for exactly that list) so the result can say so.
+	if saved.RunConsoleCommand and IsConCommandBlocked then
+		RunConsoleCommand = function(cmd, ...)
+			if type(cmd) == "string" and not frame.blocked_seen[cmd] and IsConCommandBlocked(cmd) then
+				frame.blocked_seen[cmd] = true
+				frame.blocked[#frame.blocked + 1] = cmd
+			end
+			return saved.RunConsoleCommand(cmd, ...)
+		end
+	end
+end
+
+-- The blocked commands noted by a capture, as the fields a result carries (nil when there are none).
+function A.blocked_fields(blocked)
+	if not blocked or #blocked == 0 then return nil end
+	return J.array(blocked), "RunConsoleCommand(" .. table.concat(blocked, ", ") .. ") is blocked from Lua by the engine and did nothing"
+		.. " (it does so silently): use console_exec or convar_set, which go through the engine, then read the value back."
 end
 
 function A.capture_end()
@@ -220,7 +260,7 @@ function A.capture_end()
 	for k, f in pairs(top.saved) do _G[k] = f end
 	local out = table.concat(top.buf)
 	if top.dropped > 0 then out = out .. string.format("\n[mcpagent: output truncated, %d more bytes dropped]\n", top.dropped) end
-	return out
+	return out, top.blocked
 end
 
 -- Cuts the traceback before the runtime's internal frames (xpcall of run_budget / dispatch).
@@ -316,12 +356,21 @@ function A.convar(name)
 	return GetConVar and GetConVar(name)
 end
 
--- Compilation: native.compile (luaL_loadbuffer, exact chunk name); falls back to CompileString.
+-- Compilation: native.compile (luaL_loadbuffer, exact chunk name); falls back to CompileString. Returns a function, or nil and the
+-- compiler's message. Whatever the compiler answers that is not a function is a failure to compile (live verification of 0.3.7: code
+-- with an invalid escape came back as an empty result): a compiler that gives the message as its first value, as CompileString does
+-- with handleError false, or nothing at all, never gets to run anything.
 function A.compile(code, chunk)
-	if native.compile then return native.compile(code, chunk) end
-	local f = CompileString(code, chunk, false)
+	local f, e
+	if native.compile then
+		f, e = native.compile(code, chunk)
+	else
+		f = CompileString(code, chunk, false)
+	end
 	if type(f) == "function" then return f end
-	return nil, tostring(f)
+	if e == nil and type(f) == "string" then e = f end
+	if e == nil or tostring(e) == "" then e = (chunk or "?") .. ": the code did not compile (the compiler gave no message)" end
+	return nil, tostring(e)
 end
 
 -- Public API for scripts: mcpagent.report(channel, value), mcpagent.event(type, data).

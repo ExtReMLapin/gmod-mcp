@@ -1,6 +1,8 @@
 #ifdef _WIN32
 #include "platform.h"
 
+#include "../uiinput.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -19,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <thread>
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -88,6 +91,9 @@ std::string current_directory() {
     return out;
 }
 
+// The console `quit` is blocked from server Lua and no other clean path to a Windows srcds is known: say so.
+bool request_quit(int) { return false; }
+
 void terminate_process(int code) {
     TerminateProcess(GetCurrentProcess(), (UINT)code);
     ExitProcess((UINT)code);
@@ -107,6 +113,39 @@ uint64_t process_start_stamp(uint32_t pid) {
     }
     CloseHandle(h);
     return r;
+}
+
+static double filetime_unix(const FILETIME &ft) {
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return t < 116444736000000000ull ? 0.0 : (double)(t - 116444736000000000ull) / 1e7;
+}
+
+void *process_watch_open(uint32_t pid) {
+    if (pid == 0) return nullptr;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    return h;  // NULL on failure
+}
+
+bool process_watch_query(void *watch, ProcInfo &out, int wait_ms) {
+    if (!watch) return false;
+    HANDLE h = (HANDLE)watch;
+    out = ProcInfo{};
+    if (WaitForSingleObject(h, wait_ms < 0 ? 0 : (DWORD)wait_ms) == WAIT_OBJECT_0) {
+        DWORD code = 0;
+        if (!GetExitCodeProcess(h, &code)) return false;
+        out.exited = true;
+        out.exit_code = (uint32_t)code;
+    }
+    FILETIME c, e, k, u;
+    if (GetProcessTimes(h, &c, &e, &k, &u)) {
+        out.start_unix = filetime_unix(c);
+        if (out.exited) out.exit_unix = filetime_unix(e);
+    }
+    return true;
+}
+
+void process_watch_close(void *watch) {
+    if (watch) CloseHandle((HANDLE)watch);
 }
 
 bool read_file(const std::string &path, std::string &out) {
@@ -202,6 +241,15 @@ std::vector<std::string> local_ipv4_addresses() {
     return out;
 }
 
+bool memory_status(uint64_t &free_commit_mb, uint64_t &free_ram_mb) {
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (!GlobalMemoryStatusEx(&m)) return false;
+    free_commit_mb = (uint64_t)(m.ullAvailPageFile / (1024 * 1024));
+    free_ram_mb = (uint64_t)(m.ullAvailPhys / (1024 * 1024));
+    return true;
+}
+
 int process_has_foreground() {
     HWND fg = GetForegroundWindow();
     if (!fg) return -1;
@@ -232,6 +280,176 @@ bool send_focus_lost() {
     if (!w) return false;
     SendMessageA(w, WM_ACTIVATE, WA_INACTIVE, 0);
     return true;
+}
+
+bool foreground_window(Foreground &out) {
+    out = Foreground{};
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    out.hwnd = static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(fg));
+    out.pid = pid;
+    return true;
+}
+
+void focus_target_state(unsigned long long hwnd, bool &exists, bool &usable) {
+    HWND w = reinterpret_cast<HWND>(static_cast<uintptr_t>(hwnd));
+    exists = usable = false;
+    if (!hwnd || !IsWindow(w)) return;
+    exists = true;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    usable = pid != GetCurrentProcessId() && IsWindowVisible(w) && !IsIconic(w);
+}
+
+bool return_focus_to(unsigned long long hwnd) {
+    HWND w = reinterpret_cast<HWND>(static_cast<uintptr_t>(hwnd));
+    if (!IsWindow(w)) return false;
+    SetForegroundWindow(w);
+    return GetForegroundWindow() == w;
+}
+
+// --- Close guard ---
+static WNDPROC g_orig_proc = nullptr;
+static bool (*g_guard_before)() = nullptr;
+static int g_guard_delay_ms = 0;
+static bool g_guard_installed = false;
+static bool g_guard_pending = false;    // a close request is held back (read and written on the window's thread)
+static volatile LONG g_guard_pass = 0;  // the next close request is our own re-post: let it through
+
+static LRESULT CALLBACK close_guard_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    bool close_request = msg == WM_CLOSE || (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE);
+    if (close_request) {
+        if (InterlockedExchange(&g_guard_pass, 0)) {
+            g_guard_pending = false;
+        } else if (g_guard_pending) {
+            return 0;  // already held back: a second click changes nothing
+        } else {
+            bool hold = false;
+            try {
+                hold = g_guard_before && g_guard_before();
+            } catch (...) {
+            }
+            if (hold) {
+                g_guard_pending = true;
+                int delay = g_guard_delay_ms;
+                // The very message again (the engine quits on SC_CLOSE, and ignores a bare WM_CLOSE: seen live).
+                std::thread([h, delay, msg, wp, lp] {
+                    Sleep(delay);
+                    InterlockedExchange(&g_guard_pass, 1);
+                    PostMessageW(h, msg, wp, lp);
+                }).detach();
+                return 0;
+            }
+        }
+    }
+    return CallWindowProcW(g_orig_proc, h, msg, wp, lp);
+}
+
+bool install_close_guard(bool (*before)(), int delay_ms) {
+    if (g_guard_installed) return true;
+    HWND w = nullptr;
+    EnumWindows(find_main_window, reinterpret_cast<LPARAM>(&w));
+    if (!w || !IsWindowUnicode(w)) return false;  // an ANSI window would need the A variants
+    g_guard_before = before;
+    g_guard_delay_ms = delay_ms;
+    g_orig_proc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(w, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(close_guard_proc)));
+    g_guard_installed = g_orig_proc != nullptr;
+    return g_guard_installed;
+}
+
+// --- UI input (ui_click, ui_key) ---
+static_assert(uiinput::kWmKeyDown == WM_KEYDOWN && uiinput::kWmKeyUp == WM_KEYUP && uiinput::kWmChar == WM_CHAR &&
+                  uiinput::kWmMouseMove == WM_MOUSEMOVE && uiinput::kWmLButtonDown == WM_LBUTTONDOWN &&
+                  uiinput::kWmLButtonUp == WM_LBUTTONUP && uiinput::kWmLButtonDblClk == WM_LBUTTONDBLCLK &&
+                  uiinput::kWmRButtonDown == WM_RBUTTONDOWN && uiinput::kWmRButtonUp == WM_RBUTTONUP &&
+                  uiinput::kWmRButtonDblClk == WM_RBUTTONDBLCLK && uiinput::kWmMButtonDown == WM_MBUTTONDOWN &&
+                  uiinput::kWmMButtonUp == WM_MBUTTONUP && uiinput::kWmMButtonDblClk == WM_MBUTTONDBLCLK &&
+                  uiinput::kWmMouseWheel == WM_MOUSEWHEEL,
+              "uiinput message numbers must be the Win32 ones");
+static_assert(uiinput::kMkLButton == MK_LBUTTON && uiinput::kMkRButton == MK_RBUTTON && uiinput::kMkMButton == MK_MBUTTON &&
+                  uiinput::kWheelDelta == WHEEL_DELTA,
+              "uiinput flags must be the Win32 ones");
+
+bool ui_supported() { return true; }
+
+bool ui_window(UiWindow &out) {
+    out = UiWindow{};
+    HWND w = nullptr;
+    EnumWindows(find_main_window, reinterpret_cast<LPARAM>(&w));
+    if (!w) return false;
+    out.found = true;
+    out.hwnd = reinterpret_cast<uint64_t>(w);
+    out.minimized = IsIconic(w) != 0;
+    out.unicode = IsWindowUnicode(w) != 0;
+    char cls[64] = {};
+    GetClassNameA(w, cls, sizeof cls);
+    out.window_class = cls;
+    RECT rc{};
+    if (!out.minimized && GetClientRect(w, &rc)) {
+        out.client_w = rc.right - rc.left;
+        out.client_h = rc.bottom - rc.top;
+    }
+    POINT origin{0, 0};
+    if (!out.minimized && ClientToScreen(w, &origin)) {
+        out.origin_x = origin.x;
+        out.origin_y = origin.y;
+    }
+    UINT dpi = GetDpiForWindow(w);
+    out.dpi = dpi ? (int)dpi : 96;
+    out.dpi_awareness = "unknown";
+    DPI_AWARENESS_CONTEXT ctx = GetWindowDpiAwarenessContext(w);
+    if (ctx) {
+        switch (GetAwarenessFromDpiAwarenessContext(ctx)) {
+            case DPI_AWARENESS_UNAWARE: out.dpi_awareness = "unaware"; break;
+            case DPI_AWARENESS_SYSTEM_AWARE: out.dpi_awareness = "system"; break;
+            case DPI_AWARENESS_PER_MONITOR_AWARE: out.dpi_awareness = "per_monitor"; break;
+            default: break;
+        }
+    }
+    return true;
+}
+
+bool ui_post(uint64_t hwnd, unsigned msg, unsigned long long wparam, long long lparam, std::string &err) {
+    HWND w = reinterpret_cast<HWND>(hwnd);
+    DWORD pid = 0;
+    if (!IsWindow(w) || !GetWindowThreadProcessId(w, &pid) || pid != GetCurrentProcessId()) {
+        err = "the game window is gone";
+        return false;
+    }
+    if (!PostMessageW(w, msg, (WPARAM)wparam, (LPARAM)lparam)) {
+        err = "PostMessage failed (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    return true;
+}
+
+unsigned ui_scan_code(unsigned vk) { return MapVirtualKeyW(vk, MAPVK_VK_TO_VSC); }
+
+unsigned ui_ansi_code_page() { return GetACP(); }
+
+bool ui_ansi_keeps(unsigned cp) {
+    if (cp < 0x80) return true;
+    UINT acp = GetACP();
+    if (acp == CP_UTF8) return true;  // every character; the no-best-fit flag is not allowed for it
+    wchar_t w[2];
+    int wn = 1;
+    if (cp >= 0x10000) {
+        cp -= 0x10000;
+        w[0] = (wchar_t)(0xD800 + (cp >> 10));
+        w[1] = (wchar_t)(0xDC00 + (cp & 0x3FF));
+        wn = 2;
+    } else {
+        w[0] = (wchar_t)cp;
+    }
+    char narrow[8] = {};
+    BOOL used_default = FALSE;
+    int n = WideCharToMultiByte(acp, WC_NO_BEST_FIT_CHARS, w, wn, narrow, (int)sizeof narrow, nullptr, &used_default);
+    if (n <= 0 || used_default) return false;
+    wchar_t back[4] = {};
+    int bn = MultiByteToWideChar(acp, 0, narrow, n, back, 4);
+    return bn == wn && back[0] == w[0] && (wn == 1 || back[1] == w[1]);
 }
 
 }  // namespace plat
