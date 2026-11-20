@@ -622,3 +622,17 @@ where the fix is known).
 | FO-8 | Live, a test client started by hand (`-mcp_test_client -mcp_return_focus <terminal handle>`, no `SW_SHOWNOACTIVATE`), then the same without `-mcp_test_client` | the client takes the foreground at 0.4 s and gives it back to the terminal at 2.5 s (console line `gave it back ... (try 1)`); the game without `-mcp_test_client` keeps the foreground (the user's own game is never touched) | ✅ 2026-11-20 |
 | FO-9 | Live, `ui_click` on a Derma `DButton` (DFrame at 100,80, button at +20,+40 200x50, click at 220,145) of a test client in the background (bridge launch), 3 fresh launches with a first click each, 5 clicks | the first click of each launch registers, 5 of 5 each time, `cursor` unchanged | ✅ 2026-11-20 (3 runs) |
 | FO-10 | Live, the same button with the client in the foreground (`SetForegroundWindow` on it, `system.HasFocus()` true), 30 clicks on the same point, 3 runs | 30 of 30 registered each run (0 lost); real cursor unchanged. Without the extra moves: 25, 24 of 30 (and the first click lost on a fresh bridge launch); posted from outside the process the clicks never registered | ✅ 2026-11-20 (90 of 90) |
+
+## Claude Code "Code Mode" (Issue #3, branch fix/code-mode-compat)
+
+In Code Mode the model writes JavaScript and awaits `tools["mcp__<server>__<tool>"]({...})`. A task answer leaves the script with a stub
+string, and an error text that is not one JSON object leaves `e.detail` empty. Each row below was written first and failed first.
+
+| ID | Procedure | Expected | Last result |
+|---|---|---|---|
+| CM-1 | Issue #3, `tests/conformance/test_code_mode.py` (conformance host = the module's real MCP server and tools, no game), `map_load` as a 2026-07-28 client that declares the Tasks extension, `_meta["claudecode/toolUseId"]` = `toolu_...` then `repl_...` | a normal call is answered with `resultType: "task"` (unchanged); a call from a Code Mode script (`repl_` prefix) is answered in place: no task | ✅ 2026-11-20 (red first: the `repl_` call got a task) |
+| CM-2 | Same file, `console_wait {timeout_s: 30}` (a server-chosen task for waits of 15 s or more), `toolu_` then `repl_` | task for `toolu_`; in place for `repl_` (the call is still running after 2 s instead of a task answer) | ✅ 2026-11-20 (red first) |
+| CM-3 | Same file, host started with `GMOD_MCP_TASKS=off`: `map_load` and `console_wait {timeout_s: 30}` with a `toolu_` id, and `map_load` with no id | never a task | ✅ 2026-11-20 (red first) |
+| CM-4 | Same file, `GMOD_MCP_TASKS` = `auto`, `AUTO`, `bogus`, empty | the default: `map_load` is a task for a normal call | ✅ 2026-11-20 |
+| CM-5 | Same file, `GMOD_MCP_TASKS=off`, a 2025-11-25 client that asks for a task itself (`params.task`) for `map_load` | still a task (an explicit request of the client, not a server choice) | ✅ 2026-11-20 |
+| CM-6 | Issue #3, test_bridge.py `codemode_tasks` (fake game server records what the bridge forwards): `tools/call` with `clientCapabilities.extensions = {tasks, other}`, `elicitation`, a `repl_` tool use id; `GMOD_MCP_TASKS` unset, `auto`, `off`, `OFF`, `bogus` | unset / auto / bogus: forwarded untouched. off / OFF: the Tasks extension is removed, the other extension, `elicitation` and the tool use id stay, the call still works | ✅ 2026-11-20, 6 checks (red first: the extension was forwarded) |

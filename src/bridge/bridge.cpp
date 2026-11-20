@@ -513,6 +513,28 @@ bool feedback_offers_on() {
     return !(s == "false" || s == "0" || s == "no" || s == "off");
 }
 
+// Issue #3 (Claude Code Code Mode): GMOD_MCP_TASKS=off (default "auto", any other value too). Claude Code declares the
+// 2026-07-28 Tasks extension in the capabilities of every call, also for the calls a Code Mode script makes, and the game
+// then answers map_load and long waits with a task: the script only gets a "moved to the background" stub. With "off" the
+// bridge does not forward that extension, so the game never starts a task on its own.
+bool server_tasks_off() {
+    const char *v = std::getenv("GMOD_MCP_TASKS");
+    if (!v) return false;
+    std::string s = v;
+    for (auto &c : s) c = (char)std::tolower((unsigned char)c);
+    return s == "off";
+}
+
+// Removes the Tasks extension from the client capabilities of a 2026-07-28 request (the other capabilities and
+// extensions stay).
+void strip_tasks_extension(json &msg) {
+    if (!server_tasks_off() || !msg.contains("params") || !msg["params"].is_object()) return;
+    json &p = msg["params"];
+    if (!p.contains("_meta") || !p["_meta"].is_object() || !p["_meta"].contains(kMetaCaps) || !p["_meta"][kMetaCaps].is_object()) return;
+    json &caps = p["_meta"][kMetaCaps];
+    if (caps.contains("extensions") && caps["extensions"].is_object()) caps["extensions"].erase("io.modelcontextprotocol/tasks");
+}
+
 std::string patch_feedback(std::string text) {
     static const std::string head = "Feedback: while you work";
     size_t a = text.find(head);
@@ -2405,6 +2427,7 @@ void handle_request(const json &msg) {
         return;
     }
     json fwd = msg;
+    if (method == "tools/call") strip_tasks_extension(fwd);  // Issue #3: GMOD_MCP_TASKS=off
     if (tool == "instances_list" && fwd["params"].contains("arguments") && fwd["params"]["arguments"].is_object())
         fwd["params"]["arguments"].erase("owner");
     if (!tool.empty() && takes_instance(tool)) {

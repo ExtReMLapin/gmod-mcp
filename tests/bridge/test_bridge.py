@@ -2446,6 +2446,41 @@ def case_observe():
     b.close()
 
 
+def case_codemode_tasks():
+    """Issue #3 (Claude Code Code Mode): GMOD_MCP_TASKS=off. The bridge then removes the Tasks extension from the client
+    capabilities it forwards to the game, so that the game never answers a call with a task (the script of a Code Mode
+    call would only get a stub). Default / auto: forwarded untouched."""
+    print("== CODEMODE_TASKS: GMOD_MCP_TASKS=off keeps the Tasks extension away from the game", flush=True)
+    ext = "io.modelcontextprotocol/tasks"
+    other = "io.example/other"
+    def forwarded(value):
+        port, env = free_port(), isolated_config(with_token=True)
+        if value is not None: env["GMOD_MCP_TASKS"] = value
+        fake = FakeServer(port, version=bridge_version())
+        b = Bridge(port, env)
+        meta = modern_meta()
+        meta["io.modelcontextprotocol/clientCapabilities"] = {"extensions": {ext: {}, other: {"x": 1}}, "elicitation": {}}
+        meta["claudecode/toolUseId"] = "repl_toolu_01abc"
+        r = mreq(b, "tools/call", {"name": "echo", "arguments": {"k": 1}}, meta=meta)
+        with fake.lock: seen = [m for m, _ in fake.seen if m.get("method") == "tools/call"]
+        b.close(); fake.stop()
+        caps = (seen[-1]["params"]["_meta"].get("io.modelcontextprotocol/clientCapabilities") if seen else None)
+        return r, caps, (seen[-1]["params"]["_meta"] if seen else {})
+    r, caps, m = forwarded(None)
+    check("CODEMODE_TASKS default: the Tasks extension is forwarded as the client sent it", caps and ext in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("auto")
+    check("CODEMODE_TASKS auto: the Tasks extension is forwarded", caps and ext in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("off")
+    check("CODEMODE_TASKS off: the Tasks extension is not forwarded; the other capabilities and extensions are kept",
+          caps is not None and ext not in caps.get("extensions", {}) and caps["extensions"].get(other) == {"x": 1} and "elicitation" in caps, caps)
+    check("CODEMODE_TASKS off: the call still works, and the other _meta keys (toolUseId) are untouched",
+          r and not r["result"].get("isError") and m.get("claudecode/toolUseId") == "repl_toolu_01abc", (r, m))
+    r, caps, m = forwarded("OFF")
+    check("CODEMODE_TASKS off is case-insensitive", caps is not None and ext not in caps.get("extensions", {}), caps)
+    r, caps, m = forwarded("bogus")
+    check("CODEMODE_TASKS an unknown value keeps the default", caps and ext in caps.get("extensions", {}), caps)
+
+
 def case_feedback():
     """The plugin option feedback_offers (Claude Code userConfig, passed to the bridge as GMOD_MCP_FEEDBACK_OFFERS):
     on by default, the instructions ask agents to offer friction reports and say how to turn that off; off, the
@@ -3426,8 +3461,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

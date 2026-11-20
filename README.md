@@ -481,6 +481,10 @@ header, so a port that answers without it is held by another program, and the to
 `game_not_running`), naming the port, how to find the program (`Get-NetTCPConnection -LocalPort 27080` on Windows,
 `ss -ltnp` on Linux) and, when it finds one on the next ports, the `GMOD_MCP_PORT` value to use.
 
+| Environment variable | Effect |
+|---|---|
+| `GMOD_MCP_TASKS` | `auto` (default): with a client that supports the MCP Tasks extension (2026-07-28), the game answers `map_load` and waits of 15 s or more with a background task, except for calls made by a Claude Code Code Mode script, which are answered in place. `off`: never, for any client. Set it in the environment of Claude Code (the bridge then does not forward the extension to the game) or of the game (the module reads it too). A client that asks for a task itself (the older 2025-11-25 form) still gets one. |
+
 Scratch Lua files for the agent go to `garrysmod/lua/mcpagent_tmp/` (`status` gives the absolute path); errors and
 tracebacks then point at the real file.
 

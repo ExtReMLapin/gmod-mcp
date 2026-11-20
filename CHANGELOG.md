@@ -126,6 +126,14 @@
 
 ### Fixes
 
+- **Code Mode (Claude Code's experimental mode where the model writes JavaScript): long calls are answered in place** (Issue #3).
+  Claude Code marks the calls a script makes (`_meta["claudecode/toolUseId"]` starts with `repl_`). The game answered `map_load`
+  and waits of 15 s or more with a background task to those calls too, and the script only got a "moved to the background" stub
+  (`await map_load(...)` followed by more code broke); they are now answered in place. A new setting, the environment variable
+  `GMOD_MCP_TASKS=off` (default `auto`), turns the tasks the server chooses off for every client: set it for Claude Code (the
+  bridge then does not forward the Tasks extension to the game) or for the game (the module reads it too). A client that asks for a
+  task itself (the 2025-11-25 form) still gets one.
+
 - **A test client no longer keeps the user's foreground** (live, x86-64 branch). Every client `instances_launch` started became the foreground
   window and kept it, so the user's terminal lost the focus at each launch. The bridge now starts the client with a window shown without
   activation (`STARTF_USESHOWWINDOW`, `SW_SHOWNOACTIVATE`: three launches in a row and a launch of two, 0 of 1,216 samples taken during the

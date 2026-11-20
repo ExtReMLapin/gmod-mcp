@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -362,6 +363,7 @@ struct Ctx {
     json client_caps = json::object();
     int http_status = 200;
     const Emit *emit = nullptr;  // SSE response stream, if any
+    bool code_mode = false;      // Issue #3: the call comes from a Claude Code "Code Mode" script (see from_code_mode)
 };
 
 struct Prepared {
@@ -383,10 +385,33 @@ static bool client_supports_elicitation(const Ctx &c) {
     return c.era == tasks::Era::Modern && c.client_caps.is_object() && c.client_caps.contains("elicitation");
 }
 
+// Issue #3: a call made by a Claude Code "Code Mode" script. Claude Code puts the id of the call in
+// params._meta["claudecode/toolUseId"]; for a call made by a script it starts with "repl_" (a normal call: "toolu_").
+static bool from_code_mode(const json &params) {
+    if (!params.contains("_meta") || !params["_meta"].is_object()) return false;
+    const json &m = params["_meta"];
+    return m.contains("claudecode/toolUseId") && m["claudecode/toolUseId"].is_string() &&
+           m["claudecode/toolUseId"].get<std::string>().rfind("repl_", 0) == 0;
+}
+
+// Issue #3: GMOD_MCP_TASKS=off turns the server-chosen tasks off (default and any other value: "auto"). The module reads
+// the environment of the game process; the bridge, which Claude Code starts with its own environment, also honors it by
+// not forwarding the Tasks extension (src/bridge/bridge.cpp).
+static bool server_tasks_off() {
+    const char *v = std::getenv("GMOD_MCP_TASKS");
+    if (!v) return false;
+    std::string s = v;
+    for (auto &ch : s) ch = (char)std::tolower((unsigned char)ch);
+    return s == "off";
+}
+
 // Server-side decision (Tasks extension): always for map_load; other "optional" tools only for an explicit wait of at
-// least 15 s.
-static bool server_wants_task(const Tool &t, const json &args) {
+// least 15 s. Never for a call made by a Code Mode script (the script would only get a "moved to the background" stub and
+// the real result would go to the model: `await map_load(...)` followed by more code would break) and never when the
+// operator turned server-chosen tasks off (GMOD_MCP_TASKS=off).
+static bool server_wants_task(const Tool &t, const json &args, const Ctx &c) {
     if (t.task_support.empty() || t.task_support == "forbidden") return false;
+    if (c.code_mode || server_tasks_off()) return false;
     if (t.name == "map_load") return true;
     for (const char *k : {"timeout_s", "duration_s", "wait_s"})
         if (args.contains(k) && args[k].is_number() && args[k].get<double>() >= 15.0) return true;
@@ -619,7 +644,7 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
         json a = params.value("arguments", json::object());
         if (a.is_null()) a = json::object();
         bool legacy_task = c.era == tasks::Era::Legacy && params.contains("task") && params["task"].is_object();
-        bool modern_task = client_supports_tasks(c) && server_wants_task(*t, a);
+        bool modern_task = client_supports_tasks(c) && server_wants_task(*t, a, c);
         if (legacy_task && (t->task_support.empty() || t->task_support == "forbidden"))
             return rpc_error(id, err::kMethodNotFound, "tool " + name + " does not support task execution (execution.taskSupport absent)");
         if (legacy_task || modern_task) {
@@ -771,6 +796,7 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
     Ctx &c = p->ctx;
     std::string hv = header(headers, "mcp-protocol-version");
     json meta = params.value("_meta", json::object());
+    c.code_mode = from_code_mode(params);
     std::string mv = meta.is_object() ? meta.value(mcpproto::kMetaProtocolVersion, "") : "";
     bool is_modern = hv == kModernVersion || !mv.empty();
     if (is_modern) {
@@ -835,7 +861,7 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
         const Tool *t = find_tool(params["name"]);
         json a = params.value("arguments", json::object());
         if (!a.is_object()) a = json::object();
-        bool task = (c.era == tasks::Era::Legacy && params.contains("task")) || (t && client_supports_tasks(c) && server_wants_task(*t, a));
+        bool task = (c.era == tasks::Era::Legacy && params.contains("task")) || (t && client_supports_tasks(c) && server_wants_task(*t, a, c));
         bool progress = meta.is_object() && meta.contains("progressToken");
         if (t && !task && (progress || !t->task_support.empty())) p->stream_candidate = true;
     }
