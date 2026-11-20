@@ -171,6 +171,7 @@ static json terminate_tool(const json &args) {
     // Runs from the network thread: works even if the main thread is frozen.
     std::thread([delay] {
         plat::sleep_ms(delay);
+        coordinator::announce_leaving();  // issue #6: the coordinator ends on purpose: the member that takes over must not call it a crash
         plat::terminate_process(1);
     }).detach();
     json res{{"terminating", true}, {"pid", pid}, {"main_thread_stalled", jobs::seconds_since_last_frame() > 5.0},
