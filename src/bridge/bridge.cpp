@@ -1043,7 +1043,7 @@ json bridge_tools() {
          "Makes `instance` this session's default: tool calls without an `instance` argument go to it (useful with several "
          "games running, where they would otherwise be refused as ambiguous). null clears it. Lasts until the session ends. "
          "Do not use it with sub-agents: they all share this session, so a default set by one applies to every other's "
-         "calls too (they would act on its game). Pass `instance` on every call instead. Result: {default_instance, previous}. The id is not checked: an unknown one makes later calls fail with unknown_instance."},
+         "calls too (they would act on its game). Pass `instance` on every call instead. Result: {default_instance, previous}. An id that instances_list does not show is refused (unknown_instance, the default stays); when the list cannot be read the id is accepted with a warning."},
         {"inputSchema",
          {{"type", "object"},
           {"properties", {{"instance", {{"type", json::array({"string", "null"})}, {"description", "Instance id (see instances_list), or null."}}}}},
@@ -1811,13 +1811,47 @@ json close_tool(const json &args) {
 }
 
 json select_tool(const json &args) {
+    const json &v = args.contains("instance") ? args["instance"] : json();
+    std::string want = v.is_string() ? v.get<std::string>() : "";
+    std::string unchecked;  // why the id could not be checked
+    if (!want.empty()) {
+        // Issue #3: an id the directory does not list used to be accepted, and every later call then failed with
+        // unknown_instance. Checked before taking the lock (game_call talks to the game). A game this session just
+        // started may not have registered yet: its id is known from the launch.
+        bool launched = false;
+        {
+            std::lock_guard<std::mutex> lk(g_launch_mu);
+            for (const auto &l : g_launched) launched = launched || l.id == want;
+        }
+        json lst = launched ? json::object() : game_call("instances_list", json::object(), 3);
+        if (!launched) {
+            if (lst.is_object() && lst.contains("instances") && lst["instances"].is_array()) {
+                json known = json::array();
+                bool found = false;
+                for (const auto &in : lst["instances"])
+                    if (in.is_object() && in.contains("id") && in["id"].is_string()) {
+                        known.push_back(in["id"]);
+                        found = found || in["id"] == want;
+                    }
+                if (!found) {
+                    json err = tool_error("unknown_instance", "no instance '" + want + "' (known: " + (known.empty() ? std::string("none") : known.dump()) +
+                                                              "): the default was not changed. instances_list shows the ids.");
+                    err["structuredContent"]["error"]["details"] = json{{"instance", want}, {"known", known}};
+                    err["content"][0]["text"] = err["structuredContent"].dump();
+                    return err;
+                }
+            } else {
+                unchecked = "the id was not checked: the list of instances could not be read (the game may be unreachable); an unknown id makes later calls fail with unknown_instance";
+            }
+        }
+    }
     std::lock_guard<std::mutex> lk(g_default_mu);
     std::string prev = g_default_instance;
-    const json &v = args.contains("instance") ? args["instance"] : json();
-    g_default_instance = v.is_string() ? v.get<std::string>() : "";
-    return tool_text(json{{"default_instance", g_default_instance.empty() ? json(nullptr) : json(g_default_instance)},
-                          {"previous", prev.empty() ? json(nullptr) : json(prev)}},
-                     false);
+    g_default_instance = want;
+    json out{{"default_instance", g_default_instance.empty() ? json(nullptr) : json(g_default_instance)},
+             {"previous", prev.empty() ? json(nullptr) : json(prev)}};
+    if (!unchecked.empty()) out["warning"] = unchecked;
+    return tool_text(out, false);
 }
 
 // Closes the clients this session launched (unless kept), when the session ends.
