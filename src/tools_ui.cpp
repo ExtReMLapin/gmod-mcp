@@ -186,8 +186,8 @@ json post_steps(const Prepared &p, const std::vector<uiinput::Step> &steps, int 
 }
 
 // The optional screenshot, after the wait. Same image as the `screenshot` tool without arguments: the game window as it is, by
-// the render capture when a map is loaded and by window capture otherwise (main menu, a dialog, a loading screen), at the size
-// the coordinates of ui_click are read on.
+// the render capture when a map is loaded and by the engine's own jpeg command otherwise (main menu, a dialog, a loading screen), at
+// the size the coordinates of ui_click are read on.
 void attach_screenshot(const json &a, json &out) {
     if (!a.value("screenshot_after", false)) return;
     json shot = take_screenshot(json::object());
@@ -305,7 +305,7 @@ void register_ui() {
         "first, e.g. console_exec gameui_activate); out_of_bounds (ui_click only: the point is outside the image or window). The "
         "input is posted to the game's own window (PostMessage): the user's real cursor does not move and no window takes the focus.";
     json wait_frames = {{"type", "integer"}, {"minimum", 0}, {"maximum", 600}, {"description", "Frames to wait after the last message so the UI reacts (default 5; a light test client runs at 20 fps)."}};
-    json shot_after = {{"type", "boolean"}, {"description", "Also return a screenshot after the wait (same image as `screenshot`: the render capture with a map loaded, the window capture at the main menu, in a dialog or on a loading screen)."}};
+    json shot_after = {{"type", "boolean"}, {"description", "Also return a screenshot after the wait (same image as `screenshot`: the render capture with a map loaded, the engine's own jpeg command at the main menu, in a dialog or on a loading screen)."}};
     json allow = {{"type", "boolean"}, {"description", "Post into a game that instances_launch did not start (the user's own). Default false."}};
 
     mcp::register_tool(
@@ -318,7 +318,7 @@ void register_ui() {
          "the scale applied. Posts WM_MOUSEMOVE, then the button down and up (double: down, up, double-click, up) one frame apart, or "
          "WM_MOUSEMOVE and one WM_MOUSEWHEEL (wheel: notches, positive = up). Result: {sent: [messages], at: {x, y} (client pixels), "
          "coords, button | wheel, scale?, frames_waited, window: {client_w, client_h, dpi, dpi_awareness, class}, screen: {w, h}, "
-         "cursor_via (game_ui | vgui), screenshot?, screenshot_error?} plus the image with screenshot_after (the window capture when there is no client realm). The cursor is visible when "
+         "cursor_via (game_ui | vgui), screenshot?, screenshot_error?} plus the image with screenshot_after (the engine's jpeg capture when there is no client realm). The cursor is visible when "
          "the game menu (main menu, ESC menu, a dialog on it) is up, gui.IsGameUIVisible(), or a Derma popup, the context or spawn "
          "menu has it, vgui.CursorVisible() in the client realm." + common +
          " Example: {\"x\": 640, \"y\": 400, \"screenshot_after\": true}.",

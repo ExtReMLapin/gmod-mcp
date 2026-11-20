@@ -2602,152 +2602,113 @@ static void test_ui_tools() {
     CHECK(gtext.find("## UI input") != std::string::npos && gtext.find("ui_click") != std::string::npos && gtext.find("cursor_hidden") != std::string::npos);
 }
 
-#ifdef _WIN32
-// A visible plain window of this process (the "game window" of the screenshot tool test), on a thread of its own with a message
-// loop, DPI-unaware like the game: its client area is larger in physical pixels on a scaled screen.
-namespace {
-struct TestGameWindow {
-    std::atomic<HWND> hwnd{nullptr};
-    std::atomic<bool> quit{false};
-    std::thread th;
-    void start() {
-        th = std::thread([this] {
-            WNDCLASSW c{};
-            c.lpfnWndProc = DefWindowProcW;
-            c.hInstance = GetModuleHandleW(nullptr);
-            c.lpszClassName = L"gmcp_core_test_game";
-            c.hbrBackground = CreateSolidBrush(RGB(30, 160, 220));
-            RegisterClassW(&c);
-            DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-            RECT rc{0, 0, 320, 200};
-            AdjustWindowRectEx(&rc, style, FALSE, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
-            HWND w = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, c.lpszClassName, L"gmod-mcp screenshot test", style, 150, 150, rc.right - rc.left,
-                                     rc.bottom - rc.top, nullptr, nullptr, c.hInstance, nullptr);
-            ShowWindow(w, SW_SHOWNOACTIVATE);
-            UpdateWindow(w);
-            hwnd = w;
-            MSG m;
-            while (!quit) {
-                while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&m);
-                MsgWaitForMultipleObjects(0, nullptr, FALSE, 20, QS_ALLINPUT);
-            }
-            DestroyWindow(w);
-        });
-        while (!hwnd) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));  // first paint
-    }
-    void stop() {
-        quit = true;
-        if (th.joinable()) th.join();
-    }
-};
-}  // namespace
-#endif
-
-// screenshot without a client realm: window capture (no game: the decision, the arguments, the refusals before any capture,
-// the declared shape and the docs).
-static void test_screenshot_window_capture() {
+// screenshot without a client realm: the engine's `jpeg` command (no game: the decision, the arguments, the refusals, the whole
+// tool path with the engine faked by a sender that writes the file and prints the line, the declared shape and the docs).
+static void test_screenshot_engine_jpeg() {
     if (mcp::tools().empty()) tools::register_all();
     auto err_of_r = [](const json &r) { return r.value("isError", false) ? r["structuredContent"]["error"] : json::object(); };
     auto err_code = [&](const json &r) { return err_of_r(r).value("code", ""); };
     auto contains = [](const std::string &s, const char *part) { return s.find(part) != std::string::npos; };
 
-    // The `source` argument is checked against its enum.
+    // The `source` argument is checked against its enum; the removed value is refused too.
     CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "gpu"}})) == "invalid_params");
+    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "window_capture"}})) == "invalid_params");
     // A dedicated server has no window to capture.
     auto &cfg = agent::config();
     agent::Mode mode = cfg.mode;
+    std::string game_dir = cfg.game_dir;
     cfg.mode = agent::Mode::Dedicated;
     CHECK(err_code(mcp::call_tool("screenshot", json::object())) == "unsupported");
-    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "window_capture"}})) == "unsupported");
+    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "engine_jpeg"}})) == "unsupported");
     cfg.mode = agent::Mode::Client;
     // The render capture needs the client realm: forced, it is refused and the message points at the other source.
     json forced = mcp::call_tool("screenshot", json{{"source", "render"}});
-    CHECK(err_code(forced) == "realm_unavailable" && contains(err_of_r(forced).value("message", ""), "window_capture"));
-    // No client realm and no source: the window capture is tried. This process has no game window, so it is refused for that
-    // (the capture itself is tested in WGC-1..4); where there is no window capture (Linux) the old answer stays.
-    json def = mcp::call_tool("screenshot", json::object());
-#ifdef _WIN32
-    CHECK(err_code(def) == "window_unavailable");
-    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "window_capture"}, {"format", "png"}, {"w", 640}, {"h", 360}})) == "window_unavailable");
-#else
-    CHECK(err_code(def) == "realm_unavailable");
-#endif
-#ifdef _WIN32
-    if (plat::window_capture_supported()) {
-        // With a visible window in the process (the game's, here a plain window) and no client realm: the whole tool path. The
-        // menu realm does not answer here (no game, no main loop), so the size falls back to the client area's physical pixels.
-        TestGameWindow gw;
-        gw.start();
-        plat::UiWindow uw;
-        CHECK(plat::ui_window(uw) && uw.found);
-        auto image_of = [](const json &res) {
-            for (const json &c : res["content"])
-                if (c.value("type", "") == "image") return c;
-            return json::object();
-        };
-        auto decode_size = [&](const json &res, unsigned &w, unsigned &h) {
-            // PNG: IHDR holds the size; JPEG: the first SOF marker does.
-            std::string raw = util::base64_decode(image_of(res).value("data", ""));
-            w = h = 0;
-            if (raw.size() > 24 && raw.compare(1, 3, "PNG") == 0) {
-                auto be = [&](size_t o) { return ((unsigned char)raw[o] << 24) | ((unsigned char)raw[o + 1] << 16) | ((unsigned char)raw[o + 2] << 8) | (unsigned char)raw[o + 3]; };
-                w = be(16);
-                h = be(20);
-                return std::string("png");
-            }
-            if (raw.size() > 4 && (unsigned char)raw[0] == 0xFF && (unsigned char)raw[1] == 0xD8) {
-                for (size_t o = 2; o + 9 < raw.size();) {
-                    if ((unsigned char)raw[o] != 0xFF) break;
-                    unsigned char mk = (unsigned char)raw[o + 1];
-                    size_t len = ((unsigned char)raw[o + 2] << 8) | (unsigned char)raw[o + 3];
-                    if (mk == 0xC0 || mk == 0xC2) {
-                        h = ((unsigned char)raw[o + 5] << 8) | (unsigned char)raw[o + 6];
-                        w = ((unsigned char)raw[o + 7] << 8) | (unsigned char)raw[o + 8];
-                        break;
-                    }
-                    o += 2 + len;
-                }
-                return std::string("jpeg");
-            }
-            return std::string();
-        };
+    CHECK(err_code(forced) == "realm_unavailable" && contains(err_of_r(forced).value("message", ""), "engine_jpeg"));
+
+    // No client realm and no source: the engine's jpeg command, with the engine faked. A temporary game folder, the sender is what
+    // `jpeg` does in the engine: write screenshots/<name>.jpg, then print its line.
+    namespace fs = std::filesystem;
+    fs::path root = fs::temp_directory_path() / ("gmcp_core_jpeg_" + std::to_string((unsigned long long)std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(root / "screenshots");
+    cfg.game_dir = root.string();
+    auto jpeg_bytes = [](int w, int h) {
+        std::string s = "\xFF\xD8";
+        s += std::string("\xFF\xC0\x00\x11\x08", 5);
+        s += (char)(h >> 8);
+        s += (char)(h & 255);
+        s += (char)(w >> 8);
+        s += (char)(w & 255);
+        s += std::string("\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01", 10);
+        s += std::string("\xFF\xDA\x00\x08\x01\x01\x00\x00\x3F\x00\x00\x00", 12) + "\xFF\xD9";
+        return s;
+    };
+    std::string picture = jpeg_bytes(640, 360);
+    int sent = 0;
+    tools::set_engine_jpeg_sender_for_tests([&](std::string &) -> std::string {
+        ++sent;
+        std::string name = "Snapshot000" + std::to_string(sent) + ".jpg";
+        std::ofstream(root / "screenshots" / name, std::ios::binary).write(picture.data(), (std::streamsize)picture.size());
+        console::push_line("message", "Wrote 'screenshots/" + name + "':  691.20 KB (640x360) compresssed (quality 90) to 62.06 KB");
+        return "";
+    });
+    auto image_of = [](const json &res) {
+        for (const json &c : res["content"])
+            if (c.value("type", "") == "image") return c;
+        return json::object();
+    };
+    {
+        std::ofstream(root / "screenshots" / "mine.jpg", std::ios::binary) << "the user's own file";
         json r = mcp::call_tool("screenshot", json::object());
         CHECK(!r.value("isError", false));
         if (!r.value("isError", false)) {
             const json &sc = r["structuredContent"];
-            unsigned w = 0, h = 0;
-            CHECK(decode_size(r, w, h) == "jpeg");
-            CHECK(sc.value("source", "") == "window_capture" && sc.value("method", "") == "wgc_client_area" && sc.value("format", "") == "jpeg");
-            CHECK(w > 0 && h > 0 && sc.value("w", 0) == (int)w && sc.value("h", 0) == (int)h);
-            CHECK(sc.value("screen_w", 0) == sc.value("w", -1) && sc.value("screen_h", 0) == sc.value("h", -1) && !sc.value("scaled", true));
-            CHECK(sc.value("bytes", 0) > 100 && sc.value("capture_ms", -1.0) >= 0);
-            CHECK(!sc.contains("native_w"));
-            // The client area, in physical pixels (>= the logical 320x200 on a scaled screen).
-            CHECK(sc.value("w", 0) >= 320 && sc.value("h", 0) >= 200);
+            CHECK(sc.value("source", "") == "engine_jpeg" && sc.value("method", "") == "engine_jpeg" && sc.value("format", "") == "jpeg");
+            CHECK(sc.value("w", 0) == 640 && sc.value("h", 0) == 360 && sc.value("screen_w", 0) == 640 && sc.value("screen_h", 0) == 360);
+            CHECK(sc.value("bytes", 0) == (int)picture.size() && sc.value("file", "") == "screenshots/Snapshot0001.jpg" && sc.value("file_deleted", false));
+            CHECK(!sc.contains("ignored") && !sc.contains("warning") && !sc.contains("scaled"));
+            CHECK(image_of(r).value("mimeType", "") == "image/jpeg" && util::base64_decode(image_of(r).value("data", "")) == picture);
         }
-        // w/h and png: that size, and the window's own size is reported.
-        json p = mcp::call_tool("screenshot", json{{"source", "window_capture"}, {"format", "png"}, {"w", 160}, {"h", 100}});
-        CHECK(!p.value("isError", false));
-        if (!p.value("isError", false)) {
-            const json &sc = p["structuredContent"];
-            unsigned w = 0, h = 0;
-            CHECK(decode_size(p, w, h) == "png" && w == 160 && h == 100);
-            CHECK(sc.value("w", 0) == 160 && sc.value("h", 0) == 100 && sc.value("scaled", false) && sc.value("native_w", 0) >= 320 && sc.value("native_h", 0) >= 200);
-            CHECK(sc.value("source", "") == "window_capture" && image_of(p).value("mimeType", "") == "image/png");
-        }
-        // A minimized game window is refused, nothing is restored.
-        ShowWindow(gw.hwnd.load(), SW_SHOWMINNOACTIVE);
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        json mn = mcp::call_tool("screenshot", json::object());
-        CHECK(err_code(mn) == "window_unavailable" && err_of_r(mn).value("message", "").find("minimized") != std::string::npos);
-        CHECK(IsIconic(gw.hwnd.load()) != 0);
-        // A forced render is still refused without a client realm, window or not.
-        CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "render"}})) == "realm_unavailable");
-        gw.stop();
+        CHECK(!fs::exists(root / "screenshots" / "Snapshot0001.jpg"));
+        CHECK(fs::exists(root / "screenshots" / "mine.jpg"));  // nothing else was touched
     }
-#endif
+    // png, w, h and quality are not applied: the engine's JPEG comes back and the result says so.
+    {
+        json r = mcp::call_tool("screenshot", json{{"source", "engine_jpeg"}, {"format", "png"}, {"w", 160}, {"h", 100}, {"quality", 50}});
+        CHECK(!r.value("isError", false));
+        if (!r.value("isError", false)) {
+            const json &sc = r["structuredContent"];
+            CHECK(sc.value("format", "") == "jpeg" && sc.value("w", 0) == 640 && image_of(r).value("mimeType", "") == "image/jpeg");
+            CHECK(sc.value("ignored", json::array()) == json::array({"format", "w", "h", "quality"}) && contains(sc.value("note", ""), "engine's own"));
+        }
+        CHECK((int)std::distance(fs::directory_iterator(root / "screenshots"), fs::directory_iterator()) == 1);  // only mine.jpg left
+    }
+    // A forced render is still refused without a client realm.
+    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "render"}})) == "realm_unavailable");
+    // The sender's failure is the tool's error; the engine's line never printed gives capture_timeout (not waited for 4 s here: the
+    // sender reports a failure, so it ends at once).
+    tools::set_engine_jpeg_sender_for_tests([](std::string &code) -> std::string {
+        code = "realm_unavailable";
+        return "realm menu unavailable (not loaded)";
+    });
+    json down = mcp::call_tool("screenshot", json::object());
+    CHECK(err_code(down) == "realm_unavailable" && contains(err_of_r(down).value("message", ""), "menu"));
+    // A line that names a file outside screenshots/: capture_failed, nothing deleted.
+    {
+        std::ofstream(root / "secret.jpg", std::ios::binary) << "secret";
+        tools::set_engine_jpeg_sender_for_tests([&](std::string &) -> std::string {
+            console::push_line("message", "Wrote '../secret.jpg':  1.00 KB (8x8) compresssed (quality 90) to 1.00 KB");
+            return "";
+        });
+        json bad = mcp::call_tool("screenshot", json::object());
+        CHECK(err_code(bad) == "capture_failed" && contains(err_of_r(bad).value("message", ""), "screenshots"));
+        CHECK(fs::exists(root / "secret.jpg"));
+    }
+    // ui_click / ui_key screenshot_after use the same function (attach_screenshot): the engine path, same shape.
+    tools::set_engine_jpeg_sender_for_tests({});
+    cfg.game_dir = game_dir;
     cfg.mode = mode;
+    std::error_code ec;
+    fs::remove_all(root, ec);
 
     // Declared: the argument, the result fields, and every place that used to say "the main menu cannot be captured".
     const mcp::Tool *shot = mcp::find_tool("screenshot");
@@ -2756,24 +2717,27 @@ static void test_screenshot_window_capture() {
         CHECK(shot->input_schema["properties"].contains("source"));
         if (shot->input_schema["properties"].contains("source")) {
             json en = shot->input_schema["properties"]["source"]["enum"];
-            CHECK(en == json::array({"auto", "render", "window_capture"}));
+            CHECK(en == json::array({"auto", "render", "engine_jpeg"}));
         }
-        for (const char *part : {"window_capture", "main menu", "Windows Graphics Capture", "source", "window_unavailable", "cover the game"})
+        for (const char *part : {"engine_jpeg", "main menu", "jpeg", "source", "capture_timeout", "capture_failed", "deletes it", "cover", "ignored", "jpeg_quality"})
             CHECK(contains(shot->description, part));
-        CHECK(!contains(shot->description, "the menu cannot be captured"));
-        for (const char *prop : {"source", "scaled", "native_w", "native_h", "screen_w", "screen_h"})
+        CHECK(!contains(shot->description, "Windows Graphics Capture") && !contains(shot->description, "window_capture"));
+        CHECK(!contains(shot->description, "writes no file"));
+        for (const char *prop : {"source", "screen_w", "screen_h", "file", "file_deleted", "ignored", "note", "warning"})
             CHECK(shot->output_schema["properties"].contains(prop));
+        for (const char *gone : {"scaled", "native_w", "native_h"}) CHECK(!shot->output_schema["properties"].contains(gone));
     }
     for (const char *name : {"ui_click", "ui_key"}) {
         const mcp::Tool *t = mcp::find_tool(name);
         if (!t) continue;
         std::string d = t->input_schema["properties"]["screenshot_after"].value("description", "");
-        CHECK(!contains(d, "needs a loaded map") && contains(d, "window"));
+        CHECK(!contains(d, "needs a loaded map") && contains(d, "jpeg") && !contains(d, "window capture"));
         CHECK(t->output_schema["properties"].contains("screenshot"));
+        CHECK(!contains(t->description, "window capture"));
     }
     json guide = resources::read("mcpagent://guide");
     std::string gtext = guide.is_object() && guide.contains("text") ? guide["text"].get<std::string>() : "";
-    CHECK(contains(gtext, "window_capture") && contains(gtext, "Windows Graphics Capture"));
+    CHECK(contains(gtext, "engine_jpeg") && contains(gtext, "garrysmod/screenshots") && !contains(gtext, "Windows Graphics Capture") && !contains(gtext, "window_capture"));
     CHECK(!contains(gtext, "`screenshot` needs a loaded map"));
 }
 
@@ -3225,7 +3189,7 @@ int main(int argc, char **argv) {
     test_wiki_http_realms();
     test_next_call();
     test_ui_tools();
-    test_screenshot_window_capture();
+    test_screenshot_engine_jpeg();
     test_cmdline();
     test_crash_report();
     test_health();

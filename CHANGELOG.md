@@ -26,17 +26,20 @@
   the window size, DPI and scale, and with `screenshot_after` the image like `screenshot`.
 - **`screenshot` works at the main menu, in a dialog and on a loading screen.** Without a loaded map there is no client realm, so
   the engine's render capture had nothing to run in (`realm_unavailable`), and a VGUI2 dialog such as "Disconnected by the
-  server" could not be seen at all. `screenshot` now captures the game's own window through Windows Graphics Capture when no
-  client realm exists, and keeps the render capture when one does. The new `source` argument (`auto` by default, `render`,
-  `window_capture`) forces one, and the result says which one it used (`source`). The image is the window's client area (title bar
-  and borders cropped) at the backbuffer's size, so the point you read on it is the point `ui_click` takes; when the window is
-  larger than the backbuffer (DPI scaling) the image is scaled down and the result says `scaled`, `native_w`, `native_h`.
-  The capture works while other windows cover the game, never takes the focus or raises the window, writes no file and captures
-  nothing but the game's own window; it runs off the game's main thread with a 2 s limit (`capture_timeout`) and a minimized
-  window is refused (`window_unavailable`: Windows captures nothing from it). Windows 10 version 1803 or later; on other platforms
-  the old `realm_unavailable` stays. `ui_click` and `ui_key` `screenshot_after` use the same fallback (they used to answer
-  `screenshot_note`). `w`/`h` resize a window capture instead of rendering the view again, and `screenshot_from` still needs a
-  map.
+  server" could not be seen at all. `screenshot` now uses the engine's own `jpeg` console command when no client realm exists,
+  and keeps the render capture when one does. (Windows Graphics Capture was tried first: it returns an all-white image for this
+  game's window, covered or not, so it is not used.) The new `source` argument (`auto` by default, `render`, `engine_jpeg`) forces
+  one, and the result says which one it used (`source`). The module sends `jpeg` through the engine path `console_exec` uses for
+  commands blocked from Lua, waits (4 s at most, `capture_timeout`) for the console line the engine prints,
+  `Wrote 'screenshots/<name>.jpg': ... (WxH) ...`, taken after a console cursor read just before sending, reads exactly that file
+  under `garrysmod/` and deletes it, and nothing else: the path must be `screenshots/<one name>.jpg` (no `..`, no other folder,
+  no link), the file must not be older than the command, and a file that cannot be read stays where it is and is named in a
+  `capture_failed` error; one that cannot be deleted is returned all the same with a `warning` that names its path. The result
+  has `file` and `file_deleted`. It is the engine's own capture, so it works while other windows cover the game and takes no
+  focus. The image is a JPEG at the backbuffer's size (the space `ui_click` reads), at the engine's own quality (the `jpeg_quality`
+  convar, which is archived and left alone): `format`, `w`, `h` and `quality` are not applied there and are listed in `ignored`.
+  One capture at a time. `ui_click` and `ui_key` `screenshot_after` use the same fallback (they used to answer
+  `screenshot_note`). `screenshot_from` still needs a map.
 - **`lua_job {wait: false}` is suggested as `async`** (issue #11). The unknown-argument message answered "did you mean
   'jit'?" for `wait` (the closest spelling). A small synonym table (`wait`, `await`, `sync`, `blocking`, `nowait`,
   `background`, `detach`...) now points to `async` when the tool has it. `wait` and `async` are opposites, so the message says
