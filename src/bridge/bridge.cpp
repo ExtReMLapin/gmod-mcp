@@ -958,7 +958,9 @@ json bridge_tools() {
          "of one core, 1.55 GB of commit (virtual memory) and 1.2 GB of RAM; normal 24% and the same memory. Eight clients: "
          "about 1.5 cores and 12 GB. Memory is the limit, not CPU: a machine out of commit makes every game crash "
          "(0xC000041D, no dump), so before starting anything this call checks the free commit and free RAM and refuses with "
-         "the error low_memory {details: free_commit_mb, free_ram_mb, running_clients (all sessions), per_client_mb, count, "
+         "the error low_memory {details: free_commit_mb, free_ram_mb, running_clients (all sessions: the "
+         "registered instances, this bridge's clients and every process of the game's executable, so clients another session started "
+         "that have not registered yet count), registered_clients, game_processes, per_client_mb, count, "
          "needed_commit_mb, needed_ram_mb} when they do not cover the clients asked for (1.6 GB of commit each plus 1 GB "
          "for the rest of the machine, 1.2 GB of RAM each); nothing is started then. Close clients you no longer use "
          "(instances_close), start fewer, or pass ignore_low_memory: true to start anyway. The frame cap is what saves CPU (30 to 20 fps: -20%); sound: false saves about 12% more. Window "
@@ -1422,6 +1424,33 @@ std::string describe_unhealthy(const json &peers) {
     return t;
 }
 
+#ifdef _WIN32
+// Issue #8 (chaos test G4): pids of the processes running this game's executable (any session's client, registered with the
+// directory or still starting). Matched by the full image path (case-insensitive), so another copy of the game is not counted.
+std::set<uint32_t> game_process_pids(const std::string &exe) {
+    std::set<uint32_t> out;
+    auto norm = [](std::wstring w) {
+        for (auto &c : w) c = c == L'/' ? L'\\' : (wchar_t)towlower(c);
+        return w;
+    };
+    std::wstring want = norm(utf8_to_wide(exe));
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return out;
+    PROCESSENTRY32W e{};
+    e.dwSize = sizeof e;
+    for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e)) {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, e.th32ProcessID);
+        if (!h) continue;
+        wchar_t buf[2048];
+        DWORD n = 2048;
+        if (QueryFullProcessImageNameW(h, 0, buf, &n) && norm(std::wstring(buf, n)) == want) out.insert(e.th32ProcessID);
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return out;
+}
+#endif
+
 json launch_tool(const json &args, const json &token) {
 #ifndef _WIN32
     (void)args;
@@ -1499,7 +1528,13 @@ json launch_tool(const json &args, const json &token) {
                     if (l.h && WaitForSingleObject(l.h, 0) == WAIT_TIMEOUT) alive.insert(l.pid);
             }
             alive.erase(0u);
-            lowmem::Verdict lv = lowmem::check_launch(mem, count, (int)alive.size(), false);
+            // Issue #8 (chaos test G4): clients other sessions started that have not registered yet are not in the directory: count the
+            // game's processes too (the union by pid, so a registered one is not counted twice), and report both numbers.
+            int registered = (int)alive.size();
+            std::string gexe = gamedir::find_game_exe(root);
+            std::set<uint32_t> procs = gexe.empty() ? std::set<uint32_t>() : game_process_pids(gexe);
+            alive.insert(procs.begin(), procs.end());
+            lowmem::Verdict lv = lowmem::check_launch(mem, count, (int)alive.size(), false, registered, (int)procs.size());
             if (lv.refuse) return tool_text(json{{"error", {{"code", "low_memory"}, {"message", lv.message}, {"details", lv.details}}}}, true);
         }
     }

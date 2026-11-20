@@ -981,6 +981,13 @@ static void test_lowmem() {
     // Plenty: no refusal.
     auto v = lowmem::check_launch(mem(60000, 20000), 4, 2, false);
     CHECK(!v.refuse);
+    // Issue #8 (chaos test G4): clients other sessions started that have not registered yet are game processes too: the two counts
+    // (registered, processes) are reported next to the merged running_clients, and the message gives both.
+    v = lowmem::check_launch(mem(1780, 4000), 1, 11, false, 3, 11);
+    CHECK(v.refuse && v.details.value("running_clients", -1) == 11 && v.details.value("registered_clients", -1) == 3 && v.details.value("game_processes", -1) == 11);
+    CHECK(v.message.find("3 registered") != std::string::npos && v.message.find("11 game processes") != std::string::npos);
+    v = lowmem::check_launch(mem(1780, 4000), 1, 11, false);
+    CHECK(!v.details.contains("registered_clients") && !v.details.contains("game_processes"));  // not measured: not invented
     // The report of the issue: 11 clients running, free commit 1.8 GB, one more client wanted.
     v = lowmem::check_launch(mem(1780, 4000), 1, 11, false);
     CHECK(v.refuse);

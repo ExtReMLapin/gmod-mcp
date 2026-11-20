@@ -27,6 +27,8 @@ Cases (default: a f):
          the survivor and warns it is not closed (stand-in game, fake game server)
   chaos_owner Issue #8 (chaos test G3): the owner label rides on the command line and in the heartbeat; instances_close {owner}
          closes keep:true test clients of another session that carry it (never a non-test client or an untagged one)
+  chaos_memory Issue #8 (chaos test G4): low_memory counts the game processes of the game folder, registered or not, and reports
+         both numbers (stand-in game processes started outside the bridge)
   lowmem instances_launch refuses under low free memory (low_memory), ignore_low_memory, free memory in a crash report
   crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
@@ -2820,8 +2822,47 @@ def case_chaos_owner():
             except OSError: pass
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "fuzz"]
+def case_chaos_memory():
+    """Issue #8 (chaos test G4): low_memory counts the game processes of this game folder, not only the registered instances and
+    this bridge's own clients: clients another session started that have not registered yet are running too. Both numbers are
+    reported (stand-in game processes started outside the bridge, fake game server)."""
+    print("== CHAOS_MEMORY: low_memory counts unregistered game processes", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_MEMORY stand-in game built next to the bridge", False)
+        return
+    import subprocess as sp
+    S = chaos_session(extra_env={"GMOD_MCP_FAKE_FREE_COMMIT_MB": "1780", "GMOD_MCP_FAKE_FREE_RAM_MB": "6000"})
+    exe = os.path.join(S["game"], "gmod_win64.exe")
+    procs = []
+    try:
+        # Nothing runs: running_clients 0, game_processes 0.
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
+        d = sc.get("error", {}).get("details", {})
+        check("CHAOS_MEMORY nothing runs: low_memory with running_clients 0, registered_clients 0, game_processes 0",
+              sc.get("error", {}).get("code") == "low_memory" and d.get("running_clients") == 0 and d.get("registered_clients") == 0 and d.get("game_processes") == 0, sc)
+        # Three game processes started by other sessions, not registered (still starting); one of them is registered after all, plus a registered fake.
+        procs = [sp.Popen([exe], stdout=sp.DEVNULL, stderr=sp.DEVNULL) for _ in range(3)]
+        time.sleep(0.5)
+        S["srv"].extra_instances = [{"id": "reg-1", "pid": procs[0].pid, "port": 1, "mode": "client", "state": "running"},
+                                    {"id": "reg-2", "pid": 4000001, "port": 1, "mode": "client", "state": "running"}]
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g4", "timeout_s": 30, "game_dir": S["game"]})
+        e = sc.get("error", {}); d = e.get("details", {})
+        check("CHAOS_MEMORY 3 unregistered-or-not game processes + 1 fake registered one: running_clients 4 (union), registered_clients 2, game_processes 3",
+              e.get("code") == "low_memory" and d.get("running_clients") == 4 and d.get("registered_clients") == 2 and d.get("game_processes") == 3, sc)
+        check("CHAOS_MEMORY the message gives both numbers", "2 registered" in e.get("message", "") and "3 game processes" in e.get("message", ""), e)
+        check("CHAOS_MEMORY nothing started", S["started"]() == [], S["started"]())
+    finally:
+        for p in procs:
+            try: p.kill()
+            except OSError: pass
+        S["close"]()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
