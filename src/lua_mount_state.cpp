@@ -1,6 +1,7 @@
 // What each realm loaded from the mounted folder (Issue #9): load-time snapshots, reload records, changes since. Pure
 // bookkeeping over the file system; the engine side (MountLua hook, runtime injection) feeds it. No game needed.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <mutex>
@@ -34,6 +35,16 @@ using SteadyClock = std::chrono::steady_clock;
 SteadyClock::time_point g_injected_at[realms::COUNT];
 bool g_injected_without_start[realms::COUNT];
 constexpr std::chrono::seconds kLateStartWindow(3);
+// The last scan taken by a load hook, shared with the other realm's hook of the same load.
+struct SharedScan {
+    bool valid = false;
+    std::string root;
+    SteadyClock::time_point at;
+    Files files;
+};
+std::mutex g_scan_mu;
+SharedScan g_shared_scan;
+constexpr std::chrono::seconds kSharedScanWindow(3);
 
 bool valid_realm(int r) { return r >= 0 && r < realms::COUNT; }
 
@@ -53,10 +64,13 @@ void scan_dir(const fs::path &dir, const std::string &prefix, Files &out) {
         if (!it->is_regular_file(e2)) continue;
         std::string name = it->path().filename().u8string();
         if (name.size() < 4 || util::to_lower(name.substr(name.size() - 4)) != ".lua") continue;
-        std::string rel = fs::relative(it->path(), dir, e2).generic_u8string();
+        std::string rel = it->path().lexically_relative(dir).generic_u8string();
         if (e2) continue;
         rel = prefix + "/" + rel;
-        long long mt = mtime_of(it->path().u8string());
+        // The directory entry already holds the file's time (the listing returned it): no second stat per file.
+        std::error_code e3;
+        auto lt = it->last_write_time(e3);
+        long long mt = e3 ? -1 : (long long)lt.time_since_epoch().count();
         out[util::to_lower(rel)] = FileStamp{rel, mt};
     }
 }
@@ -70,7 +84,11 @@ long long mtime_of(const std::string &abs) {
     return (long long)t.time_since_epoch().count();
 }
 
+static std::atomic<uint64_t> g_scans{0};
+uint64_t scan_count() { return g_scans.load(); }
+
 Files scan_files(const std::string &root) {
+    ++g_scans;
     Files out;
     if (root.empty()) return out;
     scan_dir(fs::u8path(root) / "lua", "lua", out);
@@ -102,7 +120,21 @@ void record_load_start(int realm, const std::string &root) {
         g_pending[realm] = Record{};  // nothing was in front for this load
         return;
     }
-    note_load_start(realm, root, scan_files(root));
+    // The server's and the client's hook of one load come within seconds: one scan serves both (each stat of a 30000-file
+    // folder is paid on the main thread, inside the load).
+    Files files;
+    {
+        std::lock_guard<std::mutex> lk(g_scan_mu);
+        auto now = SteadyClock::now();
+        if (!g_shared_scan.valid || !same_root(g_shared_scan.root, root) || now - g_shared_scan.at > kSharedScanWindow) {
+            g_shared_scan.files = scan_files(root);
+            g_shared_scan.root = root;
+            g_shared_scan.at = now;
+            g_shared_scan.valid = true;
+        }
+        files = g_shared_scan.files;
+    }
+    note_load_start(realm, root, std::move(files));
 }
 
 void note_load_start(int realm, const std::string &root, Files files) {
@@ -169,7 +201,19 @@ std::string loaded_from_other_mount(int realm, const std::string &rel) {
     return r.root;
 }
 
+bool has_record(int realm) {
+    if (!valid_realm(realm)) return false;
+    std::string cur = current();
+    std::lock_guard<std::mutex> lk(g_mu);
+    return same_root(g_cur[realm].root, cur);
+}
+
 std::vector<Change> changed_files(int realm) {
+    if (!has_record(realm)) return {};  // nothing to compare with: no scan
+    return changed_files(realm, scan_files(current()));
+}
+
+std::vector<Change> changed_files(int realm, const Files &now) {
     std::vector<Change> out;
     if (!valid_realm(realm)) return out;
     std::string cur = current();
@@ -179,7 +223,6 @@ std::vector<Change> changed_files(int realm) {
         rec = g_cur[realm];
     }
     if (!same_root(rec.root, cur)) return out;
-    Files now = scan_files(cur);
     for (const auto &kv : rec.files) {
         auto it = now.find(kv.first);
         if (it == now.end()) out.push_back({kv.second.rel, "deleted"});
@@ -262,6 +305,8 @@ void forget_loads_for_tests() {
         g_pending[i] = g_cur[i] = Record{};
         g_injected_without_start[i] = false;
     }
+    std::lock_guard<std::mutex> sk(g_scan_mu);
+    g_shared_scan = SharedScan{};
 }
 
 }  // namespace lua_mount

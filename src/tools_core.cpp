@@ -474,12 +474,19 @@ json mount_state(const std::vector<int> &rs) {
     // Issue #9: a folder renamed or deleted since it was mounted serves nothing; every file would only show up as "deleted".
     bool missing = !lua_mount::folder_present(root);
     if (missing) st["folder_missing"] = true;
+    // One scan of the folder for every realm (a big folder costs seconds to stat), and none when no realm has a record.
+    lua_mount::Files now;
+    bool scanned = false;
     for (int r : rs) {
         bool w = lua_mount::realm_loaded_with_mount(r);
         with[realm_name_of(r)] = w;
         if (!w) without.push_back(realm_name_of(r));
         if (missing) continue;
-        for (const auto &c : lua_mount::changed_files(r)) {
+        if (!scanned && lua_mount::has_record(r)) {
+            now = lua_mount::scan_files(root);
+            scanned = true;
+        }
+        for (const auto &c : lua_mount::changed_files(r, now)) {
             auto runs_in = default_realms(c.rel);
             if (std::find(runs_in.begin(), runs_in.end(), r) == runs_in.end()) continue;
             auto it = files.find(c.rel);

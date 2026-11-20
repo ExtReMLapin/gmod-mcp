@@ -78,6 +78,8 @@ struct FileStamp {
 using Files = std::map<std::string, FileStamp>;  // key: lower-case rel
 // Every .lua under <root>/lua and <root>/gamemodes.
 Files scan_files(const std::string &root);
+// How many times scan_files ran (a scan stats every file of the folder: tests count them).
+uint64_t scan_count();
 // File time in ticks of the file system clock, -1 if the file cannot be read.
 long long mtime_of(const std::string &abs);
 // "lua/x.lua" if `abs` is inside the current mount root, else "".
@@ -86,7 +88,8 @@ std::string rel_in_mount(const std::string &abs);
 // Whether the mount root and its lua/ folder exist (a folder renamed or deleted since it was mounted is not served).
 bool folder_present(const std::string &root);
 // The hook's entry (main thread): the folder was put in front of the realm's Lua path. Records the folder's files, unless
-// the folder (or its lua/) is gone: the realm then loads without it and must not be reported as loaded with the mount.
+// the folder (or its lua/) is gone: the realm then loads without it and must not be reported as loaded with the mount. The
+// server's and the client's hook of one map load (seconds apart at most) share one scan of the folder.
 void record_load_start(int realm, const std::string &root);
 // The folder was put in front of the realm's Lua path (hook, main thread): `files` is the folder at that moment. The
 // record becomes the realm's once its runtime is injected (a new Lua state is a new load of every file).
@@ -111,6 +114,10 @@ struct Change {
 };
 // Files of the mounted folder that are not what the realm loaded (empty if the realm has no record).
 std::vector<Change> changed_files(int realm);
+// Whether the realm has a record (a load, or files run again by lua_reload) for the CURRENT mounted folder.
+bool has_record(int realm);
+// Same, against a scan the caller already made (`now`): several realms share one scan.
+std::vector<Change> changed_files(int realm, const Files &now);
 // ---- Does the engine really serve the folder? (Issue #9, chaos testing 2026-11-20) ----
 // The bookkeeping above is the module's own: a path the engine accepts but cannot read (UNC, junction, too long...) is
 // recorded as loaded and loads nothing. So each realm's file system is asked for a few files of the folder.

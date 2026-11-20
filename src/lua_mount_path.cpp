@@ -110,7 +110,7 @@ std::string refuse_too_long(const std::string &root, size_t max_path) {
             if (!it->is_regular_file(e2)) continue;
             std::string name = it->path().filename().u8string();
             if (name.size() < 4 || util::to_lower(name.substr(name.size() - 4)) != ".lua") continue;
-            std::string rel = std::string(prefix) + "/" + fs::relative(it->path(), dir, e2).generic_u8string();
+            std::string rel = std::string(prefix) + "/" + it->path().lexically_relative(dir).generic_u8string();
             size_t n = root.size() + 1 + rel.size();
             if (!e2 && n > longest) {
                 longest = n;
@@ -138,7 +138,7 @@ std::vector<std::string> shadowed_base_files(const std::string &root, const std:
             if (!it->is_regular_file(e2)) continue;
             std::string name = it->path().filename().u8string();
             if (name.size() < 4 || util::to_lower(name.substr(name.size() - 4)) != ".lua") continue;
-            fs::path sub = fs::relative(it->path(), mount_dir, e2);
+            fs::path sub = it->path().lexically_relative(mount_dir);
             if (e2) continue;
             if (fs::is_regular_file(game_side / sub, e2)) out.push_back(prefix + "/" + sub.generic_u8string());
         }

@@ -657,6 +657,80 @@ static void test_issue9_engine_serves() {
     fs::remove_all(base, ec);
 }
 
+// Issue #9 (chaos testing 2026-11-20, F5): a 30000-file mount made status and lua_reload {mounted_changed} take ~9 s (one scan
+// per realm, each stat-ing every file again) and map_load 8 -> 25 s (a scan inside the MountLua hook, on the main thread, once
+// per realm). Fewer scans (one per status, one per load for both realms) and a cheaper scan (the directory listing already
+// carries each file's time). A scan counts; the file time check must stay exact (an OLDER file is changed too).
+static void test_issue9_scan_cost() {
+    using Clock = std::chrono::steady_clock;
+    fs::path base = fs::temp_directory_path() / "gmod-mcp-coretests-scan", ov = base / "wt";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    constexpr int kDirs = 50, kPerDir = 100;  // 5000 files
+    for (int d = 0; d < kDirs; ++d) {
+        fs::create_directories(ov / "lua" / ("d" + std::to_string(d)));
+        for (int f = 0; f < kPerDir; ++f) std::ofstream(ov / "lua" / ("d" + std::to_string(d)) / ("f" + std::to_string(f) + ".lua"), std::ios::binary) << "return 1\n";
+    }
+    const int SV = realms::SERVER, CL = realms::CLIENT;
+    auto ms = [](Clock::time_point a) { return std::chrono::duration<double, std::milli>(Clock::now() - a).count(); };
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+
+    auto t = Clock::now();
+    auto files = lua_mount::scan_files(ov.u8string());
+    double scan_ms = ms(t);
+    CHECK(files.size() == (size_t)kDirs * kPerDir);  // Issue #9
+    std::printf("  F5 scan of %zu files: %.0f ms\n", files.size(), scan_ms);
+
+    // One load: the server's and the client's MountLua hook share one scan.
+    uint64_t c0 = lua_mount::scan_count();
+    t = Clock::now();
+    lua_mount::record_load_start(SV, ov.u8string());
+    lua_mount::record_load_start(CL, ov.u8string());
+    std::printf("  F5 both hooks: %.0f ms, %llu scan(s)\n", ms(t), (unsigned long long)(lua_mount::scan_count() - c0));
+    CHECK(lua_mount::scan_count() - c0 == 1);  // Issue #9: was 2
+    lua_mount::note_realm_loaded(SV);
+    lua_mount::note_realm_loaded(CL);
+    CHECK(lua_mount::realm_loaded_with_mount(SV) && lua_mount::realm_loaded_with_mount(CL));  // Issue #9
+
+    // status / lua_reload {mounted_changed} / the end of map_load: one scan for both realms.
+    c0 = lua_mount::scan_count();
+    t = Clock::now();
+    json st = tools::mount_state({SV, CL});
+    std::printf("  F5 mount_state: %.0f ms, %llu scan(s)\n", ms(t), (unsigned long long)(lua_mount::scan_count() - c0));
+    CHECK(lua_mount::scan_count() - c0 == 1);  // Issue #9: was 2
+    CHECK(st["stale_files"].empty());  // Issue #9
+
+    // The check stays exact: newer, OLDER (a git checkout of an older file), added and deleted files are all found.
+    auto set_age = [&](const char *rel, int hours) {
+        fs::path p = ov / rel;
+        fs::last_write_time(p, fs::last_write_time(p) + std::chrono::hours(hours));
+    };
+    set_age("lua/d3/f7.lua", 2);    // newer
+    set_age("lua/d4/f8.lua", -48);  // older
+    std::ofstream(ov / "lua/d5/added.lua", std::ios::binary) << "return 2\n";
+    fs::remove(ov / "lua/d6/f9.lua");
+    auto ch = lua_mount::changed_files(SV);
+    std::map<std::string, std::string> by;
+    for (const auto &c : ch) by[c.rel] = c.reason;
+    CHECK(ch.size() == 4 && by["lua/d3/f7.lua"] == "modified" && by["lua/d4/f8.lua"] == "modified" && by["lua/d5/added.lua"] == "added" &&
+          by["lua/d6/f9.lua"] == "deleted");  // Issue #9
+    st = tools::mount_state({SV, CL});
+    CHECK(st["stale_files"].size() == 4);  // Issue #9: each file once, with both realms (shared files run in both)
+    // A realm that only has files run again (no load record) is compared too, with the one shared scan: its file is current.
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests(ov.u8string());
+    lua_mount::note_reloaded(CL, ov.u8string(), "lua/d1/f1.lua", lua_mount::mtime_of((ov / "lua/d1/f1.lua").u8string()));
+    st = tools::mount_state({CL});
+    CHECK(st["stale_files"].empty());  // Issue #9: not "5000 files deleted" because the scan was skipped
+    set_age("lua/d1/f1.lua", 1);
+    st = tools::mount_state({CL});
+    CHECK(st["stale_files"].size() == 1 && st["stale_files"][0]["file"] == "lua/d1/f1.lua");  // Issue #9
+    lua_mount::forget_loads_for_tests();
+    lua_mount::set_current_for_tests("");
+    fs::remove_all(base, ec);
+}
+
 // Issue #9 (chaos testing 2026-11-20, F4): the mounted folder changed (another folder, or none) without a map load: a function
 // that ran from the first folder was reported from_mount false / not_on_disk with a note about a .gma. The realm remembers the
 // folder it loaded with. And a file loaded in place at load, then run again with lua_reload, is reloaded_from_mount.
@@ -2439,6 +2513,7 @@ int main(int argc, char **argv) {
     test_issue9_folder_missing();
     test_issue9_shadow_base();
     test_issue9_provenance_changed();
+    test_issue9_scan_cost();
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();
