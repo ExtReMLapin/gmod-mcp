@@ -3432,7 +3432,11 @@ static void cluster_closing_case(int base, bool on_purpose) {
         CHECK(ended && exit_code == 1);  // a terminated game exits with code 1
         a.kill();  // reaps the handles (and does not leave a node behind when the check failed)
     } else {
-        a.kill();  // exit code 0xC0000005, no notice
+        // Exit code 0xC0000005, no notice. The process handle stays open until the end, as the bridge that launched a client keeps
+        // one: without any open handle the process object is freed at once, the successor cannot read the exit code, and the end
+        // is judged unknown (instance_gone). That is what made this check fail on the CI runner, where the take-over came later.
+        TerminateProcess(a.pi.hProcess, 0xC0000005u);
+        WaitForSingleObject(a.pi.hProcess, 5000);
     }
     CHECK(until([&] { return cluster_call(base, "instances_list", json::object()).is_object(); }, 15));
     auto code_of = [&](const std::string &id) {
