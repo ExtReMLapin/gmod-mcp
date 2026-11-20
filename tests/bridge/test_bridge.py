@@ -21,6 +21,8 @@ Cases (default: a f):
   launch_mount_first Issue #6: instances_launch checks (and re-applies) the lua_mount before any map loads, no map for a client
          without it, coordinator_changing waited out (fake server, stand-in game)
   close_coordinator Issue #6: instances_close of the coordinator says the role moved and to whom; instances_list warns beforehand
+  chaos_health Issue #8 (chaos tests G1): instances_launch refuses (peer_unhealthy) while a running client is unresponsive or
+         hung, unless ignore_unhealthy, and names the unhealthy peers when it times out (fake server, stand-in game)
   lowmem instances_launch refuses under low free memory (low_memory), ignore_low_memory, free memory in a crash report
   crash  a client of the session crashed or quit (stand-in game with a crash mode and a fake dump folder): client_crashed
          with the dump name and exit code, instances_list shows it as crashed, a clean exit is not a crash, a map_load
@@ -2635,8 +2637,93 @@ def case_close_coordinator():
     shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "fuzz"]
+# --- Issue #8 (chaos tests): instances_launch and instances_close around unhealthy, crashed and foreign clients. ---
+def chaos_session(extra_env=None, extra_instances=None, with_pid_dir=True):
+    """A bridge, a fake game server and a temporary game folder holding the stand-in game. Returns a dict with call(tool, args)."""
+    import shutil
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    game = tempfile.mkdtemp(prefix="gmcp-chaos-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    os.makedirs(os.path.join(game, "garrysmod")); crashes = os.path.join(game, "crashes"); os.makedirs(crashes)
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-"); pid_dir = os.path.join(work, "pids"); os.makedirs(pid_dir)
+    port, env = free_port(), isolated_config(with_token=True)
+    env.update(GMCP_FAKE_CRASH_DIR=crashes, GMCP_FAKE_ARGV=os.path.join(work, "argv.txt"), GMOD_MCP_FP7137_WORKAROUND="0",
+               GMOD_MCP_FAKE_FREE_COMMIT_MB="100000", GMOD_MCP_FAKE_FREE_RAM_MB="100000")
+    if with_pid_dir: env["GMCP_FAKE_PID_DIR"] = pid_dir
+    env.update(extra_env or {})
+    srv = FakeServer(port, version=bridge_version()); srv.pid_dir = pid_dir
+    srv.extra_instances = [dict(e) for e in (extra_instances or [])]
+    b = Bridge(port, env)
+    S = {"game": game, "work": work, "pid_dir": pid_dir, "srv": srv, "b": b, "crashes": crashes}
+    def call(tool, args, timeout=90):
+        r = b.req("tools/call", {"name": tool, "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        return res.get("structuredContent", {}), res.get("isError")
+    S["call"] = call
+    def started(): return [int(open(os.path.join(pid_dir, f)).read() or 0) for f in os.listdir(pid_dir)]
+    S["started"] = started
+    def close():
+        try: call("instances_close", {"all": True}, 30)
+        except Exception: pass
+        b.close(); srv.stop()
+        shutil.rmtree(game, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+    S["close"] = close
+    return S
+
+
+def case_chaos_health():
+    """Issue #8 (chaos test G1): a launch while a running client is frozen (unresponsive or hung) would time out with `0 of 1
+    clients answered` (a frozen client blocks a new one from registering, FP7137 handshake): it is refused up front with
+    peer_unhealthy unless ignore_unhealthy, and a timeout names the unhealthy peers seen meanwhile."""
+    print("== CHAOS_HEALTH: peer_unhealthy before a launch, unhealthy peers named at a timeout", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_HEALTH stand-in game built next to the bridge", False)
+        return
+    me = os.getpid()
+    # 1. A frozen client (unresponsive) is running: the launch is refused, nothing started, the error names it and the way out.
+    S = chaos_session(extra_instances=[{"id": "frozen-1", "pid": me, "port": 1, "mode": "client", "state": "unresponsive", "stalled_s": 25.0}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    e, d = sc.get("error", {}), sc.get("error", {}).get("details", {})
+    check("CHAOS_HEALTH an unresponsive client running: peer_unhealthy, isError, nothing started", e.get("code") == "peer_unhealthy" and err is True and S["started"]() == [], sc)
+    check("CHAOS_HEALTH the message names the instance, its pid and state, and the way out (instances_close, game_terminate, ignore_unhealthy)",
+          all(w in e.get("message", "") for w in ("frozen-1", str(me), "unresponsive", "instances_close", "game_terminate", "ignore_unhealthy")), e)
+    check("CHAOS_HEALTH details.unhealthy lists {instance, pid, state}", d.get("unhealthy") == [{"instance": "frozen-1", "pid": me, "state": "unresponsive"}], d)
+    # 2. ignore_unhealthy: true starts anyway.
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"], "ignore_unhealthy": True})
+    check("CHAOS_HEALTH ignore_unhealthy: the client starts and answers", len(S["started"]()) == 1 and not sc.get("error"), sc)
+    S["close"]()
+    # 3. A hung client counts too; a healthy one (running) and a crashed one do not.
+    S = chaos_session(extra_instances=[{"id": "hung-1", "pid": me, "port": 1, "mode": "client", "state": "hung", "stalled_s": 100.0},
+                                       {"id": "ok-1", "pid": me + 1, "port": 1, "mode": "client", "state": "running"},
+                                       {"id": "dead-1", "pid": me + 2, "port": 1, "mode": "client", "state": "crashed"}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    d = sc.get("error", {}).get("details", {})
+    check("CHAOS_HEALTH a hung client is refused too; only it is named (not the running or the crashed one)", sc.get("error", {}).get("code") == "peer_unhealthy" and [u["instance"] for u in d.get("unhealthy", [])] == ["hung-1"], sc)
+    S["close"]()
+    S = chaos_session(extra_instances=[{"id": "ok-1", "pid": me + 1, "port": 1, "mode": "client", "state": "running"},
+                                       {"id": "dead-1", "pid": me + 2, "port": 1, "mode": "client", "state": "crashed"}])
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 30, "game_dir": S["game"]})
+    check("CHAOS_HEALTH only healthy and crashed peers: the launch goes ahead", len(S["started"]()) == 1 and not sc.get("error"), sc)
+    S["close"]()
+    # 4. A peer freezes while the launch waits for its client (which never answers): the timeout names it.
+    S = chaos_session(extra_instances=[{"id": "soon-frozen", "pid": me, "port": 1, "mode": "client", "state": "running"}], with_pid_dir=False)
+    def freeze():
+        time.sleep(3)
+        S["srv"].extra_instances[0].update(state="unresponsive", stalled_s=12.0)
+    threading.Thread(target=freeze, daemon=True).start()
+    sc, err = S["call"]("instances_launch", {"count": 1, "owner": "g1", "timeout_s": 10, "game_dir": S["game"]}, 60)
+    e = sc.get("error", {})
+    check("CHAOS_HEALTH timeout: 0 of 1 clients answered, and the unhealthy peer seen meanwhile is named in details and message",
+          e.get("code") == "timeout" and e.get("details", {}).get("unhealthy_peers") == [{"instance": "soon-frozen", "pid": me, "state": "unresponsive"}]
+          and "soon-frozen" in e.get("message", "") and "unresponsive" in e.get("message", ""), sc)
+    S["close"]()
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

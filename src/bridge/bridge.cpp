@@ -980,6 +980,12 @@ json bridge_tools() {
          "with error map_load_in_progress and starts nothing: retry later, or with a larger timeout_s. Not covered: a game "
          "started by hand (not by this call) and a load that begins while a launch is already creating its processes "
          "(only launches and map_load calls of the bridge wait, a load started by other means is never held back).\n"
+         // Issue #8 (chaos test G1)
+         "A client that is frozen (instances_list state unresponsive or hung: suspended, crash dialog, a load that never ends) keeps "
+         "a new client from registering (engine FP7137 handshake), so a launch beside it ends with `0 of N clients answered`: "
+         "before starting anything this call refuses with peer_unhealthy {details.unhealthy: [{instance, pid, state}]}, naming "
+         "the way out (instances_close {pids} for a client this session started, game_terminate {instance} for any), unless "
+         "ignore_unhealthy: true; a timeout also names the stuck peers it saw meanwhile (details.unhealthy_peers).\n"
          "Right after a game starts, the other games can be unreachable for 15-18 s (instance_unreachable or timeouts): "
          "expected, wait and retry; it is not a dead game (client_crashed is the signal for a dead one).\n"
          "Order: launch all the clients you need in ONE call (with `map`, they load 2 at a time after the settle delay), "
@@ -1001,6 +1007,7 @@ json bridge_tools() {
             {"launch_args", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 160}}},  // Issue #10
                              {"description", "Extra engine command-line tokens, one per element, e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]. Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, window mode, -dxlevel, -condebug, -game), +connect, +map. Options: https://developer.valvesoftware.com/wiki/Command_line_options"}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
+            {"ignore_unhealthy", {{"type", "boolean"}, {"description", "Start even when a running client is unresponsive or hung (error peer_unhealthy otherwise: a frozen client keeps a new one from registering, so the launch would time out). Default false."}}},
             {"ignore_low_memory", {{"type", "boolean"}, {"description", "Start even when the free memory does not cover the clients asked for (error low_memory otherwise). Default false: a machine out of memory crashes every game on it."}}},
             {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
@@ -1384,6 +1391,27 @@ std::vector<std::string> fp7137_loading_games(const std::string &except = "") { 
     return ids;  // FP7137
 }  // FP7137
 
+// Issue #8 (chaos test G1): the running instances whose main thread or whole process is stuck (state "unresponsive" or "hung").
+// A frozen client keeps the engine from letting a new client register (FP7137 handshake): a launch then times out with
+// "0 of 1 clients answered". [{instance, pid, state}]
+json unhealthy_peers(const json &lst) {
+    json out = json::array();
+    if (!lst.is_object() || !lst.contains("instances") || !lst["instances"].is_array()) return out;
+    for (const auto &e : lst["instances"]) {
+        if (!e.is_object()) continue;
+        std::string st = e.value("state", "");
+        if (st != "unresponsive" && st != "hung") continue;
+        out.push_back(json{{"instance", e.value("id", "?")}, {"pid", e.value("pid", 0u)}, {"state", st}});
+    }
+    return out;
+}
+
+std::string describe_unhealthy(const json &peers) {
+    std::string t;
+    for (const auto &u : peers) t += (t.empty() ? "" : ", ") + u.value("instance", std::string("?")) + " (pid " + std::to_string(u.value("pid", 0u)) + ") is " + u.value("state", std::string("?"));
+    return t;
+}
+
 json launch_tool(const json &args, const json &token) {
 #ifndef _WIN32
     (void)args;
@@ -1432,13 +1460,28 @@ json launch_tool(const json &args, const json &token) {
         std::string inside = lua_mount::refuse_inside_game(mount_root, root + "/garrysmod");
         if (!inside.empty()) return tool_error("invalid_params", "lua_mount: " + inside);
     }
+    json peers_list = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
+    // Issue #8 (chaos test G1): a frozen client blocks a new one from registering: refuse up front, with the way out.
+    if (!args.value("ignore_unhealthy", false)) {
+        json bad = unhealthy_peers(peers_list);
+        if (!bad.empty()) {
+            std::string pids;
+            for (const auto &u : bad) pids += (pids.empty() ? "" : ", ") + std::to_string(u.value("pid", 0u));
+            return tool_text(json{{"error", {{"code", "peer_unhealthy"},
+                                            {"message", "a running client is stuck: " + describe_unhealthy(bad) + ". A client frozen as a whole (or mid-load) keeps a new client from "
+                                                        "registering (engine FP7137 handshake): the launch would time out with `0 of N clients answered`. Close it first "
+                                                        "(instances_close {pids: [" + pids + "]} for a client this session started, or game_terminate {instance}), or pass "
+                                                        "ignore_unhealthy: true to start anyway. Nothing was started."},
+                                            {"details", {{"unhealthy", bad}}}}}},
+                             true);
+        }
+    }
     // Issue #8: memory first. A machine out of commit crashes every game on it (11 clients, 1.8 GB free: all died, no dump).
     {
         lowmem::Memory mem = lowmem::current();
         if (mem.known && !args.value("ignore_low_memory", false)) {
             std::set<uint32_t> alive;
-            json lst = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
-            for (const auto &e : lst.value("instances", json::array()))
+            for (const auto &e : peers_list.value("instances", json::array()))
                 if (e.is_object() && e.value("state", "") != "crashed" && e.value("mode", "client") != "srcds") alive.insert(e.value("pid", 0u));
             {
                 std::lock_guard<std::mutex> lk(g_launch_mu);
@@ -1515,9 +1558,11 @@ json launch_tool(const json &args, const json &token) {
     auto t0 = std::chrono::steady_clock::now();
     auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
     json found = json::object();
+    std::map<std::string, json> seen_unhealthy;  // issue #8 (G1): peers that were stuck while this launch waited
     while ((int)found.size() < count && elapsed() < timeout) {
         json lst = game_call("instances_list", json::object(), 5);
         note_instances(lst);
+        for (const auto &u : unhealthy_peers(lst)) seen_unhealthy[u.value("instance", std::string("?"))] = u;
         for (const auto &in : lst.value("instances", json::array()))
             for (auto &l : started)
                 if (in.value("pid", 0u) == l.pid && in.value("state", "") != "crashed" && !found.contains(std::to_string(l.pid))) {
@@ -1544,12 +1589,18 @@ json launch_tool(const json &args, const json &token) {
         for (auto &l : started)
             if (!found.contains(std::to_string(l.pid))) silent.push_back(l.pid);
             else answered.push_back(json{{"instance", l.id}, {"pid", l.pid}});
-        return tool_text(json{{"error", {{"code", "timeout"},
-                                         {"message", std::to_string(found.size()) + " of " + std::to_string(count) +
-                                                         " clients answered within " + std::to_string((int)timeout) +
-                                                         " s (still starting, or gmod-mcp did not load in them: see "
-                                                         "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
-                                                         "the silent ones with instances_close {pids}."}}},
+        json stuck = json::array();
+        for (auto &kv : seen_unhealthy) stuck.push_back(kv.second);
+        std::string stuck_note = stuck.empty() ? "" : " A running client was stuck meanwhile: " + describe_unhealthy(stuck) +
+                                                          " (a frozen client keeps a new one from registering, engine FP7137 handshake): close it with instances_close {pids} or game_terminate {instance}.";
+        json terr{{"code", "timeout"},
+                  {"message", std::to_string(found.size()) + " of " + std::to_string(count) +
+                                  " clients answered within " + std::to_string((int)timeout) +
+                                  " s (still starting, or gmod-mcp did not load in them: see "
+                                  "garrysmod/data/mcpagent/last_crash.txt and the console). Close "
+                                  "the silent ones with instances_close {pids}." + stuck_note}};
+        if (!stuck.empty()) terr["details"] = json{{"unhealthy_peers", stuck}};
+        return tool_text(json{{"error", terr},
                               {"silent_pids", silent}, {"answered", answered},
                               {"lua_mount", mount_root.empty() ? json(nullptr) : json(mount_root)},
                               {"lua_mount_note", mount_root.empty() ? json(nullptr)
