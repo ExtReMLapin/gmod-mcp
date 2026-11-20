@@ -7,6 +7,7 @@
 #include "console.h"
 #include "coordinator.h"
 #include "jobs.h"
+#include "layout.h"
 #include "ljdump.h"
 #include "mcp.h"
 #include "lua_mount.h"
@@ -226,6 +227,7 @@ static json status_tool(const json &args) {
            {"perf", jobs::frame_stats()},
            {"realms", realms_j},
            {"client_lock", agent::lock_status()},
+           {"layout_check", layout::report()},  // the fixed vtable slots and offsets the module uses, checked before use (layout.h)
            {"console_capture", console::method()},
            {"tmp_dir", c.tmp_dir},
            {"game_dir", c.game_dir},

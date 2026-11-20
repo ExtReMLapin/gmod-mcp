@@ -8,6 +8,7 @@
 #include <GarrysMod/Lua/LuaShared.h>
 
 #include "agent.h"
+#include "layout.h"
 #include "log.h"
 #include "luaapi.h"
 #include "platform/platform.h"
@@ -108,7 +109,24 @@ static int read_fs_slot_base() {
     return base;
 }
 
-// need_layout: the caller will call AddSearchPath/RemoveSearchPath (EmptyCache alone does not need the layout).
+// Why the mount (or the cache emptying) is refused when ILuaShared's slots are not recognized: each failed slot with what did not match.
+static std::string ilua_refusal(const layout::IluaShared &ls, bool cache_only) {
+    std::string why;
+    auto add = [&](const char *name, int slot, const layout::Check &c) {
+        if (!c.ok) why += (why.empty() ? "" : "; ") + std::string("slot ") + std::to_string(slot) + " (" + name + ") " + c.why;
+    };
+    if (cache_only) {
+        add("EmptyCache", 17, ls.empty_cache);
+    } else {
+        add("MountLua", 9, ls.mount_lua);
+        add("MountLuaAdd", 10, ls.mount_lua_add);
+        add("UnMountLua", 11, ls.unmount_lua);
+    }
+    return "this game build's ILuaShared (" GMOD_LUASHARED_INTERFACE ") layout is not recognized (" + why +
+           "): the " + (cache_only ? "cache emptying" : "Lua mount") + " is refused rather than calling an unknown slot (docs/REVERSE.md, \"Slot checks\")";
+}
+
+// need_layout: the caller will call AddSearchPath/RemoveSearchPath and hook MountLua (EmptyCache alone only needs its own slot).
 static bool ensure(std::string &err, bool need_layout = true) {
     if (!g_fs) g_fs = get_iface(plat::filesystem_names(), "VFileSystem022");
     if (!g_ls) g_ls = static_cast<GarrysMod::Lua::ILuaShared *>(get_iface(plat::lua_shared_names(), GMOD_LUASHARED_INTERFACE));
@@ -119,10 +137,20 @@ static bool ensure(std::string &err, bool need_layout = true) {
                   : "IFileSystem (VFileSystem022) not found in filesystem_stdio";
     else if (!g_ls) err = "ILuaShared (" GMOD_LUASHARED_INTERFACE ") not found in lua_shared";
     if (!g_fs || !g_ls) return false;
+    const layout::IluaShared &ls = layout::iluashared(g_ls);
     if (g_fs_base == 0) g_fs_base = read_fs_slot_base();
-    if (g_fs_base < 0 && need_layout) {
-        err = "this game build's IFileSystem (VFileSystem022) layout is not recognized: the Lua mount is refused rather "
-              "than calling an unknown slot (docs/REVERSE.md, \"Lua mount: search paths\")";
+    if (need_layout) {
+        if (!ls.mount_ok()) {
+            err = ilua_refusal(ls, false);
+            return false;
+        }
+        if (g_fs_base < 0) {
+            err = "this game build's IFileSystem (VFileSystem022) layout is not recognized: the Lua mount is refused rather "
+                  "than calling an unknown slot (docs/REVERSE.md, \"Lua mount: search paths\")";
+            return false;
+        }
+    } else if (!ls.cache_ok()) {
+        err = ilua_refusal(ls, true);
         return false;
     }
     return true;
@@ -213,6 +241,15 @@ static bool hook(bool on, std::string &err) {
 
 bool supported(std::string *) { return true; }
 
+void verify_layout(bool dedicated) {
+    if (dedicated) {
+        layout::publish("ifilesystem", layout::State::NotApplicable, "dedicated server: the Lua mount is not supported there");
+        return;
+    }
+    std::string err;
+    if (!ensure(err) && !g_fs) layout::publish("ifilesystem", layout::State::Refused, err);
+}
+
 bool empty_cache() {
     std::string err;
     if (!ensure(err, false)) return false;
@@ -243,6 +280,8 @@ json info() {
 json set(const std::string &root, bool empty_cache) {
     std::string err;
     if (!ensure(err)) return json{{"ok", false}, {"error", {{"code", "interface_missing"}, {"message", err}}}};
+    if (empty_cache && !layout::iluashared(g_ls).cache_ok())
+        return json{{"ok", false}, {"error", {{"code", "interface_missing"}, {"message", ilua_refusal(layout::iluashared(g_ls), true) + "; mount with empty_cache: false to skip it"}}}};
     std::string old = current();
     json removed = json::object();
     if (!old.empty()) {
@@ -305,6 +344,8 @@ json info() {
 json set(const std::string &, bool) { return info(); }
 
 bool empty_cache() { return false; }
+
+void verify_layout(bool) {}
 
 #endif
 

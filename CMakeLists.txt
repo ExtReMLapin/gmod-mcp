@@ -146,7 +146,7 @@ endif()
 add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
 
 # Module helpers that need no game (links the module's sources like the snapshot generator).
-add_executable(gmod-mcp-coretests tests/native/test_core.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
 target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 target_compile_definitions(gmod-mcp-coretests PRIVATE GMOD_MCP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")  # tests/schema/results.json

@@ -170,6 +170,11 @@ static bool start(lua_State *L) {
 
     tools::register_all();
 
+    // The fixed vtable slots and offsets the module relies on are checked once, now (layout.h): a slot the game build moved turns off
+    // the feature that needs it, with a reason in `status` (layout_check) and one log line here, instead of calling another function.
+    realms::verify_layout();
+    lua_mount::verify_layout(cfg.mode == agent::Mode::Dedicated);
+
     // -mcp_lua_mount "<folder>": a test client started on a worktree's code (instances_launch {lua_mount}).
     // The game's own command line is ANSI (tier0): a folder with characters outside the code page would arrive damaged.
     // The process's wide command line (UTF-8) is exact; the game's copy stays the fallback.

@@ -66,6 +66,9 @@ bool is_constant_return(const std::vector<uint8_t> &code);
 int fs_slot_base(const std::vector<uint8_t> &s7, const std::vector<uint8_t> &s8, const std::vector<uint8_t> &s11,
                  const std::vector<uint8_t> &s12);
 
+// Main thread, at load: reads the IFileSystem and ILuaShared layouts the mount needs and publishes the verdicts (layout.h); a mount on a
+// layout that is not recognized is refused. `dedicated`: no mount there. Does nothing where the layouts are not checked.
+void verify_layout(bool dedicated);
 // Main thread. root empty = remove the mounted folder. Returns {"ok":true,"result":...} or an agent error.
 nlohmann::json set(const std::string &root, bool empty_cache);
 // Main thread: the current mounted folder and the Lua search paths the engine uses now.

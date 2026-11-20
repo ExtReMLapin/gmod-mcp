@@ -48,6 +48,8 @@
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
+void run_slotcheck_tests(int *pass, int *fail);
+
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                     \
     do {                                                                \
@@ -2305,6 +2307,11 @@ static void test_output_schemas() {
     CHECK(fails("map_list", json{{"maps", json::array({1})}, {"count", 1}, {"truncated", false}}));
     CHECK(fails("wait_frames", json{{"frames", "20"}, {"elapsed_s", 1}}));
     CHECK(fails("status", json{{"main_thread_stalled", "no"}}));
+    // status.layout_check (src/layout.h): the verdict of each interface is {ok: boolean, state: string, ...}.
+    CHECK(fails("status", json{{"layout_check", {{"ifilesystem", {{"ok", "yes"}, {"state", "verified"}}}}}}));  // ok is a boolean
+    CHECK(fails("status", json{{"layout_check", {{"iluashared", {{"ok", true}}}}}}));                          // state required
+    CHECK(fails("status", json{{"layout_check", {{"iluashared", {{"ok", true}, {"state", "verified"}, {"mount_lua", "yes"}}}}}}));  // a slot verdict is a boolean
+    CHECK(fails("status", json{{"layout_check", {{"lua_offsets", {{"ok", true}, {"state", "verified"}, {"backref_ok", "many"}}}}}}));
     // Extra fields stay allowed (a newer module may add some), and the hint fields are strings.
     const mcp::Tool *wf = mcp::find_tool("wait_frames");
     CHECK(wf != nullptr);
@@ -3315,6 +3322,12 @@ int main(int argc, char **argv) {
     CHECK(tools::project_values(e, json{{"fields", {"pass"}}}) == e);  // errors untouched
 
     fs::remove_all(root.parent_path(), ec);
+    {
+        int p = 0, f = 0;
+        run_slotcheck_tests(&p, &f);  // tests/native/test_slotcheck.cpp (its own counters: check.h)
+        g_pass += p;
+        g_fail += f;
+    }
     std::printf("core: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
