@@ -1,5 +1,6 @@
 // Tools: world (entities, players, bots, traces), rendering (screenshots, debug draw), sound, performance.
 #include <chrono>
+#include <cmath>
 
 #include "agent.h"
 #include "jobs.h"
@@ -8,6 +9,8 @@
 #include "realms.h"
 #include "tasks.h"
 #include "tools.h"
+#include "util.h"
+#include "windowshot.h"
 
 namespace tools {
 
@@ -49,15 +52,58 @@ static json capture(int realm, const json &req) {
     }
 }
 
-json capture_screenshot(int realm, const json &req) { return capture(realm, req); }
-
-static json screenshot_tool(const json &a) {
-    if (agent::config().mode != agent::Mode::Client) return agent::err("unsupported", "no renderer in srcds mode");
-    // The menu state has no render.Capture: at the main menu, screenshots are not available (defined behavior).
-    if (!agent::realm_present(realms::CLIENT))
-        return agent::err("realm_unavailable", "screenshots need the client realm: load a map first (the main menu cannot be captured)");
-    return capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality"}));
+// Screenshot without a client realm (main menu, a VGUI2 dialog, a loading screen): the game's own window through Windows Graphics
+// Capture, cropped to its client area and sized like the backbuffer (what the render capture returns at screen size, and what
+// ui_click's coordinates are read on). It needs neither the client realm nor the main thread's frame loop, only a visible window.
+static json window_capture_shot(const json &a) {
+    plat::WindowBitmap bmp;
+    std::string code, msg;
+    if (!plat::window_capture_bitmap(0, 2000, bmp, code, msg)) return agent::err(code, msg);
+    windowshot::SizeRequest sr;
+    sr.crop = {bmp.w, bmp.h};
+    sr.w = a.value("w", 0);
+    sr.h = a.value("h", 0);
+    // The backbuffer's size, from the menu state (ScrW/ScrH: the menu realm always exists). Short wait: a main thread stuck in a
+    // map load must not hold the screenshot back; the client area's size is the fallback.
+    json st = agent::rt(realms::MENU, "ui_state", json::object(), 2.0);
+    if (st.value("ok", false) && st.contains("result")) {
+        const json &r = st["result"];
+        if (r.contains("scr_w") && r["scr_w"].is_number() && r.contains("scr_h") && r["scr_h"].is_number()) {
+            sr.backbuffer.w = (int)r["scr_w"].get<double>();
+            sr.backbuffer.h = (int)r["scr_h"].get<double>();
+        }
+    }
+    windowshot::Target t = windowshot::target_size(sr);
+    std::string format = a.value("format", "jpeg") == "png" ? "png" : "jpeg";
+    std::string data;
+    if (!plat::window_encode(bmp, t.scaled ? t.size.w : 0, t.scaled ? t.size.h : 0, format, a.value("quality", 90), data, msg))
+        return agent::err("capture_failed", msg);
+    json res = {{"format", format}, {"w", t.size.w}, {"h", t.size.h}, {"screen_w", t.screen.w}, {"screen_h", t.screen.h},
+                {"method", "wgc_client_area"}, {"bytes", data.size()}, {"scaled", t.scaled}, {"capture_ms", std::round(bmp.capture_ms)}};
+    if (t.scaled) {  // the client area is not the size of the image: DPI scaling, or w/h
+        res["native_w"] = bmp.w;
+        res["native_h"] = bmp.h;
+    }
+    json out = {{"ok", true}, {"result", res}};
+    out["image"] = json{{"data", util::base64_encode(data)}, {"mimeType", format == "png" ? "image/png" : "image/jpeg"}};
+    return out;
 }
+
+json take_screenshot(const json &a) {
+    windowshot::SourceFacts f;
+    f.requested = a.value("source", "auto");
+    f.client_mode = agent::config().mode == agent::Mode::Client;
+    f.windows = plat::window_capture_supported();
+    f.client_realm_present = agent::realm_present(realms::CLIENT);
+    f.client_allowed = agent::lock_status().value("client_allowed", false);
+    windowshot::SourceChoice c = windowshot::choose_source(f);
+    if (!c.code.empty()) return agent::err(c.code, c.message);
+    json r = c.source == windowshot::Source::Render ? capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality"})) : window_capture_shot(a);
+    if (r.value("ok", false)) r["result"]["source"] = windowshot::source_name(c.source);
+    return r;
+}
+
+static json screenshot_tool(const json &a) { return take_screenshot(a); }
 
 static json screenshot_from_tool(const json &a) {
     if (!agent::realm_present(realms::CLIENT)) return agent::err("realm_unavailable", "screenshot_from needs a loaded map (client realm)");
@@ -236,14 +282,29 @@ void register_render() {
                 {"quality", {{"type", "integer"}, {"minimum", 1}, {"maximum", 100}, {"description", "JPEG quality (default 90)."}}},
                 {"w", {{"type", "integer"}, {"minimum", 16}, {"maximum", 3840}, {"description", "Width in pixels (default: the game window's)."}}},
                 {"h", {{"type", "integer"}, {"minimum", 16}, {"maximum", 2160}, {"description", "Height in pixels (default: the game window's)."}}}};
+    json shot_args = img;
+    shot_args["source"] = {{"type", "string"}, {"enum", {"auto", "render", "window_capture"}},
+                           {"description", "auto (default): the render capture when a map is loaded, the window capture otherwise. render: the engine's "
+                                           "render capture (client realm only). window_capture: the game window through Windows Graphics Capture, with or "
+                                           "without a map."}};
     mcp::register_tool({"screenshot", "Take a screenshot",
-                        "Captures what the local player sees and returns it as an MCP image (plus {format, w, h, screen_w, screen_h, "
-                        "method, bytes}). Game client with a loaded map only: error realm_unavailable at the main menu (the menu "
-                        "cannot be captured) and unsupported on srcds. Without w/h: the game window as it is, HUD included "
-                        "(method backbuffer). With w/h: the player's view rendered again at that size, without HUD or view model "
-                        "(method render_target). A minimized or frozen game gives timeout after 10 s. debug_draw primitives are "
-                        "visible. Example: {\"w\": 1280, \"h\": 720, \"format\": \"png\"}.",
-                        json{{"properties", img}}, json{{"readOnlyHint", true}}, screenshot_tool});
+                        "Captures what the game shows and returns it as an MCP image (plus {source, format, w, h, screen_w, screen_h, "
+                        "method, bytes}). Two sources, chosen by `source` (auto by default). render: what the local player sees, "
+                        "drawn by the engine; needs a loaded map (client realm); without w/h it is the game window as it is, HUD "
+                        "included (method backbuffer), with w/h the player's view rendered again at that size, without HUD or view "
+                        "model (method render_target); debug_draw primitives are visible; a minimized or frozen game gives timeout "
+                        "after 10 s. window_capture: the game's own window through Windows Graphics Capture, the only way to see the "
+                        "main menu, a VGUI2 dialog (\"Disconnected by the server\") or a loading screen, when there is no client realm; "
+                        "Windows only. It is the window's client area (title bar and borders excluded), at the backbuffer's size so "
+                        "that ui_click coordinates match (method wgc_client_area; if DPI scaling makes the window larger, the image "
+                        "is scaled down and the result says scaled, native_w, native_h); w/h resize it instead (the view is not "
+                        "rendered again, no HUD choice). It works while other windows cover the game, never takes the focus or "
+                        "raises the window, writes no file, and captures nothing but the game's own window. Errors: realm_unavailable "
+                        "(source render without a map), unsupported (srcds, or a platform without window capture), client_locked, "
+                        "window_unavailable (window minimized or not found: restore it, Windows captures nothing from a minimized "
+                        "window), capture_timeout (no frame within 2 s), capture_failed. Example: {\"w\": 1280, \"h\": 720, "
+                        "\"format\": \"png\"}, or {\"source\": \"window_capture\"} at the main menu.",
+                        json{{"properties", shot_args}}, json{{"readOnlyHint", true}}, screenshot_tool});
     json from = img;
     from["pos"] = vec_schema("Camera position, " + std::string(VEC) + ".");
     from["ang"] = vec_schema("Camera angles [pitch, yaw, roll] in degrees.");

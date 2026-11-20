@@ -24,6 +24,19 @@
   `window_unavailable` (minimized or not found), `cursor_hidden` (the game has the mouse: no menu, dialog or popup is open) and
   `out_of_bounds`; `cursor_hidden` and `loading` carry a `next_call`. The result lists what was sent, the point in client pixels,
   the window size, DPI and scale, and with `screenshot_after` the image like `screenshot`.
+- **`screenshot` works at the main menu, in a dialog and on a loading screen.** Without a loaded map there is no client realm, so
+  the engine's render capture had nothing to run in (`realm_unavailable`), and a VGUI2 dialog such as "Disconnected by the
+  server" could not be seen at all. `screenshot` now captures the game's own window through Windows Graphics Capture when no
+  client realm exists, and keeps the render capture when one does. The new `source` argument (`auto` by default, `render`,
+  `window_capture`) forces one, and the result says which one it used (`source`). The image is the window's client area (title bar
+  and borders cropped) at the backbuffer's size, so the point you read on it is the point `ui_click` takes; when the window is
+  larger than the backbuffer (DPI scaling) the image is scaled down and the result says `scaled`, `native_w`, `native_h`.
+  The capture works while other windows cover the game, never takes the focus or raises the window, writes no file and captures
+  nothing but the game's own window; it runs off the game's main thread with a 2 s limit (`capture_timeout`) and a minimized
+  window is refused (`window_unavailable`: Windows captures nothing from it). Windows 10 version 1803 or later; on other platforms
+  the old `realm_unavailable` stays. `ui_click` and `ui_key` `screenshot_after` use the same fallback (they used to answer
+  `screenshot_note`). `w`/`h` resize a window capture instead of rendering the view again, and `screenshot_from` still needs a
+  map.
 - **`lua_job {wait: false}` is suggested as `async`** (issue #11). The unknown-argument message answered "did you mean
   'jit'?" for `wait` (the closest spelling). A small synonym table (`wait`, `await`, `sync`, `blocking`, `nowait`,
   `background`, `detach`...) now points to `async` when the tool has it. `wait` and `async` are opposites, so the message says

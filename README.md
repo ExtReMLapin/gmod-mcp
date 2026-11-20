@@ -237,7 +237,7 @@ Repos: [ExtReMLapin/gmod-mcp](https://github.com/ExtReMLapin/gmod-mcp) · [AmyJe
 | Console | `console_exec` (`a 1; b 2` runs two commands like the console; an unknown command is an error; convars it sets are read back), `console_read`, `console_wait` (block until N lines match, e.g. the end of a batch), `console_buffer`, `convar_get`, `convar_set`, `concommand_list` |
 | Errors | `errors_since`, `errors_clear` (Lua errors from all three realms, with stack) |
 | World | `ents_find`, `ent_info`, `ent_spawn`, `ent_remove`, `ent_fire`, `players_list`, `player_set`, `bots_add`, `trace`, `trace_through` (every surface crossed, with thickness and material) |
-| Rendering | `screenshot`, `screenshot_from` (arbitrary camera), `debug_draw`, `debug_clear` |
+| Rendering | `screenshot` (works at the main menu, in a dialog and on a loading screen too, on Windows), `screenshot_from` (arbitrary camera), `debug_draw`, `debug_clear` |
 | UI input | `ui_click` (click or scroll at a pixel of a `screenshot`), `ui_key` (keys and text; characters outside the machine's ANSI code page are refused, the engine would alter them): dialogs, Derma and menu buttons that have no console command. Windows test clients only; posted to the game's own window, your real mouse and focus are untouched |
 | Sound | `sound_emit`, `sound_trace` |
 | Performance | `perf_snapshot` |
@@ -530,7 +530,9 @@ tracebacks then point at the real file.
 - Tested on Windows x64 (game and dedicated server) and in a Linux x64 dedicated server. The Linux client game has not
   been tested. `instances_launch` is Windows only.
 - The very first start needs one map load (to install the main-menu loader).
-- Screenshots need a loaded map (the menu state has no capture function).
+- Without a loaded map, `screenshot` captures the game window through Windows Graphics Capture (Windows 10 version 1803 or later),
+  so there is no HUD choice and no `w`/`h` re-render; it works while other windows cover the game, but not while the game is
+  minimized. `screenshot_from` and the `render` source need a loaded map.
 - `hook_trace` adds a temporary hook: if another hook returns a value first, that call is not seen.
 - The Garry's Mod dedicated server ignores packets from `127.0.0.1`: to join a local dedicated server, connect to this
   machine's LAN address (the client lock recognizes it as local).

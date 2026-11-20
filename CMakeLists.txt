@@ -51,6 +51,8 @@ FetchContent_Declare(garrysmod_common
 FetchContent_MakeAvailable(httplib nlohmann_json json_schema_validator garrysmod_common)
 
 set(PLATFORM_SOURCES src/platform/platform_win.cpp src/platform/platform_posix.cpp)
+# Window capture (Windows Graphics Capture, C++/WinRT): in the module and the tools' executables, not in the bridge.
+set(CAPTURE_SOURCES src/platform/window_capture_win.cpp)
 # One version for the module and the bridge (the bridge reports a module of another version).
 add_compile_definitions(GMOD_MCP_VERSION="${PROJECT_VERSION}")
 
@@ -63,7 +65,7 @@ add_compile_definitions(GMOD_MCP_VERSION="${PROJECT_VERSION}")
     DEPENDS ${LUA_RUNTIME_FILES} ${CMAKE_SOURCE_DIR}/cmake/embed_lua.cmake
     COMMENT "Embedding the Lua runtime")
   file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
-  add_library(mcpagent SHARED ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+  add_library(mcpagent SHARED ${CORE_SOURCES} ${PLATFORM_SOURCES} ${CAPTURE_SOURCES} ${EMBED_OUT})
   target_include_directories(mcpagent PRIVATE ${CMAKE_BINARY_DIR}/generated)
   target_link_libraries(mcpagent PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 
@@ -77,7 +79,9 @@ set_target_properties(mcpagent PROPERTIES
 if(MSVC)
   target_compile_options(mcpagent PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)
   target_compile_definitions(mcpagent PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
-  target_link_libraries(mcpagent PRIVATE ws2_32 bcrypt)
+  target_link_libraries(mcpagent PRIVATE ws2_32 bcrypt delayimp)
+  # Window capture (WGC): Direct3D 11 and DWM are loaded at the first window capture, not when the game loads the module.
+  target_link_options(mcpagent PRIVATE /DELAYLOAD:d3d11.dll /DELAYLOAD:dwmapi.dll)
 else()
   target_compile_options(mcpagent PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fvisibility=hidden)
   # The game process has its own libstdc++: keep the module's statically linked C++ runtime private (not exported, and
@@ -87,7 +91,7 @@ endif()
 
 # --- Offline snapshot: tools, prompts, resources and instructions built from the module's sources without the game,
 # embedded into the bridge (served while the game has never answered). The generator is a build tool, not shipped.
-add_executable(gmod-mcp-snapshot src/snapshot/snapshot_main.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+add_executable(gmod-mcp-snapshot src/snapshot/snapshot_main.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${CAPTURE_SOURCES} ${EMBED_OUT})
 target_include_directories(gmod-mcp-snapshot PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-snapshot PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 if(MSVC)
@@ -124,7 +128,9 @@ endif()
 add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/test_platform.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES}
   tests/native/test_fp7137.cpp src/bridge/fp7137.cpp
   tests/native/test_mdmp.cpp src/mdmp.cpp  # FP7137: its tests and the code they test; mdmp: the minidump reader
-  tests/native/test_uiinput.cpp src/uiinput.cpp)  # ui_click / ui_key: the pure part
+  tests/native/test_uiinput.cpp src/uiinput.cpp  # ui_click / ui_key: the pure part
+  tests/native/test_windowshot.cpp src/windowshot.cpp  # window capture: the pure part
+  tests/native/test_window_capture.cpp ${CAPTURE_SOURCES})  # window capture: Windows Graphics Capture against windows of its own
 target_include_directories(gmod-mcp-unittests PRIVATE src)
 if(NOT WIN32)
   # A shared object without SONAME that the platform test loads by full path (see tests/native/test_platform.cpp).
@@ -145,7 +151,7 @@ endif()
 add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
 
 # Module helpers that need no game (links the module's sources like the snapshot generator).
-add_executable(gmod-mcp-coretests tests/native/test_core.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+add_executable(gmod-mcp-coretests tests/native/test_core.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES} ${CAPTURE_SOURCES} ${EMBED_OUT})
 target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 target_compile_definitions(gmod-mcp-coretests PRIVATE GMOD_MCP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")  # tests/schema/results.json
@@ -162,7 +168,7 @@ endif()
 # fixtures live in this executable and nowhere else (never in the DLL, the bridge or a release package).
 add_executable(gmod-mcp-conformance-host
   tests/conformance/conformance_host.cpp tests/conformance/fixtures.cpp tests/conformance/relay.cpp
-  ${CORE_SOURCES} ${PLATFORM_SOURCES} ${EMBED_OUT})
+  ${CORE_SOURCES} ${PLATFORM_SOURCES} ${CAPTURE_SOURCES} ${EMBED_OUT})
 target_include_directories(gmod-mcp-conformance-host PRIVATE src tests/conformance ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-conformance-host PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 if(MSVC)
