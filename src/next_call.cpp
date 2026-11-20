@@ -9,6 +9,19 @@ json for_error(const std::string &code, const std::string &tool, const json &arg
     if (code == "realm_unavailable") return make("map_load", instance_of(args));  // the server/client realms exist once a map is loaded
     if (code == "main_thread_timeout") return make("status", instance_of(args));
     if (code == "ambiguous_instance") return make("instances_list");
+    if (tool.compare(0, 3, "ui_") == 0) {
+        // ui_click / ui_key: the refusals that have an obvious next step.
+        json a = instance_of(args);
+        if (code == "cursor_hidden") {
+            a["cmd"] = "gameui_activate";  // opens the game menu: its cursor is visible
+            return make("console_exec", a);
+        }
+        if (code == "loading") {
+            a["types"] = json::array({"map_loaded"});
+            a["timeout_s"] = 60;
+            return make("events_wait", a);
+        }
+    }
     if (code == "client_crashed" || code == "instance_gone") return make("instances_launch", json{{"count", 1}});
     if (code == "instance_unreachable") return make("status", instance_of(args), 10);  // a game is unreachable for 15-18 s after a start
     if (code == "budget_exceeded" && args.is_object()) {

@@ -940,6 +940,7 @@ void register_all() {
     register_console();
     register_world();
     register_render();
+    register_ui();
     register_docs();
     register_reports();
     register_lua_tools();

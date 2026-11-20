@@ -49,6 +49,8 @@ static json capture(int realm, const json &req) {
     }
 }
 
+json capture_screenshot(int realm, const json &req) { return capture(realm, req); }
+
 static json screenshot_tool(const json &a) {
     if (agent::config().mode != agent::Mode::Client) return agent::err("unsupported", "no renderer in srcds mode");
     // The menu state has no render.Capture: at the main menu, screenshots are not available (defined behavior).

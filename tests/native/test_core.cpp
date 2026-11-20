@@ -1732,6 +1732,76 @@ static void test_next_call() {
     CHECK(err_of(other).value("message", "").find("'async'") == std::string::npos);
 }
 
+// ui_click / ui_key (no game: the refusals that come before any game access, argument checks, the hints and the guide).
+static void test_ui_tools() {
+    if (mcp::tools().empty()) tools::register_all();
+    auto err_code = [](const json &r) { return r.value("isError", false) ? r["structuredContent"]["error"].value("code", "") : std::string(); };
+    // Hints: a hidden cursor suggests opening the game menu, a loading map suggests waiting for it; only for the ui_ tools.
+    CHECK(next_of(err_result("cursor_hidden", "x"), "ui_click", json{{"x", 1}, {"y", 1}, {"instance", "client-2"}}) ==
+          (json{{"tool", "console_exec"}, {"arguments", {{"instance", "client-2"}, {"cmd", "gameui_activate"}}}}));
+    CHECK(next_of(err_result("cursor_hidden", "x"), "ui_key", json{{"key", "enter"}}) ==
+          (json{{"tool", "console_exec"}, {"arguments", {{"cmd", "gameui_activate"}}}}));
+    CHECK(next_of(err_result("loading", "x"), "ui_click", json{{"x", 1}, {"y", 1}}) ==
+          (json{{"tool", "events_wait"}, {"arguments", {{"types", json::array({"map_loaded"})}, {"timeout_s", 60}}}}));
+    CHECK(next_of(err_result("cursor_hidden", "x"), "lua_exec", json::object()).is_null());
+    CHECK(next_of(err_result("not_a_test_client", "x"), "ui_click", json{{"x", 1}, {"y", 1}}).is_null());
+    CHECK(next_of(err_result("out_of_bounds", "x"), "ui_click", json{{"x", 1}, {"y", 1}}).is_null());
+
+    // Argument checks before anything else.
+    json bad = mcp::call_tool("ui_click", json{{"x", 10}});
+    CHECK(err_code(bad) == "invalid_params");
+    bad = mcp::call_tool("ui_click", json{{"x", 10}, {"y", 10}, {"coords", "desktop"}});
+    CHECK(err_code(bad) == "invalid_params");
+    bad = mcp::call_tool("ui_click", json{{"x", 10}, {"y", 10}, {"screenshot_size", json::array({640})}});
+    CHECK(err_code(bad) == "invalid_params");
+    bad = mcp::call_tool("ui_click", json{{"x", 10}, {"y", 10}, {"button", "back"}});
+    CHECK(err_code(bad) == "invalid_params");
+    bad = mcp::call_tool("ui_click", json{{"x", 10}, {"y", 10}, {"wheel", 101}});
+    CHECK(err_code(bad) == "invalid_params");
+    bad = mcp::call_tool("ui_key", json::object());
+    CHECK(err_code(bad) == "invalid_params" && bad["structuredContent"]["error"].value("message", "").find("key") != std::string::npos);
+    bad = mcp::call_tool("ui_key", json{{"key", "ctrl"}});
+    CHECK(err_code(bad) == "invalid_params" && bad["structuredContent"]["error"].value("message", "").find("unknown key") != std::string::npos);
+    bad = mcp::call_tool("ui_key", json{{"text", "a\nb"}});
+    CHECK(err_code(bad) == "invalid_params" && bad["structuredContent"]["error"].value("message", "").find("key") != std::string::npos);
+    bad = mcp::call_tool("ui_key", json{{"text", "\xFF"}});
+    CHECK(err_code(bad) == "invalid_params");
+
+    // A dedicated server has no window; a game that instances_launch did not start is the user's own (no game access needed).
+    auto &cfg = agent::config();
+    agent::Mode mode = cfg.mode;
+    bool test_client = cfg.test_client;
+    cfg.mode = agent::Mode::Dedicated;
+    CHECK(err_code(mcp::call_tool("ui_click", json{{"x", 1}, {"y", 1}})) == "unsupported");
+    CHECK(err_code(mcp::call_tool("ui_key", json{{"key", "enter"}})) == "unsupported");
+    cfg.mode = agent::Mode::Client;
+    cfg.test_client = false;
+#ifdef _WIN32
+    json user = mcp::call_tool("ui_click", json{{"x", 1}, {"y", 1}});
+    CHECK(err_code(user) == "not_a_test_client" && user["structuredContent"]["error"].value("message", "").find("allow_user_game") != std::string::npos);
+    CHECK(err_code(mcp::call_tool("ui_key", json{{"text", "hi"}})) == "not_a_test_client");
+#else
+    CHECK(err_code(mcp::call_tool("ui_click", json{{"x", 1}, {"y", 1}})) == "unsupported");
+#endif
+    cfg.mode = mode;
+    cfg.test_client = test_client;
+
+    // Declared in the tool list with their refusals; the guide has its section.
+    for (const char *name : {"ui_click", "ui_key"}) {
+        const mcp::Tool *t = mcp::find_tool(name);
+        CHECK(t != nullptr);
+        if (!t) continue;
+        for (const char *code : {"not_a_test_client", "cursor_hidden", "client_locked", "loading", "window_unavailable", "unsupported"})
+            CHECK(t->description.find(code) != std::string::npos);
+        CHECK(t->description.find("PostMessage") != std::string::npos);
+    }
+    const mcp::Tool *click = mcp::find_tool("ui_click");
+    if (click) CHECK(click->description.find("out_of_bounds") != std::string::npos && click->description.find("screenshot_size") != std::string::npos);
+    json guide = resources::read("mcpagent://guide");
+    std::string gtext = guide.is_object() && guide.contains("text") ? guide["text"].get<std::string>() : "";
+    CHECK(gtext.find("## UI input") != std::string::npos && gtext.find("ui_click") != std::string::npos && gtext.find("cursor_hidden") != std::string::npos);
+}
+
 // Issue #5: a foreign program on the base port must not be reported as a token mismatch. A gmod-mcp coordinator that
 // refuses the token (401 from gmod-mcp) is "refused"; any other answer (404, 403, a 401 of another program) is "foreign".
 static void test_port_conflict_link() {
@@ -2120,6 +2190,7 @@ int main(int argc, char **argv) {
     test_guide_result_conventions();
     test_output_schemas();
     test_next_call();
+    test_ui_tools();
     test_cmdline();
     test_crash_report();
     test_health();
