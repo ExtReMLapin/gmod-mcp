@@ -918,6 +918,19 @@ static void test_health() {
     CHECK(w5.low_s(30) == 0);
 }
 
+// Issue #8 (chaos test B2): `status.loading` and the `loading` of this instance in `instances_list` come from the same flag (the
+// list said true for minutes while status said false: status read only the menu's IsInLoading).
+static void test_status_loading_agrees() {
+    agent::on_server_state_open();  // a server Lua state appeared: a map load begins (the server source of the flag)
+    json st = mcp::call_tool("status", json::object()).value("structuredContent", json::object());
+    CHECK(st.contains("loading") && st["loading"] == true);
+    json mine;
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(mine.is_object() && mine.value("loading", false) == true);
+    CHECK(agent::map_loading());
+}
+
 // Issue #8: the memory check before instances_launch, and the memory facts of a crash report.
 static void test_lowmem() {
     using lowmem::Memory;
@@ -2185,6 +2198,7 @@ int main(int argc, char **argv) {
     test_crash_report_coordinator();
     test_coordinator_handover_cluster();  // Issue #6
 #endif
+    test_status_loading_agrees();  // Issue #8: sets the load flag (it stays on): keep it after the tests that read the flag
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;
     fs::remove_all(root.parent_path(), ec);

@@ -52,6 +52,16 @@ static void loading_set(loadflag::Tracker::Source src, bool on, bool restart = f
     }  // FP7137
     if (changed) coordinator::wake();  // FP7137: tell the coordinator now, not at the next heartbeat (2 s)
 }  // FP7137
+// Issue #8: tells the tracker whether a server Lua state exists (every frame): a server state that opened and closed between
+// two pump runs (`map x` then `disconnect`) is otherwise never seen to end, and the flag stayed on for minutes.
+static void loading_note_server_state(bool present) {
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lk(g_loading_mu);
+        changed = g_loading.note_server_state(present, mono_s());
+    }
+    if (changed) coordinator::wake();
+}
 bool map_loading(double *since_s) {  // FP7137
     std::lock_guard<std::mutex> lk(g_loading_mu);  // FP7137
     double now = mono_s();  // FP7137
@@ -581,6 +591,7 @@ void pump(lua_State *host) {
         ensure_runtime(r, L);
         if (r != realms::MENU && fc % 10 == 0) poll_ready(r);
     }
+    loading_note_server_state(realms::state(realms::SERVER) != nullptr);  // issue #8
     if (fc % 10 == 0) check_map_loaded();
     // FP7137 (issue #7): the engine's own idea of "loading" (the loading screen), so a load is seen from its first frame
     // even when it was started from the console.
