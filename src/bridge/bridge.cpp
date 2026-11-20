@@ -1083,7 +1083,7 @@ json bridge_tools() {
          "those only if the user asks, with game_terminate. By owner label it also closes keep: true test clients of an earlier "
          "session (a bridge restarted, another agent) that carry that label (instances_list shows it as `owner`; closed[i]."
          "launched_by_other_session is true), but never a game that is not a test client or one without the tag. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
-         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], refused?: [ids, pids or "
+         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], already_gone?: [{pid, instance?, owner?}] (processes that had ended before the call: nothing was closed), refused?: [ids, pids or "
          "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error only when nothing was "
          "closed. Closing the client that is the coordinator (the game on the base port, see instances_list: role, "
          "coordinator_warning) while other games live moves that role: the answer says so (closed[i].was_coordinator, "
@@ -2056,15 +2056,26 @@ json close_tool(const json &args) {
     }
     bool coordinator_ended = false;
     json closed = json::array();
+    json already_gone = json::array();  // issue #8: processes that had ended before this call: nothing was closed
     for (auto &l : todo) {
-        if (!l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
+        bool gone = false;
 #ifdef _WIN32
-        if (WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
+        gone = l.h && WaitForSingleObject(l.h, 0) == WAIT_OBJECT_0;
+#endif
+        if (!gone && !l.id.empty()) game_call("game_terminate", json{{"instance", l.id}}, 5);
+#ifdef _WIN32
+        if (!gone && WaitForSingleObject(l.h, 3000) != WAIT_OBJECT_0) TerminateProcess(l.h, 0);
         CloseHandle(l.h);
 #endif
         json c{{"pid", l.pid}};
         if (!l.id.empty()) c["instance"] = l.id;
         if (!l.owner.empty()) c["owner"] = l.owner;
+        if (gone) {
+            already_gone.push_back(c);
+            std::lock_guard<std::mutex> lk(g_default_mu);
+            if (g_default_instance == l.id) g_default_instance.clear();
+            continue;
+        }
         if (!l.id.empty() && l.id == coordinator_before && others_alive > 0) {
             c["was_coordinator"] = true;
             coordinator_ended = true;
@@ -2076,18 +2087,31 @@ json close_tool(const json &args) {
     for (const auto &e : foreign) {
         std::string id = e.value("id", "");
         uint32_t pid = e.value("pid", 0u);
-        game_call("game_terminate", json{{"instance", id}}, 5);
+        bool gone = false;
 #ifdef _WIN32
-        if (HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid)) {
+        HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
+        gone = !h || WaitForSingleObject(h, 0) == WAIT_OBJECT_0;  // issue #8: the list still shows it (a game that just quit)
+        if (gone) {
+            if (h) CloseHandle(h);
+            h = nullptr;
+        }
+#endif
+        if (!gone) game_call("game_terminate", json{{"instance", id}}, 5);
+#ifdef _WIN32
+        if (h) {
             if (WaitForSingleObject(h, 3000) != WAIT_OBJECT_0) TerminateProcess(h, 0);
             CloseHandle(h);
         }
 #endif
-        closed.push_back(json{{"pid", pid}, {"instance", id}, {"owner", owner}, {"launched_by_other_session", true}});
+        (gone ? already_gone : closed).push_back(json{{"pid", pid}, {"instance", id}, {"owner", owner}, {"launched_by_other_session", true}});
         std::lock_guard<std::mutex> lk(g_default_mu);
         if (g_default_instance == id) g_default_instance.clear();
     }
     json res{{"closed", closed}};
+    if (!already_gone.empty()) {
+        res["already_gone"] = already_gone;
+        res["note"] = "already_gone: the process had ended before this call (it quit or crashed by itself): nothing was closed for it";
+    }
     if (coordinator_ended) {
         // The others elect a new coordinator within about a second of the port being released: say who took the role.
         std::set<std::string> gone;

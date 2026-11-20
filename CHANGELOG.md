@@ -177,6 +177,9 @@
   every process running the game's executable; each game starts helper processes of the same executable (`--type=renderer`,
   `--type=utility`), so it was about 3 times too high and could refuse a launch the machine could take. A process whose parent
   is a game process that started before it is a helper and is no longer counted.
+- **`instances_close` says `already_gone` for a process that had already ended** (issue #8, live chaos test). `{owner}`
+  listed a pid that had quit before the call as `closed`. Such pids (a client of this session that quit by itself, another
+  session's test client whose process is gone) are now in `already_gone`, with a note, and nothing is sent to them.
 - **The instance directory survives the coordinator's exit** (issue #6). The game that holds the base port keeps the
   directory of instances; when it ended, `instances_list` was empty and every call with `instance` failed with
   `unknown_instance` for about 10 s (a refused loopback connection takes 2 s on Windows, and the members waited for

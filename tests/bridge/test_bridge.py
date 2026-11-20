@@ -3128,8 +3128,52 @@ def case_chaos_job():
     check("CHAOS_JOB ... and they are still running after it (not in the job object)", o["ok"] and all(o["alive"]), o)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "fuzz"]
+def case_chaos_close():
+    """Issue #8 (live chaos test): instances_close {owner} listed a pid that had already quit as `closed`. A client that is gone
+    before the call is `already_gone` (nothing was closed), for this session's clients and for another session's keep:true test client
+    (stand-in games, fake game server, Windows)."""
+    print("== CHAOS_CLOSE: instances_close reports what was already gone", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("CHAOS_CLOSE stand-in game built next to the bridge", False)
+        return
+    work = tempfile.mkdtemp(prefix="gmcp-chaos-close-")
+    trigger = os.path.join(work, "go")
+    dead = fp_dead_pid()
+    # A client of this session quit by itself (clean exit) before instances_close; another one still runs; a foreign test client's
+    # process (another session, keep: true) is gone too, and a third one lives.
+    live_foreign = subprocess.Popen([os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        S = chaos_session(extra_env={"GMCP_FAKE_TRIGGER": trigger, "GMCP_FAKE_EXIT": "0", "GMCP_FAKE_DUMP": "0"},
+                          extra_instances=[{"id": "gone-9", "pid": dead, "port": 1, "mode": "client", "state": "running", "owner": "other", "test_client": True},
+                                           {"id": "live-9", "pid": live_foreign.pid, "port": 1, "mode": "client", "state": "running", "owner": "other", "test_client": True}])
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "mine", "timeout_s": 30, "game_dir": S["game"]})
+        mine = S["started"]()[0]
+        open(trigger, "w").close()
+        end = time.time() + 10
+        while alive(mine) and time.time() < end: time.sleep(0.1)
+        check("CHAOS_CLOSE the client quit by itself before the close", not alive(mine), mine)
+        sc, err = S["call"]("instances_close", {"owner": "mine"}, 30)
+        ag = sc.get("already_gone", [])
+        check("CHAOS_CLOSE this session's client that had already quit: already_gone {pid, instance, owner}, not closed, no error",
+              sc.get("closed") == [] and [(x.get("pid"), x.get("owner")) for x in ag] == [(mine, "mine")] and ag[0].get("instance") == "fake-%d" % mine and err is not True, sc)
+        sc, err = S["call"]("instances_close", {"owner": "other"}, 30)
+        closed, ag = sc.get("closed", []), sc.get("already_gone", [])
+        time.sleep(0.5)
+        check("CHAOS_CLOSE another session's test client whose process is gone: already_gone (launched_by_other_session), the live one is closed",
+              [x.get("pid") for x in closed] == [live_foreign.pid] and [x.get("pid") for x in ag] == [dead] and ag[0].get("instance") == "gone-9"
+              and ag[0].get("launched_by_other_session") is True and not alive(live_foreign.pid), sc)
+        S["close"]()
+    finally:
+        try: live_foreign.kill()
+        except OSError: pass
+        import shutil; shutil.rmtree(work, ignore_errors=True)
+
+
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
