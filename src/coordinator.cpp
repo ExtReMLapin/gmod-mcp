@@ -164,6 +164,7 @@ static json self_info() {
     // Issue #8 (G3): who launched it (instances_launch {owner}) and whether it is one of our test clients (-mcp_test_client), so that
     // instances_list names the owner of every instance and a later bridge session can close keep:true test clients by owner.
     info["test_client"] = c.test_client;
+    if (agent::map_loading_stuck()) info["loading_stuck"] = true;  // issue #8 (I-C1): the engine's loading screen is stuck, not a load
     if (!c.owner.empty()) info["owner"] = c.owner;
     return info;  // game_dir is read by the coordinator (where the crash dumps are), not shown by instances_list
 }

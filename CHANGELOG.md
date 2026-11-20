@@ -4,6 +4,12 @@
 
 ### Fixes
 
+- **A stuck loading screen is not a load** (issue #8, live check I-C1). After `map gm_flatgrass` then `disconnect` within a second the
+  engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
+  300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no
+  connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
+  false, `status` and `instances_list` say `loading_stuck: true` with the way out (`map_load` or `disconnect` clears it). A real load,
+  even a minute-long one with its realm present, is never cut.
 - **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
   the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
   do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;

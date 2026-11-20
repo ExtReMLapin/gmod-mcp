@@ -84,7 +84,7 @@ json build(const std::string &tool) {
                            {"coordinator", B}, {"uptime_s", N}, {"frames", N}, {"last_tick_age_s", N},
                            {"main_thread_stalled", B}, {"perf", Obj}, {"realms", Obj}, {"client_lock", Obj},
                            {"console_capture", S}, {"tmp_dir", S}, {"game_dir", S}, {"menu", Obj}, {"server", Obj}, {"client", Obj},
-                           {"host_error", Obj}, {"map", NS}, {"gamemode", ANY}, {"maxplayers", ANY}, {"loading", B},
+                           {"host_error", Obj}, {"map", NS}, {"gamemode", ANY}, {"maxplayers", ANY}, {"loading", B}, {"loading_stuck", B}, {"loading_stuck_note", S},
                            {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS},
                            {"lua_mount", Obj}});
         // --- Lua execution

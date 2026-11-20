@@ -570,6 +570,78 @@ static void test_loadflag() {
     Tracker d;
     d.set(Tracker::Server, true, 0);
     CHECK(d.active(250) && !d.active(loadflag::kMaxLoadS + 1));
+
+    // Issue #8 (live check I-C1, still red after the server-source fix): `map gm_flatgrass` then `disconnect` 0.2-1 s later left the
+    // engine's IsInLoading() true for ever with nothing behind it (no server or client realm, not in a game, no load progress): the
+    // Menu source then held the flag for kMaxLoadS (300 s), instances_list/status said `loading` and instances_launch failed with
+    // map_load_in_progress for minutes. A loading screen with nothing behind it for kMenuStuckS no longer counts; status says so.
+    // `pump` plays the pump: every 0.25 s it polls the menu (loading, with `engaged` = a realm exists or the game is connected).
+    auto pump = [](Tracker &t, double from, double to, bool loading, bool engaged) {
+        for (double x = from; x <= to + 1e-9; x += 0.25) {
+            t.set(Tracker::Menu, loading, x);
+            t.note_menu_context(engaged, x);
+        }
+    };
+    Tracker s;
+    s.set(Tracker::Menu, false, 9.9);
+    CHECK(s.set(Tracker::Server, true, 10, true));     // the server state opened (map)...
+    pump(s, 10.0, 10.2, true, true);                   // ... the loading screen is up and a realm exists for a moment
+    pump(s, 10.25, 10.5, true, false);                 // `disconnect`: the realm is gone, the engine keeps saying "loading"
+    s.note_server_state(false, 10.5);
+    s.note_server_state(false, 11.7);                  // the server source ends (issue #8, first part)
+    pump(s, 10.75, 10 + loadflag::kMenuStuckS - 1, true, false);
+    CHECK(s.active(10 + loadflag::kMenuStuckS - 1) && !s.menu_stuck(10 + loadflag::kMenuStuckS - 1));   // still within the bound
+    pump(s, 10 + loadflag::kMenuStuckS - 0.75, 10 + loadflag::kMenuStuckS + 1, true, false);
+    CHECK(!s.active(10 + loadflag::kMenuStuckS + 1));  // the stuck loading screen no longer counts (not kMaxLoadS later)
+    CHECK(s.menu_stuck(10 + loadflag::kMenuStuckS + 1) && loadflag::kMenuStuckS < loadflag::kServerOnlyMaxS);
+    pump(s, 10 + loadflag::kMenuStuckS + 1.25, 100, true, false);
+    CHECK(!s.active(100) && s.menu_stuck(100));        // it stays that way while nothing happens
+    // A real load clears it at once: a new server state (map_load) is engagement, the loading screen counts again, and it ends normally.
+    CHECK(s.set(Tracker::Server, true, 101, true) && s.active(101) && !s.menu_stuck(101));
+    pump(s, 101.0, 130, true, true);                   // 30 s of a long load with the realm there: counted
+    CHECK(s.active(130) && !s.menu_stuck(130));
+    pump(s, 130.25, 131, false, true);                 // the loading screen goes down
+    CHECK(!s.menu_stuck(131));
+    s.set(Tracker::Server, false, 131);
+    CHECK(!s.active(131));
+    // A big map: the loading screen up for 60 s with the server realm present all along is never cut (and never reported stuck).
+    Tracker big;
+    big.set(Tracker::Menu, false, 0);
+    big.set(Tracker::Server, true, 0, true);
+    pump(big, 0, 60, true, true);
+    CHECK(big.active(60) && !big.menu_stuck(60));
+    // Engagement later in the same load (the realm shows up after a long BSP read, the engine polled meanwhile) resets the bound.
+    Tracker late;
+    late.set(Tracker::Menu, false, 0);
+    pump(late, 0, 10, true, false);                    // the loading screen is up, nothing behind it yet: within the bound
+    CHECK(late.active(10) && !late.menu_stuck(10));
+    pump(late, 10.25, 11, true, true);                 // the realm appears: engagement, the clock restarts
+    pump(late, 11.25, 11 + loadflag::kMenuStuckS - 1, true, false);
+    CHECK(late.active(11 + loadflag::kMenuStuckS - 1));
+    // A blocked main thread (a big map reading its BSP for a minute) feeds no polls: that silence is not "nothing happening".
+    Tracker blk;
+    blk.set(Tracker::Menu, false, 0);
+    pump(blk, 0, 5, true, false);
+    pump(blk, 65, 70, true, false);                    // 60 s with no poll at all
+    CHECK(blk.active(70) && !blk.menu_stuck(70));
+    pump(blk, 70.25, 5 + 60 + loadflag::kMenuStuckS + 1, true, false);
+    CHECK(!blk.active(65 + loadflag::kMenuStuckS + 1) && blk.menu_stuck(65 + loadflag::kMenuStuckS + 1));
+    // The flag changing because of the bound is reported (the pump then wakes the coordinator).
+    Tracker chg;
+    chg.set(Tracker::Menu, false, 0);
+    bool changed = false;
+    for (double x = 0; x <= loadflag::kMenuStuckS + 2; x += 0.25) {
+        chg.set(Tracker::Menu, true, x);
+        changed = chg.note_menu_context(false, x) || changed;
+    }
+    CHECK(changed);
+    // The engine's own "not loading" clears the stuck state too.
+    chg.set(Tracker::Menu, false, 20);
+    chg.note_menu_context(false, 20);
+    CHECK(!chg.menu_stuck(20));
+    // The loading screen coming up again after that (a new load) starts a new bound.
+    pump(chg, 20.25, 21, true, false);
+    CHECK(chg.active(21) && !chg.menu_stuck(21));
 }
 
 void test_fp7137() {

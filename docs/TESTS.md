@@ -554,3 +554,9 @@ where the fix is known).
 | X-11 | srcds: `map_load` (changelevel) | module kept, runtime reinjected (generation 2) | ✅ 2026-11-07 |
 | X-13 | `mcpagent_setup` in the client console / srcds console / run as a player on srcds | full `claude mcp add` command and `.mcp.json` snippet with the base port / same / nothing printed (token never sent to a player) | ✅ 2026-11-07 |
 | X-12 | connection failure ("Connection failed", non-clickable native dialog) | `disconnect_reason` event with the reason | ✅ 2026-11-07 |
+
+## Final chaos fixes (live verification of 0.3.7, branch fix/chaos-final)
+
+| ID | Scenario | Expected | Last result |
+|---|---|---|---|
+| E-1 | Issue #8, live check I-C1 still red (unittests `test_loadflag`, simulated menu polls): `map gm_flatgrass` then `disconnect` 0.2-1 s later left the engine's `IsInLoading()` true for ever with nothing behind it (no server or client realm, not in a game, no load progress), so the Menu source held `loading` for the 300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. `Tracker::note_menu_context` is fed with every menu poll (engaged = a realm exists or the game is connected) | a loading screen with nothing engaged behind it for 12 s of polled time stops counting and `menu_stuck()` is true (`status.loading_stuck`, `loading_stuck_note`, the heartbeat's `loading_stuck`); the 300 s cap is not what ends it; a new server state (map_load) or an engaged poll clears it at once; a loading screen up for 60 s with the realm present is never cut; a realm showing up late restarts the bound; a blocked main thread (60 s without a poll) is not counted as quiet; the flag change is reported (the pump wakes the coordinator); the engine saying "not loading" clears it | ✅ 2026-11-20, 17 checks (red first: 6 failures with the stub) |
