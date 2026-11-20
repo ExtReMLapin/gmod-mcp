@@ -61,6 +61,7 @@ def pack(win_bridge, linux_bridge, out, version=None):
         ("manifest.json", (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), 0o644),
         ("LICENSE", read(os.path.join(ROOT, "LICENSE")), 0o644),
         ("THIRD_PARTY_NOTICES.md", read(os.path.join(ROOT, "THIRD_PARTY_NOTICES.md")), 0o644),
+        (manifest["icon"], read(os.path.join(ROOT, "mcpb", manifest["icon"])), 0o644),
         (entry, read(linux_bridge), 0o755),
         (exe, read(win_bridge), 0o755),
     ]

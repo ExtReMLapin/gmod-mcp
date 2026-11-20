@@ -107,7 +107,7 @@ class Pack(unittest.TestCase):
             with zipfile.ZipFile(out) as z:
                 self.assertIsNone(z.testzip())
                 names = sorted(z.namelist())
-                self.assertEqual(names, ["LICENSE", "THIRD_PARTY_NOTICES.md", "manifest.json", "server/gmod-mcp-bridge",
+                self.assertEqual(names, ["LICENSE", "THIRD_PARTY_NOTICES.md", "icon.png", "manifest.json", "server/gmod-mcp-bridge",
                                          "server/gmod-mcp-bridge.exe"])
                 self.assertEqual(json.loads(z.read("manifest.json"))["version"], "9.8.7")
                 for n in ("server/gmod-mcp-bridge", "server/gmod-mcp-bridge.exe"):

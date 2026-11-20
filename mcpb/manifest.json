@@ -17,6 +17,7 @@
   "documentation": "https://github.com/ExtReMLapin/gmod-mcp#install",
   "support": "https://github.com/ExtReMLapin/gmod-mcp/issues",
   "license": "MIT",
+  "icon": "icon.png",
   "keywords": ["garrys-mod", "gmod", "lua", "game", "debugging"],
   "server": {
     "type": "binary",
