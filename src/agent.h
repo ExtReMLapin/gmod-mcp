@@ -74,13 +74,13 @@ std::string map_of_load(uint64_t seq);
 // since_s (optional) gets the seconds since the oldest load that still counts. Stops counting a load after 300 s.
 bool map_loading(double *since_s = nullptr);
 // Issue #8 (live check I-C1): the engine reports a loading screen with nothing behind it (no realm, not connected, no load starting) for
-// longer than a few seconds: its state is stuck; that screen no longer counts as a load. A map_load or `disconnect` clears it.
+// longer than a few seconds: its state is stuck; that screen no longer counts as a load. A map_load clears it; `disconnect` does not (checked live).
 bool map_loading_stuck();
 // What status and instances_list say about it.
 inline const char *loading_stuck_note() {
     return "the engine reports a loading screen (the menu's IsInLoading) but nothing is loading: no server or client realm, not connected, "
            "no load in progress. It is a stuck engine state (typically after `map` then `disconnect` within a second), not a load, so `loading` is "
-           "false and launches are not held back. map_load (or `disconnect`) clears it.";
+           "false and launches are not held back. map_load clears it; `disconnect` does not.";
 }
 // Queues a one-time notice shown in game to the local player once the client realm is ready (client mode only).
 void notify_player(const std::string &text);

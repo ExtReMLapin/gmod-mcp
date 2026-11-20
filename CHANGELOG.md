@@ -117,7 +117,7 @@
   engine kept `IsInLoading()` true for ever with nothing behind it, so `loading` stayed true in `instances_list` and `status` until the
   300 s cap and `instances_launch` failed `map_load_in_progress` for minutes. A loading screen with no server or client realm, no
   connection and no load starting for 12 s of polled time (a blocked main thread is not counted) no longer counts as a load: `loading` is
-  false, `status` and `instances_list` say `loading_stuck: true` with the way out (`map_load` or `disconnect` clears it). A real load,
+  false, `status` and `instances_list` say `loading_stuck: true` with the way out (a `map_load` clears it; `disconnect` does not, checked live). A real load,
   even a minute-long one with its realm present, is never cut.
 - **`game_quit` on a dedicated server really quits (Linux) or says it cannot.** On srcds the console `quit` is blocked from server Lua
   (the engine's own blacklist), so `game_quit` answered `{quitting: true}` and the server kept running. The runtime now checks

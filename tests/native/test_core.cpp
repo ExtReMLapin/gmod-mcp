@@ -1436,6 +1436,22 @@ static void test_health() {
     CHECK(w5.low_s(30) == 0);
 }
 
+// Live verification of 0.3.7: the note said "map_load (or `disconnect`) clears it" but only a map_load clears the engine's stuck loading
+// screen (`disconnect` leaves it: checked live). The wording everywhere says what clears it, and that `disconnect` does not.
+static void test_loading_stuck_wording() {
+    if (mcp::tools().empty()) tools::register_all();
+    std::string note = agent::loading_stuck_note();
+    CHECK(note.find("map_load") != std::string::npos);
+    CHECK(note.find("(or `disconnect`)") == std::string::npos && note.find("`disconnect` clears") == std::string::npos);
+    CHECK(note.find("`disconnect` does not") != std::string::npos);
+    const mcp::Tool *list = mcp::find_tool("instances_list");
+    CHECK(list != nullptr);
+    if (list) {
+        CHECK(list->description.find("map_load or `disconnect` clears") == std::string::npos);
+        CHECK(list->description.find("map_load clears it") != std::string::npos);
+    }
+}
+
 // Issue #8 (chaos test B2): `status.loading` and the `loading` of this instance in `instances_list` come from the same flag (the
 // list said true for minutes while status said false: status read only the menu's IsInLoading).
 static void test_status_loading_agrees() {
@@ -3013,6 +3029,7 @@ int main(int argc, char **argv) {
     test_coordinator_handover_cluster();  // Issue #6
     test_coordinator_tombstone_cluster();  // Issue #6
 #endif
+    test_loading_stuck_wording();
     test_status_loading_agrees();  // Issue #8: sets the load flag (it stays on): keep it after the tests that read the flag
     fs::path root = fs::temp_directory_path() / "gmod-mcp-coretests" / "garrysmod";
     std::error_code ec;
