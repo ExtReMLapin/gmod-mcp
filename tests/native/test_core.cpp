@@ -442,6 +442,41 @@ static void test_launch_options() {
     CHECK(parsed == std::vector<std::string>({"cl_showfps", "fps_max", "mat_vsync"}));
     CHECK(launchopts::parse_restore_list("").empty());
     CHECK(launchopts::join_list({"a", "b"}) == "a,b" && launchopts::join_list({}).empty());
+    // Issue #8 (chaos test G3): the owner label on the command line, read back by the module.
+    using launchopts::decode_owner;
+    using launchopts::encode_owner;
+    CHECK(encode_owner("fork-a") == "fork-a" && decode_owner("fork-a") == "fork-a");
+    CHECK(encode_owner("A_b.c-9") == "A_b.c-9");
+    CHECK(encode_owner("my task; \"x\"") == "my%20task%3B%20%22x%22");                  // spaces, ';' and quotes never reach the command line
+    CHECK(decode_owner(encode_owner("my task; \"x\"")) == "my task; \"x\"");
+    CHECK(decode_owner(encode_owner("t\xC3\xA2" "che 100%")) == "t\xC3\xA2" "che 100%");  // non-ASCII (UTF-8 bytes) and '%' itself round-trip
+    CHECK(encode_owner("t\xC3\xA2") == "t%C3%A2");
+    CHECK(encode_owner("").empty() && decode_owner("").empty());
+    CHECK(decode_owner("bad%2") .empty() && decode_owner("bad%zz").empty() && decode_owner("a%00b").empty() && decode_owner("a%0Ab").empty());  // malformed or control
+    CHECK(encode_owner(std::string(64, 'a')) == std::string(64, 'a') && !decode_owner(std::string(64, 'a')).empty());
+    CHECK(decode_owner(std::string(65, 'a')).empty());                                  // longer than the 64 characters instances_launch accepts
+}
+
+// Issue #8 (chaos test G3): the owner label and the test-client mark ride in this instance's entry of instances_list (the
+// heartbeat), so every instance shows its owner whatever bridge session launched it.
+static void test_owner_in_list() {
+    auto &cfg = agent::config();
+    std::string old_owner = cfg.owner;
+    bool old_tc = cfg.test_client;
+    cfg.owner = "fork-a";
+    cfg.test_client = true;
+    json mine;
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(mine.value("owner", "") == "fork-a" && mine.value("test_client", false) == true);
+    cfg.owner = "";
+    cfg.test_client = false;
+    mine = json();
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(!mine.contains("owner") && mine.value("test_client", true) == false);  // the user's own game: no owner, not a test client
+    cfg.owner = old_owner;
+    cfg.test_client = old_tc;
 }
 
 // Issue #4: the current x86-64 install has bin/win64/gmod.exe and no gmod_win64.exe (its root gmod.exe is 32-bit).
@@ -2194,6 +2229,7 @@ int main(int argc, char **argv) {
     test_game_exe_layouts();
     test_launch_options();
     test_port_conflict_link();
+    test_owner_in_list();
 #ifdef _WIN32
     test_crash_report_coordinator();
     test_coordinator_handover_cluster();  // Issue #6

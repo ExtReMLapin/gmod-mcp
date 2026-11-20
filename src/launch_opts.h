@@ -39,4 +39,12 @@ std::vector<std::string> restore_names(const std::vector<std::string> &statement
 std::string join_list(const std::vector<std::string> &names);
 std::vector<std::string> parse_restore_list(const std::string &csv);
 
+// Issue #8 (chaos test G3): the owner label of instances_launch carried on the command line (-mcp_owner) so that it survives the
+// bridge session that launched the client. The label is free text (up to 64 characters): characters outside [A-Za-z0-9._-] are
+// written as %XX (the UTF-8 bytes, upper-case hex), which is a printable ASCII token without spaces, quotes or ';'.
+// decode_owner reads it back; a malformed escape, a control character or an over-long result gives "" (no owner).
+constexpr size_t kMaxOwnerChars = 64;
+std::string encode_owner(const std::string &owner);
+std::string decode_owner(const std::string &token);
+
 }  // namespace launchopts

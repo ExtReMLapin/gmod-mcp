@@ -149,13 +149,18 @@ static json self_info() {
     // Health at a glance (sent with every heartbeat): agents pick a usable instance without one status call each.
     json fps = jobs::frame_stats()["fps"];
     double since = jobs::seconds_since_last_frame();
-    return json{{"id", c.instance_id}, {"mode", agent::mode_name()}, {"port", c.port}, {"pid", plat::process_id()},
+    json info = json{{"id", c.instance_id}, {"mode", agent::mode_name()}, {"port", c.port}, {"pid", plat::process_id()},
                 {"map", agent::current_map()}, {"realms", realms_j}, {"agent_version", c.version},
                 {"uptime_s", (int64_t)console::uptime()}, {"fps", fps.is_number() ? json((int)(fps.get<double>() + 0.5)) : json(nullptr)},
                 {"main_thread_stalled", since > 5.0}, {"last_tick_age_s", since < 0 ? 0.0 : std::round(since * 100) / 100},  // issue #8
                 {"lua_errors", console::errors_cursor()},
                 {"loading", agent::map_loading()},  // FP7137 (issue #7): a map load is in progress, whatever started it
-                {"game_dir", c.game_dir}};  // read by the coordinator (where the crash dumps are), not shown by instances_list
+                {"game_dir", c.game_dir}};
+    // Issue #8 (G3): who launched it (instances_launch {owner}) and whether it is one of our test clients (-mcp_test_client), so that
+    // instances_list names the owner of every instance and a later bridge session can close keep:true test clients by owner.
+    info["test_client"] = c.test_client;
+    if (!c.owner.empty()) info["owner"] = c.owner;
+    return info;  // game_dir is read by the coordinator (where the crash dumps are), not shown by instances_list
 }
 
 // Members recently removed (process gone, or no heartbeat): so that a later call gets a useful answer, and a crash stays

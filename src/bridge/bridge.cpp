@@ -910,10 +910,15 @@ json bridge_tools() {
          "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, waits until it answers, "
          "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
          "Returns their instance ids and pids: pass an id as `instance` on every call. "
+         "Without keep: true they end with this bridge session (when it ends, the clients it started are closed); with keep: true they "
+         "outlive it, and a later session closes them by `owner` (below) or by pid / game_terminate. "
          "They close when this session ends unless keep is true; close them earlier with instances_close (not game_quit: "
          "it keeps their exit short; a clean quit is safe too, see the convar note below). Sub-agents of one Claude Code session share "
          "this bridge: give each one's clients an `owner` label and close them with instances_close {owner}, never "
-         "{all: true}, which would close the other sub-agents' clients too. The game is found through Steam; pass "
+         "{all: true}, which would close the other sub-agents' clients too. The `owner` label goes to the game (-mcp_owner) and "
+         "back in its heartbeat: instances_list shows `owner` on every instance whichever bridge session launched it, and "
+         "instances_close {owner} also closes keep: true test clients of an EARLIER session that carry that label (only test "
+         "clients started by instances_launch, never the user's own game or an instance without the tag). The game is found through Steam; pass "
          "game_dir (the folder holding gmod_win64.exe or bin/win64/gmod.exe) if it is elsewhere. Windows only for now.\n"
          "Presets: 'light' (default: 640x360, 20 fps; for most tests, NOT for performance measurements: the 20 fps cap "
          "hides per-frame cost) and 'normal' (640x360, 30 fps; for rendering checks, screenshots and frame-time sensitive "
@@ -1012,7 +1017,7 @@ json bridge_tools() {
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
             {"ignore_unhealthy", {{"type", "boolean"}, {"description", "Start even when a running client is unresponsive or hung (error peer_unhealthy otherwise: a frozen client keeps a new one from registering, so the launch would time out). Default false."}}},
             {"ignore_low_memory", {{"type", "boolean"}, {"description", "Start even when the free memory does not cover the clients asked for (error low_memory otherwise). Default false: a machine out of memory crashes every game on it."}}},
-            {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task); instances_close {owner} then closes only them."}}},
+            {"owner", {{"type", "string"}, {"maxLength", 64}, {"description", "Label recorded with these clients (e.g. your sub-agent's name or task), also on their command line and in instances_list; instances_close {owner} then closes only them, even from a later bridge session when keep is true."}}},
             {"lua_mount", {{"type", "string"}, {"maxLength", 1024},
                          {"description", "Absolute folder whose Lua these clients load before every addon's (e.g. your git worktree of "
                                          "the addon: its root or its lua/ folder). Applies from their first map load; see lua_mount. "
@@ -1029,8 +1034,10 @@ json bridge_tools() {
         {"description",
          "Closes clients this session started with instances_launch, at once and without writing their config, by "
          "instance id, by pid (also for a client that never answered, e.g. gmod-mcp did not load in it) or by owner label. "
-         "Other games (the user's own, another session's) are refused: close those only if the user asks, with "
-         "game_terminate. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
+         "By id, pid or all, only this bridge session's clients: other games (the user's own, another session's) are refused, close "
+         "those only if the user asks, with game_terminate. By owner label it also closes keep: true test clients of an earlier "
+         "session (a bridge restarted, another agent) that carry that label (instances_list shows it as `owner`; closed[i]."
+         "launched_by_other_session is true), but never a game that is not a test client or one without the tag. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
          "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], refused?: [ids, pids or "
          "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error only when nothing was "
          "closed. Closing the client that is the coordinator (the game on the base port, see instances_list: role, "
@@ -1042,7 +1049,7 @@ json bridge_tools() {
           {"properties",
            {{"instances", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Instance ids to close."}}},
             {"pids", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"description", "Process ids to close (as returned by instances_launch)."}}},
-            {"owner", {{"type", "string"}, {"description", "Close every client launched with this owner label."}}},
+            {"owner", {{"type", "string"}, {"description", "Close every client launched with this owner label, including keep: true test clients of an earlier bridge session that carry it."}}},
             {"all", {{"type", "boolean"}, {"description", "Close every client this session started, other sub-agents' included."}}}}},
           {"additionalProperties", false}}},
         {"annotations", {{"title", "Close test clients"}, {"readOnlyHint", false}, {"destructiveHint", true}, {"openWorldHint", false}}}};
@@ -1517,6 +1524,9 @@ json launch_tool(const json &args, const json &token) {
     // names of the convars they and the commands may change, which the module gives back to the user's values before a
     // clean quit (an older module ignores this option).
     for (const auto &t : extra_args) opts += " " + t;
+    // Issue #8 (chaos test G3): the owner label rides on the command line (encoded: no space, quote or ';') and in the module's
+    // heartbeat, so instances_list names it and a later bridge session can close this client by owner even with keep: true.
+    if (!owner.empty()) opts += " -mcp_owner " + launchopts::encode_owner(owner);
     std::vector<std::string> restore = launchopts::restore_names(startup_cmds, extra_args);
     if (!restore.empty()) opts += " -mcp_restore_convars " + launchopts::join_list(restore);
     SetEnvironmentVariableA("SteamAppId", "4000");
@@ -1797,6 +1807,7 @@ json close_tool(const json &args) {
         return tool_error("invalid_params", "pass instances: [ids], pids: [pids], owner: \"label\" or all: true");
     std::vector<Launched> todo;
     json refused = json::array();
+    bool owner_local_match = false;
     {
         std::lock_guard<std::mutex> lk(g_launch_mu);
         if (all) {
@@ -1821,9 +1832,37 @@ json close_tool(const json &args) {
             if (!owner.empty()) {
                 bool any = false;
                 while (take([&](const Launched &l) { return l.owner == owner; })) any = true;
-                if (!any) refused.push_back("owner:" + owner);
+                owner_local_match = any;
             }
         }
+    }
+    // Issue #8 (chaos test G3): keep:true test clients of an earlier bridge session carry the owner in their heartbeat (-mcp_owner):
+    // those that are test clients (-mcp_test_client) and carry exactly this tag are closed too. Never a game that is not a test
+    // client (the user's own), never one without the tag.
+    std::vector<json> foreign;
+    std::string not_test_clients;
+    if (!owner.empty() && !all) {
+        json lst = game_call("instances_list", json::object(), 5);
+        std::set<uint32_t> mine;
+        for (const auto &l : todo) mine.insert(l.pid);
+        {
+            std::lock_guard<std::mutex> lk(g_launch_mu);
+            for (const auto &l : g_launched) mine.insert(l.pid);  // another owner's client of this session: not ours to take here
+        }
+        for (const auto &e : lst.value("instances", json::array())) {
+            if (!e.is_object() || e.value("owner", "") != owner || mine.count(e.value("pid", 0u)) || e.value("pid", 0u) == 0) continue;
+            std::string st = e.value("state", "running");
+            if (st == "crashed" || e.value("mode", "client") == "srcds") continue;
+            if (e.value("test_client", false) != true) {
+                refused.push_back(e.value("id", "?"));
+                not_test_clients += (not_test_clients.empty() ? "" : ", ") + e.value("id", std::string("?"));
+                continue;
+            }
+            foreign.push_back(e);
+        }
+        if (!owner_local_match && foreign.empty() && not_test_clients.empty()) refused.push_back("owner:" + owner);
+    } else if (!owner.empty() && !owner_local_match) {
+        refused.push_back("owner:" + owner);
     }
     // Issue #6: which of them is the coordinator while other instances live? Its end moves the role: say so.
     std::string coordinator_before;
@@ -1859,6 +1898,20 @@ json close_tool(const json &args) {
         std::lock_guard<std::mutex> lk(g_default_mu);
         if (g_default_instance == l.id) g_default_instance.clear();
     }
+    for (const auto &e : foreign) {
+        std::string id = e.value("id", "");
+        uint32_t pid = e.value("pid", 0u);
+        game_call("game_terminate", json{{"instance", id}}, 5);
+#ifdef _WIN32
+        if (HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid)) {
+            if (WaitForSingleObject(h, 3000) != WAIT_OBJECT_0) TerminateProcess(h, 0);
+            CloseHandle(h);
+        }
+#endif
+        closed.push_back(json{{"pid", pid}, {"instance", id}, {"owner", owner}, {"launched_by_other_session", true}});
+        std::lock_guard<std::mutex> lk(g_default_mu);
+        if (g_default_instance == id) g_default_instance.clear();
+    }
     json res{{"closed", closed}};
     if (coordinator_ended) {
         // The others elect a new coordinator within about a second of the port being released: say who took the role.
@@ -1882,6 +1935,9 @@ json close_tool(const json &args) {
     if (!refused.empty()) {
         res["refused"] = refused;
         res["why_refused"] = "not started by this session (or already closed): close a game this session did not start only if the user asks (game_terminate)";
+        if (!not_test_clients.empty())
+            res["why_refused"] = res["why_refused"].get<std::string>() + ". " + not_test_clients + (owner.empty() ? "" : " carries owner \"" + owner + "\"") +
+                                 " but is not a test client (not started by instances_launch): never closed by owner";
     }
     return tool_text(res, !refused.empty() && closed.empty());
 }

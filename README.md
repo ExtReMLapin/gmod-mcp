@@ -385,7 +385,9 @@ Several **clients** can run side by side too. With the Claude Code plugin, the `
 test clients (small window, frame cap, Windows for now), `instances_close` closes them (by id, pid or owner label),
 and `instance_select` sets the default instance of a session. Its description gives the measured cost: about 1.5 GB of
 RAM and a fifth of a CPU core per client. Sub-agents of one Claude Code session share that session: each one labels its
-clients with `owner` and closes only those.
+clients with `owner` and closes only those. The label travels with the game (command line and heartbeat), so
+`instances_list` shows it on every instance and `instances_close {owner}` still finds clients started with `keep: true`
+by an earlier session; it never closes a game that is not one of our test clients.
 
 <!-- FP7137: agent-facing text A1-A3, see docs/FP7137.md -->
 Starting a game makes every other running Garry's Mod release its GPU resources for 2-10 s, and a map load ending in

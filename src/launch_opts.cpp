@@ -176,4 +176,41 @@ std::vector<std::string> parse_restore_list(const std::string &csv) {
     return out;
 }
 
+std::string encode_owner(const std::string &owner) {
+    static const char *hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : owner) {
+        if (std::isalnum(c) || c == '.' || c == '_' || c == '-') {
+            out += (char)c;
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+std::string decode_owner(const std::string &token) {
+    auto hexv = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; };
+    std::string out;
+    size_t chars = 0;
+    for (size_t i = 0; i < token.size(); ++i) {
+        unsigned char c = (unsigned char)token[i];
+        if (c == '%') {
+            if (i + 2 >= token.size()) return "";  // truncated escape
+            int h = hexv(token[i + 1]), l = hexv(token[i + 2]);
+            if (h < 0 || l < 0) return "";
+            c = (unsigned char)(h * 16 + l);
+            i += 2;
+            if (c < 0x20 || c == 0x7F) return "";
+        } else if (!(std::isalnum(c) || c == '.' || c == '_' || c == '-')) {
+            return "";
+        }
+        if ((c & 0xC0) != 0x80) ++chars;  // not a UTF-8 continuation byte: one more character
+        out += (char)c;
+    }
+    return chars > kMaxOwnerChars ? std::string() : out;
+}
+
 }  // namespace launchopts
