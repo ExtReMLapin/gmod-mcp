@@ -93,4 +93,24 @@ bool send_focus_lost();
 // Installed once; later calls return true without doing anything.
 bool install_close_guard(bool (*before)(), int delay_ms);
 
+// Window messages for ui_click / ui_key (Windows only; the pure part is src/uiinput.h). The game's main window is found
+// by its process; messages are POSTED to it (never SetCursorPos/SendInput/SetForegroundWindow: the user's real cursor and
+// focus are not touched).
+struct UiWindow {
+    bool found = false;
+    bool minimized = false;
+    bool unicode = true;
+    uint64_t hwnd = 0;
+    int client_w = 0, client_h = 0;  // GetClientRect (title bar and borders excluded)
+    int origin_x = 0, origin_y = 0;  // the client area's top-left in screen coordinates
+    int dpi = 96;                    // GetDpiForWindow
+    std::string dpi_awareness;       // unaware | system | per_monitor | unknown
+    std::string window_class;        // the engine's is "Valve001"
+};
+bool ui_supported();  // true on Windows
+bool ui_window(UiWindow &out);  // false: no visible top-level window of this process
+// Posts one message to `hwnd` (refused unless it is a window of this process). `err` says why not.
+bool ui_post(uint64_t hwnd, unsigned msg, unsigned long long wparam, long long lparam, std::string &err);
+unsigned ui_scan_code(unsigned vk);  // MapVirtualKey; 0 elsewhere
+
 }  // namespace plat
