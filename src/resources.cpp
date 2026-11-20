@@ -146,7 +146,8 @@ for i, ent in ipairs(ents.GetAll()) do
 end
 return found
 ```
-
+)"
+    R"(
 ## Mounted Lua folder (lua_mount)
 `lua_mount {path}` plugs a folder into ONE game process: typically the git worktree of an addon (the folder that
 contains `lua/`). From then on every Lua lookup of that game looks in the folder FIRST, then in the game and its addons.
@@ -270,7 +271,8 @@ A mounted folder that is renamed, moved or deleted (or whose `lua/` is deleted) 
 and `map_load` then carry `folder_missing: true` and a `mount_folder_missing` warning (no list of "deleted" files), `lua_reload
 {mounted_changed}` answers the error `mount_folder_missing`, and a realm that loaded while the folder was gone is not
 `loaded_with_mount`. Restore the folder (or mount the right one) and `map_load`.
-
+)"
+    R"(
 ## Reporting frictions
 The maintainers want to hear about every friction agents meet with gmod-mcp, without making work for the user.
 
@@ -385,7 +387,8 @@ A call in flight to an instance that dies is answered at once, not at its own ti
 it launched, the bridge watch the process. `details.memory` ({free_commit_mb, free_ram_mb}, measured when the crash is
 reported) is added, with a sentence when the free commit is under 4 GB: out of memory is a likely cause (exit code
 0xC000041D, no dump).
-
+)"
+    R"(
 ## A game is hung, or the machine is out of memory
 - **Hung.** `instances_list` gives every instance `stalled_s` (seconds its main thread has been blocked, 0 when it ticks) and
   `fps_low_s` (seconds the frame rate has stayed under 10 fps, 0 when fine; not counted while it loads: measurements taken
