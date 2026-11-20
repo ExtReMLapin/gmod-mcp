@@ -55,6 +55,12 @@ Prints PASS/FAIL per check and exits non-zero on a failure."""
 import base64, http.server, json, os, queue, random, select, socket, socketserver, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
 
+# The bridges these tests start must not refuse a launch because THIS machine is short of memory at that moment (issue #8's
+# low_memory check measures the real machine): plenty of fake free memory by default. The cases about low memory set their
+# own values explicitly, and a value already set in the environment is kept.
+os.environ.setdefault("GMOD_MCP_FAKE_FREE_COMMIT_MB", "1000000")
+os.environ.setdefault("GMOD_MCP_FAKE_FREE_RAM_MB", "1000000")
+
 try: sys.stdout.reconfigure(errors="replace")  # failure details may hold non-ASCII paths
 except Exception: pass
 BRIDGE = os.path.abspath(sys.argv[1])
