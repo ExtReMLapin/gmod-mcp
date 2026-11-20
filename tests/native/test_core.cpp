@@ -2504,6 +2504,65 @@ static void test_ui_tools() {
     CHECK(gtext.find("## UI input") != std::string::npos && gtext.find("ui_click") != std::string::npos && gtext.find("cursor_hidden") != std::string::npos);
 }
 
+// screenshot without a client realm: window capture (no game: the decision, the arguments, the refusals before any capture,
+// the declared shape and the docs).
+static void test_screenshot_window_capture() {
+    if (mcp::tools().empty()) tools::register_all();
+    auto err_of_r = [](const json &r) { return r.value("isError", false) ? r["structuredContent"]["error"] : json::object(); };
+    auto err_code = [&](const json &r) { return err_of_r(r).value("code", ""); };
+    auto contains = [](const std::string &s, const char *part) { return s.find(part) != std::string::npos; };
+
+    // The `source` argument is checked against its enum.
+    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "gpu"}})) == "invalid_params");
+    // A dedicated server has no window to capture.
+    auto &cfg = agent::config();
+    agent::Mode mode = cfg.mode;
+    cfg.mode = agent::Mode::Dedicated;
+    CHECK(err_code(mcp::call_tool("screenshot", json::object())) == "unsupported");
+    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "window_capture"}})) == "unsupported");
+    cfg.mode = agent::Mode::Client;
+    // The render capture needs the client realm: forced, it is refused and the message points at the other source.
+    json forced = mcp::call_tool("screenshot", json{{"source", "render"}});
+    CHECK(err_code(forced) == "realm_unavailable" && contains(err_of_r(forced).value("message", ""), "window_capture"));
+    // No client realm and no source: the window capture is tried. This process has no game window, so it is refused for that
+    // (the capture itself is tested in WGC-1..4); where there is no window capture (Linux) the old answer stays.
+    json def = mcp::call_tool("screenshot", json::object());
+#ifdef _WIN32
+    CHECK(err_code(def) == "window_unavailable");
+    CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "window_capture"}, {"format", "png"}, {"w", 640}, {"h", 360}})) == "window_unavailable");
+#else
+    CHECK(err_code(def) == "realm_unavailable");
+#endif
+    cfg.mode = mode;
+
+    // Declared: the argument, the result fields, and every place that used to say "the main menu cannot be captured".
+    const mcp::Tool *shot = mcp::find_tool("screenshot");
+    CHECK(shot != nullptr);
+    if (shot) {
+        CHECK(shot->input_schema["properties"].contains("source"));
+        if (shot->input_schema["properties"].contains("source")) {
+            json en = shot->input_schema["properties"]["source"]["enum"];
+            CHECK(en == json::array({"auto", "render", "window_capture"}));
+        }
+        for (const char *part : {"window_capture", "main menu", "Windows Graphics Capture", "source", "window_unavailable", "cover the game"})
+            CHECK(contains(shot->description, part));
+        CHECK(!contains(shot->description, "the menu cannot be captured"));
+        for (const char *prop : {"source", "scaled", "native_w", "native_h", "screen_w", "screen_h"})
+            CHECK(shot->output_schema["properties"].contains(prop));
+    }
+    for (const char *name : {"ui_click", "ui_key"}) {
+        const mcp::Tool *t = mcp::find_tool(name);
+        if (!t) continue;
+        std::string d = t->input_schema["properties"]["screenshot_after"].value("description", "");
+        CHECK(!contains(d, "needs a loaded map") && contains(d, "window"));
+        CHECK(t->output_schema["properties"].contains("screenshot"));
+    }
+    json guide = resources::read("mcpagent://guide");
+    std::string gtext = guide.is_object() && guide.contains("text") ? guide["text"].get<std::string>() : "";
+    CHECK(contains(gtext, "window_capture") && contains(gtext, "Windows Graphics Capture"));
+    CHECK(!contains(gtext, "`screenshot` needs a loaded map"));
+}
+
 // Issue #5: a foreign program on the base port must not be reported as a token mismatch. A gmod-mcp coordinator that
 // refuses the token (401 from gmod-mcp) is "refused"; any other answer (404, 403, a 401 of another program) is "foreign".
 static void test_port_conflict_link() {
@@ -2951,6 +3010,7 @@ int main(int argc, char **argv) {
     test_wiki_http_realms();
     test_next_call();
     test_ui_tools();
+    test_screenshot_window_capture();
     test_cmdline();
     test_crash_report();
     test_health();

@@ -31,8 +31,10 @@ void register_jobs();
 void register_instances();
 
 // Shared helpers.
-// Screenshot of a realm's frame (render hook + poll): {ok, result, image} like the screenshot tool, or an error.
-json capture_screenshot(int realm, const json &req);
+// What the `screenshot` tool does: the render capture of the client realm's frame (render hook + poll) when that realm exists,
+// else the game window through Windows Graphics Capture; `a` is the tool's arguments ({source, format, quality, w, h}).
+// {ok, result, image} or an error (ui_click / ui_key use it for screenshot_after).
+json take_screenshot(const json &a);
 json ok(json result);
 json realm_prop(const std::string &desc, bool with_menu = true);
 int realm_of(const json &args, const char *key, int def);  // -1 if invalid
