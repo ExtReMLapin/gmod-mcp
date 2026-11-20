@@ -142,7 +142,7 @@ json build(const std::string &tool) {
         s["wait_for"] = obj({{"satisfied", B}, {"elapsed_s", N}, {"polls", N}, {"value", ANY}}, {"satisfied", "elapsed_s", "polls"});
         s["wait_frames"] = obj({{"frames", N}, {"elapsed_s", N}}, {"frames", "elapsed_s"});
         // --- console
-        s["console_exec"] = obj({{"cmd", S}, {"realm", S}, {"via", S}, {"statements", ANYS}, {"blocked_in_lua", B}, {"connect_result", Obj},
+        s["console_exec"] = obj({{"cmd", S}, {"realm", S}, {"via", S}, {"statements", ANYS}, {"blocked_in_lua", B}, {"left_game_first", B}, {"connect_result", Obj},
                                  {"output", arr(console_line())}, {"next_cursor", N}, {"output_note", S}, {"convars", Obj}},
                                 {"cmd", "realm", "via", "output", "next_cursor"});
         s["console_wait"] = obj({{"matched", N}, {"lines", arr(console_line())}, {"next_cursor", N}, {"waited_s", N}, {"lost", N}},

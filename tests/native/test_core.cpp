@@ -97,6 +97,13 @@ static void test_cmdline() {
     CHECK(!cmdline::connect_not_alone(cmdline::split_statements("echo \"x; connect y\"; echo z")));  // quoted ';' is no statement
     CHECK(!cmdline::connect_not_alone(cmdline::split_statements("echo a; echo b")));
     CHECK(!cmdline::connect_not_alone({}));
+    // Crash on killserver (engine.dll+0x2069e0): a listen server must be left (disconnect) before killserver runs.
+    CHECK(cmdline::leave_game_first("killserver"));
+    CHECK(cmdline::leave_game_first("  KillServer  "));
+    CHECK(!cmdline::leave_game_first("disconnect"));
+    CHECK(!cmdline::leave_game_first("echo killserver"));
+    CHECK(!cmdline::leave_game_first("killserver_x"));
+    CHECK(!cmdline::leave_game_first(""));
     CHECK(cmdline::own_log_line("[mcpagent] initialize (protocol 2026-07-28)"));
     CHECK(!cmdline::own_log_line("x [mcpagent] y"));
     CHECK(!cmdline::own_log_line("pba_enable = 1"));

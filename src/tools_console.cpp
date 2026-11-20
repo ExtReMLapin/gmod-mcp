@@ -102,9 +102,24 @@ static json console_exec_tool(const json &args) {
     }
     json sent = json::array();
     std::string via_all;
+    bool left_game = false;
     for (const auto &st : stmts) {
         std::string via;
-        json res = send_statement(r, st, via);
+        int sr = r;
+        // Crash on killserver: run on a hosted map at low fps it crashes the game (cmdline::leave_game_first). Leave the
+        // map first (disconnect waits until both realms are gone); killserver then only resets the network mode.
+        if (client && cmdline::leave_game_first(st) &&
+            (agent::realm_present(realms::SERVER) || agent::realm_present(realms::CLIENT))) {
+            json d = mcp::call_tool("disconnect", json{{"instance", agent::config().instance_id}});
+            if (d.value("isError", false)) {
+                json details = d["structuredContent"];
+                if (!sent.empty()) details["already_sent"] = sent;
+                return agent::err("busy", "could not leave the current game before " + cmdline::command_name(st), details);
+            }
+            left_game = true;
+        }
+        if (left_game && sr != realms::MENU && !agent::realm_present(sr)) sr = realms::MENU;  // that realm is gone now
+        json res = send_statement(sr, st, via);
         if (!res.value("ok", false)) {
             if (sent.empty()) return res;
             json e = res;  // earlier statements already ran: say which
@@ -117,6 +132,7 @@ static json console_exec_tool(const json &args) {
     json out = json{{"cmd", cmd}, {"realm", realms::name(r)}, {"via", via_all}};
     if (stmts.size() > 1) out["statements"] = sent;
     if (via_all == "engine") out["blocked_in_lua"] = true;
+    if (left_game) out["left_game_first"] = true;
     wait_frames(frames, 5.0);
     std::string e;
     // connect: wait for the outcome and report it, so the agent knows at once (a failure also opens a native game dialog
@@ -414,8 +430,9 @@ void register_console() {
                         "(gmod-mcp's own log lines left out; the console is shared, so filter with `regex`). An unknown "
                         "command or convar is an error (unknown_command), not a silent no-op. For every convar it set or "
                         "named, `convars` gives the value read back (value, number, and a warning for FCVAR_ARCHIVE "
-                        "convars, which land in the user's config and are shared by every instance). "
-                        "Example: {\"cmd\": \"sv_gravity 600\"}. convar_set refuses archived convars unless persist: true.",
+                        "convars, which land in the user's config and are shared by every instance). `killserver` on a game "
+                        "that hosts a map first leaves it like `disconnect` (left_game_first: true): run in game it can crash "
+                        "the engine. Example: {\"cmd\": \"sv_gravity 600\"}. convar_set refuses archived convars unless persist: true.",
                         json{{"properties", {{"cmd", {{"type", "string"}, {"minLength", 1}, {"description", "Command line, e.g. 'echo hello' or 'sv_gravity 600'."}}},
                                              {"realm", realm_p},
                                              {"wait_frames", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600}, {"description", "Frames to wait before reading the output (default 5)."}}},

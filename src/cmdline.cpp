@@ -49,6 +49,8 @@ bool connect_not_alone(const std::vector<std::string> &statements) {
     return false;
 }
 
+bool leave_game_first(const std::string &statement) { return command_name(statement) == "killserver"; }
+
 std::vector<std::string> unknown_commands(const std::vector<std::string> &lines) {
     // GMod prints `Unknown command: name` (seen in every realm); Source 2013 prints `Unknown command "name"`.
     static const std::string colon = "Unknown command: ", quoted = "Unknown command \"";

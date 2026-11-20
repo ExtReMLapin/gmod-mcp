@@ -120,3 +120,32 @@ but **neither `lua_run_menu` nor `lua_openscript_menu`**. The menu state therefo
 - These indices match the public order of `cdll_int.h` and `inetchannelinfo.h` (Source SDK 2013).
 - The module runs **no code in the client realm** to read the address. Any value that is not `a.b.c.d:port` or
   `loopback` is treated as unknown, and the client realm is then locked.
+
+## `bin/win64/engine.dll` — crash on killserver (listen server)
+
+engine.dll sha256 `34d8749a…` (x86-64 build of 2026-11-19), found from 6 minidumps (faulting thread's CONTEXT from the
+exception stream, stack scanned for return addresses) and the binary. RVAs:
+
+- Frame loop (`_Host_RunFrame`, `0x1cba80`): for each server tick of the frame, in order, `_Host_RunFrame_Input`
+  (`0x1ccaa0`, runs the command buffer `0x184a30`), `_Host_RunFrame_Server` (`0x1ccbf0`), then the client part. A frame at low
+  fps (fps_max 20 with a 66-tick server) runs about 3 ticks.
+- Before each tick: if the server is active and the network is single-player, it switches back to multiplayer (`0x1fb220(1)`,
+  `NET_SetMultiplayer`-like: changes the mode, reconfigures the sockets, and clears state when switching off).
+- `SV_Frame` (`0x166140`) checks the server state once (`>= 2` = active), runs the game frame, then `0x166aa0` →
+  `SendClientMessages` (`0x167060`, VProf name) → snapshot → `SV_WritePropsFromPackedEntity` (`0x15b640`, VProf name).
+  There, when a delta flag (`+0x47c`) is set, it reads the "from" packed entity at `+0x48` through a getter
+  `0x2069e0` (`mov eax,[rcx+0x30]; ret`): **the crash is that getter with a null "from" entity** (engine.dll+0x2069e0,
+  read of 0x30). Faulting stack (return addresses): `0x15b844` (SV_WritePropsFromPackedEntity) ← `0x15aca9` ← `0x15bfb4`
+  ← `0x73ebf` ← `0x158dcc` ← `0x167304` (SendClientMessages) ← `0x166aeb` ← `0x1663fc` (SV_Frame) ← `0x1ccc76`
+  (`_Host_RunFrame_Server`) ← `0x1cbf6e` (`_Host_RunFrame`). No gmod-mcp frame on it.
+- `killserver` (`0x1d0200`, registered at `0x15ed0` with "Shutdown the server."): on a non-dedicated game it disconnects the
+  local client (`0x216e60`), calls `0x1c77a0(0)` (toggles queued material system, returns the old value), `0x1dc1d0` (marks the
+  host state for a game shutdown, which happens later, plus GMod's uncache tests), then `0x1fb220(0)` (single-player).
+  `disconnect` (`0x1ce2d0`) does the same without the single-player switch.
+- So (inference: the exact field that goes null was not traced) `killserver` in the input step of tick 1 leaves an active server whose client is gone; the next tick switches the network
+  back to multiplayer and `SV_Frame` sends a snapshot from that state. Live: 6 of 6 crashes at fps_max 20, none at fps_max 300
+  (one tick per frame), none with `disconnect` first. The command is blocked from Lua (`RunConsoleCommand`,
+  `game.ConsoleCommand`, `exec`, `point_servercommand` from Lua did nothing), so it reaches the engine only through the
+  console or `IVEngineClient::ClientCmd` (gmod-mcp's engine fallback). gmod-mcp leaves the map first (`disconnect`, wait for
+  the realms to go), then sends `killserver`.
+

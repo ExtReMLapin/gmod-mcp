@@ -4,6 +4,11 @@
 
 ### Fixes
 
+- **Crash on killserver**: `console_exec "killserver"` on a game that hosts a map (default realm or `realm:"server"`) crashed
+  the game (access violation in engine.dll) whenever a frame ran several server ticks, as test clients at fps_max 20 always
+  do. The engine disconnects the local client and switches to single-player at once but shuts the server down only later;
+  the next tick of the same frame sends a snapshot from the half-torn server. `console_exec` now leaves the map first (as
+  `disconnect` does, `left_game_first: true` in the result) and then runs `killserver`, which only resets the network mode.
 - **A success result never fails an outputSchema because of a non-finite number** (issue #3, live fuzz). `trace` and
   `trace_through` with a huge end point, `players_list` / `player_set` after an overflowing or NaN eye angle, `ents_find` with a
   NaN origin and `convar_get` / `convar_set` with "1e999" answered `null` where the schema said `number`, which the MCP SDK in
