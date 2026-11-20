@@ -4,6 +4,9 @@
 
 ### Fixes
 
+- **`map_load` with no game answers as fast as `status`**. It answered `game_not_running` after 2-3 s instead of 1 s: before the call itself,
+  the bridge asked the directory which other games were loading (to report them), a second refused connection. It no longer asks
+  once a call has found nothing listening.
 - **A crash answer says where the dump's exception happened** (issue #8, live verification). `client_crashed` / `server_crashed` named
   the minidump and nothing else. The module now reads it (exception record, the faulting thread's stack pointer and stack memory, the
   module list) and `details` and the `instances_list` crash entry carry `fault` (e.g. `engine.dll+0x2069e0`) and `stack_candidates` (up

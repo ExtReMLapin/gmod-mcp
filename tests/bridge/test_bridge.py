@@ -2939,6 +2939,25 @@ def case_chaos_final():
     S["close"]()
 
 
+def case_chaos_nogame():
+    """Live verification of 0.3.7: `map_load` with no game answered game_not_running after about 3 s, `status` after 1 s. Before it reaches the
+    game, map_load asks the directory which other games are loading (to report them), which is a second refused connection (about 1 s each
+    on Windows) when nothing listens. With no game that is already known, nothing is asked."""
+    print("== CHAOS_NOGAME: map_load with no game is as quick as status", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env); b.req("initialize", INIT)
+    def timed(tool, args):
+        t0 = time.time()
+        r = b.req("tools/call", {"name": tool, "arguments": args}, 30)
+        return time.time() - t0, (r or {}).get("result", {}).get("structuredContent", {}).get("error", {}).get("code")
+    ts, cs = timed("status", {})
+    tm, cm = timed("map_load", {"map": "gm_flatgrass"})
+    tm2, cm2 = timed("map_load", {"map": "gm_flatgrass"})
+    check("CHAOS_NOGAME status and map_load both answer game_not_running", cs == "game_not_running" and cm == "game_not_running" and cm2 == "game_not_running", [cs, cm, cm2])
+    check("CHAOS_NOGAME map_load with no game answers about as fast as status (one refused connection, not two)", tm < ts + 0.6 and tm2 < ts + 0.6, [round(ts, 2), round(tm, 2), round(tm2, 2)])
+    b.close()
+
+
 def case_chaos_owner():
     """Issue #8 (chaos test G3): the owner label survives the bridge session that launched the client. instances_launch passes it
     on the command line (-mcp_owner, encoded), the module sends it in its heartbeat (instances_list shows `owner` for every
@@ -3327,8 +3346,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

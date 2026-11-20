@@ -1464,6 +1464,10 @@ std::wstring utf8_to_wide(const std::string &s) {
 // heartbeat), whatever started the load: the console, Lua, a script talking to the game, a bridge. `except` is skipped.
 std::vector<std::string> fp7137_loading_games(const std::string &except = "") {  // FP7137
     std::vector<std::string> ids;  // FP7137
+    // Live verification of 0.3.7: with no game this was a second refused connection (about 1 s on Windows) before the call's own: map_load
+    // answered game_not_running after 3 s, status after 1 s. The last call said nothing listens: there is nothing to ask (a game that started
+    // since only goes unreported for this call: the link is refreshed by the call itself).
+    if (g_link == Link::Down) return ids;
     json lst = game_call("instances_list", json::object(), 3);  // FP7137: an unreachable game is an error object: no ids
     if (!lst.is_object() || !lst.contains("instances") || !lst["instances"].is_array()) return ids;  // FP7137
     for (const auto &in : lst["instances"])  // FP7137
