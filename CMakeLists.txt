@@ -124,7 +124,8 @@ endif()
 add_executable(gmod-mcp-unittests tests/native/test_crashguard.cpp tests/native/test_ljdump.cpp tests/native/test_platform.cpp tests/native/unittests_main.cpp src/crashguard.cpp src/ljdump.cpp ${PLATFORM_SOURCES}
   tests/native/test_fp7137.cpp src/bridge/fp7137.cpp
   tests/native/test_mdmp.cpp src/mdmp.cpp  # FP7137: its tests and the code they test; mdmp: the minidump reader
-  tests/native/test_uiinput.cpp src/uiinput.cpp)  # ui_click / ui_key: the pure part
+  tests/native/test_uiinput.cpp src/uiinput.cpp  # ui_click / ui_key: the pure part
+  tests/native/test_windowshot.cpp src/windowshot.cpp)  # window capture: the pure part
 target_include_directories(gmod-mcp-unittests PRIVATE src)
 if(NOT WIN32)
   # A shared object without SONAME that the platform test loads by full path (see tests/native/test_platform.cpp).
