@@ -63,6 +63,35 @@
   (the server moves the player, the client says what it sees) instead of two jobs synchronised through files in `data/`.
   It runs at once on the main thread and never yields; `budget` (10 s by default) stops a runaway chunk; a missing realm
   (`realm_unavailable`), the client lock (`client_locked`) or a Lua error there raise a catchable `{code, message}`.
+- **Every tool description starts with its call shape** (issue #18). `tests_run(path, budget?, realm?)`: required arguments first,
+  optional ones with a `?` (six at most, then `...`), `instance` never listed. The tools are often deferred in the agent's client,
+  which sees the description before the schema, so four first calls no longer fail on `file` for `path` or `title` for `name`.
+  Built from the input schema when the list is served (the game's tools and the bridge's own), so it cannot drift.
+- **`convar_get` says whether the convar is archived** (issue #23): `archived`, `archived_from` (`flags` or `config.cfg`) and, on
+  test clients (which can read `cfg/config.cfg`), `in_config_cfg`. A convar `CreateClientConVar(name, def, true)` made is saved to
+  `config.cfg` although its flags have no `FCVAR_ARCHIVE` bit (and `ConVar:IsFlagSet(FCVAR_ARCHIVE)` is false), so a name that
+  `config.cfg` lists counts as archived. `convar_set` and the `console_exec` warning use it. Limit: a convar created this session
+  and not saved yet shows `archived: false`; the guide says `IsFlagSet(FCVAR_ARCHIVE)` is not reliable from Lua.
+- **`hook_list {name}`** (issue #18): keeps the hooks whose identifier contains the text (plain, any case), in every event or in
+  `event`; events left empty are omitted. "Is my hook gone from Think?" no longer reads the whole list.
+- **`wiki_page` resolves a name that is not a page** (issue #18): `CurTime` reads `Global.CurTime` (`resolved_from` and a `note`
+  say so) when one page can only mean it (the same name in another case, or the only page ending in `.CurTime` / `:CurTime`); when
+  several can (`EmitSound`) or none does, the `not_found` error lists the closest pages in `details.candidates` and in its message.
+- **`ent_info` has a `transmit` field** (issue #18). Server realm: `always_sent` (`EFL_FORCE_CHECK_TRANSMIT`) and `in_pvs_of` (ids of
+  the players whose PVS holds it, `Entity:TestPVS`); client realm: `on_client` and `dormant`. Each only when the engine gives it;
+  a `SetPreventTransmit` or an addon's `CheckTransmit` rule cannot be read from Lua, and the `note` says to ask the client realm.
+- **`lua_check` knows the test runner's `expect`** (issue #11): in a test file (a `tests/`, `test/`, `spec/` folder, `test_*.lua`,
+  `*_test.lua`, `*_spec.lua`) `expect` is no longer reported as an unknown global (hundreds of lines for one test file); every other
+  unknown global there is still reported, and a `note` says what was not. A normal file is unchanged.
+- **`instances_list {include_crashed: false}`** (issue #11): leaves out the entries whose game crashed (they are listed for an
+  hour) and counts them in `crashed_hidden`; a call to such an instance still answers `client_crashed`. The default list is unchanged.
+- **Guide and `map_load` description** (issues #27, #23, #18, #11). `InitPostEntity` / `Initialize` have already run when `map_load`
+  returns: a hook added afterwards with `lua_exec` never fires, one added before is destroyed with the old realm, and the way to test
+  such code (an autorun file or a `lua_mount` folder, or call the init function by hand). New guide section "Small pitfalls":
+  that, `IsFlagSet(FCVAR_ARCHIVE)`, `net.Start` raising on a string that was not pooled, the recipe for a second player (bots on a
+  listen server; a dedicated server plus a client for a real join), CRLF line endings when writing files on Windows (`newline=""`),
+  and that every call to another instance is relayed by the coordinator (often the user's own game: a network thread, no Lua on
+  its main thread; not measured).
 
 ### Fixes
 

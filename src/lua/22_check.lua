@@ -136,6 +136,8 @@ end
 
 -- Globals set by the engine while it loads a scripted entity, weapon, gamemode, effect or tool.
 local INJECTED = { ENT = true, SWEP = true, GM = true, EFFECT = true, TOOL = true }
+-- Issue #11: globals the test runner (tests_run) gives a test file; known only in the files the tool marked `test_file`.
+local TEST_GLOBALS = { expect = true }
 
 local function sorted(list, cap)
 	table.sort(list, function(a, b)
@@ -157,6 +159,7 @@ function H.lua_check(args)
 	local want_globals = args.globals ~= false
 	local cap = args.limit or 200
 	local errors, reads, writes, written, notes = {}, {}, {}, {}, J.array({})
+	local test_hidden = false
 	local ops
 	if want_globals then
 		local ok, e = pcall(opcodes)
@@ -173,6 +176,8 @@ function H.lua_check(args)
 				if kind == "write" then
 					writes[#writes + 1] = rec
 					written[name] = true
+				elseif it.test_file and TEST_GLOBALS[name] then
+					test_hidden = true
 				else
 					reads[#reads + 1] = rec
 				end
@@ -192,6 +197,7 @@ function H.lua_check(args)
 		out.globals_written, tr2 = sorted(writes, cap)
 		if tr1 or tr2 then out.truncated = true end
 	end
+	if test_hidden then notes[#notes + 1] = "`expect` is not reported as unknown in test files (tests/, test_*.lua, *_test.lua, *_spec.lua): tests_run defines it. Other unknown globals there are still reported." end
 	if #notes > 0 then out.notes = notes end
 	return out
 end

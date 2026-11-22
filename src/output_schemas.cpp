@@ -175,7 +175,8 @@ json build(const std::string &tool) {
                                 {"next_cursor"});
         s["errors_clear"] = obj({{"cleared", B}, {"next_cursor", N}}, {"cleared", "next_cursor"});
         json convar = obj({{"name", S}, {"flags", N}, {"flag_names", STRS}, {"help", S}, {"default", S}, {"value", NS}, {"number", N},
-                           {"protected", B}, {"min", N}, {"max", N}, {"previous", NS}, {"via", S}},
+                           {"protected", B}, {"min", N}, {"max", N}, {"previous", NS}, {"via", S}, {"archived", B}, {"archived_from", S},
+                           {"in_config_cfg", B}},
                           {"name", "flags", "flag_names"});
         s["convar_get"] = convar;
         s["convar_set"] = convar;
@@ -185,7 +186,7 @@ json build(const std::string &tool) {
         s["ents_find"] = obj({{"entities", arr(entity())}, {"count", N}, {"truncated", B}}, {"entities", "count", "truncated"});
         s["ent_info"] = obj({{"id", N}, {"class", S}, {"model", S}, {"name", S}, {"nick", S}, {"pos", NUMS}, {"ang", NUMS}, {"valid", B},
                              {"velocity", NUMS}, {"health", N}, {"max_health", N}, {"solid", N}, {"movetype", N}, {"collision_group", N},
-                             {"obb", Obj}, {"parent", NN}, {"owner", NN}, {"nw_vars", ANY}, {"table", ANY}, {"keyvalues", ANY}, {"door", Obj}},
+                             {"obb", Obj}, {"parent", NN}, {"owner", NN}, {"nw_vars", ANY}, {"table", ANY}, {"keyvalues", ANY}, {"door", Obj}, {"transmit", Obj}},
                             {"id", "class", "valid"});
         s["ent_spawn"] = entity();
         s["ent_remove"] = obj({{"removed", N}}, {"removed"});
@@ -246,7 +247,7 @@ json build(const std::string &tool) {
         s["api_search"] = obj({{"pattern", S}, {"results", ANYS}, {"count", N}, {"realms_searched", Obj}, {"wiki_index", S}},
                               {"results", "count"});
         s["wiki_search"] = obj({{"query", S}, {"results", ANYS}, {"total_matches", N}, {"cache", S}}, {"query", "results", "total_matches"});
-        s["wiki_page"] = obj({{"name", S}, {"format", S}, {"url", S}, {"cache", S}, {"content", S}, {"page", ANY}}, {"name"});
+        s["wiki_page"] = obj({{"name", S}, {"format", S}, {"url", S}, {"cache", S}, {"content", S}, {"page", ANY}, {"resolved_from", S}, {"note", S}}, {"name"});
         // --- events, reports, hooks, performance, tests
         s["events_wait"] = obj({{"events", ANYS}, {"next_cursor", N}, {"lost", N}, {"timed_out", B}}, {"events", "next_cursor"});
         s["reports_read"] = obj({{"channel", S}, {"items", ANYS}, {"next_cursor", N}, {"lost", N}, {"timed_out", B}}, {"items", "next_cursor"});
@@ -258,7 +259,7 @@ json build(const std::string &tool) {
         // --- instances
         // silent_s: seconds since the instance's last heartbeat, on every entry (0 for this game), as in the instance_hung error.
         s["instances_list"] = obj({{"instances", arr(obj({{"state", S}, {"heartbeat_age_s", N}, {"silent_s", N}, {"stalled_s", N}, {"fps_low_s", N}, {"loading", B}}))},
-                                   {"coordinator", B}},
+                                   {"coordinator", B}, {"crashed_hidden", N}},
                                   {"instances"});
         return s;
     }();

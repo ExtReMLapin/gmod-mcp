@@ -59,6 +59,9 @@ bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs,
 std::vector<std::string> resolve_test_files(const std::string &pattern, std::string &err);
 // tests_run: adds up several runtime results ({files, totals, ok}).
 json merge_test_runs(const std::vector<json> &runs);
+// Issue #11: is this relative path (folder segments + file name) a test file: a directory named tests, test, spec, specs or
+// __tests__, or a file named test_*.lua, *_test.lua, *_spec.lua? lua_check then knows the globals tests_run gives (expect).
+bool is_test_lua_path(const std::string &rel_path);
 // Applies the `fields` argument (lua_exec, lua_exec_file, lua_job): keeps only these keys of each returned table.
 json project_values(json result, const json &args);
 // `fields` on an object result (status): keeps only these top-level keys.
@@ -112,6 +115,14 @@ std::string job_reset_message(const JobId &id, uint64_t current_generation);
 // Wiki helpers shared with resources and completion.
 json wiki_page_tool(const json &args);  // {name, format?, refresh?} -> tool result
 std::set<std::string> pagelist_from_cache();  // never hits the network
+// Issue #18: a wiki name that is not a page ("CurTime"; the page is Global.CurTime), looked up in the page list. `resolved` is the
+// one page it must mean (same name in another case, or the only page whose part after the last . or : is that name), else empty;
+// `candidates` are the closest pages (best first, at most 8), Global.* first when the name has no prefix.
+struct WikiResolution {
+    std::string resolved;
+    std::vector<std::string> candidates;
+};
+WikiResolution resolve_wiki_name(const std::string &name, const std::set<std::string> &pages);
 // Realms the wiki GET may run in, in order: the host realm (menu in client mode, server on srcds), then the others that can
 // carry HTTP. Issue #3: the menu realm of a game build can lack the HTTP function; wiki_page then tries the next one.
 std::vector<int> wiki_http_realms(bool client_mode);

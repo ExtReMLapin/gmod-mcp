@@ -227,7 +227,10 @@ void register_world() {
                         "{mins, maxs} (local bounds), parent and owner (entity ids or null), nw_vars (SetNW* values), table (the "
                         "entity's Lua table, cut at depth/limit), and in the server realm keyvalues (map/engine keyvalues) and, "
                         "for classes containing \"door\", door {m_eDoorState, m_toggle_state, state: closed|opening|open|"
-                        "closing|ajar}. Error not_found for an invalid id. Example: {\"id\": 57}.") + kNeedsMap,
+                        "closing|ajar}. `transmit` tells what Lua can know about the entity reaching the client: server realm "
+                        "{always_sent, in_pvs_of: [player ids whose PVS holds it], note}, client realm {on_client, dormant: out of the "
+                        "PVS}. An entity that is not on the client answers not_found there: ask both realms. Error not_found for an "
+                        "invalid id. Example: {\"id\": 57}.") + kNeedsMap,
                         json{{"properties", {{"id", {{"type", "integer"}, {"minimum", 0}, {"description", "Entity index (from ents_find / players_list)."}}},
                                              {"realm", realm_sv},
                                              {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 4}, {"description", "Depth of the Lua `table` field (default 1)."}}},

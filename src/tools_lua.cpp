@@ -206,13 +206,15 @@ static json tests_run_tool(const json &args) {
 void register_lua_tools() {
     json RO = {{"readOnlyHint", true}};
     mcp::register_tool({"hook_list", "List hooks", "Hooks registered with hook.Add in a realm (hook.GetTable), with where each function was defined. Without `event`: "
-                        "every event (large). Result: {hooks: {<event>: [{id, source (file), line, what}]}, count}, and with "
+                        "every event (large; `name` keeps the hooks whose identifier contains it, e.g. to check that one was removed). Result: {hooks: {<event>: [{id, source (file), line, what}]}, count}, and with "
                         "`event`: event, known (false = no hook and no gamemode function for that name: probably a typo) and "
                         "gamemode_function (source of GAMEMODE:<event>, or null). Example: {\"realm\": \"client\", \"event\": \"Think\"}.",
-                        json{{"properties", {{"realm", realm_prop("Default server.")}, {"event", {{"type", "string"}, {"description", "Event name (e.g. Think)."}}}}}},
+                        json{{"properties", {{"realm", realm_prop("Default server.")}, {"event", {{"type", "string"}, {"description", "Event name (e.g. Think)."}}},
+                                             {"name", {{"type", "string"}, {"description", "Keep only the hooks whose identifier contains this text (plain text, any case, not a pattern); events left empty are omitted."}}}}}},
                         RO, [](const json &a) {
                             json p = json::object();
                             if (a.contains("event")) p["event"] = a["event"];
+                            if (a.contains("name")) p["name"] = a["name"];
                             return rt_realm(a, "realm", realms::SERVER, "hook_list", p);
                         }});
     mcp::register_tool({"hook_trace", "Trace a hook",

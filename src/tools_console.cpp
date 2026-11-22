@@ -208,10 +208,11 @@ static json console_exec_tool(const json &args) {
         json c{{"value", g["result"].value("value", json())}};
         if (g["result"].contains("number")) c["number"] = g["result"]["number"];
         if (parts.size() == 2) c["requested"] = parts[1];
-        for (const auto &f : g["result"].value("flag_names", json::array()))
-            if (f == "ARCHIVE")
-                c["warning"] = "FCVAR_ARCHIVE: saved to cfg/config.cfg when the game closes, and shared by every instance "
-                               "and the user's own game (convar_set refuses it unless persist: true)";
+        bool archived = g["result"].value("archived", false);
+        for (const auto &f : g["result"].value("flag_names", json::array())) archived = archived || f == "ARCHIVE";
+        if (archived)
+            c["warning"] = "FCVAR_ARCHIVE: saved to cfg/config.cfg when the game closes, and shared by every instance "
+                           "and the user's own game (convar_set refuses it unless persist: true)";
         convars[g["result"].value("name", parts[0])] = c;
     }
     if (!convars.empty()) out["convars"] = convars;
@@ -426,7 +427,8 @@ static json convar_set_tool(const json &args) {
     // An FCVAR_ARCHIVE convar is written back to the user's cfg/config.cfg when the game closes: refused by default.
     json before = agent::rt(r, "convar_get", json{{"name", args["name"]}});
     if (!before.value("ok", false)) return before;
-    bool archived = false;
+    // `archived` (flag, or listed in config.cfg: Issue #23); the decoded flags alone are the fallback for an older runtime.
+    bool archived = before["result"].value("archived", false);
     for (const auto &f : before["result"].value("flag_names", json::array())) archived = archived || f == "ARCHIVE";
     if (archived && !args.value("persist", false))
         return agent::err("archived", "FCVAR_ARCHIVE convar: changing it would write to the user's cfg/config.cfg. Pass persist=true to accept.",
@@ -602,7 +604,11 @@ void register_console() {
                         }});
     mcp::register_tool({"convar_get", "Read a convar",
                         "Value (string as the engine stores it), number (the value as a number when it is one: compare this, since the "
-                        "same value can read \"0.0\" or \"0.000000\"), default, help text, flags (decoded), min/max of a convar. "
+                        "same value can read \"0.0\" or \"0.000000\"), default, help text, flags (raw and decoded as flag_names), "
+                        "min/max of a convar, and archived: true when changing it is saved into cfg/config.cfg (shared with the user's game "
+                        "and every instance); archived_from says flags or config.cfg, in_config_cfg whether config.cfg lists it (test "
+                        "clients only). Do not use ConVar:IsFlagSet(FCVAR_ARCHIVE) from Lua for this: it can be false for an archived "
+                        "convar (CreateClientConVar with save). A convar created this session and not saved yet shows archived: false. "
                         "FCVAR_PROTECTED convars have their value masked.",
                         json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"description", "Exact convar name, e.g. 'sv_gravity'. Error not_found if it does not exist."}}}, {"realm", realm_p}}}, {"required", {"name"}}},
                         RO, [](const json &a) { return rt_realm(a, "realm", default_realm(), "convar_get", json{{"name", a["name"]}}); }});

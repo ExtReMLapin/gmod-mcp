@@ -13,16 +13,20 @@ function H.hook_list(args)
 	local t = hook.GetTable()
 	local out = J.object({})
 	local count = 0
+	-- Issue #18: `name` keeps the hooks whose identifier contains it (plain text, any case); events left empty are omitted.
+	local want = type(args.name) == "string" and args.name ~= "" and string.lower(args.name) or nil
 	for ev, hooks in pairs(t) do
 		if not args.event or ev == args.event then
 			local list = J.array({})
 			for id, f in pairs(hooks) do
 				local o = fn_src(f)
 				o.id = type(id) == "string" and id or A.serialize(id, { depth = 1 })
-				list[#list + 1] = o
-				count = count + 1
+				if not want or string.find(string.lower(tostring(type(o.id) == "string" and o.id or id)), want, 1, true) then
+					list[#list + 1] = o
+					count = count + 1
+				end
 			end
-			out[ev] = list
+			if not want or #list > 0 then out[ev] = list end
 		end
 	end
 	local gm_has = false

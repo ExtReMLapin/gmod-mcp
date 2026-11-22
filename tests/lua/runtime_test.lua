@@ -1077,5 +1077,129 @@ do
 	include, file = real_include, real_file
 end
 
+-- Issue #23: convar_get says whether the convar is archived (FCVAR_ARCHIVE, 128) instead of leaving the agent to decode `flags`
+-- (ConVar:IsFlagSet(FCVAR_ARCHIVE) is not reliable from Lua). A convar the game's config.cfg lists is archived too, even when its
+-- flags lack the bit (a convar made by CreateClientConVar(..., true): live, GetFlags had no 128 and it was in config.cfg).
+do
+	local old_flags, old_name, old_cfg = fake_cv.GetFlags, fake_cv.GetName, A.native.user_config
+	fake_cv.GetName = function() return "pba_arch" end
+	fake_cv.GetFlags = function() return 128 + 8 end
+	r = call("convar_get", { name = "pba_arch" })
+	check(r.ok and r.result.archived == true and r.result.archived_from == "flags" and r.result.flags == 136, "convar_get: FCVAR_ARCHIVE in the flags -> archived true")
+	fake_cv.GetFlags = function() return 268763144 end
+	r = call("convar_get", { name = "pba_arch" })
+	check(r.ok and r.result.archived == false and r.result.archived_from == nil and r.result.in_config_cfg == nil, "convar_get: no archive bit, no config.cfg -> archived false")
+	A.native.user_config = function() return 'pba_other "1"\npba_arch "5"\n' end
+	r = call("convar_get", { name = "pba_arch" })
+	check(r.ok and r.result.archived == true and r.result.archived_from == "config.cfg" and r.result.in_config_cfg == true,
+		"convar_get: no archive bit but listed in config.cfg -> archived true, from config.cfg")
+	A.native.user_config = function() return 'pba_other "1"\n' end
+	r = call("convar_get", { name = "pba_arch" })
+	check(r.ok and r.result.archived == false and r.result.in_config_cfg == false, "convar_get: config.cfg readable and without the convar -> archived false, in_config_cfg false")
+	A.native.user_config = function() error("boom") end
+	r = call("convar_get", { name = "pba_arch" })
+	check(r.ok and r.result.archived == false, "convar_get: an unreadable config.cfg does not break the call")
+	fake_cv.GetFlags, fake_cv.GetName, A.native.user_config = old_flags, old_name, old_cfg
+end
+
+-- Issue #18 item 2: hook_list takes `name`, a case-insensitive part of the hook identifier, so "is my hook gone from Think?" does not
+-- need the whole list. Events with no match are left out and `count` counts the matches.
+do
+	local f1, f2 = function() end, function() end
+	hook = { GetTable = function() return { Think = { ["pba_tick"] = f1, ["Other_Tick"] = f2, ["x"] = f2 }, Tick = { ["PBA_other"] = f1 } } end }
+	assert(loadfile(dir .. "/40_hooks.lua"))()
+	r = call("hook_list", {})
+	check(r.ok and r.result.count == 4, "hook_list: without a filter every hook")
+	r = call("hook_list", { name = "pba" })
+	check(r.ok and r.result.count == 2 and #r.result.hooks.Think == 1 and r.result.hooks.Think[1].id == "pba_tick"
+		and #r.result.hooks.Tick == 1 and r.result.hooks.Tick[1].id == "PBA_other", "hook_list name: case-insensitive part of the id, in every event")
+	r = call("hook_list", { name = "pba", event = "Think" })
+	check(r.ok and r.result.count == 1 and r.result.hooks.Tick == nil and r.result.event == "Think", "hook_list name + event")
+	r = call("hook_list", { name = "gone", event = "Think" })
+	check(r.ok and r.result.count == 0 and next(r.result.hooks) == nil and r.result.known == true, "hook_list name: no match is an empty list, not an error")
+	r = call("hook_list", { name = "a.b" })
+	check(r.ok and r.result.count == 0, "hook_list name is plain text, not a pattern")
+	hook = nil
+end
+
+-- Issue #18 item 4: ent_info tells what is knowable about the entity reaching the client: the server realm says whether the entity is
+-- always sent and which players' PVS it is in; the client realm says whether it is dormant. Fields are absent when the API is.
+do
+	local function ent(extra)
+		local e = { }
+		function e:EntIndex() return 12 end
+		function e:GetClass() return "npc_grenade_frag" end
+		function e:GetPos() return { x = 0, y = 0, z = 0 } end
+		function e:GetAngles() return { p = 0, y = 0, r = 0 } end
+		function e:GetModel() return "" end
+		function e:IsPlayer() return false end
+		function e:GetVelocity() return { x = 0, y = 0, z = 0 } end
+		function e:Health() return 0 end
+		function e:GetMaxHealth() return 0 end
+		function e:GetSolid() return 0 end
+		function e:GetMoveType() return 0 end
+		function e:GetCollisionGroup() return 0 end
+		function e:OBBMins() return { x = 0, y = 0, z = 0 } end
+		function e:OBBMaxs() return { x = 0, y = 0, z = 0 } end
+		function e:GetParent() return nil end
+		function e:GetOwner() return nil end
+		function e:GetNWVarTable() return {} end
+		function e:GetTable() return {} end
+		function e:GetKeyValues() return {} end
+		function e:GetNoDraw() return false end
+		for k, v in pairs(extra or {}) do e[k] = v end
+		return e
+	end
+	local realm0, server0, sv_ent = A.realm, SERVER, nil
+	local players = { { id = 1 }, { id = 2 } }
+	for _, p in ipairs(players) do function p:EntIndex() return p.id end function p:IsValid() return true end end
+	player = { GetAll = function() return players end }
+	Entity = function(i) if i == 12 then return sv_ent end end
+	IsValid = function(e) return e ~= nil end
+	game = game or {}
+	game.GetWorld = game.GetWorld or function() return {} end
+	assert(loadfile(dir .. "/60_world.lua"))()
+	SERVER = true
+	A.realm = "server"
+	sv_ent = ent({ TestPVS = function(self, p) return p.id == 2 end, IsEFlagSet = function(self, f) return false end })
+	EFL_FORCE_CHECK_TRANSMIT = 1
+	r = call("ent_info", { id = 12 })
+	check(r.ok and r.result.transmit and r.result.transmit.in_pvs_of[1] == 2 and #r.result.transmit.in_pvs_of == 1
+		and r.result.transmit.always_sent == false and type(r.result.transmit.note) == "string" and r.result.transmit.note:find("client", 1, true),
+		"ent_info (server): transmit lists the players whose PVS holds the entity, and points at the client realm")
+	sv_ent = ent({ TestPVS = function() return false end, IsEFlagSet = function(self, f) return f == 1 end })
+	r = call("ent_info", { id = 12 })
+	check(r.ok and r.result.transmit.always_sent == true and #r.result.transmit.in_pvs_of == 0, "ent_info (server): FORCE_CHECK_TRANSMIT -> always_sent")
+	sv_ent = ent({})
+	r = call("ent_info", { id = 12 })
+	check(r.ok and r.result.transmit and r.result.transmit.in_pvs_of == nil and r.result.transmit.always_sent == nil, "ent_info (server): no TestPVS / IsEFlagSet -> only the note")
+	SERVER = nil
+	A.realm = "client"
+	sv_ent = ent({ IsDormant = function() return true end })
+	r = call("ent_info", { id = 12 })
+	check(r.ok and r.result.transmit and r.result.transmit.dormant == true and r.result.transmit.on_client == true
+		and r.result.transmit.note:find("dormant", 1, true), "ent_info (client): dormant is reported and the entity exists on the client")
+	sv_ent = ent({ IsDormant = function() return false end })
+	r = call("ent_info", { id = 12 })
+	check(r.ok and r.result.transmit.dormant == false, "ent_info (client): not dormant")
+	SERVER, A.realm = server0, realm0
+	EFL_FORCE_CHECK_TRANSMIT, player, Entity = nil, nil, nil
+end
+
+-- Issue #11 (comment): lua_check does not report the test runner's own globals (`expect`) in a file marked as a test file
+-- (`test_file`, set by the tool from the path), but still reports every other unknown global there; a normal file still gets `expect`.
+do
+	local code = "local a = expect(1)\nlocal b = prnit(2)\nreturn a, b"
+	r = call("lua_check", { items = { { file = "t.lua", chunk = "@t.lua", code = code, test_file = true } } })
+	local names = {}
+	for _, u in ipairs(r.result.unknown_globals or {}) do names[u.name] = true end
+	check(r.ok and names.prnit and not names.expect, "lua_check: expect is known in a test file, a typo is still reported")
+	check(type(r.result.notes) == "table" and tostring(r.result.notes[1]):find("expect", 1, true), "lua_check: a note says which test globals were not reported")
+	r = call("lua_check", { items = { { file = "t.lua", chunk = "@t.lua", code = code } } })
+	names = {}
+	for _, u in ipairs(r.result.unknown_globals or {}) do names[u.name] = true end
+	check(r.ok and names.prnit and names.expect and r.result.notes == nil, "lua_check: expect stays unknown in a normal file")
+end
+
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

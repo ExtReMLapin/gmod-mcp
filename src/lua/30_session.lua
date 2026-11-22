@@ -312,6 +312,22 @@ function H.convar_get(args)
 	end
 	local flags = cv.GetFlags and cv:GetFlags() or 0
 	local o = { name = cv:GetName(), flags = flags, flag_names = decode_flags(flags), help = cv:GetHelpText(), default = cv:GetDefault() }
+	-- Issue #23: will changing it be written to cfg/config.cfg? ConVar:IsFlagSet(FCVAR_ARCHIVE) and the flags of a convar made by
+	-- CreateClientConVar(name, def, true) lack the bit although it is saved (live), so a name that config.cfg lists counts too
+	-- (readable on test clients only: native.user_config). A convar created in this session and not saved yet is not in it.
+	o.archived = bit.band(flags, 128) ~= 0
+	if o.archived then o.archived_from = "flags" end
+	if native.user_config then
+		local ok, text = pcall(native.user_config)
+		if ok and type(text) == "string" then
+			local listed = A.parse_config_values(text)[string.lower(name)] ~= nil
+			o.in_config_cfg = listed
+			if listed and not o.archived then
+				o.archived = true
+				o.archived_from = "config.cfg"
+			end
+		end
+	end
 	if bit.band(flags, 32) ~= 0 then
 		o.value = J.null
 		o.protected = true
