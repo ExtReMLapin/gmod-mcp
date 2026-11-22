@@ -64,6 +64,9 @@ function Job:wait(cond, timeout)
 	return true
 end
 function Job:elapsed() return SysTime() - self.started end
+-- Issue #31: real seconds between the previous resume and this one (since the start on the first resume). FrameTime() is
+-- the engine's tick step on the server, not the interval between two resumes of a job.
+function Job:dt() return self._dt or 0 end
 
 function H.job_start(args)
 	if type(args.code) ~= "string" then A.fail("invalid_params", "code: expected a string") end
@@ -110,8 +113,45 @@ local function add_output(job, s)
 	job._output_size = job._output_size + #s
 end
 
+-- Issue #30: job:call(realm, code [, opts]) runs a chunk in another realm of this instance and returns its values.
+-- The module crosses over (native.call_realm, on the same main thread, so nothing waits and no frame passes): the chunk
+-- runs like lua_exec in that realm, with a budget (default 10 s, opts.budget) so a loop there cannot freeze the game.
+-- opts: budget, depth, limit, max_string (as lua_exec). What the chunk printed is added to the job's output as "[realm] ...".
+-- A failure (realm_unavailable, client_locked, lua_error...) raises a table {code, message, details}: catch it with pcall.
+local REALMS = { client = true, server = true, menu = true }
+function Job:call(realm, code, opts)
+	if type(realm) ~= "string" or not REALMS[realm] then A.fail("invalid_params", "job:call: realm must be \"client\", \"server\" or \"menu\"") end
+	if realm == A.realm then A.fail("invalid_params", "job:call: this job already runs in the " .. realm .. " realm: run the code directly") end
+	if type(code) ~= "string" then A.fail("invalid_params", "job:call: code must be a string") end
+	if opts ~= nil and type(opts) ~= "table" then A.fail("invalid_params", "job:call: opts must be a table") end
+	local native = A.native
+	if type(native.call_realm) ~= "function" then A.fail("unsupported", "job:call needs a newer module (this one cannot cross realms)") end
+	opts = opts or {}
+	local o = { budget = tonumber(opts.budget) or 10, depth = tonumber(opts.depth), limit = tonumber(opts.limit), max_string = tonumber(opts.max_string) }
+	local res = J.decode(native.call_realm(realm, code, J.encode(o), A.realm))
+	local result = res.result
+	if type(result) == "table" and type(result.output) == "string" and result.output ~= "" then
+		local out = result.output
+		if out:sub(-1) ~= "\n" then out = out .. "\n" end
+		add_output(self, "[" .. realm .. "] " .. out)
+	end
+	if not res.ok then
+		local e = res.error or {}
+		A.fail(e.code or "internal", "job:call(" .. realm .. "): " .. tostring(e.message), e.details)
+	end
+	local values, n = result.values or {}, result.n or 0
+	local unpacked = {}
+	for i = 1, n do
+		local v = values[i]
+		if v == J.null then v = nil end
+		unpacked[i] = v
+	end
+	return unpack(unpacked, 1, n)
+end
+
 local function resume(job)
 	local t0 = SysTime()
+	job._dt = t0 - (job._resume_t0 or job.started)
 	local deadline = t0 + (job.limit or 0)
 	local oldf, oldmask, oldcount = debug.gethook()
 	if job.limit then

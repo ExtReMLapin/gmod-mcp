@@ -67,6 +67,9 @@ static std::string body(const std::string &name, const json &a) {
                "- Call job:progress() regularly (at least every second of work) with done/total when the amount of work is known.\n"
                "- Call job:step() inside every loop that can run more than a few hundred iterations.\n"
                "- Use job:report() for intermediate findings worth keeping even if the job fails later.\n"
+               "- Scale a per-frame step with job:dt(), not FrameTime() (the server's tick step).\n"
+               "- A check that spans realms (the server acts, the client looks) is ONE job: run it in the realm that acts and ask the other "
+               "with job:call(\"client\", code). Do not start a job in each realm and synchronise them through files in data/.\n"
                "- Return a compact summary table; put bulky data in reports.\n"
                "- For anything longer than ~15 s pass timeout_s so the client can run it as a background task.\n"
                "- Save the script with lua_file_write (or directly in the Lua working directory) and run it with `path`, so errors point to the file.";

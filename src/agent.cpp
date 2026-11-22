@@ -357,6 +357,46 @@ static int native_report(lua_State *L) {
     return 0;
 }
 
+std::string cross_call_refusal(int from, int to, int depth) {
+    if (to < 0 || to >= realms::COUNT) return "unknown realm";
+    if (from == to) return "a job cannot call its own realm: run the code directly";
+    if (depth > 0) return "nested cross-realm call";
+    return "";
+}
+
+// native.call_realm(realm, code, opts_json, from_realm) -> json string {"ok":..,"result"|"error"} (Issue #30: job:call). Runs the chunk
+// like lua_exec in that realm, right now, on this same main thread: nothing to wait for and no frame passes. The realm
+// checks of call_runtime apply (client lock, srcds has no client or menu, realm not loaded yet: realm_unavailable).
+static int native_call_realm(lua_State *L) {
+    static int depth = 0;
+    const auto &A = lua::api();
+    int to = realms::parse(lua::tostring(L, 1));
+    // The calling realm: L is the job's coroutine here, not the realm's main state, so the runtime says where it runs.
+    int from = realms::parse(lua::tostring(L, 4));
+    json out;
+    std::string why = cross_call_refusal(from, to, depth);
+    if (!why.empty()) {
+        out = err("invalid_params", why);
+    } else {
+        json args = json::object();
+        try {
+            std::string o = lua::tostring(L, 3);
+            json opts = o.empty() ? json::object() : json::parse(o);
+            for (const char *k : {"budget", "depth", "limit", "max_string"})
+                if (opts.contains(k) && opts[k].is_number()) args[k] = opts[k];
+        } catch (...) {
+        }
+        args["code"] = lua::tostring(L, 2);
+        args["chunkname"] = std::string("=mcpagent:call:") + realms::name(to);
+        ++depth;
+        out = call_runtime(to, "lua_exec", args);
+        --depth;
+    }
+    std::string s = out.dump(-1, ' ', false, json::error_handler_t::replace);
+    A.pushlstring(L, s.data(), s.size());
+    return 1;
+}
+
 static bool has_runtime(lua_State *L) {
     const auto &A = lua::api();
     A.getfield(L, lua::GLOBALSINDEX, "__mcpagent");
@@ -398,6 +438,8 @@ static bool inject(int realm, lua_State *L, std::string &e) {
     A.setfield(L, -2, "event");
     A.pushcclosure(L, native_report, 0);
     A.setfield(L, -2, "report");
+    A.pushcclosure(L, native_call_realm, 0);
+    A.setfield(L, -2, "call_realm");
     if (realm == (g_cfg.mode == Mode::Client ? realms::MENU : realms::SERVER)) {
         A.pushcclosure(L, native_setup_info, 0);
         A.setfield(L, -2, "setup_info");
