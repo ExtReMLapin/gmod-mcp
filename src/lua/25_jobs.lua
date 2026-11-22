@@ -79,7 +79,7 @@ function H.job_start(args)
 		slice = (tonumber(args.slice_ms) or 8) / 1000,
 		-- No resume limit unless asked: a resume that never yields freezes the game (the caller notices).
 		limit = args.jit ~= true and tonumber(args.resume_limit_s) or nil,
-		depth = tonumber(args.depth), items = tonumber(args.limit), maxstr = tonumber(args.max_string),
+		hook_guard = args.hook_guard, depth = tonumber(args.depth), items = tonumber(args.limit), maxstr = tonumber(args.max_string),
 		started = SysTime(), _frames = 0, _resumes = 0, _cpu = 0, _blocked = {}, _blocked_seen = {},
 		wake_t = 0, wake_frame = 0, state = "running",
 		_reports = {}, _reports_dropped = 0, _reports_truncated = 0, _reports_bytes = 0, _output = {}, _output_size = 0,
@@ -124,7 +124,9 @@ local function resume(job)
 	end
 	job._resume_t0 = t0
 	A.capture_begin()
+	A.guard_begin(job.hook_guard)  -- Issue #15: only while this job runs, so another script's hooks are never wrapped
 	local res = pack(coroutine.resume(job.co))
+	A.guard_end()
 	local out, blocked = A.capture_end()
 	add_output(job, out)
 	for _, c in ipairs(blocked or {}) do  -- issue #11: commands the engine blocked from Lua, over all the resumes

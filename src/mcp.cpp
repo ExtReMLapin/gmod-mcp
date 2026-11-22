@@ -1,4 +1,5 @@
 #include "mcp.h"
+#include "console.h"
 #include "next_call.h"
 #include "output_schemas.h"
 
@@ -299,6 +300,12 @@ static json call_tool_raw(const std::string &name, const json &args_in);
 json call_tool(const std::string &name, const json &args_in) {
     json r = call_tool_raw(name, args_in);
     next_call::annotate(r, name, args_in.is_null() ? json::object() : args_in);
+    // Issue #15: where this game's Lua errors stand, for the bridge (one per caller) to tell a caller that the game is flooded since
+    // its last call. A relayed answer already carries the target game's own figures: those are the ones that count.
+    if (r.is_object() && !r.contains("_meta")) {
+        r["_meta"] = json{{"gmod-mcp/lua_errors", {{"instance", agent::config().instance_id}, {"cursor", console::errors_cursor()},
+                                                     {"recent", console::errors_recent(5.0)}}}};
+    }
     return r;
 }
 

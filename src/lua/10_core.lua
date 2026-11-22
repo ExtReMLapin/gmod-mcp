@@ -282,6 +282,70 @@ function A.error_text(e)
 	return tostring(e)
 end
 
+-- Hook guard (Issue #15). GMod never removes a hook that errors, so a temporary hook installed by a lua_exec / lua_job chunk
+-- that fails runs (and fails) at every call, a hundred times a second, until somebody notices. While a chunk runs, hook.Add is
+-- replaced by a version that wraps the functions it is given: after `limit` identical errors in a row the hook is removed and one
+-- line is logged. The hook keeps its identifier (hook.Remove works), the error still propagates (the engine reports it as before),
+-- and a hook added by anything else, at any other time, is never touched. hook_guard 0 turns it off.
+A.HOOK_GUARD_DEFAULT = 300
+local guard_stack = {}
+local guard_wrappers = setmetatable({}, { __mode = "k" })  -- wrapper -> its state (a wrapper is never wrapped twice)
+
+local function guard_remove(st, w, msg)
+	local ok, tbl = pcall(function() return hook.GetTable() end)
+	local cur = ok and type(tbl) == "table" and type(tbl[st.event]) == "table" and tbl[st.event][st.id] or nil
+	if cur ~= w then return end  -- somebody replaced the hook meanwhile: not ours any more
+	pcall(hook.Remove, st.event, st.id)
+	pcall(MsgN, string.format("[gmod-mcp] hook %s / %s removed after %d identical errors in a row (hook_guard): %s",
+		tostring(st.event), tostring(st.id), st.limit, msg))
+end
+
+local function guard_finish(st, w, ok, ...)
+	if ok then st.streak = 0 return ... end
+	local e = ...
+	local msg = tostring(e)
+	if msg == st.last then
+		st.streak = st.streak + 1
+	else
+		st.last, st.streak = msg, 1
+		-- The module remembers which hook raised this message: errors_since and the warnings name it.
+		local note = __mcpagent_native and __mcpagent_native.hook_error
+		if note then pcall(note, tostring(st.event), tostring(st.id), msg) end
+	end
+	if st.streak >= st.limit then guard_remove(st, w, msg) end
+	error(e, 0)
+end
+
+local function guard_wrap(event, id, f, limit)
+	local st = { event = event, id = id, limit = limit, streak = 0 }
+	local function handler(e) return e end
+	local w
+	w = function(...) return guard_finish(st, w, xpcall(f, handler, ...)) end
+	guard_wrappers[w] = st
+	return w
+end
+
+-- limit: nil = the default, 0 = no guard. Runs can nest (a stack).
+function A.guard_begin(limit)
+	limit = limit == nil and A.HOOK_GUARD_DEFAULT or tonumber(limit) or 0
+	if limit < 1 or type(hook) ~= "table" or type(hook.Add) ~= "function" then
+		guard_stack[#guard_stack + 1] = false
+		return
+	end
+	local orig = hook.Add
+	local function detour(event, id, f, ...)
+		if type(f) == "function" and not guard_wrappers[f] then f = guard_wrap(event, id, f, limit) end
+		return orig(event, id, f, ...)
+	end
+	hook.Add = detour
+	guard_stack[#guard_stack + 1] = { orig = orig, detour = detour }
+end
+
+function A.guard_end()
+	local top = table.remove(guard_stack)
+	if top and hook.Add == top.detour then hook.Add = top.orig end  -- the chunk replaced hook.Add itself: leave its choice
+end
+
 -- Cuts the traceback before the runtime's internal frames (xpcall of run_budget / dispatch).
 function A.trim_traceback(tb)
 	local out = {}

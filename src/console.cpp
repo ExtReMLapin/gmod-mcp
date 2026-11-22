@@ -390,22 +390,76 @@ void push_error(const json &e) {
 }
 
 json errors_since(uint64_t cursor, size_t limit, const std::function<bool(const json &)> &keep) {
-    std::lock_guard<std::mutex> lk(g_emu);
-    json out = json::array();
-    uint64_t oldest = g_errors.empty() ? g_err_next : g_errors.front()["seq"].get<uint64_t>();
-    uint64_t from = cursor < g_err_floor ? g_err_floor : cursor;
+    // Copy what is wanted under the lock and run `keep` outside it: push_error runs on the game's threads, and a filter (a
+    // regular expression over 2000 messages) must never hold them up.
+    std::vector<json> cand;
+    uint64_t oldest, from, next, end;
+    {
+        std::lock_guard<std::mutex> lk(g_emu);
+        oldest = g_errors.empty() ? g_err_next : g_errors.front()["seq"].get<uint64_t>();
+        from = cursor < g_err_floor ? g_err_floor : cursor;
+        next = cursor < oldest ? oldest : cursor;
+        end = g_err_next;
+        for (const auto &e : g_errors)
+            if (e["seq"].get<uint64_t>() >= cursor) cand.push_back(e);
+    }
     uint64_t lost = from < oldest ? oldest - from : 0;
-    uint64_t next = cursor < oldest ? oldest : cursor;
-    for (const auto &e : g_errors) {
+    json out = json::array();
+    for (auto &e : cand) {
         uint64_t s = e["seq"].get<uint64_t>();
-        if (s < cursor) continue;
         if (keep && !keep(e)) continue;
         if (out.size() >= limit) break;
-        out.push_back(e);
         next = s + 1;
+        out.push_back(std::move(e));
     }
-    if (out.size() < limit) next = g_err_next;
+    if (out.size() < limit) next = end;
     return json{{"errors", out}, {"next_cursor", next}, {"lost", lost}};
+}
+
+size_t errors_recent(double window_s) {
+    std::lock_guard<std::mutex> lk(g_emu);
+    double cutoff = uptime() - window_s;
+    size_t n = 0;
+    for (auto it = g_errors.rbegin(); it != g_errors.rend(); ++it) {
+        // Errors are pushed in order, so the times only decrease going back; the stamp is the game's own uptime.
+        if (it->value("time", 0.0) < cutoff) break;
+        ++n;
+    }
+    return n;
+}
+
+uint64_t errors_dropped() {
+    std::lock_guard<std::mutex> lk(g_emu);
+    uint64_t oldest = g_errors.empty() ? g_err_next : g_errors.front()["seq"].get<uint64_t>();
+    return oldest > g_err_floor ? oldest - g_err_floor : 0;
+}
+
+json errors_lost_warning(uint64_t lost) {
+    return json{{"code", "errors_dropped"}, {"lost", lost},
+                {"text", std::to_string(lost) + " errors were dropped before they could be read (only the last 2000 are kept): the list is "
+                         "incomplete. Read with a cursor often, or fix the code that floods the game (group_by: \"message\" shows what repeats)."}};
+}
+
+// Which hook raised a message (named by the hook guard of lua_exec / lua_job, Issue #15). Bounded: the newest 64 messages.
+static std::mutex g_hook_mu;
+static std::deque<std::pair<std::string, std::string>> g_hook_notes;
+
+void note_hook_error(const std::string &message, const std::string &hook) {
+    std::lock_guard<std::mutex> lk(g_hook_mu);
+    for (auto &n : g_hook_notes)
+        if (n.first == message) {
+            n.second = hook;
+            return;
+        }
+    g_hook_notes.emplace_back(message, hook);
+    while (g_hook_notes.size() > 64) g_hook_notes.pop_front();
+}
+
+std::string hook_of(const std::string &message) {
+    std::lock_guard<std::mutex> lk(g_hook_mu);
+    for (const auto &n : g_hook_notes)
+        if (n.first == message) return n.second;
+    return "";
 }
 
 void errors_restamp(uint64_t from_seq, uint64_t map_load) {

@@ -347,6 +347,17 @@ class Fake(http.server.BaseHTTPRequestHandler):
             return self.reply_json(res({"content": [{"type": "text", "text": "instances"}], "structuredContent": sc}))
         if name == "jsonerr":  # Issue #3: an error result with no structuredContent whose text is the JSON error (e.g. a cancelled task)
             return self.reply_json(res({"content": [{"type": "text", "text": json.dumps({"error": {"code": "fake_error", "message": "fails on purpose", "details": {"n": 1}}})}], "isError": True}))
+        if name == "errors_since" and srv.errors_answer is not None:  # Issue #15: what the game says about its Lua errors
+            with srv.lock: srv.errors_calls.append(args)
+            sc = srv.errors_answer
+            r = {"content": [{"type": "text", "text": json.dumps(sc, separators=(",", ":"))}], "structuredContent": sc}
+            if srv.err_meta is not None: r["_meta"] = {"gmod-mcp/lua_errors": dict(srv.err_meta)}
+            return self.reply_json(res(r))
+        if name in ("echo", "status_like") and srv.err_meta is not None:  # Issue #15: the module's _meta on every answer
+            sc = {"args": args}
+            r = {"content": [{"type": "text", "text": json.dumps(sc, separators=(",", ":"))}], "structuredContent": sc,
+                 "_meta": {"gmod-mcp/lua_errors": dict(srv.err_meta), "other": 1}}
+            return self.reply_json(res(r))
         if name == "echo":
             h = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("mcp")}
             sc = {"args": args, "headers": h}  # like the module: the text is the JSON of structuredContent
@@ -428,6 +439,7 @@ class FakeServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.pid_file, self.lua_mount_answer, self.lua_mount_calls = None, None, []
         self.changing, self.terminate_hook, self.instances_answer = 0, None, None  # Issue #6
         self.map_load_hook = None
+        self.err_meta, self.errors_answer, self.errors_calls = None, None, []  # Issue #15: _meta of the answers, errors_since's answer, its calls
         self.status_answer = None  # chaos tests: what `status` says ({map, loading}), a function of the arguments
         self.exec_answer, self.exec_calls, self.order = None, [], []  # Issue #10: console_exec answers and the order of console_exec / map_load calls
         self.pid_dir, self.map_hold, self.map_log, self.map_active, self.map_max = None, None, [], 0, 0  # FP7137 tests
@@ -2407,6 +2419,82 @@ def case_version():
     fake.stop(); b.close()
 
 
+def case_errwarn():
+    """Issue #15: the bridge (one per caller) turns the game's Lua error figures (_meta on every answer) into a `warnings` entry when
+    the game was flooded with errors since this caller's last call; the private _meta key never reaches the client."""
+    print("== ERRWARN: Lua error spam warnings (issue 15)", flush=True)
+    port, env = free_port(), isolated_config(with_token=True)
+    bv = bridge_version()
+    fake = FakeServer(port, version=bv)
+    b = Bridge(port, env)
+    b.req("initialize", INIT)
+    time.sleep(3)
+    spam = {"count": 300, "message": "lua/x.lua:59: attempt to call method 'GetWeaponSelect' (a nil value)", "source": "lua/x.lua:59",
+            "first_time": 100.0, "last_time": 103.0, "hook": "StartCommand / SELJ_sc", "realms": ["client"], "stack": []}
+    fake.errors_answer = {"groups": [spam, {"count": 12, "message": "other", "first_time": 101.0, "last_time": 102.0}], "groups_total": 2, "next_cursor": 400, "lost": 0}
+
+    def echo(meta):
+        fake.err_meta = meta
+        r = b.req("tools/call", {"name": "echo", "arguments": {}})
+        res = (r or {}).get("result", {})
+        texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+        return res, res.get("structuredContent", {}), texts
+
+    res, sc, texts = echo({"instance": "g1", "cursor": 100, "recent": 0})
+    check("ERRWARN a calm game: no warnings, and the private _meta key is gone", "warnings" not in sc and
+          "gmod-mcp/lua_errors" not in res.get("_meta", {}), res)
+    check("ERRWARN other _meta keys of the module are kept", res.get("_meta", {}).get("other") == 1, res)
+    res, sc, texts = echo({"instance": "g1", "cursor": 400, "recent": 300})
+    w = sc.get("warnings") or []
+    check("ERRWARN a flood since the last call: one lua_error_spam warning per top message, with count, seconds, message, source, hook",
+          len(w) == 2 and w[0].get("code") == "lua_error_spam" and w[0].get("count") == 300 and w[0].get("seconds") == 3.0 and
+          "GetWeaponSelect" in w[0].get("message", "") and w[0].get("source") == "lua/x.lua:59" and w[0].get("hook") == "StartCommand / SELJ_sc" and
+          w[0].get("instance") == "g1" and w[0].get("errors_since_your_last_call") == 300 and "hook.Remove" in w[0].get("text", ""), sc)
+    check("ERRWARN the text block stays the JSON of structuredContent, warnings first (Code Mode parses it)",
+          len(texts) == 1 and texts[0].startswith('{"warnings":[') and json_equal(texts[0], sc), texts)
+    check("ERRWARN no _meta key of ours left", "gmod-mcp/lua_errors" not in res.get("_meta", {}), res)
+    with fake.lock: calls = list(fake.errors_calls)
+    check("ERRWARN the bridge asked the game for the errors since the caller's last answer, grouped, for that instance",
+          len(calls) == 1 and calls[0].get("cursor") == 100 and calls[0].get("group_by") == "message" and calls[0].get("instance") == "g1", calls)
+    res, sc, texts = echo({"instance": "g1", "cursor": 400, "recent": 300})
+    check("ERRWARN nothing new since: no second warning (it is per caller, per call)", "warnings" not in sc, sc)
+    res, sc, texts = echo({"instance": "g1", "cursor": 410, "recent": 10})
+    check("ERRWARN a trickle (under 20 in 5 s) is not a spam", "warnings" not in sc, sc)
+    with fake.lock: n_before = len(fake.errors_calls)
+    fake.err_meta = {"instance": "g1", "cursor": 900, "recent": 400}
+    r = b.req("tools/call", {"name": "errors_since", "arguments": {"cursor": 0}})
+    sc2 = (r or {}).get("result", {}).get("structuredContent", {})
+    check("ERRWARN no warning on errors_since itself (the caller is reading them)", "warnings" not in sc2, sc2)
+    res, sc, texts = echo({"instance": "g1", "cursor": 900, "recent": 400})
+    check("ERRWARN ... and what it read is not warned about afterwards", "warnings" not in sc, sc)
+    # A game this caller has not met: the burst only, the history before it does not count.
+    with fake.lock: fake.errors_calls.clear()
+    res, sc, texts = echo({"instance": "g2", "cursor": 5000, "recent": 40})
+    with fake.lock: calls = list(fake.errors_calls)
+    check("ERRWARN a first contact with a flooded game warns, asking for the burst only (cursor - recent)",
+          sc.get("warnings") and len(calls) == 1 and calls[0].get("cursor") == 4960 and calls[0].get("instance") == "g2", (sc, calls))
+    # An answer that is an error is served too: an error result carries warnings like the rest.
+    fake.stop(); b.close()
+    # With a version mismatch both fields are there, the version warning stays first.
+    port, env = free_port(), isolated_config(with_token=True)
+    b = Bridge(port, env)
+    b.req("initialize", INIT)
+    b.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    fake = FakeServer(port, version="0.0.1")
+    fake.errors_answer = {"groups": [spam], "groups_total": 1, "next_cursor": 400, "lost": 0}
+    time.sleep(5)
+    fake.err_meta = {"instance": "g1", "cursor": 100, "recent": 0}
+    b.req("tools/call", {"name": "echo", "arguments": {}})
+    fake.err_meta = {"instance": "g1", "cursor": 400, "recent": 300}
+    r = b.req("tools/call", {"name": "echo", "arguments": {}})
+    res = (r or {}).get("result", {})
+    sc = res.get("structuredContent", {})
+    t0 = (res.get("content") or [{}])[0].get("text", "")
+    check("ERRWARN with a version mismatch both are there, version_warning first, one JSON text",
+          bool(sc.get("warnings")) and "version_warning" in sc and t0.startswith('{"version_warning":"') and json_equal(t0, sc) and len(res.get("content", [])) == 1, res)
+    fake.stop(); b.close()
+
+
 def case_version_live():
     """Live (Windows, Steam running, no other game; the game's module must be OLDER than this bridge, e.g. the previous
     release's DLL put back in garrysmod/lua/bin): a client launched by this bridge, then any tool result warns."""
@@ -3723,8 +3811,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "private_desktop": case_private_desktop, "module_check": case_module_check, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "private_desktop", "module_check", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "errwarn": case_errwarn, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "private_desktop": case_private_desktop, "module_check": case_module_check, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "errwarn", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "private_desktop", "module_check", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

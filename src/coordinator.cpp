@@ -164,6 +164,8 @@ static json self_info() {
                 {"game_dir", c.game_dir}};
     // Issue #8 (G3): who launched it (instances_launch {owner}) and whether it is one of our test clients (-mcp_test_client), so that
     // instances_list names the owner of every instance and a later bridge session can close keep:true test clients by owner.
+    uint64_t dropped = console::errors_dropped();  // Issue #15: errors that can no longer be read (the buffer keeps 2000)
+    if (dropped > 0) info["lua_errors_lost"] = dropped;
     info["test_client"] = c.test_client;
     if (agent::map_loading_stuck()) info["loading_stuck"] = true;  // issue #8 (I-C1): the engine's loading screen is stuck, not a load
     if (!c.owner.empty()) info["owner"] = c.owner;
@@ -331,6 +333,13 @@ json instances() {
         json mem = lowmem::memory_json(lowmem::current());  // issue #8
         if (!mem.is_null()) ce["crash"]["memory"] = mem;
         arr.push_back(ce);
+    }
+    // Issue #15: said once for every instance whose heartbeat reported it (a game's own entry and the members', not a crashed one's).
+    for (auto &e : arr) {
+        uint64_t lost = e.value("lua_errors_lost", (uint64_t)0);
+        if (lost == 0) continue;
+        if (!e.contains("warnings") || !e["warnings"].is_array()) e["warnings"] = json::array();
+        e["warnings"].push_back(console::errors_lost_warning(lost));
     }
     return arr;
 }

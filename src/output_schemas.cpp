@@ -53,6 +53,7 @@ json obj(Props props, std::initializer_list<const char *> required = {}) {
     // Hint fields any tool may add (see "Reading results" in the guide) and what the bridge adds.
     for (const char *h : {"note", "warning", "next", "truncated_note", "version_warning", "answered_by"})
         if (!p.contains(h)) p[h] = S;
+    if (!p.contains("warnings")) p["warnings"] = ANYS;  // Issue #15: the list of warnings the game or the bridge adds
     if (!p.contains("next_call")) p["next_call"] = NextCall;
     json o{{"type", "object"}, {"properties", std::move(p)}, {"additionalProperties", true}};
     if (required.size()) {
@@ -208,6 +209,7 @@ json build(const std::string &tool) {
         tr["properties"]["hitgroup"] = N;
         tr["properties"]["physics_bone"] = N;
         for (const char *h : {"note", "warning", "version_warning", "answered_by"}) tr["properties"][h] = S;
+        tr["properties"]["warnings"] = ANYS;
         tr["properties"]["next_call"] = NextCall;
         tr["required"] = json::array({"hit", "pos", "fraction", "distance"});
         s["trace"] = tr;

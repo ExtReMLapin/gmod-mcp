@@ -665,6 +665,98 @@ void add_version_warning(json &result) {
     if (!rewritten) content.insert(content.begin(), json{{"type", "text"}, {"text", w}});
 }
 
+// --- Lua error warnings (issue #15) ---
+// Every answer of the game carries `_meta["gmod-mcp/lua_errors"]` = {instance, cursor, recent} (cursor: how many errors the game has
+// raised so far; recent: how many in the last 5 s). This bridge serves one caller, so it is the one place that knows what THIS caller
+// has seen: it remembers the cursor of each game at the caller's last answer, and when the game raised a burst of errors since (20 or
+// more in the last 5 s) it asks the game what they were and puts a `warnings` entry on the answer, so a hook that fails a hundred times
+// a second does not go on unnoticed. Without a burst nothing is asked and the answer only loses the _meta key.
+json game_call(const std::string &tool, json args, double timeout_s);  // defined below
+constexpr uint64_t kErrorBurst = 20;
+std::mutex g_errwarn_mu;
+std::map<std::string, uint64_t> g_errors_seen;  // game id -> its error cursor at this caller's last answer
+
+// Puts `key: value` first in structuredContent and in the JSON text block that mirrors it. Returns false when the result has no
+// JSON object to carry it (then nothing is changed).
+bool put_top_field(json &result, const std::string &key, const json &value) {
+    if (!result.is_object() || !result.contains("content") || !result["content"].is_array()) return false;
+    std::string v = value.dump(-1, ' ', false, json::error_handler_t::replace);
+    if (result.contains("structuredContent") && result["structuredContent"].is_object()) {
+        json &sc = result["structuredContent"];
+        for (json &c : result["content"]) {
+            if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
+            if (json::parse(c["text"].get<std::string>(), nullptr, false) == sc) {
+                std::string body = sc.dump(-1, ' ', false, json::error_handler_t::replace);
+                c["text"] = "{" + json(key).dump() + ":" + v + (body.size() > 2 ? "," + body.substr(1) : "}");
+            }
+            break;  // only the first text block can be the JSON
+        }
+        sc[key] = value;
+        return true;
+    }
+    for (json &c : result["content"]) {
+        if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
+        json body = json::parse(c["text"].get<std::string>(), nullptr, false);
+        if (body.is_object()) {
+            std::string text = body.dump(-1, ' ', false, json::error_handler_t::replace);
+            c["text"] = "{" + json(key).dump() + ":" + v + (text.size() > 2 ? "," + text.substr(1) : "}");
+            return true;
+        }
+        break;
+    }
+    return false;
+}
+
+double round1(double x) { return std::round(x * 10.0) / 10.0; }
+
+void add_lua_error_warnings(json &result, const std::string &tool) {
+    static const char *kKey = "gmod-mcp/lua_errors";
+    if (!result.is_object() || !result.contains("_meta") || !result["_meta"].is_object() || !result["_meta"].contains(kKey)) return;
+    json m = result["_meta"][kKey];
+    result["_meta"].erase(kKey);  // private to the bridge
+    if (result["_meta"].empty()) result.erase("_meta");
+    if (!m.is_object()) return;
+    std::string inst = m.value("instance", "");
+    uint64_t cursor = m.value("cursor", (uint64_t)0), recent = m.value("recent", (uint64_t)0);
+    uint64_t last;
+    {
+        std::lock_guard<std::mutex> lk(g_errwarn_mu);
+        auto it = g_errors_seen.find(inst);
+        // A game this caller has not met: only what the burst itself holds counts, the history before is not "since your last call".
+        last = it != g_errors_seen.end() ? it->second : (cursor > recent ? cursor - recent : 0);
+        g_errors_seen[inst] = cursor;
+    }
+    // The caller reading the errors is hearing about them: no warning on errors_since / errors_clear themselves.
+    if (tool == "errors_since" || tool == "errors_clear" || cursor <= last || recent < kErrorBurst) return;
+    json args{{"cursor", last}, {"group_by", "message"}, {"limit", 3}};
+    if (!inst.empty()) args["instance"] = inst;
+    json sc = game_call("errors_since", args, 5.0);
+    if (!sc.is_object() || !sc.contains("groups") || !sc["groups"].is_array() || sc["groups"].empty()) return;
+    json warnings = json::array();
+    double first = 1e300, lastt = 0;
+    for (const auto &g : sc["groups"]) {
+        first = std::min(first, g.value("first_time", 0.0));
+        lastt = std::max(lastt, g.value("last_time", 0.0));
+    }
+    uint64_t total = cursor - last;
+    double seconds = round1(std::max(0.0, lastt - first));
+    for (const auto &g : sc["groups"]) {
+        json w{{"code", "lua_error_spam"}, {"count", g.value("count", 0)}, {"errors_since_your_last_call", total}, {"seconds", seconds},
+               {"message", g.value("message", "")}, {"instance", inst}};
+        if (g.contains("source")) w["source"] = g["source"];
+        if (g.contains("hook")) w["hook"] = g["hook"];
+        std::string text = std::to_string(total) + " Lua errors in the last " + std::to_string((int)std::ceil(std::max(seconds, 1.0))) + " s on " +
+                           (inst.empty() ? "the game" : inst) + " since your last call; this message came " + std::to_string(g.value("count", 0)) + " times";
+        if (g.contains("source")) text += ", raised at " + g["source"].get<std::string>();
+        if (g.contains("hook")) text += ", by the hook " + g["hook"].get<std::string>();
+        text += ". GMod never removes a hook that errors: if it is a hook you added, remove it with hook.Remove now. "
+                "errors_since {group_by: \"message\"} lists what repeats.";
+        w["text"] = text;
+        warnings.push_back(std::move(w));
+    }
+    put_top_field(result, "warnings", warnings);
+}
+
 json local_result(const json &msg, json r) {
     if (modern_2026(msg)) {
         r["resultType"] = "complete";
@@ -2833,6 +2925,7 @@ void handle_request(const json &msg) {
             json &res = r.response["result"];
             res = tool_text(annotate_instances(res.value("structuredContent", json::object()), params_of(msg).value("arguments", json::object())), false);
         }
+        if (!tool.empty() && r.response.contains("result")) add_lua_error_warnings(r.response["result"], tool);  // issue #15
         if (!tool.empty() && r.response.contains("result")) add_version_warning(r.response["result"]);
         // Remember where the game is (instances_launch can then start more without asking).
         if (tool == "status" && r.response.contains("result")) {

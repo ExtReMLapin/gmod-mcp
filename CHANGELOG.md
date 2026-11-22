@@ -25,6 +25,16 @@
   and Linux x86-64, built by `cmake/mcp_registry.py` and run once in CI before the release) and, from a tag, publishes
   `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the
   bridge; the module for the game is still installed as before. See `docs/MCP_REGISTRY.md`.
+- **Lua error spam is now visible, bounded and filterable** (issues #15, #24, #11). `errors_since` filters: `source` / `exclude_source`
+  (prefix of the `file:line` the error was raised at, else the first stack frame) and `pattern` / `exclude_pattern` (regex on the
+  message), so an agent in a game shared with others reads only its own errors. `group_by: "message"` now groups per message **and
+  source**, each group carries its `source` and, when known, the `hook`. `warnings` on the answers: `errors_dropped` when `lost > 0`
+  (`errors_since` and `instances_list`, which also gets `lua_errors_lost`), `repeated_errors` on a plain list that is mostly one message,
+  and `lua_error_spam`, added by the plugin to the answer of any tool when the game raised 20 or more Lua errors in 5 s since this
+  caller's last answer (count, seconds, message, source, hook). **Hook guard**: a hook added by `lua_exec` / `lua_exec_file` /
+  `lua_job` / `lua_reload` (while the chunk runs, or during a job's resumes) is wrapped and removed after `hook_guard` identical errors in
+  a row (default 300, `0` = off) with one log line; it keeps its identifier, so `hook.Remove` still works, and the error is still reported.
+  The default of `errors_since` stays the plain list (a result-shape change for scripts).
 
 - **`tests_run` is cheaper to read and easier to debug** (issues #16, #21, #22, #26). New arguments: `only_failures` (fail and
   error cases only; every file keeps its `totals`), `case` (run the cases whose name contains the text), `output`

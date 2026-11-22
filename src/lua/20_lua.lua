@@ -13,9 +13,11 @@ function H.lua_exec(args)
 	-- No budget unless asked (jit: true, the old way to turn it off, wins).
 	local budget = args.jit ~= true and tonumber(args.budget) or nil
 	A.capture_begin()
+	A.guard_begin(args.hook_guard)  -- Issue #15: hooks added by this chunk are removed after N identical errors in a row
 	local t0 = SysTime()
 	local ok, res, err, tb, exceeded = A.run_budget(fn, budget)
 	local dt = (SysTime() - t0) * 1000
+	A.guard_end()
 	local output, blocked = A.capture_end()
 	if not ok then
 		if A.is_fail(err) then A.fail(err.code, err.message, err.details) end
