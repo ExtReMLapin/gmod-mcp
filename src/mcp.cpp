@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "agent.h"
+#include "imagecap.h"
 #include "mcp_protocol.h"
 #include "log.h"
 #include "prompts.h"
@@ -274,6 +275,10 @@ static json to_call_result(json r) {
         content.push_back(json{{"type", "text"}, {"text", sc.dump(-1, ' ', false, json::error_handler_t::replace)}});
         return json{{"content", content}, {"structuredContent", sc}, {"isError", true}};
     }
+    // Issue #17: an image over the cap is never sent (a client drops the whole connection above 16 MB per message).
+    if (r.contains("image") && r["image"].is_object() && r["image"].contains("data") && r["image"]["data"].is_string() &&
+        r["image"]["data"].get_ref<const std::string &>().size() > imagecap::kMaxBase64)
+        return to_call_result(imagecap::too_large_error(r["image"]["data"].get_ref<const std::string &>().size()));
     json result = r.value("result", json::object());
     if (!result.is_object()) result = json{{"value", result}};
     // Always say which game process answered (several instances may share the endpoint).

@@ -36,6 +36,12 @@ local function do_capture(req)
 	local sw, sh = ScrW(), ScrH()
 	local w, h = req.w or sw, req.h or sh
 	local info = { format = fmt, w = w, h = h, screen_w = sw, screen_h = sh, realm = A.realm }
+	-- Issue #11 (item 8): crop = a rectangle of the picture (validated in capture_request); render.Capture takes it as is.
+	local cx, cy, cw, ch = 0, 0, nil, nil
+	if req.crop then
+		cx, cy, cw, ch = req.crop.x, req.crop.y, req.crop.w, req.crop.h
+		info.crop = { x = cx, y = cy, w = cw, h = ch }
+	end
 	if A.realm == "client" and (w ~= sw or h ~= sh or req.origin) then
 		-- Arbitrary dimensions (or explicit viewpoint): render into a render target of the requested size.
 		local rt = GetRenderTargetEx("mcpagent_rt_" .. w .. "x" .. h, w, h, RT_SIZE_LITERAL, MATERIAL_RT_DEPTH_SEPARATE, 0, 0, IMAGE_FORMAT_RGB888)
@@ -49,8 +55,9 @@ local function do_capture(req)
 			-- Show the local player only from an arbitrary viewpoint (otherwise its head blocks the view).
 			drawhud = false, drawviewmodel = false, dopostprocess = true, drawviewer = req.origin ~= nil,
 		})
-		local data = render.Capture({ format = fmt, x = 0, y = 0, w = w, h = h, quality = req.quality or 90, alpha = false })
+		local data = render.Capture({ format = fmt, x = cx, y = cy, w = cw or w, h = ch or h, quality = req.quality or 90, alpha = false })
 		render.PopRenderTarget()
+		if cw then info.w, info.h = cw, ch end
 		info.method = "render_target"
 		finish(data, info)
 	else
@@ -58,7 +65,8 @@ local function do_capture(req)
 		w, h = math.min(w, sw), math.min(h, sh)
 		info.w, info.h = w, h
 		info.method = A.realm == "menu" and "menu_backbuffer" or "backbuffer"
-		local data = render.Capture({ format = fmt, x = 0, y = 0, w = w, h = h, quality = req.quality or 90, alpha = false })
+		local data = render.Capture({ format = fmt, x = cx, y = cy, w = cw or w, h = ch or h, quality = req.quality or 90, alpha = false })
+		if cw then info.w, info.h = cw, ch end
 		finish(data, info)
 	end
 end
@@ -82,6 +90,16 @@ function H.capture_request(args)
 	if cap.pending then A.fail("busy", "a capture is already in progress") end
 	cap.result, cap.data = nil, nil
 	local req = { format = args.format, quality = args.quality, w = args.w, h = args.h, wait_frames = args.wait_frames or 1 }
+	if args.crop then
+		-- The rectangle must lie inside the picture that would be captured without it: w x h when given, else the window.
+		local c, tw, th = args.crop, args.w or ScrW(), args.h or ScrH()
+		local x, y, cw, ch = tonumber(c.x), tonumber(c.y), tonumber(c.w), tonumber(c.h)
+		if not (x and y and cw and ch) or x < 0 or y < 0 or cw < 1 or ch < 1 or x + cw > tw or y + ch > th then
+			A.fail("invalid_params", "crop {x=" .. tostring(c.x) .. ", y=" .. tostring(c.y) .. ", w=" .. tostring(c.w) .. ", h=" .. tostring(c.h) ..
+				"} is not inside the " .. tw .. "x" .. th .. " picture")
+		end
+		req.crop = { x = math.floor(x), y = math.floor(y), w = math.floor(cw), h = math.floor(ch) }
+	end
 	if args.origin then
 		req.origin = A.to_vector(args.origin, "pos")
 		req.angles = A.to_angle(args.angles or { 0, 0, 0 }, "ang")

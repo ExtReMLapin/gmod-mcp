@@ -7,6 +7,7 @@ void test_fp7137();  // FP7137
 void test_mdmp();
 void test_uiinput();
 void test_enginejpeg();
+void test_imagecap();
 void test_platform();
 void test_modcheck();  // Issue #13
 
@@ -17,6 +18,7 @@ int main() {
     test_mdmp();
     test_uiinput();
     test_enginejpeg();
+    test_imagecap();
     test_platform();
     test_modcheck();  // Issue #13
     std::printf("unittests: %d passed, %d failed\n", g_pass, g_fail);

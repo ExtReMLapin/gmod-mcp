@@ -576,7 +576,9 @@ tracebacks then point at the real file.
 - Without a loaded map, `screenshot` runs the engine's own `jpeg` command: the engine writes a file in `garrysmod/screenshots/`,
   the module reads exactly the file the engine names in its console and deletes it (nothing else is touched). It works while other
   windows cover the game, but not while the game is minimized or frozen (`capture_timeout`). The image is the engine's JPEG at the
-  game's screen size and quality: no HUD choice, no `w`/`h`, no PNG. `screenshot_from` and the `render` source need a loaded map.
+  game's screen size and quality: no HUD choice, no `w`/`h`, no PNG, no `crop`/`scale`. `screenshot_from` and the `render` source need a loaded map.
+- An image is never returned above 8 MB encoded (a client drops the connection above 16 MB per message): a too big `png` comes back as a
+  JPEG (`size_capped: true`) or fails with `result_too_large`. `screenshot {crop, scale}` crops and enlarges a small region (a HUD icon).
 - `hook_trace` adds a temporary hook: if another hook returns a value first, that call is not seen.
 - The Garry's Mod dedicated server ignores packets from `127.0.0.1`: to join a local dedicated server, connect to this
   machine's LAN address (the client lock recognizes it as local).
