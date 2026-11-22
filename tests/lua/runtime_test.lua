@@ -31,7 +31,7 @@ function GetConVar(n) error("cached GetConVar used (crash risk)") end
 function GetConVar_Internal(n) return setmetatable({}, fake_cv) end
 function RunConsoleCommand() end
 game = game or { ConsoleCommand = function() end }
-for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua" }) do
+for _, name in ipairs({ "00_json.lua", "10_core.lua", "12_data_overlay.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua" }) do
 	local f = assert(loadfile(dir .. "/" .. name))
 	f()
 end
@@ -43,6 +43,8 @@ local fails, passes = 0, 0
 local function check(cond, what)
 	if cond then passes = passes + 1 else fails = fails + 1 print("FAIL " .. what) end
 end
+-- Issue #20: the data/ overlay chunk is part of the runtime: without a configuration it installs nothing (no `file` library here).
+check(A.data_overlay and A.data_overlay.status().installed == false and rawget(_G, "__mcpagent_data_overlay_state") == nil, "data overlay chunk loads and stays off without a configuration")
 local function call(tool, args)
 	return J.decode(A.dispatch(J.encode({ tool = tool, args = args })))
 end

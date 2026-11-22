@@ -149,6 +149,9 @@ function H.status(args)
 		s.players = #player.GetAll()
 		s.curtime = CurTime()
 		s.tickinterval = engine.TickInterval()
+		-- Issue #20: the data/ isolation or audit of a test client (12_data_overlay.lua), when it is on in this realm.
+		local di = A.data_overlay and A.data_overlay.status()
+		if di and di.installed then s.data_isolation = di end
 		if A.realm == "server" then
 			s.dedicated = game.IsDedicated()
 			s.singleplayer = game.SinglePlayer()
