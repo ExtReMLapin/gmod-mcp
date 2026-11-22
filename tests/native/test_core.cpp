@@ -413,14 +413,24 @@ static void test_frictions_small() {
         const mcp::Tool *t = mcp::find_tool(tool);
         return t ? call_shape::of(tool, t->input_schema) : std::string("<no tool>");
     };
-    CHECK(shape("tests_run") == "tests_run(path, budget?, case?, fields?, frames_between_files?, only_failures?, output?, ...)");  // retex/tests added arguments: the first six alphabetical ones are listed
+    // Optional arguments: realm, code, path, name, timeout_s first when present, then alphabetical; at most 8, then `...`.
+    CHECK(shape("tests_run") == "tests_run(path, realm?, timeout_s?, budget?, case?, fields?, frames_between_files?, only_failures?, output?)");
     CHECK(shape("wiki_page") == "wiki_page(name, format?, refresh?)");
-    CHECK(shape("hook_list") == "hook_list(event?, name?, realm?)");
+    CHECK(shape("hook_list") == "hook_list(realm?, name?, event?)");
     CHECK(shape("status").rfind("status(", 0) == 0 && shape("status").find("instance") == std::string::npos);
     json many{{"properties", {{"a", json::object()}, {"b", json::object()}, {"c", json::object()}, {"d", json::object()}, {"e", json::object()},
-                              {"f", json::object()}, {"g", json::object()}, {"h", json::object()}, {"instance", json::object()}}},
+                              {"f", json::object()}, {"g", json::object()}, {"h", json::object()}, {"i", json::object()},
+                              {"instance", json::object()}}},
               {"required", {"z"}}};
-    CHECK(call_shape::of("x", many) == "x(z, a?, b?, c?, d?, e?, f?, ...)");
+    CHECK(call_shape::of("x", many) == "x(z, a?, b?, c?, d?, e?, f?, g?, h?, ...)");
+    json prio{{"properties", {{"a", json::object()}, {"zeta", json::object()}, {"timeout_s", json::object()}, {"name", json::object()},
+                              {"path", json::object()}, {"code", json::object()}, {"realm", json::object()}, {"instance", json::object()}}},
+              {"required", {"path"}}};
+    CHECK(call_shape::of("p", prio) == "p(path, realm?, code?, name?, timeout_s?, a?, zeta?)");  // path is required: listed once, first
+    json prio_cap = prio;
+    for (char c = 'b'; c <= 'h'; ++c) prio_cap["properties"][std::string(1, c)] = json::object();
+    // A priority argument is never cut by the cap while an alphabetical one is shown: realm and timeout_s come before `a`.
+    CHECK(call_shape::of("p", prio_cap) == "p(path, realm?, code?, name?, timeout_s?, a?, b?, c?, d?, ...)");
     CHECK(call_shape::of("y", json::object()) == "y()");
     CHECK(call_shape::prefixed("y", json::object(), "Does y.") == "y(). Does y.");
     CHECK(call_shape::prefixed("y", json::object(), "y(). Does y.") == "y(). Does y.");  // idempotent

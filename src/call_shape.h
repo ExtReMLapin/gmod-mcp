@@ -4,17 +4,20 @@
 // sees the description before the schema: this is where it learns that `tests_run` wants `path` (not `file`) before the
 // first call fails. Header-only: the module and the bridge both use it.
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 namespace call_shape {
 
-// Required arguments first (schema order), then the optional ones with a `?`, at most kMaxOptional of them, then `...`.
-// `instance` is on every tool and never listed. Alphabetical inside each group (the schema's object order).
+// Required arguments first (schema order), then the optional ones with a `?`: the ones an agent reaches for first (realm, code,
+// path, name, timeout_s) when present, then the rest alphabetically (the schema's object order), at most kMaxOptional of them,
+// then `...`. `instance` is on every tool and never listed.
 inline std::string of(const std::string &name, const nlohmann::json &input_schema) {
-    constexpr size_t kMaxOptional = 6;
-    std::string req, opt;
-    size_t n_opt = 0, shown = 0;
+    constexpr size_t kMaxOptional = 8;
+    static const char *const kPriority[] = {"realm", "code", "path", "name", "timeout_s"};
+    std::string req;
+    std::vector<std::string> optional;
     nlohmann::json required = input_schema.value("required", nlohmann::json::array());
     auto is_required = [&](const std::string &k) {
         for (const auto &r : required)
@@ -27,18 +30,19 @@ inline std::string of(const std::string &name, const nlohmann::json &input_schem
             if (!req.empty()) req += ", ";
             req += r.get<std::string>();
         }
-        for (auto it = input_schema["properties"].begin(); it != input_schema["properties"].end(); ++it) {
+        const auto &props = input_schema["properties"];
+        for (const char *p : kPriority)
+            if (props.contains(p) && !is_required(p)) optional.push_back(p);
+        for (auto it = props.begin(); it != props.end(); ++it) {
             if (it.key() == "instance" || is_required(it.key())) continue;
-            ++n_opt;
-            if (shown >= kMaxOptional) continue;
-            ++shown;
-            if (!opt.empty()) opt += ", ";
-            opt += it.key() + "?";
+            bool done = false;
+            for (const char *p : kPriority) done = done || it.key() == p;
+            if (!done) optional.push_back(it.key());
         }
     }
     std::string args = req;
-    if (!opt.empty()) args += (args.empty() ? "" : ", ") + opt;
-    if (n_opt > shown) args += ", ...";
+    for (size_t i = 0; i < optional.size() && i < kMaxOptional; ++i) args += (args.empty() ? "" : ", ") + optional[i] + "?";
+    if (optional.size() > kMaxOptional) args += ", ...";
     return name + "(" + args + ")";
 }
 
