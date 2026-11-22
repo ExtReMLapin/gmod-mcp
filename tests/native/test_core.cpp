@@ -412,7 +412,7 @@ static void test_frictions_small() {
         const mcp::Tool *t = mcp::find_tool(tool);
         return t ? call_shape::of(tool, t->input_schema) : std::string("<no tool>");
     };
-    CHECK(shape("tests_run") == "tests_run(path, budget?, realm?)");
+    CHECK(shape("tests_run") == "tests_run(path, budget?, case?, fields?, frames_between_files?, only_failures?, output?, ...)");  // retex/tests added arguments: the first six alphabetical ones are listed
     CHECK(shape("wiki_page") == "wiki_page(name, format?, refresh?)");
     CHECK(shape("hook_list") == "hook_list(event?, name?, realm?)");
     CHECK(shape("status").rfind("status(", 0) == 0 && shape("status").find("instance") == std::string::npos);
