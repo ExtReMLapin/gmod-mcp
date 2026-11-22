@@ -22,6 +22,12 @@ namespace fs = std::filesystem;
 
 static std::mutex g_mu;
 static std::string g_root;
+static std::string g_early_root;  // Issue #20: the internal early root (see set_early_root)
+
+std::string early_root() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_early_root;
+}
 
 std::string current() {
     std::lock_guard<std::mutex> lk(g_mu);
@@ -212,6 +218,9 @@ static void hooked_mount(void *self, const char *id) {
     g_hook_ids[id] = g_hook_ids.value(id, 0) + 1;
     std::string root = current();
     bool sv = std::strcmp(id, "lsv") == 0, cl = std::strcmp(id, "lcl") == 0;
+    // Issue #20: the early root goes in first, so that the user's mounted folder (added next, at the head) stays in front of it.
+    std::string early = early_root();
+    if (!early.empty() && (sv || cl)) add_lua(early, id);
     if (!root.empty() && (sv || cl)) {
         add_lua(root, id);
         // Issue #9: the folder is in front for the Lua this realm loads next: remember what it holds right now.
@@ -287,6 +296,28 @@ json info() {
     return json{{"ok", true}, {"result", r}};
 }
 
+bool set_early_root(const std::string &root, std::string &err) {
+    if (root.empty()) {
+        err = "empty folder";
+        return false;
+    }
+    if (!ensure(err)) return false;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_early_root = root;
+    }
+    fs_add(root, "MOD", kTail);  // a file only loads when its full path maps back to a MOD-relative name (see set)
+    add_lua(root, "lsv");
+    add_lua(root, "lcl");
+    if (!hook(true, err)) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_early_root.clear();
+        return false;
+    }
+    logx::info("early Lua root set: %s", root.c_str());
+    return true;
+}
+
 json set(const std::string &root, bool empty_cache) {
     std::string err;
     if (!ensure(err)) return json{{"ok", false}, {"error", {{"code", "interface_missing"}, {"message", err}}}};
@@ -315,7 +346,7 @@ json set(const std::string &root, bool empty_cache) {
         add_lua(root, "lsv");
         add_lua(root, "lcl");
         if (!hook(true, err)) return json{{"ok", false}, {"error", {{"code", "hook_failed"}, {"message", err}}}};
-    } else if (!hook(false, err)) {
+    } else if (early_root().empty() && !hook(false, err)) {  // the early root still needs the hook
         return json{{"ok", false}, {"error", {{"code", "hook_failed"}, {"message", err}}}};
     }
     // Cached copies are keyed by MOD-relative name and file time: an addon file and its mounted copy share the name.
@@ -352,6 +383,11 @@ json info() {
 }
 
 json set(const std::string &, bool) { return info(); }
+
+bool set_early_root(const std::string &, std::string &err) {
+    supported(&err);
+    return false;
+}
 
 bool empty_cache() { return false; }
 

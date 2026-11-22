@@ -4,6 +4,14 @@
 
 ### Features
 
+- **Test clients can keep your `data/` folder safe (Issue #20).** `instances_launch` takes `data_isolation: true` (each client
+  gets a copy-on-write `data/`: reads fall back to the real folder, writes, appends, deletes and renames go to
+  `data/mcp_overlay/<token>/`, removed with the client), `data_audit: true` (only record what each client creates, changes or
+  deletes) and `early_lua` (Lua run in the client and server realms before any addon's file, which is the only way to prepare an
+  addon whose convars do not exist yet when `commands` run). The overlay is installed by a file the module mounts in front of
+  every addon; `status` shows `data_isolation`. The new tool `instances_data_changes` lists the changes while the clients run
+  and `instances_close` returns them (`closed[i].data_changes`) and removes the folder. Off by default. The docs now say that
+  archived convars changed through `commands`, `launch_args` and `fps_max` are given back before a clean quit.
 - **Listed in the official MCP Registry.** Each release now attaches `gmod-mcp.mcpb` (one MCP Bundle with the bridge for Windows
   and Linux x86-64, built by `cmake/mcp_registry.py` and run once in CI before the release) and, from a tag, publishes
   `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the

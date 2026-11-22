@@ -144,6 +144,10 @@ that connects, map changes (use `map`) and what gmod-mcp sets itself (`-multirun
   test that writes cookies, data files or archived convars changes the user's game too: clean up after it. Archived
   convars (FCVAR_ARCHIVE) are saved to `cfg/config.cfg` and seen by every instance: one agent's `pba_x 0` left behind
   pollutes another's runs (`console_exec` warns when it sets one; `convar_set` refuses them unless `persist: true`).
+  An addon that caches into `data/` (or deletes its cache when its format changes) does it right after the map loads, before
+  `commands` can switch it off: start the clients with `instances_launch {data_isolation: true}` (copy-on-write `data/`, removed
+  with the client; `instances_data_changes` and `instances_close` list what the client changed) or `{data_audit: true}` (only record).
+  `early_lua` runs Lua in the client and server realms before any addon's file.
 - A background test client may believe it has the focus (`system.HasFocus()` true): `fps_max_nofocus` is not
   exercised there.
 - Engine facts that cost agents runs: entity names (targetname) are server-side (`ents.FindByName` does nothing on the

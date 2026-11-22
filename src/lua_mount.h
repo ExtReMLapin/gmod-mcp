@@ -79,6 +79,13 @@ std::string current();
 void set_current_for_tests(const std::string &root);
 // False on platforms where the engine layouts are not verified (why says so).
 bool supported(std::string *why);
+// Issue #20: a second, internal root searched in front of every addon in the same way (its lua/ at the head of "lsv" and "lcl",
+// re-added after every MountLua), independent of the user's mount (`set`, which never removes it). It holds the early autorun
+// file the module writes for a test client: it runs before any addon's file in the client and server realms. Main thread, once
+// at start. False with `err` when the engine layouts are not recognized or the platform has no mount.
+bool set_early_root(const std::string &root, std::string &err);
+// The early root ("" if none). Any thread.
+std::string early_root();
 // Main thread. Empties the engine's Lua file cache (a mounted file edited behind its back may be served stale from it);
 // false when there is no engine to ask (unsupported platform, interface missing).
 bool empty_cache();
