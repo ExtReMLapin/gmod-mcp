@@ -263,6 +263,25 @@ function A.capture_end()
 	return out, top.blocked
 end
 
+-- An error value as text: a string as is; a table through its __tostring, its message / msg / error field, or serialized
+-- (error({ code = 1 }) would otherwise read "table: 0x...").
+function A.error_text(e)
+	if type(e) == "string" then return e end
+	if type(e) ~= "table" then return tostring(e) end
+	local mt = getmetatable(e)
+	if type(mt) == "table" and rawget(mt, "__tostring") then
+		local ok, s = pcall(tostring, e)
+		if ok and type(s) == "string" then return s end
+	end
+	for _, k in ipairs({ "message", "msg", "error", "err" }) do
+		local v = rawget(e, k)
+		if type(v) == "string" then return v end
+	end
+	local ok, s = pcall(function() return J.encode(A.serialize(e, { depth = 3, limit = 20, maxstr = 300 })) end)
+	if ok and type(s) == "string" then return "error object: " .. s end
+	return tostring(e)
+end
+
 -- Cuts the traceback before the runtime's internal frames (xpcall of run_budget / dispatch).
 function A.trim_traceback(tb)
 	local out = {}
@@ -276,13 +295,17 @@ end
 -- Budgeted execution (debug.sethook): returns ok, results (packed table), err, traceback.
 local function pack(...) return { n = select("#", ...), ... } end
 
--- budget nil/false: no time limit and nothing changed for the compiler (an infinite loop freezes the game; the caller
--- notices through its own timeout and status). With a budget (seconds): best effort. A count hook stops the code past
--- the deadline; count hooks never fire inside compiled code, so the compiler is turned off for fn's own body only (its
--- top-level loops), never for the functions it defines (hooks, timers): they run compiled, like the addon's own code.
--- A loop inside a compiled function it calls is not stopped.
+-- budget nil/false/0: no time limit and no hook: nothing changes for the compiler (an infinite loop freezes the game; the
+-- caller notices through its own timeout and status). Code that is timed must run this way.
+-- With a budget (seconds, best effort) a count hook stops the code past the deadline. While any hook is installed LuaJIT runs
+-- everything in its instrumented interpreter and does not compile new code: fn's own body, and every function it calls
+-- (helpers, loops) that has no compiled trace yet, run several times slower than normal (3x in plain LuaJIT; a loop in a helper
+-- measured up to 40x in the game). Compiled traces never check hooks, so a loop that already runs compiled is not stopped.
+-- jit.off(fn) puts fn's own body in the plain interpreter (faster than the instrumented one, and its top-level loops see the
+-- hook). Functions the code defines only run compiled once the hook is gone, i.e. after this call returns.
+-- Never put a timing loop under a budget: tests_run cases opt out (`timing = true`, or a budget of 0).
 function A.run_budget(fn, budget, ...)
-	local hooked = budget ~= nil and budget ~= false
+	local hooked = type(budget) == "number" and budget > 0
 	if hooked and jit and jit.off then pcall(jit.off, fn) end
 	local deadline = SysTime() + (hooked and budget or 0)
 	local oldf, oldmask, oldcount = debug.gethook()
