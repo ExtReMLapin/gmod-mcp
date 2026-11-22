@@ -64,6 +64,39 @@ function H.ents_find(args)
 	return res
 end
 
+-- Issue #18: why is a server entity not on the client? What Lua can tell. Server: always_sent (EFL_FORCE_CHECK_TRANSMIT: sent whatever
+-- the PVS says) and in_pvs_of (ids of the players whose PVS holds it: Entity:TestPVS), each only when the engine offers it. Client:
+-- dormant (Entity:IsDormant: out of the PVS, no update received) and on_client (the entity exists here). A SetPreventTransmit or a
+-- CheckTransmit rule of an addon cannot be read from Lua: the note says what to look at instead.
+function A.transmit_info(e)
+	local t = {}
+	if SERVER then
+		if e.IsEFlagSet and EFL_FORCE_CHECK_TRANSMIT then
+			local ok, v = pcall(e.IsEFlagSet, e, EFL_FORCE_CHECK_TRANSMIT)
+			if ok then t.always_sent = v == true end
+		end
+		if e.TestPVS and player and player.GetAll then
+			local list = J.array({})
+			for _, p in ipairs(player.GetAll()) do
+				local ok, v = pcall(e.TestPVS, e, p)
+				if ok and v then list[#list + 1] = p:EntIndex() end
+			end
+			t.in_pvs_of = list
+		end
+		t.note = "server side: what Lua can tell. A SetPreventTransmit or an addon's CheckTransmit rule cannot be read. To see whether the "
+			.. "client has it, call ent_info with realm 'client' (not_found = never sent; dormant = out of the player's PVS)."
+	else
+		t.on_client = true
+		if e.IsDormant then
+			local ok, v = pcall(e.IsDormant, e)
+			if ok then t.dormant = v == true end
+		end
+		t.note = "client side: the entity exists here. dormant = true: the server stopped sending updates (the entity is outside the "
+			.. "player's PVS), so its position and state here may be old."
+	end
+	return t
+end
+
 function H.ent_info(args)
 	local e = get_ent(args.id)
 	local o = ent_summary(e)
@@ -80,6 +113,7 @@ function H.ent_info(args)
 	o.owner = IsValid(e:GetOwner()) and e:GetOwner():EntIndex() or J.null
 	o.nw_vars = A.serialize(e:GetNWVarTable() or {}, { depth = 2, limit = 200 })
 	o.table = A.serialize(e:GetTable() or {}, { depth = args.depth or 1, limit = args.limit or 100 })
+	o.transmit = A.transmit_info(e)
 	if SERVER then
 		o.keyvalues = A.serialize(e:GetKeyValues() or {}, { depth = 1, limit = 300 })
 		local cls = e:GetClass()

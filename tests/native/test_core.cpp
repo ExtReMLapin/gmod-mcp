@@ -22,6 +22,7 @@
 
 #include "agent.h"
 #include "argcheck.h"
+#include "call_shape.h"
 #include "cmdline.h"
 #include "gamedir.h"
 #include "console.h"
@@ -262,6 +263,88 @@ static void test_long_waits() {
     json too_long = mcp::call_tool("wait_for", json{{"condition", "true"}, {"timeout_s", 3601}});
     CHECK(too_long.value("isError", false));
     CHECK(coordinator::kRelayReadTimeoutS >= 3600 + 60);
+}
+
+// Issue #18 (items 1 and 3) and Issue #11 (lua_check comment): the call shape leads every served description, a wiki name that is
+// not a page is looked up in the page list, and a test file is recognised from its path.
+static void test_frictions_small() {
+    if (mcp::tools().empty()) tools::register_all();
+    // Item 1: `name(required, optional?)` from the input schema, `instance` never listed, at most 6 optional ones.
+    auto shape = [](const char *tool) {
+        const mcp::Tool *t = mcp::find_tool(tool);
+        return t ? call_shape::of(tool, t->input_schema) : std::string("<no tool>");
+    };
+    CHECK(shape("tests_run") == "tests_run(path, budget?, realm?)");
+    CHECK(shape("wiki_page") == "wiki_page(name, format?, refresh?)");
+    CHECK(shape("hook_list") == "hook_list(event?, name?, realm?)");
+    CHECK(shape("status").rfind("status(", 0) == 0 && shape("status").find("instance") == std::string::npos);
+    json many{{"properties", {{"a", json::object()}, {"b", json::object()}, {"c", json::object()}, {"d", json::object()}, {"e", json::object()},
+                              {"f", json::object()}, {"g", json::object()}, {"h", json::object()}, {"instance", json::object()}}},
+              {"required", {"z"}}};
+    CHECK(call_shape::of("x", many) == "x(z, a?, b?, c?, d?, e?, f?, ...)");
+    CHECK(call_shape::of("y", json::object()) == "y()");
+    CHECK(call_shape::prefixed("y", json::object(), "Does y.") == "y(). Does y.");
+    CHECK(call_shape::prefixed("y", json::object(), "y(). Does y.") == "y(). Does y.");  // idempotent
+    // The served list (the snapshot the bridge embeds) starts every description with it.
+    json snap = mcp::offline_snapshot();
+    int shaped = 0, total = 0;
+    for (const auto &t : snap["tools_legacy"]) {
+        ++total;
+        std::string name = t["name"], d = t["description"];
+        if (d.rfind(name + "(", 0) == 0) ++shaped;
+        else std::printf("%s: description does not start with its call shape\n", name.c_str());
+    }
+    CHECK(total > 40 && shaped == total);
+    for (const auto &t : snap["tools_modern"]) CHECK(t["description"].get<std::string>().rfind(t["name"].get<std::string>() + "(", 0) == 0);
+
+    // Guide and descriptions (Issue #27, #23, #18 items 6 and 7, #11 comments).
+    json gd = resources::read("mcpagent://guide");
+    std::string guide = gd.is_object() && gd.contains("text") ? gd["text"].get<std::string>() : "";
+    for (const char *needle : {"Map load and InitPostEntity", "IsFlagSet(FCVAR_ARCHIVE)", "archived_from", "net.Start", "util.AddNetworkString", "pcall",
+                               "bots_add", "connect 127.0.0.1", "newline=\"\"", "Every call to another instance goes through the coordinator", "relayed_by"})
+        if (guide.find(needle) == std::string::npos) std::printf("guide lacks: %s\n", needle);
+    CHECK(guide.find("Map load and InitPostEntity") != std::string::npos && guide.find("IsFlagSet(FCVAR_ARCHIVE)") != std::string::npos &&
+          guide.find("archived_from") != std::string::npos && guide.find("net.Start") != std::string::npos &&
+          guide.find("util.AddNetworkString") != std::string::npos && guide.find("bots_add") != std::string::npos &&
+          guide.find("connect 127.0.0.1") != std::string::npos && guide.find("newline=\"\"") != std::string::npos &&
+          guide.find("Every call to another instance goes through the coordinator") != std::string::npos && guide.find("relayed_by") != std::string::npos);
+    auto desc_of = [](const char *tool) {
+        const mcp::Tool *t = mcp::find_tool(tool);
+        return t ? t->description : std::string();
+    };
+    CHECK(desc_of("map_load").find("InitPostEntity and Initialize have ALREADY run") != std::string::npos && desc_of("map_load").find("lua_mount") != std::string::npos);
+    CHECK(desc_of("convar_get").find("archived") != std::string::npos && desc_of("convar_get").find("IsFlagSet(FCVAR_ARCHIVE)") != std::string::npos);
+    CHECK(desc_of("hook_list").find("`name`") != std::string::npos && mcp::find_tool("hook_list")->input_schema["properties"].contains("name"));
+    CHECK(mcp::find_tool("instances_list")->input_schema["properties"].contains("include_crashed"));
+
+    // Item 3: wiki names.
+    std::set<std::string> pages{"Global.CurTime", "Entity:EmitSound", "Global.EmitSound", "util.TraceLine", "Structures/TraceResult", "GM:InitPostEntity"};
+    auto r = tools::resolve_wiki_name("CurTime", pages);
+    CHECK(r.resolved == "Global.CurTime");
+    CHECK(tools::resolve_wiki_name("curtime", pages).resolved == "Global.CurTime");
+    CHECK(tools::resolve_wiki_name("util.traceline", pages).resolved == "util.TraceLine");  // the same page in another case
+    CHECK(tools::resolve_wiki_name("InitPostEntity", pages).resolved == "GM:InitPostEntity");
+    r = tools::resolve_wiki_name("EmitSound", pages);  // two pages: no guess, both named, Global first
+    CHECK(r.resolved.empty() && r.candidates.size() == 2 && r.candidates[0] == "Global.EmitSound" && r.candidates[1] == "Entity:EmitSound");
+    r = tools::resolve_wiki_name("TraceLin", pages);  // a typo: close pages, nothing resolved
+    CHECK(r.resolved.empty() && !r.candidates.empty() && r.candidates[0] == "util.TraceLine");
+    CHECK(tools::resolve_wiki_name("Entity.EmitSound", pages).resolved.empty());  // with a prefix the tail rule does not apply
+    r = tools::resolve_wiki_name("qqqq", pages);
+    CHECK(r.resolved.empty() && r.candidates.empty());
+    CHECK(tools::resolve_wiki_name("CurTime", {}).resolved.empty());
+
+    // lua_check: which files are test files.
+    for (const char *p : {"tests/a.lua", "addon/tests/sub/a.lua", "Test/a.lua", "spec/x/a.lua", "a/__tests__/b.lua", "test_foo.lua", "a/foo_test.lua",
+                          "a/foo_spec.lua", "tests\\win.lua"})
+        if (!tools::is_test_lua_path(p)) std::printf("is_test_lua_path(%s) should be true\n", p);
+    for (const char *p : {"lua/a.lua", "addon/attest/a.lua", "a/tests.lua", "a/contest_x.lua", "autorun/testing.lua", "lib/latest/a.lua", ""})
+        if (tools::is_test_lua_path(p)) std::printf("is_test_lua_path(%s) should be false\n", p);
+    CHECK(tools::is_test_lua_path("tests/a.lua") && tools::is_test_lua_path("addon/tests/sub/a.lua") && tools::is_test_lua_path("Test/a.lua") &&
+          tools::is_test_lua_path("spec/x/a.lua") && tools::is_test_lua_path("a/__tests__/b.lua") && tools::is_test_lua_path("test_foo.lua") &&
+          tools::is_test_lua_path("a/foo_test.lua") && tools::is_test_lua_path("a/foo_spec.lua") && tools::is_test_lua_path("tests\\win.lua"));
+    CHECK(!tools::is_test_lua_path("lua/a.lua") && !tools::is_test_lua_path("addon/attest/a.lua") && !tools::is_test_lua_path("a/tests.lua") &&
+          !tools::is_test_lua_path("a/contest_x.lua") && !tools::is_test_lua_path("autorun/testing.lua") && !tools::is_test_lua_path("lib/latest/a.lua") &&
+          !tools::is_test_lua_path(""));
 }
 
 static json errs_current(const char *realm = nullptr) {
@@ -1906,6 +1989,19 @@ static void test_crash_report_coordinator() {
         c.end(0xC0000005u);
         json e = status_of("crash-2");
         CHECK(e.value("code", "") == "client_crashed" && e["details"]["dump"].is_null());
+        // Issue #11 (comment): `include_crashed: false` leaves the crashed entries out of instances_list and counts them; a call to
+        // a crashed instance still says what happened; the default list is unchanged.
+        json all = mcp::call_tool("instances_list", json::object()).value("structuredContent", json::object());
+        json quiet = mcp::call_tool("instances_list", json{{"include_crashed", false}}).value("structuredContent", json::object());
+        auto crashed_in = [](const json &r) {
+            size_t n = 0;
+            for (const auto &x : r.value("instances", json::array())) n += x.value("state", "") == "crashed";
+            return n;
+        };
+        CHECK(crashed_in(all) >= 2 && !all.contains("crashed_hidden"));
+        CHECK(crashed_in(quiet) == 0 && quiet.value("crashed_hidden", 0u) == crashed_in(all));
+        CHECK(quiet.value("instances", json::array()).size() + quiet.value("crashed_hidden", 0u) == all.value("instances", json::array()).size());
+        CHECK(status_of("crash-2").value("code", "") == "client_crashed");
     }
     // 3. A dedicated server that crashed: server_crashed.
     {
@@ -3575,6 +3671,7 @@ int main(int argc, char **argv) {
     test_errors_group_by_message();
     test_fields_note();
     test_long_waits();
+    test_frictions_small();
     test_errors_load_stamp_order();
     test_small_b6();
     test_srcds_error_parsing();

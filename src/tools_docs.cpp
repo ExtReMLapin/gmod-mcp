@@ -187,6 +187,32 @@ static json wiki_search_tool(const json &a) {
     return ok(json{{"query", q}, {"results", res}, {"total_matches", hits.size()}, {"cache", state}});
 }
 
+WikiResolution resolve_wiki_name(const std::string &name, const std::set<std::string> &pages) {
+    WikiResolution out;
+    std::string n = util::to_lower(name);
+    if (n.empty() || pages.empty()) return out;
+    std::vector<std::string> same_tail;
+    for (const auto &p : pages) {
+        std::string lp = util::to_lower(p);
+        if (lp == n) {  // the same page spelled in another case
+            out.resolved = p;
+            return out;
+        }
+        auto sep = lp.find_last_of(".:");
+        if (sep != std::string::npos && lp.compare(sep + 1, std::string::npos, n) == 0) same_tail.push_back(p);
+    }
+    bool has_prefix = name.find_first_of(".:/") != std::string::npos;
+    if (!has_prefix && same_tail.size() == 1) out.resolved = same_tail[0];
+    std::vector<std::pair<int, std::string>> hits;
+    for (const auto &p : pages) {
+        int sc = score(p, name);
+        if (sc > 0) hits.emplace_back(sc + (!has_prefix && p.rfind("Global.", 0) == 0 ? 1 : 0), p);
+    }
+    std::sort(hits.begin(), hits.end(), [](const auto &x, const auto &y) { return x.first != y.first ? x.first > y.first : x.second < y.second; });
+    for (size_t i = 0; i < hits.size() && i < 8; ++i) out.candidates.push_back(hits[i].second);
+    return out;
+}
+
 static std::string url_encode_page(const std::string &s) {
     std::string out;
     static const char *hex = "0123456789ABCDEF";
@@ -211,6 +237,34 @@ json wiki_page_tool(const json &a) {
     std::string body = r["body"];
     if (body.find("<title>Page Not Found</title>") != std::string::npos) {
         plat::remove_file(path);
+        // Issue #18: "CurTime" is Global.CurTime. Look the name up in the page list (downloaded if need be); one page that
+        // can only mean it is read instead (`resolved_from` says so), otherwise the closest pages are named.
+        if (!a.value("_resolving", false)) {
+            std::set<std::string> pages = pagelist_from_cache();
+            if (pages.empty()) {
+                std::string state;
+                if (load_pagelist(false, state).value("ok", false)) pages = pagelist_from_cache();
+            }
+            WikiResolution wr = resolve_wiki_name(name, pages);
+            if (wr.resolved.empty() && pages.empty() && name.find_first_of(".:/") == std::string::npos) wr.resolved = "Global." + name;
+            if (!wr.resolved.empty() && wr.resolved != name) {
+                json b = a;
+                b["name"] = wr.resolved;
+                b["_resolving"] = true;
+                json rr = wiki_page_tool(b);
+                if (rr.value("ok", false)) {
+                    rr["result"]["resolved_from"] = name;
+                    rr["result"]["note"] = "no page is named \"" + name + "\": this is " + wr.resolved;
+                    return rr;
+                }
+            }
+            if (!wr.candidates.empty()) {
+                std::string list;
+                for (const auto &c : wr.candidates) list += (list.empty() ? "" : ", ") + c;
+                return agent::err("not_found", "wiki page not found: " + name + ". Close pages: " + list + " (or try wiki_search)",
+                                  json{{"candidates", wr.candidates}});
+            }
+        }
         return agent::err("not_found", "wiki page not found: " + name + " (try wiki_search)");
     }
     json out{{"name", name}, {"format", fmt}, {"url", std::string(kWikiBase) + url_encode_page(name)}, {"cache", r["cache"]}};
@@ -303,7 +357,9 @@ void register_docs() {
                         "Reads one wiki page by its exact name (as wiki_search returns it): format text = the page's raw wiki markup "
                         "(realm, arguments, returns, notes), format json = the wiki's JSON form. Cached 7 days (stale cache used "
                         "offline; refresh: true re-downloads). Result: {name, format, url, cache, content (text) or page (json)}. "
-                        "Error not_found for an unknown name (use wiki_search). Example: {\"name\": \"Entity:EmitSound\"}.",
+                        "A name that is not a page is looked up: CurTime reads Global.CurTime (resolved_from says so) when only one page can "
+                        "mean it, otherwise not_found lists the close pages in details.candidates. Error not_found for an unknown "
+                        "name (use wiki_search). Example: {\"name\": \"Entity:EmitSound\"}.",
                         json{{"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 200}, {"description", "Exact page name as wiki_search returns it, e.g. \"Entity:EmitSound\" or \"util.TraceLine\" (200 characters at most)."}}},
                                              {"format", {{"type", "string"}, {"enum", {"text", "json"}}, {"description", "Default text."}}},
                                              {"refresh", {{"type", "boolean"}, {"description", "Download the page again (default false)."}}}}},

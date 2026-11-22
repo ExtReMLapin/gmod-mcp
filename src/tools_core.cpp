@@ -1,5 +1,6 @@
 // Tools: status, lua_exec, lua_exec_file, lua_reload, lua_check, lua_inspect, lua_file_*.
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <map>
 
@@ -701,6 +702,23 @@ static json lua_reload_tool(const json &args) {
     return ok(out);
 }
 
+bool is_test_lua_path(const std::string &rel_path) {
+    std::string p = util::to_lower(normalize(rel_path));
+    size_t slash = p.rfind('/');
+    std::string file = slash == std::string::npos ? p : p.substr(slash + 1);
+    auto ends = [&](const char *suf) { size_t n = std::strlen(suf); return file.size() >= n && file.compare(file.size() - n, n, suf) == 0; };
+    if (file.rfind("test_", 0) == 0 || ends("_test.lua") || ends("_spec.lua")) return true;
+    size_t start = 0;
+    while (slash != std::string::npos && start < slash) {  // the directory segments, not the file name
+        size_t next = p.find('/', start);
+        if (next == std::string::npos || next > slash) next = slash;
+        std::string seg = p.substr(start, next - start);
+        if (seg == "tests" || seg == "test" || seg == "spec" || seg == "specs" || seg == "__tests__") return true;
+        start = next + 1;
+    }
+    return false;
+}
+
 static json lua_check_tool(const json &args) {
     constexpr size_t kMaxFiles = 2000, kMaxBytes = 8u << 20;
     bool has_code = args.contains("code"), has_path = args.contains("path");
@@ -738,7 +756,23 @@ static json lua_check_tool(const json &args) {
             if (!plat::read_file(f, code)) return agent::err("io_error", "cannot read: " + f);
             if ((total += code.size()) > kMaxBytes) return agent::err("invalid_params", "more than 8 MB of Lua: check a subfolder");
             std::string chunk = chunk_for(f);
-            items.push_back(json{{"file", chunk.substr(1)}, {"chunk", chunk}, {"code", std::move(code)}});
+            // A test file (tests/, test_*.lua...): judged from the part under the checked folder, or the parent folder of a lone file.
+            std::string rel;
+            if (std::filesystem::is_directory(fp, ec)) {
+                std::string base = normalize(abs);
+                while (base.size() > 1 && base.back() == '/') base.pop_back();
+                rel = f.size() > base.size() ? f.substr(base.size() + 1) : f;
+                // `lua_check {path: ".../tests"}` names the test folder itself.
+                size_t bs = base.rfind('/');
+                rel = (bs == std::string::npos ? base : base.substr(bs + 1)) + "/" + rel;
+            } else {
+                std::string nf = normalize(f);
+                size_t last = nf.rfind('/'), prev = last == std::string::npos || last == 0 ? std::string::npos : nf.rfind('/', last - 1);
+                rel = prev == std::string::npos ? nf : nf.substr(prev + 1);
+            }
+            json item{{"file", chunk.substr(1)}, {"chunk", chunk}, {"code", std::move(code)}};
+            if (is_test_lua_path(rel)) item["test_file"] = true;
+            items.push_back(std::move(item));
         }
     }
     json p{{"items", std::move(items)}, {"globals", args.value("globals", true)}, {"limit", args.value("limit", 200)}};
@@ -988,7 +1022,8 @@ void register_core() {
          "Unknown globals depend on the realm: pick the one the code runs in ('client'/'server' need a map; 'menu' lacks "
          "most game functions). ENT, SWEP, GM, EFFECT and TOOL are never reported. Result: {ok, realm, checked (files), errors: "
          "[{file, line, message}], unknown_globals: [{name, file, line}], globals_written: [{name, file, line}], "
-         "truncated? (lists cut at limit), notes?}. Errors: "
+         "truncated? (lists cut at limit), notes?}. In a test file (a tests/ folder, test_*.lua, *_test.lua) `expect` is known, "
+         "so tests_run files do not drown the list; other unknown globals there are still reported. Errors: "
          "realm_unavailable, not_found. Example: {\"realm\": \"server\", \"path\": \"addons/my_addon/lua\"}.",
          json{{"properties",
                {{"realm", realm_prop("Lua state whose parser and globals are used: 'menu' (default in client mode, always present), 'client' or 'server' (default on srcds, which has only that one).")},

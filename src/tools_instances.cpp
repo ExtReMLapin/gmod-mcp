@@ -15,15 +15,28 @@ void register_instances() {
                 "entries also carry the `owner` label given to instances_launch (sent by the game itself, so it shows for every instance "
                 "whichever bridge session launched it) and `test_client` (true for clients started by instances_launch), `owner` filters on it, and "
                 "launched_not_answering lists the clients it launched that never answered (close them with "
-                "instances_close {pids}); with no game running the list is empty, with a note.",
+                "instances_close {pids}); with no game running the list is empty, with a note. `include_crashed: false` leaves the "
+                "crashed entries out (they stay known: a call to one still answers client_crashed) and says how many in crashed_hidden.",
                 json{{"properties", {{"owner", {{"type", "string"}, {"maxLength", 64},
-                                                 {"description", "Only the clients launched with this owner label (bridge only)."}}}}}},
+                                                 {"description", "Only the clients launched with this owner label (bridge only)."}}},
+                                     {"include_crashed", {{"type", "boolean"},
+                                                          {"description", "false: leave out the entries whose game crashed (they are listed for an hour). Default true."}}}}}},
                 json{{"readOnlyHint", true}},
-                [](const json &) {
+                [](const json &a) {
                     // `coordinator`: this instance is the coordinator; `coordinator_id`: which instance is (the entry with role
                     // "coordinator" is the only one that holds the directory: closing it moves the role, issue #6).
-                    json r{{"instances", coordinator::instances()}, {"coordinator", coordinator::is_coordinator()},
+                    json list = coordinator::instances();
+                    size_t hidden = 0;
+                    if (!a.value("include_crashed", true)) {  // Issue #11: a crashed game stays listed for an hour; a quiet list on request
+                        json kept = json::array();
+                        for (const auto &e : list)
+                            if (e.value("state", "") == "crashed") ++hidden;
+                            else kept.push_back(e);
+                        list = std::move(kept);
+                    }
+                    json r{{"instances", list}, {"coordinator", coordinator::is_coordinator()},
                            {"coordinator_id", coordinator::coordinator_id()}};
+                    if (hidden) r["crashed_hidden"] = hidden;
                     json h = coordinator::handover_info();
                     if (!h.is_null()) {
                         r["coordinator_changing"] = true;
