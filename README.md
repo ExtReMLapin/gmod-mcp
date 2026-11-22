@@ -280,7 +280,7 @@ return { props = props }
 ```
 
 Also available: `job:sleep(seconds)`, `job:frames(n)`, `job:wait(fn, timeout)`, `job:report(value)` for intermediate
-results, and `args` (also `job.args`) for the call's arguments. `async: true` returns at once with a job id
+results, `job:dt()` (real seconds since the last resume; `FrameTime()` on the server is the tick step, not that interval), `job:call(realm, code)` (runs a chunk in the other realm of the instance and returns its values, so one job can move the player on the server and check what the client sees), and `args` (also `job.args`) for the call's arguments. `async: true` returns at once with a job id
 (`lua_job_status`, `lua_job_cancel`), and `fresh_env: true` keeps the script's globals out of the game's `_G`. The agent learns this protocol from the tool description and the
 `write-lua-job` prompt.
 

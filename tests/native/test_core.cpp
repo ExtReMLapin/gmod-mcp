@@ -41,6 +41,7 @@
 #include "lua_mount.h"
 #include "realms.h"
 #include "resources.h"
+#include "prompts.h"
 #include "tools.h"
 #include "platform/platform.h"
 #include "util.h"
@@ -1403,6 +1404,29 @@ static void test_job_ids() {
     CHECK(tools::job_reset_message(old, 99).empty());  // no generation in the id: the Lua side answers not_found
 }
 
+
+// Issue #30 / #13 item 2 / #18 item 5: job:call crosses to another realm of the instance. The decision before anything runs,
+// and what an agent reads about it (lua_job description, write-lua-job prompt, guide). Issue #31: job:dt().
+static void test_job_cross_realm() {
+    CHECK(agent::cross_call_refusal(realms::SERVER, realms::CLIENT, 0).empty());
+    CHECK(agent::cross_call_refusal(realms::CLIENT, realms::SERVER, 0).empty());
+    CHECK(agent::cross_call_refusal(realms::MENU, realms::SERVER, 0).empty());
+    CHECK(agent::cross_call_refusal(realms::SERVER, realms::MENU, 0).empty());
+    CHECK(agent::cross_call_refusal(realms::SERVER, realms::SERVER, 0).find("own realm") != std::string::npos);
+    CHECK(agent::cross_call_refusal(realms::SERVER, 7, 0).find("unknown realm") != std::string::npos);
+    CHECK(agent::cross_call_refusal(realms::SERVER, -1, 0).find("unknown realm") != std::string::npos);
+    CHECK(agent::cross_call_refusal(realms::SERVER, realms::CLIENT, 1).find("nested") != std::string::npos);
+    const mcp::Tool *job = mcp::find_tool("lua_job");
+    CHECK(job != nullptr);
+    if (job) {
+        CHECK(job->description.find("job:call(") != std::string::npos);
+        CHECK(job->description.find("job:dt()") != std::string::npos);
+        CHECK(job->description.find("FrameTime()") != std::string::npos);
+    }
+    std::string err;
+    json p = prompts::get("write-lua-job", json{{"goal", "x"}}, err);
+    CHECK(err.empty() && p.dump().find("job:call(") != std::string::npos && p.dump().find("job:dt()") != std::string::npos);
+}
 
 // Issue #8: frame rate over a time window, hung / stalled assessment, how long the frame rate stayed low.
 static void test_health() {
@@ -3583,6 +3607,7 @@ int main(int argc, char **argv) {
     test_edge_cases();
     test_argcheck();
     test_job_ids();
+    test_job_cross_realm();
     test_lua_mount_paths();
     test_fs_vtable_layout();
     test_issue9_mount_reload();

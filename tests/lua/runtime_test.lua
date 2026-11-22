@@ -184,6 +184,83 @@ A.jobs[s3.result.id].finished = SysTime() - 1000
 H.job_tick()
 check(A.jobs[s3.result.id] ~= nil, "async result kept after 300 s")
 
+-- Issue #31: job:dt() is the real time between two resumes (FrameTime() on the server is the tick step).
+do
+	local real = SysTime
+	local t = 1000
+	SysTime = function() return t end
+	local st = call("job_start", { code = "local a = job:dt() job:yield() local b = job:dt() job:yield() local c = job:dt() job:sleep(2) return a, b, c, job:dt()" })
+	t = 1000.5 H.job_tick()   -- first resume: 0.5 s after the start
+	t = 1000.52 H.job_tick()  -- one frame later
+	t = 1000.55 H.job_tick()
+	t = 1003 H.job_tick()     -- after a 2 s sleep
+	local out = call("job_poll", { id = st.result.id })
+	SysTime = real
+	local v = out.ok and out.result.values or {}
+	check(out.ok and out.result.state == "done", "Issue #31: dt job finished")
+	check(math.abs((v[1] or 0) - 0.5) < 1e-6 and math.abs((v[2] or 0) - 0.02) < 1e-6 and math.abs((v[3] or 0) - 0.03) < 1e-6,
+		"Issue #31: job:dt() is the time since the previous resume")
+	check(math.abs((v[4] or 0) - 2.45) < 1e-6, "Issue #31: job:dt() after a sleep is the whole interval")
+end
+
+-- Issue #30 / #13 item 2 / #18 item 5: job:call(realm, code, opts) runs a chunk in another realm of the same instance and
+-- hands its values back. The module does the crossing (native.call_realm, same main thread); here it is a stub.
+do
+	local native = A.native
+	local calls = {}
+	local answers = {}
+	native.call_realm = function(realm, code, opts_json)
+		calls[#calls + 1] = { realm = realm, code = code, opts = J.decode(opts_json) }
+		local a = table.remove(answers, 1) or { ok = true, result = { values = J.array({}), n = 0, output = "" } }
+		return J.encode(a)
+	end
+	local function run(code, ans)
+		calls, answers = {}, ans or {}
+		return run_job({ code = code })
+	end
+	local r = run("return job:call('client', 'return 1, nil, \"a\", LocalPlayer():Health()')",
+		{ { ok = true, result = { values = J.array({ 1, J.null, "a", 100 }), n = 4, output = "" } } })
+	check(r.ok and r.result.state == "done" and r.result.n == 4 and r.result.values[1] == 1 and r.result.values[3] == "a" and r.result.values[4] == 100,
+		"Issue #30: job:call returns the values of the chunk")
+	check(#calls == 1 and calls[1].realm == "client" and calls[1].code:find("LocalPlayer", 1, true), "Issue #30: job:call sends realm and code")
+	check(calls[1] and calls[1].opts.budget == 10, "Issue #30: job:call has a default budget")
+	run("return job:call('menu', 'return 1', { budget = 2, depth = 3 })")
+	check(calls[1] and calls[1].opts.budget == 2 and calls[1].opts.depth == 3, "Issue #30: job:call passes budget and depth")
+	-- Output printed by the other realm lands in the job's output, prefixed with the realm.
+	r = run("job:call('client', 'print(1)') return true",
+		{ { ok = true, result = { values = J.array({}), n = 0, output = "hello" .. string.char(10) } } })
+	check(r.ok and r.result.output:find("[client] hello", 1, true), "Issue #30: output of the other realm is kept, prefixed")
+	-- A failure comes back as a structured error the job can catch (a realm that does not exist yet, a Lua error there).
+	r = run("local ok, e = pcall(job.call, job, 'client', 'x') return ok, e.code, e.message",
+		{ { ok = false, error = { code = "realm_unavailable", message = "realm client unavailable" } } })
+	check(r.ok and r.result.values[1] == false and r.result.values[2] == "realm_unavailable" and r.result.values[3]:find("client", 1, true),
+		"Issue #30: job:call raises a catchable error with the code")
+	r = run("job:call('client', 'error(1)') return 1",
+		{ { ok = false, error = { code = "lua_error", message = "boom", details = { traceback = "tb" } } } })
+	check(r.ok and r.result.state == "failed" and r.result.error.code == "lua_error" and r.result.error.message:find("boom", 1, true),
+		"Issue #30: an uncaught remote error fails the job with its code")
+	-- Bad calls never reach the module.
+	r = run("job:call('server', 'return 1')")
+	check(r.ok and r.result.state == "failed" and r.result.error.code == "invalid_params" and #calls == 0, "Issue #30: job:call to its own realm refused")
+	r = run("job:call('moon', 'return 1')")
+	check(r.ok and r.result.state == "failed" and r.result.error.code == "invalid_params" and #calls == 0, "Issue #30: unknown realm refused")
+	r = run("job:call('client', 42)")
+	check(r.ok and r.result.state == "failed" and r.result.error.code == "invalid_params" and #calls == 0, "Issue #30: code must be a string")
+	-- The calls cost no frame: a server job polls the client until it sees something, across frames.
+	local n = 0
+	calls, answers = {}, {}
+	native.call_realm = function(realm, code, opts_json)
+		n = n + 1
+		return J.encode({ ok = true, result = { values = J.array({ n >= 3 }), n = 1, output = "" } })
+	end
+	r = run_job({ code = "local seen = job:wait(function() return job:call('client', 'return x') end, 5) return seen, job:elapsed() >= 0" })
+	check(r.ok and r.result.values[1] == true and n == 3, "Issue #30: job:call inside job:wait polls across frames")
+	-- An older module without the native function.
+	native.call_realm = nil
+	r = run_job({ code = "job:call('client', 'return 1')" })
+	check(r.ok and r.result.state == "failed" and r.result.error.code == "unsupported", "Issue #30: no native.call_realm gives unsupported")
+end
+
 -- ===================== Edge cases =====================
 -- Strict UTF-8 check (what nlohmann::json::parse on the C++ side accepts): no overlongs, no surrogates, <= U+10FFFF.
 local function strict_utf8(str)

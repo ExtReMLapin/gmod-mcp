@@ -42,6 +42,9 @@ bool client_allowed(std::string *reason = nullptr);
 // Last computed state (readable from any thread).
 nlohmann::json lock_status();
 
+// Issue #30: may a lua_job in realm `from` run code in realm `to`? Empty when yes, else the reason. `depth` is how many
+// cross-realm calls are already in progress (one level only: the other realm's chunk is not a job and has no `job`).
+std::string cross_call_refusal(int from, int to, int depth);
 // Calls a realm's Lua runtime (main thread). Injects it if needed. Returns {"ok":..,"result"|"error"}.
 nlohmann::json call_runtime(int realm, const std::string &tool, const nlohmann::json &args);
 // From the network thread: same, via the job queue with a timeout.

@@ -9,6 +9,15 @@
   `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the
   bridge; the module for the game is still installed as before. See `docs/MCP_REGISTRY.md`.
 
+- **`job:dt()` in `lua_job`** (issue #31): the real seconds since the job was last resumed. `FrameTime()` in a server job is the
+  engine's tick step, not the interval between two resumes (a job runs once per client frame), so an agent moving a player with it
+  walked at the wrong speed. The `lua_job` description and the `write-lua-job` prompt now say so.
+- **`job:call(realm, code)` in `lua_job`** (issues #30, #13, #18): runs a chunk in another realm of the same instance and returns
+  its values (like `lua_exec` there; its `print` goes to the job's output as `[client] ...`). One job can now drive both sides
+  (the server moves the player, the client says what it sees) instead of two jobs synchronised through files in `data/`.
+  It runs at once on the main thread and never yields; `budget` (10 s by default) stops a runaway chunk; a missing realm
+  (`realm_unavailable`), the client lock (`client_locked`) or a Lua error there raise a catchable `{code, message}`.
+
 ### Fixes
 
 - **Tool annotations match what the tools do.** `lua_job_status` no longer reads as destructive (it only forgets the job whose
