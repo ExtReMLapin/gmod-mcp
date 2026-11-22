@@ -220,6 +220,142 @@ static void test_errors_group_by_message() {
     CHECK(bad.value("isError", false));
 }
 
+static json errs_call(json a) {
+    json r = mcp::call_tool("errors_since", a);
+    return r.value("structuredContent", json::object());
+}
+
+// Issue #24: errors_since filters by source (prefix of the file of the error: the place named in the message, else the first
+// stack frame) and by message pattern, with their exclude counterparts. They apply before `limit`, like realm.
+static void test_errors_source_and_pattern_filters() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_f");
+    auto stk = [](const char *file) { return json::array({json{{"file", file}, {"line", 3}, {"function", "f"}}}); };
+    console::push_error(json{{"realm", "client"}, {"message", "lua/grymod/client/hud.lua:59: attempt to call method 'Foo' (a nil value)"}, {"stack", stk("lua/grymod/client/hud.lua")}});
+    console::push_error(json{{"realm", "client"}, {"message", "lua/grymod/client/radar.lua:10: bad argument #1"}, {"stack", stk("lua/grymod/client/radar.lua")}});
+    console::push_error(json{{"realm", "server"}, {"message", "lua/other/sv.lua:5: boom"}, {"stack", stk("lua/other/sv.lua")}});
+    console::push_error(json{{"realm", "server"}, {"message", "no location in this message"}, {"stack", stk("addons/x/lua/y.lua")}});
+    console::push_error(json{{"realm", "server"}, {"message", "no location and no stack"}});
+    json all = errs_call(json{{"cursor", 0}});
+    CHECK(all["errors"].size() == 5);
+    json s1 = errs_call(json{{"cursor", 0}, {"source", "lua/grymod/client/"}});
+    CHECK(s1["errors"].size() == 2 && s1["errors"][0].value("message", "").find("hud.lua") != std::string::npos);
+    json s2 = errs_call(json{{"cursor", 0}, {"exclude_source", "lua/grymod/"}});
+    CHECK(s2["errors"].size() == 3 && !s2.contains("isError"));
+    json s3 = errs_call(json{{"cursor", 0}, {"source", "addons/x/"}});  // no file in the message: the first stack frame
+    CHECK(s3["errors"].size() == 1 && s3["errors"][0].value("message", "") == "no location in this message");
+    json s4 = errs_call(json{{"cursor", 0}, {"source", "lua/grymod/client/hud.lua:59"}});  // file:line is a prefix too
+    CHECK(s4["errors"].size() == 1);
+    json s5 = errs_call(json{{"cursor", 0}, {"source", "lua\\grymod\\client\\"}});  // backslashes from a Windows path are read as slashes
+    CHECK(s5["errors"].size() == 2);
+    json p1 = errs_call(json{{"cursor", 0}, {"pattern", "attempt to call|bad argument"}});
+    CHECK(p1["errors"].size() == 2);
+    json p2 = errs_call(json{{"cursor", 0}, {"pattern", "ATTEMPT"}});  // case-insensitive, like console_read
+    CHECK(p2["errors"].size() == 1);
+    json p3 = errs_call(json{{"cursor", 0}, {"exclude_pattern", "boom|no location"}});
+    CHECK(p3["errors"].size() == 2);
+    json c1 = errs_call(json{{"cursor", 0}, {"source", "lua/grymod/"}, {"pattern", "bad argument"}, {"realm", "client"}});  // all of them must hold
+    CHECK(c1["errors"].size() == 1 && c1["errors"][0].value("message", "").find("radar.lua") != std::string::npos);
+    // They apply before the limit, and next_cursor stays exact.
+    json l1 = errs_call(json{{"cursor", 0}, {"limit", 1}, {"source", "lua/other/"}});
+    CHECK(l1["errors"].size() == 1 && l1["errors"][0].value("message", "") == "lua/other/sv.lua:5: boom");
+    // They also apply to the groups.
+    json g1 = errs_call(json{{"cursor", 0}, {"group_by", "message"}, {"source", "lua/grymod/client/"}});
+    CHECK(g1["groups"].size() == 2 && g1.value("groups_total", 0) == 2);
+    // A bad pattern is refused at once.
+    json bad = mcp::call_tool("errors_since", json{{"cursor", 0}, {"pattern", "(unclosed"}});
+    CHECK(bad.value("isError", false) && bad.dump().find("invalid_params") != std::string::npos);
+    json bad2 = mcp::call_tool("errors_since", json{{"cursor", 0}, {"exclude_pattern", "[bad"}});
+    CHECK(bad2.value("isError", false) && bad2.dump().find("invalid_params") != std::string::npos);
+}
+
+// Issue #15 / #11: grouping is per message AND source (the same text raised from two places is two groups), each group carries
+// its `source` and, when a hook guard noted it, the `hook`; the plain list names the hook too.
+static void test_errors_group_source_and_hook() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_gs");
+    auto stk = [](const char *file) { return json::array({json{{"file", file}, {"line", 3}, {"function", "f"}}}); };
+    for (int i = 0; i < 3; ++i) console::push_error(json{{"realm", "client"}, {"message", "attempt to call a nil value"}, {"stack", stk("lua/a.lua")}, {"time", 1.0 + i}});
+    for (int i = 0; i < 2; ++i) console::push_error(json{{"realm", "client"}, {"message", "attempt to call a nil value"}, {"stack", stk("lua/b.lua")}, {"time", 5.0 + i}});
+    console::push_error(json{{"realm", "client"}, {"message", "lua/c.lua:9: from a hook"}, {"stack", stk("lua/c.lua")}, {"time", 9.0}});
+    console::note_hook_error("lua/c.lua:9: from a hook", "Think / my_hook");
+    json g = errs_call(json{{"cursor", 0}, {"group_by", "message"}});
+    CHECK(g["groups"].size() == 3);
+    if (g["groups"].size() != 3) return;
+    CHECK(g["groups"][0].value("count", 0) == 3 && g["groups"][0].value("source", "") == "lua/a.lua:3");
+    CHECK(g["groups"][1].value("count", 0) == 2 && g["groups"][1].value("source", "") == "lua/b.lua:3");
+    CHECK(g["groups"][2].value("source", "") == "lua/c.lua:9" && g["groups"][2].value("hook", "") == "Think / my_hook");
+    CHECK(!g["groups"][0].contains("hook"));
+    json plain = errs_call(json{{"cursor", 0}});
+    CHECK(plain["errors"].size() == 6 && plain["errors"][5].value("hook", "") == "Think / my_hook" && !plain["errors"][0].contains("hook"));
+    // The first stack stays on the group (the first occurrence).
+    CHECK(g["groups"][0]["stack"].size() == 1);
+}
+
+// Issue #15: when the list is mostly one message, the answer says so (one line), without changing its shape.
+static void test_errors_warnings() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_w");
+    for (int i = 0; i < 3; ++i) console::push_error(json{{"realm", "server"}, {"message", "e" + std::to_string(i)}});
+    json calm = errs_call(json{{"cursor", 0}});
+    CHECK(!calm.contains("warnings"));  // nothing to say: the field is absent
+    for (int i = 0; i < 30; ++i) console::push_error(json{{"realm", "server"}, {"message", "same spam"}});
+    json rep = errs_call(json{{"cursor", 0}});
+    CHECK(rep.contains("warnings") && rep["warnings"].size() == 1 && rep["warnings"][0].value("code", "") == "repeated_errors");
+    CHECK(rep["warnings"][0].value("count", 0) == 30 && rep["warnings"][0].value("message", "") == "same spam" &&
+          rep["warnings"][0].value("text", "").find("group_by") != std::string::npos);
+    CHECK(rep["errors"].size() == 33);  // the list itself is unchanged
+    json grouped = errs_call(json{{"cursor", 0}, {"group_by", "message"}});
+    CHECK(!grouped.contains("warnings"));  // already grouped: no advice
+    // lost > 0: the buffer kept 2000, so older errors were dropped before they could be read.
+    console::errors_clear();
+    for (int i = 0; i < 2005; ++i) console::push_error(json{{"realm", "server"}, {"message", "m" + std::to_string(i % 7)}});
+    json lost = errs_call(json{{"cursor", 0}, {"limit", 1}});
+    CHECK(lost.value("lost", 0) == 5);
+    bool has = false;
+    if (lost.contains("warnings"))
+        for (const auto &w : lost["warnings"])
+            if (w.value("code", "") == "errors_dropped" && w.value("lost", 0) == 5 && w.value("text", "").find("5 errors") != std::string::npos) has = true;
+    CHECK(has);
+    json again = errs_call(json{{"cursor", lost.value("next_cursor", 0)}, {"limit", 1}});
+    CHECK(again.value("lost", -1) == 0);
+    bool has2 = false;
+    if (again.contains("warnings"))
+        for (const auto &w : again["warnings"]) has2 = has2 || w.value("code", "") == "errors_dropped";
+    CHECK(!has2);
+    // instances_list: this instance says how many errors can no longer be read.
+    json mine;
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(mine.value("lua_errors_lost", 0) == 5);
+    bool has3 = false;
+    if (mine.contains("warnings"))
+        for (const auto &w : mine["warnings"]) has3 = has3 || (w.value("code", "") == "errors_dropped" && w.value("lost", 0) == 5);
+    CHECK(has3);
+    console::errors_clear();
+    mine = json();
+    for (const auto &e : coordinator::instances())
+        if (e.value("self", false)) mine = e;
+    CHECK(!mine.contains("lua_errors_lost") && !mine.contains("warnings"));  // errors_clear is on purpose: not a loss
+}
+
+// Issue #15: every tool answer of the game carries `_meta["gmod-mcp/lua_errors"]` = {instance, cursor, recent}: the bridge reads it
+// (and strips it) to tell a caller that the game is flooded with Lua errors since its last call. `recent` = errors of the last 5 s.
+static void test_errors_meta_for_the_bridge() {
+    console::errors_clear();
+    agent::note_map_load_start("gm_m");
+    CHECK(console::errors_recent(5.0) == 0);
+    console::push_error(json{{"realm", "client"}, {"message", "old"}, {"time", console::uptime() - 60.0}});  // outside the window
+    for (int i = 0; i < 25; ++i) console::push_error(json{{"realm", "client"}, {"message", "spam"}});
+    CHECK(console::errors_recent(5.0) == 25);
+    json r = mcp::call_tool("status", json::object());
+    CHECK(r.contains("_meta") && r["_meta"].contains("gmod-mcp/lua_errors"));
+    json m = r.value("_meta", json::object()).value("gmod-mcp/lua_errors", json::object());
+    CHECK(m.value("instance", "") == agent::config().instance_id && m.value("cursor", 0) == console::errors_cursor() && m.value("recent", 0) == 25);
+    json bad = mcp::call_tool("no_such_tool_xyz", json::object());
+    CHECK(bad.contains("_meta"));  // errors too: a failing call is also a moment to hear about a flood
+}
+
 // Issue #11: `fields` on a result that holds no table (a JSON string from util.TableToJSON, a number) projects nothing: the
 // result must say so (`fields_note`) instead of silently coming back whole.
 static void test_fields_note() {
@@ -3573,6 +3709,10 @@ int main(int argc, char **argv) {
     test_errors_map_tags();
     test_errors_filter_before_limit();
     test_errors_group_by_message();
+    test_errors_source_and_pattern_filters();
+    test_errors_group_source_and_hook();
+    test_errors_warnings();
+    test_errors_meta_for_the_bridge();
     test_fields_note();
     test_long_waits();
     test_errors_load_stamp_order();

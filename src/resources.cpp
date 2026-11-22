@@ -345,6 +345,11 @@ fields, all plain sentences for you, present only when they apply:
 - `truncated_note`: values were cut by `depth`/`limit`/`max_string`; they are marked `__type = "truncated"`; raise the limit.
 - `output_note`: the console lines in `output` are shared with the game; `fps_note`: a test client runs at most 20 fps.
 - `version_warning`: the module in the game and the Claude Code plugin have different versions; tell the user.
+- `warnings`: a list of `{code, text, ...}` entries. `lua_error_spam` (added by the plugin on the answer of any tool): the game raised a
+  burst of Lua errors (20 or more in 5 s) since your last call; it names the message, its source, the hook when known and the count:
+  a hook added by `lua_exec` that fails keeps failing until removed (`hook.Remove`), and floods the user's game. `errors_dropped`
+  (`errors_since`, `instances_list`): the 2000 kept errors overflowed, the oldest were dropped. `repeated_errors` (`errors_since`): most of the
+  list is one message, use `group_by: "message"`. Only the plugin adds `lua_error_spam` (not a client that talks to the game's port directly).
 - `waited_s` / `waited_reason`: the call waited for another launch or map load (see "Launches and map loads").
 A number the game cannot hold is `null`, never a string: JSON has no NaN or infinity, so a non-finite value (NaN, +-infinity,
 a coordinate or a "1e999" that overflows a double) reads `null` where a number is expected (`distance`, `pos`, `eye_ang`,

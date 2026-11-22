@@ -137,7 +137,7 @@ static json lua_job_tool(const json &args) {
     bool async = args.value("async", false);
     json p{{"code", code}, {"chunkname", args.value("chunkname", chunk)}, {"args", args.value("args", json::object())},
            {"slice_ms", args.value("slice_ms", 8.0)}, {"fresh_env", args.value("fresh_env", false)}, {"async", async}};
-    for (const char *k : {"resume_limit_s", "jit", "depth", "limit", "max_string"})
+    for (const char *k : {"resume_limit_s", "jit", "depth", "limit", "max_string", "hook_guard"})
         if (args.contains(k)) p[k] = args[k];
     json start = agent::rt(realm, "job_start", p);
     if (!start.value("ok", false)) return start;
@@ -279,7 +279,10 @@ void register_jobs() {
                 {"depth", {{"type", "integer"}, {"minimum", 0}, {"maximum", 200}, {"description", "Cut returned tables deeper than this (default: no cut)."}}},
                 {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000000}, {"description", "Cut returned tables longer than this (default: no cut)."}}},
                 {"max_string", {{"type", "integer"}, {"minimum", 16}, {"maximum", 1073741824},
-                                {"description", "Cut returned strings longer than this (default: no cut)."}}}}},
+                                {"description", "Cut returned strings longer than this (default: no cut)."}}},
+                {"hook_guard", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000000},
+                                {"description", "A hook the script adds while it runs (hook.Add) is removed after this many identical errors in a row, "
+                                                "with one log line (default 300; 0 = never). The hook keeps its identifier: hook.Remove still works."}}}}},
               {"oneOf", json::array({json{{"required", {"code"}}}, json{{"required", {"path"}}}})}},
          json{{"destructiveHint", true}}, lua_job_tool});
     mcp::set_task_support("lua_job", "optional");

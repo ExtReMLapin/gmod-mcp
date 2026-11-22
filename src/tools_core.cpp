@@ -290,7 +290,7 @@ static json status_tool(const json &args) {
 
 static json exec_payload(const json &args, const std::string &code, const std::string &chunk) {
     json p{{"code", code}, {"chunkname", args.value("chunkname", chunk)}};
-    for (const char *k : {"budget", "jit", "depth", "limit", "max_string"})
+    for (const char *k : {"budget", "jit", "depth", "limit", "max_string", "hook_guard"})
         if (args.contains(k)) p[k] = args[k];
     return p;
 }
@@ -902,7 +902,11 @@ void register_core() {
                        {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000000},
                                   {"description", "Cut tables longer than this (default: no cut)."}}},
                        {"max_string", {{"type", "integer"}, {"minimum", 16}, {"maximum", 1073741824},
-                                       {"description", "Cut strings longer than this (default: no cut)."}}}};
+                                       {"description", "Cut strings longer than this (default: no cut)."}}},
+                       {"hook_guard", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000000},
+                                       {"description", "A hook added by this code (hook.Add while it runs) is removed after this many identical errors in a row, "
+                                                       "with one log line (default 300; 0 = never). GMod never removes a hook that errors, so a failing one floods the game. "
+                                                       "The hook keeps its identifier: hook.Remove(event, id) still works. The error is still reported as usual."}}}};
     exec_props["fields"] = {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"]): the rest "
                                             "of a large result is dropped before it reaches you. Only returned tables are projected: when none is "
