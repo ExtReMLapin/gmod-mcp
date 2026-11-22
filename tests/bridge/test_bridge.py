@@ -359,6 +359,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if name == "nofinal":
             self.sse_start(); self.sse(prog(1)); return  # stream ends without the response (game crashed)
         if name == "huge":
+            if args.get("single"):  # one copy of the text (a message of n bytes), not content plus structuredContent
+                return self.reply_json(res({"content": [{"type": "text", "text": "x" * args.get("n", 8 << 20)}]}))
             return self.reply_json(text("x" * args.get("n", 8 << 20)))
         if name == "instances_list" and srv.pid_file:
             # The stand-in game (GMCP_FAKE_PID) wrote its pid: the fake module lists it as a registered instance.
@@ -547,9 +549,21 @@ def case_f(slow=False):
     # 8 MB result.
     # The duration is printed: well under a second when the reader is buffered (it took 20 s byte by byte).
     t0 = time.time()
-    r = b.req("tools/call", {"name": "huge", "arguments": {}}, timeout=60)
+    r = b.req("tools/call", {"name": "huge", "arguments": {"single": True}}, timeout=60)
     dt = time.time() - t0
-    check("F 8 MB result intact (%.1f s)" % dt, r and len(r["result"]["structuredContent"]["text"]) == 8 << 20, "no answer after %.0f s" % dt)
+    check("F 8 MB result intact (%.1f s)" % dt, r and len(r["result"]["content"][0]["text"]) == 8 << 20, "no answer after %.0f s" % dt)
+
+    # Issue #17: a client drops the whole connection when one message passes 16 MB (a full-window PNG did). Whatever the game
+    # sends, the bridge never writes a message above its safe limit: the call gets a result_too_large error and the bridge lives on.
+    r = b.req("tools/call", {"name": "huge", "arguments": {"n": 14 << 20, "single": True}}, timeout=60)
+    res = (r or {}).get("result", {})
+    sc = res.get("structuredContent", {})
+    check("F Issue #17: a 14 MB result becomes an isError result_too_large, not a 14 MB line",
+          r and res.get("isError") is True and sc.get("error", {}).get("code") == "result_too_large"
+          and len(json.dumps(r)) < 100000 and "result_too_large" in res["content"][0]["text"], str(r)[:300])
+    check("F Issue #17: the bridge still answers after it", (b.req("ping") or {}).get("result") == {})
+    r = b.req("tools/call", {"name": "huge", "arguments": {"n": 11 << 20, "single": True}}, timeout=60)
+    check("F Issue #17: 11 MB (under the limit) still goes through", r and len(r["result"]["content"][0]["text"]) == 11 << 20, str(r)[:200])
 
     # 30 concurrent calls with string ids.
     ids = ["c-%d" % i for i in range(30)]

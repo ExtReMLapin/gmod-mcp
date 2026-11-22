@@ -214,7 +214,9 @@ json build(const std::string &tool) {
         s["trace_through"] = obj({{"surfaces", ANYS}, {"count", N}, {"total_thickness", N}, {"distance", N}, {"truncated", B}},
                                  {"surfaces", "count", "total_thickness", "distance", "truncated"});
         json shot = obj({{"format", S}, {"w", N}, {"h", N}, {"screen_w", N}, {"screen_h", N}, {"bytes", N}, {"method", S}, {"camera_restored", B},
-                         {"source", S}, {"capture_ms", N}, {"file", S}, {"file_deleted", B}, {"ignored", STRS}, {"note", S}, {"warning", S}},
+                         {"source", S}, {"capture_ms", N}, {"file", S}, {"file_deleted", B}, {"ignored", STRS}, {"note", S}, {"warning", S},
+                         {"size_capped", B}, {"requested_format", S}, {"quality", N}, {"scale", N}, {"scale_requested", N}, {"scale_filter", S},
+                         {"scaled_from", Obj}, {"crop", Obj}},
                         {"bytes"});
         s["screenshot"] = shot;
         s["screenshot_from"] = shot;

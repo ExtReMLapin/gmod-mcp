@@ -28,6 +28,7 @@
 #include "coordinator.h"
 #include "gmod_mcp_reply.h"
 #include "http_server.h"
+#include "imagecap.h"
 #include "installer.h"
 #include "launch_opts.h"
 #include "crashinfo.h"
@@ -2978,6 +2979,27 @@ static void test_screenshot_engine_jpeg() {
         }
         CHECK((int)std::distance(fs::directory_iterator(root / "screenshots"), fs::directory_iterator()) == 1);  // only mine.jpg left
     }
+    // Issue #11 (item 8): crop, scale and scale_filter are not applied to the engine's own JPEG either, and listed in `ignored`.
+    {
+        json r = mcp::call_tool("screenshot", json{{"source", "engine_jpeg"}, {"crop", json{{"x", 1}, {"y", 2}, {"w", 30}, {"h", 20}}}, {"scale", 4}, {"scale_filter", "smooth"}});
+        CHECK(!r.value("isError", false));
+        if (!r.value("isError", false)) CHECK(r["structuredContent"].value("ignored", json::array()) == json::array({"crop", "scale", "scale_filter"}));
+    }
+    // Issue #17: an image over the cap is never sent (a client drops the whole connection above 16 MB per message): the engine's
+    // JPEG cannot be made smaller here, so the answer is result_too_large with no image, and the file is still deleted.
+    {
+        std::string normal = picture;
+        picture += std::string(imagecap::kMaxRaw, '\0');
+        json r = mcp::call_tool("screenshot", json::object());
+        CHECK(err_code(r) == "result_too_large" && image_of(r).empty());
+        CHECK(contains(err_of_r(r).value("message", ""), "MB") || contains(err_of_r(r).value("message", ""), "MiB"));
+        CHECK((int)std::distance(fs::directory_iterator(root / "screenshots"), fs::directory_iterator()) == 1);  // only mine.jpg left
+        // Just under the cap: still sent.
+        picture = jpeg_bytes(640, 360) + std::string(imagecap::kMaxRaw - 2000 - jpeg_bytes(640, 360).size(), '\0');
+        r = mcp::call_tool("screenshot", json::object());
+        CHECK(!r.value("isError", false) && !image_of(r).empty());
+        picture = normal;
+    }
     // A forced render is still refused without a client realm.
     CHECK(err_code(mcp::call_tool("screenshot", json{{"source", "render"}})) == "realm_unavailable");
     // The sender's failure is the tool's error; the engine's line never printed gives capture_timeout (not waited for 4 s here: the
@@ -3022,6 +3044,22 @@ static void test_screenshot_engine_jpeg() {
         for (const char *prop : {"source", "screen_w", "screen_h", "file", "file_deleted", "ignored", "note", "warning"})
             CHECK(shot->output_schema["properties"].contains(prop));
         for (const char *gone : {"scaled", "native_w", "native_h"}) CHECK(!shot->output_schema["properties"].contains(gone));
+        // Issue #17 and Issue #11 (item 8): the size cap, crop and scale are declared, described, validated.
+        for (const char *prop : {"crop", "scale", "scale_filter"}) CHECK(shot->input_schema["properties"].contains(prop));
+        for (const char *prop : {"size_capped", "requested_format", "quality", "scale", "scale_filter", "scaled_from", "crop"})
+            CHECK(shot->output_schema["properties"].contains(prop));
+        for (const char *part : {"result_too_large", "size_capped", "crop", "scale", "png", "8 MB", "HUD"}) CHECK(contains(shot->description, part));
+        CHECK(!shot->input_schema["properties"].contains("hud"));  // Issue #11: hud + w/h is not offered (see the decision in CHANGELOG)
+        json p = shot->input_schema["properties"];
+        CHECK(p["scale"].value("minimum", 0) == 1 && p["scale"].value("maximum", 0) == 16);
+        CHECK(p["scale_filter"]["enum"] == json::array({"nearest", "smooth"}));
+        json bad_crop[] = {json{{"x", 0}, {"y", 0}, {"w", 0}, {"h", 5}}, json{{"x", -1}, {"y", 0}, {"w", 5}, {"h", 5}}, json{{"x", 0}, {"y", 0}, {"w", 5}},
+                           json{{"x", 0}, {"y", 0}, {"w", 5}, {"h", 5}, {"z", 1}}};
+        for (const json &c : bad_crop) CHECK(err_code(mcp::call_tool("screenshot", json{{"crop", c}})) == "invalid_params");
+        CHECK(err_code(mcp::call_tool("screenshot", json{{"scale", 0.5}})) == "invalid_params");
+        CHECK(err_code(mcp::call_tool("screenshot", json{{"scale", 17}})) == "invalid_params");
+        CHECK(err_code(mcp::call_tool("screenshot", json{{"scale_filter", "cubic"}})) == "invalid_params");
+        CHECK(err_code(mcp::call_tool("screenshot", json{{"hud", true}, {"w", 1920}, {"h", 1080}})) == "invalid_params");
     }
     for (const char *name : {"ui_click", "ui_key"}) {
         const mcp::Tool *t = mcp::find_tool(name);

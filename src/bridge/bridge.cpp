@@ -73,8 +73,37 @@ std::string g_dir;  // <user config>/gmod-mcp
 
 // --- Output: one JSON message per line on stdout ---
 std::mutex g_out_mu;
+// Issue #17: an MCP client drops the whole connection when one message passes 16 MB (the "wrote >16MB to stdout without a message
+// boundary" guard), and the tools are gone for the rest of the session. No single message is written above this size: a tool result
+// becomes a result_too_large error, any other answer a JSON-RPC error, a notification is dropped (and logged).
+const size_t kMaxMessageBytes = 12u << 20;
+void log(const std::string &s);
+json too_big_replacement(const json &m, size_t size) {
+    std::string why = "the answer is " + std::to_string(size >> 20) + " MB, over the " + std::to_string(kMaxMessageBytes >> 20) +
+                      " MB one message may have (an MCP client drops the whole connection above 16 MB): ask for less, e.g. a smaller region, "
+                      "fewer fields or a lower limit";
+    if (!m.is_object() || !m.contains("id") || !(m.contains("result") || m.contains("error"))) return nullptr;
+    const json &id = m["id"];
+    if (m.contains("result") && m["result"].is_object() && m["result"].contains("content") && m["result"]["content"].is_array()) {
+        json sc = {{"error", {{"code", "result_too_large"}, {"message", why}}}};
+        json r = {{"content", json::array({json{{"type", "text"}, {"text", sc.dump()}}})}, {"structuredContent", sc}, {"isError", true}};
+        if (m["result"].contains("resultType")) r["resultType"] = m["result"]["resultType"];
+        return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", r}};
+    }
+    return json{{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32603}, {"message", "result_too_large: " + why}}}};
+}
 void out(const json &m) {
     std::string s = m.dump(-1, ' ', false, json::error_handler_t::replace);
+    if (s.size() > kMaxMessageBytes) {
+        size_t big = s.size();
+        json repl = too_big_replacement(m, big);
+        if (repl.is_null()) {
+            log("dropped a " + std::to_string(big >> 20) + " MB message (over " + std::to_string(kMaxMessageBytes >> 20) + " MB)");
+            return;
+        }
+        log("replaced a " + std::to_string(big >> 20) + " MB answer by a result_too_large error");
+        s = repl.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
     std::lock_guard<std::mutex> lk(g_out_mu);
     std::fwrite(s.data(), 1, s.size(), stdout);
     std::fputc('\n', stdout);

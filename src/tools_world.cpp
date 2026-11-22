@@ -5,6 +5,7 @@
 #include "agent.h"
 #include "console.h"
 #include "enginejpeg.h"
+#include "imagecap.h"
 #include "jobs.h"
 #include "mcp.h"
 #include "platform/platform.h"
@@ -32,8 +33,8 @@ static json pass(const json &a, std::initializer_list<const char *> keys) {
     return p;
 }
 
-// Screenshot: request in a render hook, then poll until the frame has been captured.
-static json capture(int realm, const json &req) {
+// Screenshot: request in a render hook, then poll until the frame has been captured. One attempt, at the format asked for.
+static json capture_once(int realm, const json &req) {
     json r = agent::rt(realm, "capture_request", req, 5.0);
     if (!r.value("ok", false)) return r;
     auto t0 = Clock::now();
@@ -52,6 +53,26 @@ static json capture(int realm, const json &req) {
         if (std::chrono::duration<double>(Clock::now() - t0).count() > 10.0)
             return agent::err("timeout", "the frame was not rendered within 10 s (game minimized or frozen?)");
     }
+}
+
+// The capture the tools use. Issue #17: an image over imagecap::kMaxBase64 is never returned (the client drops the whole connection
+// above 16 MB per message): a PNG that is too big is taken again as a JPEG, at lower qualities, or the call fails with
+// result_too_large. Issue #11 (item 8): `scale` enlarges the (cropped) picture here, from a lossless PNG.
+static json capture(int realm, const json &req) {
+    if (req.contains("scale")) {
+        json r = req;
+        r.erase("scale");
+        r.erase("scale_filter");
+        r.erase("quality");
+        r["format"] = "png";
+        return imagecap::apply_scale(capture_once(realm, r), req["scale"].get<double>(), req.value("scale_filter", "nearest") == "smooth");
+    }
+    return imagecap::capture_capped(req.value("format", "jpeg"), req.value("quality", 90), [&](const imagecap::Step &step) {
+        json r = req;
+        r["format"] = step.format;
+        r["quality"] = step.quality;
+        return capture_once(realm, r);
+    });
 }
 
 // Screenshot without a client realm (main menu, a VGUI2 dialog, a loading screen): the engine's own `jpeg` command (sent through the
@@ -98,6 +119,8 @@ static json engine_jpeg_shot(const json &a) {
     if (a.contains("w")) ignored.push_back("w");
     if (a.contains("h")) ignored.push_back("h");
     if (a.contains("quality")) ignored.push_back("quality");
+    for (const char *k : {"crop", "scale", "scale_filter"})
+        if (a.contains(k)) ignored.push_back(k);
     if (!ignored.empty()) {
         res["ignored"] = ignored;
         res["note"] = "source engine_jpeg returns the engine's own JPEG at the game's screen size and quality (jpeg_quality); these arguments were not applied";
@@ -116,7 +139,7 @@ json take_screenshot(const json &a) {
     f.client_allowed = agent::lock_status().value("client_allowed", false);
     enginejpeg::SourceChoice c = enginejpeg::choose_source(f);
     if (!c.code.empty()) return agent::err(c.code, c.message);
-    json r = c.source == enginejpeg::Source::Render ? capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality"})) : engine_jpeg_shot(a);
+    json r = c.source == enginejpeg::Source::Render ? capture(realms::CLIENT, pass(a, {"w", "h", "format", "quality", "crop", "scale", "scale_filter"})) : engine_jpeg_shot(a);
     if (r.value("ok", false)) r["result"]["source"] = enginejpeg::source_name(c.source);
     return r;
 }
@@ -310,13 +333,31 @@ void register_render() {
                 {"w", {{"type", "integer"}, {"minimum", 16}, {"maximum", 3840}, {"description", "Width in pixels (default: the game window's)."}}},
                 {"h", {{"type", "integer"}, {"minimum", 16}, {"maximum", 2160}, {"description", "Height in pixels (default: the game window's)."}}}};
     json shot_args = img;
+    shot_args["crop"] = {{"type", "object"},
+                         {"properties", {{"x", {{"type", "integer"}, {"minimum", 0}}}, {"y", {{"type", "integer"}, {"minimum", 0}}},
+                                         {"w", {{"type", "integer"}, {"minimum", 1}}}, {"h", {{"type", "integer"}, {"minimum", 1}}}}},
+                         {"required", {"x", "y", "w", "h"}},
+                         {"additionalProperties", false},
+                         {"description", "Capture only this rectangle, in pixels of the picture you would get without it (origin top-left; with w/h, of that "
+                                         "w x h render). Outside the picture: invalid_params. Not applied by source engine_jpeg."}};
+    shot_args["scale"] = {{"type", "number"}, {"minimum", 1}, {"maximum", 16},
+                          {"description", "Enlarge the picture by this factor (1-16), always as a PNG: read small HUD elements with crop + scale. Lowered "
+                                          "when the result would pass 4 million pixels (result scale_requested). Not applied by source engine_jpeg."}};
+    shot_args["scale_filter"] = {{"type", "string"}, {"enum", {"nearest", "smooth"}},
+                                 {"description", "How scale enlarges: nearest (default, each pixel becomes a block) or smooth (bilinear)."}};
     shot_args["source"] = {{"type", "string"}, {"enum", {"auto", "render", "engine_jpeg"}},
                            {"description", "auto (default): the render capture when a map is loaded, the engine's jpeg command otherwise. render: the "
                                            "engine's render capture (client realm only). engine_jpeg: the engine's own `jpeg` console command, with or "
                                            "without a map (format, w, h and quality do not apply to it)."}};
     mcp::register_tool({"screenshot", "Take a screenshot",
                         "Client only (unsupported on srcds). Captures what the game shows and returns it as an MCP image (plus {source, format, w, h, screen_w, screen_h, "
-                        "method, bytes}). Two sources, chosen by `source` (auto by default). render: what the local player sees, "
+                        "method, bytes}). Size: an image over 8 MB once encoded is never sent (a client drops the whole connection above 16 MB). A png "
+                        "without w/h can be that big (a full window): it is retaken as a JPEG at lower quality and the result says size_capped: true "
+                        "(requested_format, quality); if nothing fits the call fails with result_too_large and no image. Ask for jpeg, a smaller w/h or "
+                        "a crop to avoid it. crop {x, y, w, h} captures only that rectangle (result crop); scale 1-16 enlarges the picture as a PNG "
+                        "(scale_filter nearest or smooth; result scale, scaled_from): to read a small HUD element, crop it and scale 8. Without w/h the "
+                        "picture is the window with its HUD; with w/h the view is rendered again without HUD, so to see the HUD larger use crop + scale, "
+                        "not w/h. Two sources, chosen by `source` (auto by default). render: what the local player sees, "
                         "drawn by the engine; needs a loaded map (client realm); without w/h it is the game window as it is, HUD "
                         "included (method backbuffer), with w/h the player's view rendered again at that size, without HUD or view "
                         "model (method render_target); debug_draw primitives are visible; a minimized or frozen game gives timeout "
@@ -327,7 +368,7 @@ void register_render() {
                         "reads exactly that file and deletes it (and nothing else; result file, file_deleted, and a warning with the "
                         "path if the file could not be deleted). The image is the game's screen size (the space ui_click coordinates "
                         "are read on) as a JPEG at the engine's own quality (convar jpeg_quality, not changed): format, w, h and quality "
-                        "are not applied and, when given, are listed in `ignored`. A picture the user takes with their own jpeg command "
+                        "are not applied (nor crop, scale and scale_filter) and, when given, are listed in `ignored`. A picture the user takes with their own jpeg command "
                         "in the same instant can be mistaken for it. One capture at a time. Errors: realm_unavailable (source render "
                         "without a map), unsupported (srcds), client_locked, capture_timeout (no `Wrote` line from the engine within "
                         "4 s: game minimized or frozen, or the console capture is off), capture_failed (the file named by the engine "

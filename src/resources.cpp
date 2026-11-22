@@ -468,8 +468,19 @@ loading screen. The engine writes garrysmod/screenshots/<name>.jpg and prints it
 that file and deletes it, and nothing else (`file`, `file_deleted`; a `warning` with the path if the delete failed). It is the
 engine's own capture, so it works while other windows cover the game, takes no focus and does not touch the window. The image is
 a JPEG at the game's screen size (the space ui_click coordinates are read on) and at the engine's own quality (convar
-jpeg_quality, left alone): `format`, `w`, `h` and `quality` are not applied and are listed in `ignored`. No `Wrote` line within
-4 s gives `capture_timeout` (game minimized or frozen); a file that cannot be taken gives `capture_failed` and is left in place.
+jpeg_quality, left alone): `format`, `w`, `h`, `quality`, `crop`, `scale` and `scale_filter` are not applied and are listed in
+`ignored`. No `Wrote` line within 4 s gives `capture_timeout` (game minimized or frozen); a file that cannot be taken gives
+`capture_failed` and is left in place.
+
+Size: no image over 8 MB once encoded is ever returned (an MCP client drops the whole connection above 16 MB per message, and the
+game tools are gone for the session). A `png` without `w`/`h` is a full window and can be that big: the module retakes it as a
+JPEG (quality 90, then 70, 50, 30) and says so (`size_capped: true`, `requested_format`, `quality`); when nothing fits the call fails
+with `result_too_large` and no image. The bridge also never writes one message above 12 MB, whatever the tool.
+
+Small HUD elements: `crop {x, y, w, h}` captures only that rectangle of the picture, `scale` (1-16, `scale_filter` nearest or
+smooth) enlarges it as a PNG: `{crop: {x: 20, y: 280, w: 90, h: 60}, scale: 8}`. Without `w`/`h` the picture is the window with
+its HUD; with `w`/`h` the view is rendered again without the HUD, so use crop + scale to see the HUD larger. Take the window at its
+real size (no `w`/`h`) and crop in its pixels.
 
 ## Limits
 - No connection to remote servers; the client realm is refused outside singleplayer/listen/srcds loopback.

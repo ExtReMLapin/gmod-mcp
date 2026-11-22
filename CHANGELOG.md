@@ -4,6 +4,12 @@
 
 ### Features
 
+- **`screenshot {crop, scale, scale_filter}`** (Issue #11, item 8): `crop {x, y, w, h}` captures only that rectangle of the picture
+  (pixels of the image you would get without it), `scale` (1 to 16) enlarges it, `scale_filter` is `nearest` (default, every pixel
+  becomes a block: for reading small HUD elements) or `smooth`. A cropped and enlarged radar icon no longer needs a script on the
+  agent's side. The enlarged picture is always a PNG; `scale` is lowered when the result would pass 4 million pixels and the result says
+  so (`scale_requested`). Not applied by the engine's own JPEG (`source: engine_jpeg`): listed in `ignored`. To look at the HUD
+  larger, crop and scale the window capture (no `w`/`h`: that render has no interface).
 - **Listed in the official MCP Registry.** Each release now attaches `gmod-mcp.mcpb` (one MCP Bundle with the bridge for Windows
   and Linux x86-64, built by `cmake/mcp_registry.py` and run once in CI before the release) and, from a tag, publishes
   `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the
@@ -11,6 +17,11 @@
 
 ### Fixes
 
+- **A big image can no longer drop the MCP connection** (Issue #17). A full-window PNG went over 16 MB once base64-encoded and the
+  MCP client closed the transport for the whole session. No image over 8 MB (base64) is sent any more: a capture that is too big is
+  taken again as a JPEG (quality 90, 70, 50, then 30) and the result says so (`size_capped: true`, `requested_format`, `quality`); when
+  nothing fits the call fails with `result_too_large` and no image. The bridge also refuses to write any single message above 12 MB
+  to the client (every tool, not only images): the call gets a `result_too_large` error instead and the connection stays up.
 - **Tool annotations match what the tools do.** `lua_job_status` no longer reads as destructive (it only forgets the job whose
   result it hands over). `wait_for`, `lua_inspect` and `lua_function_source` run caller-supplied Lua, so they are no longer
   read-only (destructive, like `lua_exec`). `lua_file_write`, `ui_click` and `ui_key` are marked destructive (overwrite a file;
