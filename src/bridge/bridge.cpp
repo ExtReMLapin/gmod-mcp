@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -43,6 +44,7 @@
 #include "bridge_snapshot.h"
 #include "crashinfo.h"
 #include "lowmem.h"
+#include "modcheck.h"  // Issue #13
 #include "gamedir.h"
 #include "launch_opts.h"  // Issue #10
 #include "fp7137.h"  // FP7137
@@ -500,7 +502,12 @@ std::string exe_dir() {
 }
 
 // The plugin ships the module next to the bridge: <plugin>/bin/gmod-mcp-bridge and <plugin>/module/<platform>/garrysmod/...
-std::string module_dir() { return exe_dir() + "/../module/" + plat::platform_tag(); }
+// GMOD_MCP_MODULE_DIR replaces it (the bridge tests; an unusual install layout).
+std::string module_dir() {
+    if (const char *e = std::getenv("GMOD_MCP_MODULE_DIR"))
+        if (*e) return e;
+    return exe_dir() + "/../module/" + plat::platform_tag();
+}
 
 // --- Answers built by the bridge ---
 // The plugin option feedback_offers (Claude Code userConfig, given to the bridge as GMOD_MCP_FEEDBACK_OFFERS): on by
@@ -870,6 +877,7 @@ struct Launched {
     std::string id;
     std::string owner;  // free label given at launch (a sub-agent's name): instances_close {owner} closes only those
     bool keep = false;
+    bool private_desktop = false;  // issue #14: started on the session's private desktop
     std::string root;  // game folder it was started from (where its crash dumps go)
     std::shared_ptr<EndSlot> slot;  // how it ended, worked out once (shared by the copies of this record)
 #ifdef _WIN32
@@ -987,7 +995,7 @@ json bridge_tools() {
         {"title", "Launch test clients"},
         {"description",
          "Starts 1 to 8 extra Garry's Mod clients for tests, and works while no game runs (the first one then becomes the "
-         "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, waits until it answers, "
+         "main instance). Each starts with -multirun, gmod-mcp on, a small window and a frame cap, on a private Windows desktop (below), waits until it answers, "
          "then loads `map` through map_load (never +map: a game loading a map in the background can grab the mouse). "
          "Returns their instance ids and pids: pass an id as `instance` on every call. "
          "Without keep: true they end with this bridge session (when it ends, the clients it started are closed, also when the bridge is killed: "
@@ -1004,7 +1012,21 @@ json bridge_tools() {
          "Presets: 'light' (default: 640x360, 20 fps; for most tests, NOT for performance measurements: the 20 fps cap "
          "hides per-frame cost) and 'normal' (640x360, 30 fps; for rendering checks, screenshots and frame-time sensitive "
          "tests). sound: false (-nosound) changes what the engine reports about sounds: SoundDuration of compressed "
-         "(ADPCM) WAV files differs (0.49 s instead of 1.24 s seen); keep sound on for sound tests.\n"
+         "(ADPCM) WAV files differs (0.49 s instead of 1.24 s seen); pass sound: true for sound tests.\n"
+         // Issue #14
+         "Desktop (Windows): by default each client runs on a private Windows desktop of this bridge session (desktop: \"private\"; "
+         "result desktop, desktop_name). A starting game makes every game on ITS desktop release and restore its GPU resources "
+         "(the user's own game freezes about 10 s and its render targets are rebuilt empty); a client on another desktop never "
+         "finds the user's windows, so the user's game is not disturbed. Consequences: the client has no visible window and no taskbar "
+         "button (nothing to close by hand: instances_close), it never takes the user's focus, and sound is OFF unless you pass "
+         "sound: true (nobody sees it, and its audio would still reach the speakers). ui_click, ui_key and screenshot still work "
+         "(posted window messages and the engine's own capture: no real input and no screen grab). Clients of one session share "
+         "that desktop, so they still disturb each other as described below. desktop: \"shared\" starts them on the user's desktop "
+         "(visible window, the foreground handed back to the user's window): use it only to look at the window.\n"
+         // Issue #13
+         "Before starting anything the module installed in the game folder (lua/bin) is compared with the one this plugin ships: "
+         "an older one is refused with module_outdated and the update steps (a client would run it and only say so afterwards), unless "
+         "ignore_outdated_module: true. instances_list and the game_not_running error show module_outdated while no game runs.\n"
          // Issue #10
          "Pass-through options (checked before anything starts; a refused one is invalid_params naming it): fps_max and "
          "fps_max_nofocus (integers: 0 = no cap, or 10 to 1000) replace the preset's frame cap (fps_max_nofocus follows "
@@ -1050,7 +1072,7 @@ json bridge_tools() {
          "-textmode and lower graphics settings were measured: no real gain (and graphics settings would be saved into the "
          "user's own), so neither is offered.\n"
          "Result: {instances: [{instance, pid, port, owner?, commands? [{cmd, ok, error?}], map? (or map: null + map_error)}], game_dir, found_by, preset, "
-         "keep, fps_max, fps_max_nofocus, fps_note, launch_args?, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
+         "keep, desktop, desktop_name?, sound, module?, fps_max, fps_max_nofocus, fps_note, launch_args?, lua_mount}. If they do not all answer within timeout_s: error timeout with silent_pids "
          "(started but never answered: close them with instances_close {pids}) and answered [{instance, pid}]. A client that "
          "crashed during startup or its map load is reported as client_crashed (startup: the whole call's error; map load: that "
          "client's map_error), with the minidump file name in details.dump (for a human) and exit_code: launch a replacement. "
@@ -1091,7 +1113,9 @@ json bridge_tools() {
             {"map", {{"type", "string"}, {"pattern", "^[A-Za-z0-9_.-]{1,64}$"}, {"description", "Map to load on each, e.g. gm_construct. Default: stay at the main menu."}}},
             {"maxplayers", {{"type", "integer"}, {"minimum", 1}, {"maximum", 128}, {"description", "For map_load (default 1: singleplayer)."}}},
             {"preset", {{"type", "string"}, {"enum", json::array({"light", "normal"})}, {"description", "Default light."}}},
-            {"sound", {{"type", "boolean"}, {"description", "Keep sound on (default true). false saves CPU when sound does not matter."}}},
+            {"sound", {{"type", "boolean"}, {"description", "Sound on. Default false on the private desktop (invisible clients stay silent), true with desktop: shared. Pass true for sound tests (SoundDuration differs without sound)."}}},
+            {"desktop", {{"type", "string"}, {"enum", json::array({"private", "shared"})}, {"description", "private (default): a Windows desktop of this session, so the user's own game is not disturbed (no visible window, no focus taken). shared: the user's desktop, visible window."}}},  // Issue #14
+            {"ignore_outdated_module", {{"type", "boolean"}, {"description", "Start even when the module installed in the game folder is older than the one this plugin ships (error module_outdated otherwise). Default false."}}},  // Issue #13
             {"fps_max", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000},  // Issue #10
                          {"description", "Frame cap of these clients (fps_max): 0 = no cap, or 10 to 1000. Default: the preset's (light 20, normal 30). Given back to the user's value on a clean quit."}}},
             {"fps_max_nofocus", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000},  // Issue #10
@@ -1260,6 +1284,7 @@ json annotate_instances(json sc, const json &args, bool from_game = true) {
             if (l.pid == pid) {
                 if (!l.owner.empty()) e["owner"] = l.owner;
                 e["launched_by_this_session"] = true;
+                e["desktop"] = l.private_desktop ? "private" : "shared";  // issue #14
             }
         if (!want.empty() && e.value("owner", "") != want) continue;
         kept.push_back(std::move(e));
@@ -1289,6 +1314,7 @@ json annotate_instances(json sc, const json &args, bool from_game = true) {
         json x{{"pid", l.pid}, {"note", "launched by this session, not answering: still starting, or gmod-mcp did not load in it "
                                         "(see garrysmod/data/mcpagent/last_crash.txt). instances_close {pids} closes it."}};
         if (!l.owner.empty()) x["owner"] = l.owner;
+        x["desktop"] = l.private_desktop ? "private" : "shared";  // issue #14
         silent.push_back(x);
     }
     if (!silent.empty()) sc["launched_not_answering"] = silent;
@@ -1315,11 +1341,12 @@ json retry_later(json refused, const std::string &tool, const json &args, double
 }
 
 // The answer to a tool call while the game is unreachable: the module's error shape, as text and structuredContent.
+json offline_module_info();  // issue #13, below
+
 json not_running_error() {
-    return tool_text(json{{"error", {{"code", unreachable_code()},
-                                     {"message", not_running_text()},
-                                     {"details", {{"host", "127.0.0.1"}, {"port", g_port}, {"reason", why_down()}}}}}},
-                     true);
+    json details{{"host", "127.0.0.1"}, {"port", g_port}, {"reason", why_down()}};
+    details.update(offline_module_info());  // issue #13: module_outdated / module_check, when the game folder is known
+    return tool_text(json{{"error", {{"code", unreachable_code()}, {"message", not_running_text()}, {"details", details}}}}, true);
 }
 
 // Calls `again` while the coordinator role moves (see the hand-over notes above), for at most g_handover_wait_s: nothing
@@ -1433,6 +1460,73 @@ std::string parent_of(std::string p) {
 #endif
     how = "not found";
     return "";
+}
+
+// --- Issue #13: the module installed in the game against the one this bridge ships ---
+const char *module_file_name() {
+#ifdef _WIN32
+    return "gmsv_mcpagent_win64.dll";
+#else
+    return "gmsv_mcpagent_linux64.dll";
+#endif
+}
+
+struct ModuleCheck {
+    modcheck::Verdict verdict;
+    std::string shipped_file, installed_file;
+};
+
+// Reads the two module files (nothing is loaded or written). The shipped one is <module dir>/garrysmod/lua/bin/<name>; the installed one
+// <game folder>/garrysmod/lua/bin/<name>.
+ModuleCheck check_installed_module(const std::string &game_root) {
+    ModuleCheck c;
+    c.shipped_file = module_dir() + "/garrysmod/lua/bin/" + module_file_name();
+    c.installed_file = game_root + "/garrysmod/lua/bin/" + module_file_name();
+    std::string shipped, installed;
+    bool sr = plat::read_file(c.shipped_file, shipped);
+    bool ir = plat::read_file(c.installed_file, installed);
+    c.verdict = modcheck::decide(sr, sr ? modcheck::find_version(shipped) : "", ir, ir ? modcheck::find_version(installed) : "");
+    return c;
+}
+
+json module_json(const ModuleCheck &c) {
+    json m{{"state", c.verdict.name()}};
+    if (!c.verdict.shipped.empty()) m["shipped"] = c.verdict.shipped;
+    if (!c.verdict.installed.empty()) m["installed"] = c.verdict.installed;
+    m["shipped_file"] = c.shipped_file;
+    m["installed_file"] = c.installed_file;
+    return m;
+}
+
+// The steps that bring the installed module up to date (what the gmod-mcp skill does, section 3).
+std::string module_update_steps(const ModuleCheck &c, const std::string &game_root) {
+    std::string base = c.shipped_file.substr(0, c.shipped_file.size() - std::string("/lua/bin/").size() - std::string(module_file_name()).size());  // <module dir>/garrysmod
+    return "Update: quit every game that runs gmod-mcp (a loaded module cannot be replaced), then copy " + c.shipped_file + " to " + c.installed_file +
+           " and " + base + "/lua/autorun/server/mcpagent_boot.lua to " + game_root + "/garrysmod/lua/autorun/server/mcpagent_boot.lua (the gmod-mcp skill does it: "
+           "`gmod-mcp-bridge --module-dir` prints the shipped folder), then call this again.";
+}
+
+// While no game runs: module_outdated (only when the versions could be compared) and module_check, for the game folder the bridge knows.
+// An empty object when the folder is not known.
+json offline_module_info() {
+    // The files are a few MB each and every failed call asks: read them again at most every 3 s.
+    static std::mutex mu;
+    static std::chrono::steady_clock::time_point at;
+    static json last;
+    std::lock_guard<std::mutex> lk(mu);
+    if (!last.is_null() && std::chrono::steady_clock::now() - at < std::chrono::seconds(3)) return last;
+    std::string how, root = find_game_root("", how);
+    json r = json::object();
+    at = std::chrono::steady_clock::now();
+    last = r;
+    if (root.empty()) return r;
+    ModuleCheck c = check_installed_module(root);
+    using S = modcheck::State;
+    if (c.verdict.state == S::Outdated) r["module_outdated"] = true;
+    else if (c.verdict.state == S::Current || c.verdict.state == S::Newer) r["module_outdated"] = false;
+    if (c.verdict.state != S::Unknown) r["module_check"] = module_json(c);
+    last = r;
+    return r;
 }
 
 thread_local double g_fp7137_progress_offset = 0;  // FP7137: progress already reported while waiting for the lock
@@ -1632,6 +1726,70 @@ json recover_lost_map_load(const Launched &l, const std::string &map, double bud
     }
     return json();
 }
+
+// --- Issue #14: the private desktop ---
+// A starting game sends the engine's "another app is initializing" message (WM_COPYDATA) to every window of ITS OWN desktop that carries
+// the game's marker child, and each receiver releases and restores its GPU resources: the user's own game freezes about 10 s. A client started
+// on another desktop of the same window station never finds those windows. One desktop per bridge session, created at the first launch and kept
+// while a client started on it still runs; closed (CloseDesktop: the desktop goes away with its last process) after instances_close and at
+// the end of the session. Clients of the session still see each other (they share the desktop).
+std::mutex g_desk_mu;
+HDESK g_desk = nullptr;
+std::string g_desk_name;               // "gmod-mcp-<bridge pid>"
+std::string g_desk_station;            // the window station of this process ("WinSta0" for a normal session)
+std::atomic<int> g_desk_launching{0};  // launches in progress: the desktop is never closed under them
+
+// The desktop the clients start on, created if needed. False with `err` when the system refuses.
+bool private_desktop(std::string &name, std::string &station, std::string &err) {
+    std::lock_guard<std::mutex> lk(g_desk_mu);
+    if (!g_desk) {
+        char st[256] = {};
+        DWORD need = 0;
+        HWINSTA ws = GetProcessWindowStation();
+        if (!ws || !GetUserObjectInformationA(ws, UOI_NAME, st, sizeof st, &need)) std::strcpy(st, "WinSta0");
+        std::string n = "gmod-mcp-" + std::to_string(GetCurrentProcessId());
+        std::wstring wn = utf8_to_wide(n);
+        HDESK d = CreateDesktopW(wn.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+        if (!d) {
+            err = "CreateDesktop failed (error " + std::to_string(GetLastError()) + ")";
+            return false;
+        }
+        g_desk = d;
+        g_desk_name = n;
+        g_desk_station = st;
+    }
+    name = g_desk_name;
+    station = g_desk_station;
+    return true;
+}
+
+// Closes the desktop when no client started on it runs any more (and no launch is about to use it). The processes that still run on it
+// would keep it alive anyway: closing the handle is harmless, the next launch makes a new one.
+void release_private_desktop_if_unused() {
+    if (g_desk_launching.load() > 0) return;
+    {
+        std::lock_guard<std::mutex> lk(g_launch_mu);
+        for (const auto &l : g_launched)
+            if (l.private_desktop && l.h && WaitForSingleObject(l.h, 0) == WAIT_TIMEOUT) return;
+    }
+    std::lock_guard<std::mutex> lk(g_desk_mu);
+    if (g_desk && g_desk_launching.load() == 0) {
+        CloseDesktop(g_desk);
+        g_desk = nullptr;
+    }
+}
+
+// Session end (the clients were just terminated): drop the handle whatever runs.
+void close_private_desktop() {
+    std::lock_guard<std::mutex> lk(g_desk_mu);
+    if (g_desk) {
+        CloseDesktop(g_desk);
+        g_desk = nullptr;
+    }
+}
+#else
+inline void release_private_desktop_if_unused() {}
+inline void close_private_desktop() {}
 #endif
 
 json launch_tool(const json &args, const json &token) {
@@ -1642,7 +1800,9 @@ json launch_tool(const json &args, const json &token) {
 #else
     int count = args.value("count", 1);
     std::string preset = args.value("preset", "light");
-    bool sound = args.value("sound", true), keep = args.value("keep", false);
+    // Issue #14: by default the clients run on a private desktop of this session; there nobody sees them, so they are silent unless asked.
+    bool private_desk = args.value("desktop", "private") != "shared";
+    bool sound = args.value("sound", !private_desk), keep = args.value("keep", false);
     double timeout = args.value("timeout_s", 180.0);
     std::string map = args.value("map", "");
     std::string owner = args.value("owner", "");
@@ -1681,6 +1841,22 @@ json launch_tool(const json &args, const json &token) {
     if (!mount_root.empty()) {
         std::string code, inside = lua_mount::refuse_mount(mount_root, root + "/garrysmod", args.value("allow_shadow", false), &code);
         if (!inside.empty()) return tool_error(code, "lua_mount: " + inside);
+    }
+    // Issue #13: the module installed in this game folder against the one this bridge ships, before anything starts (a client of an older module
+    // starts, answers, and only then says "version mismatch": the launch, its settle delay and its map load are wasted).
+    ModuleCheck module_chk = check_installed_module(root);
+    if (module_chk.verdict.outdated() && !args.value("ignore_outdated_module", false)) {
+        std::string had = module_chk.verdict.installed.empty() ? "an older release (it carries no version marker)" : module_chk.verdict.installed;
+        json err{{"code", "module_outdated"},
+                 {"message", "instances_launch refused: the gmod-mcp module installed in the game (" + had + ", " + module_chk.installed_file +
+                                 ") is older than the one this plugin ships (" + module_chk.verdict.shipped + "). The clients would start with the old module and report a "
+                                 "version mismatch only afterwards. Nothing was started. " + module_update_steps(module_chk, root) +
+                                 " Or pass ignore_outdated_module: true to start anyway."},
+                 {"details", {{"installed", module_chk.verdict.installed.empty() ? json(nullptr) : json(module_chk.verdict.installed)},
+                              {"shipped", module_chk.verdict.shipped},
+                              {"installed_file", module_chk.installed_file},
+                              {"shipped_file", module_chk.shipped_file}}}};
+        return tool_text(json{{"error", err}}, true);
     }
     json peers_list = game_call("instances_list", json::object(), 3);  // an unreachable game is an error object: no ids
     // Issue #5 (live verification of 0.3.7): a program that is not gmod-mcp holds the base port. The module takes the next free port, which
@@ -1767,11 +1943,27 @@ json launch_tool(const json &args, const json &token) {
     if (fp_gate.waited_s() > 0) g_fp7137_progress_offset = fp_gate.waited_s() + 1;  // FP7137
     std::vector<Launched> started;
     unsigned long long return_target = 0;  // the foreground window before the first start: the clients give the foreground back to it
+    // Issue #14: the private desktop (created now, kept while a client runs on it). The count keeps release_private_desktop_if_unused away
+    // until these clients are in g_launched.
+    std::string desk_name, desk_station;
+    struct DeskGuard {
+        std::atomic<int> &n;
+        explicit DeskGuard(std::atomic<int> &c) : n(c) { ++n; }
+        ~DeskGuard() { --n; }
+    } desk_guard(g_desk_launching);
+    if (private_desk) {
+        std::string derr;
+        if (!private_desktop(desk_name, desk_station, derr)) {
+            fp_gate.release();
+            return tool_error("launch_failed", "could not create the private desktop for the clients: " + derr + ". Nothing was started. Pass desktop: \"shared\" to start them on the user's desktop.");
+        }
+    }
+    std::wstring wdesk = utf8_to_wide(desk_station + "\\" + desk_name);
     for (int i = 0; i < count; ++i) {
         // A test client takes the foreground window when it starts: tell it which window had it, so it hands it back once its own window is up.
         // The foreground window of a client this launch just started (it has not handed it back yet) is not a target: keep the earlier one.
         std::string client_opts = opts;
-        {
+        if (!private_desk) {  // on the private desktop the client never takes the user's foreground: nothing to give back (issue #14)
             plat::Foreground fg;
             bool have = plat::foreground_window(fg);
             bool ours = false;
@@ -1786,11 +1978,15 @@ json launch_tool(const json &args, const json &token) {
         si.cb = sizeof si;
         si.dwFlags = STARTF_USESHOWWINDOW;  // the first ShowWindow of the client shows its window without activating it (it does not take the foreground)
         si.wShowWindow = SW_SHOWNOACTIVATE;
+        if (private_desk) si.lpDesktop = wdesk.data();  // issue #14
         PROCESS_INFORMATION pi{};
         HANDLE job = keep ? nullptr : client_job();  // issue #8: ends with the bridge unless keep: true
         if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
+            DWORD cpe = GetLastError();
             for (auto &l : started) TerminateProcess(l.h, 0);
-            return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(GetLastError()) + ") for " + exe);
+            fp_gate.release();
+            return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(cpe) + ") for " + exe +
+                                                   (private_desk ? " on the private desktop " + desk_name + ": pass desktop: \"shared\" to start the clients on the user's desktop" : ""));
         }
         if (job) {
             AssignProcessToJobObject(job, pi.hProcess);  // a failure (a parent job that forbids nesting): the client just runs without the guard
@@ -1802,6 +1998,7 @@ json launch_tool(const json &args, const json &token) {
         l.pid = pi.dwProcessId;
         l.h = pi.hProcess;
         l.keep = keep;
+        l.private_desktop = private_desk;
         l.owner = owner;
         l.root = root;
         l.slot = std::make_shared<EndSlot>();
@@ -2044,6 +2241,31 @@ json launch_tool(const json &args, const json &token) {
              {"fps_note", fps_note},
              {"next", "Pass `instance` to target one, or instance_select to make one the default; instances_close when done."}};
     if (!extra_args.empty()) res["launch_args"] = extra_args;  // Issue #10
+    // Issue #14: where the clients run, and what that changes for the caller.
+    res["desktop"] = private_desk ? "private" : "shared";
+    res["sound"] = sound;
+    if (private_desk) {
+        res["desktop_name"] = desk_name;
+        res["desktop_note"] =
+            "the clients run on a private Windows desktop (" + desk_name + "): no window on the user's screen, no taskbar button, nothing to close by hand (instances_close), "
+            "and they never take the user's focus (no -mcp_return_focus). The user's own game is not disturbed by their start (no GPU release/restore, no freeze). "
+            "ui_click, ui_key and screenshot work as usual (posted window messages and the engine's own capture). " +
+            std::string(sound ? "Sound is on (sound: true): the clients are audible although nobody sees them. " : "Sound is off by default there (-nosound): sound: true turns it on (SoundDuration of ADPCM WAV files differs without sound). ") +
+            "The clients of this session share the desktop, so a client that starts still disturbs the others of the session: launch them in one call. desktop: \"shared\" starts them on the user's desktop.";
+    }
+    // Issue #13: what the module check found (an outdated module only gets here with ignore_outdated_module).
+    if (module_chk.verdict.state != modcheck::State::Unknown) {
+        json m = module_json(module_chk);
+        res["module"] = m;
+        if (module_chk.verdict.outdated()) {
+            std::string w = "the gmod-mcp module installed in the game (" + (module_chk.verdict.installed.empty() ? std::string("an older release") : module_chk.verdict.installed) +
+                            ") is older than the one this plugin ships (" + module_chk.verdict.shipped + "): started anyway (ignore_outdated_module). " + module_update_steps(module_chk, root);
+            res["warning"] = res.contains("warning") ? json(res["warning"].get<std::string>() + " " + w) : json(w);
+        } else if (module_chk.verdict.state == modcheck::State::Missing) {
+            std::string w = "no module file in " + module_chk.installed_file + ": the clients only answer when an addon carries the module. The shipped one is " + module_chk.shipped_file + ".";
+            res["warning"] = res.contains("warning") ? json(res["warning"].get<std::string>() + " " + w) : json(w);
+        }
+    }
     if (!mount_problems.empty()) {
         std::string w = "lua_mount " + mount_root + " is NOT active on every client: ";
         for (size_t i = 0; i < mount_problems.size(); ++i) w += (i ? "; " : "") + mount_problems[i].get<std::string>();
@@ -2211,6 +2433,7 @@ json close_tool(const json &args) {
         std::lock_guard<std::mutex> lk(g_default_mu);
         if (g_default_instance == id) g_default_instance.clear();
     }
+    release_private_desktop_if_unused();  // issue #14: the last client of the session on the private desktop is gone
     json res{{"closed", closed}};
     if (!already_gone.empty()) {
         res["already_gone"] = already_gone;
@@ -2303,6 +2526,7 @@ void close_launched_on_exit() {
 #endif
     }
     g_launched.clear();
+    close_private_desktop();  // issue #14
 }
 
 void probe_module_version();
@@ -2645,6 +2869,7 @@ void handle_request(const json &msg) {
                 {"note", g_conflict ? "no game instance reachable: port_conflict: " + port_conflict_text()
                                     : "no game instance is running: nothing answers on 127.0.0.1:" + std::to_string(g_port) + " (" + why_down() +
                                           "). instances_launch starts test clients; the user's game needs the -mcp launch option."}};
+        sc.update(offline_module_info());  // issue #13: module_outdated / module_check
         out(local_result(msg, tool_text(annotate_instances(sc, params_of(msg).value("arguments", json::object()), false), false)));  // the bridge's own empty list: not a reading of the games
     } else if (method == "tools/call" && !launched_answer(fwd).is_null()) {
         out(local_result(msg, launched_answer(fwd)));

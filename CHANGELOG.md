@@ -4,6 +4,23 @@
 
 ### Features
 
+- **Test clients start on a private Windows desktop** (`instances_launch {desktop}`, default `"private"`; Issue #14). A starting
+  game sends the engine's "release your GPU resources" message to every game window of its own desktop, which froze the user's
+  own game for about 10 s and rebuilt its render targets empty; a client on another desktop never finds those windows (measured:
+  no video-memory drop, no blocked main thread). One desktop per bridge session (`gmod-mcp-<bridge pid>`), created at the first
+  launch and closed after `instances_close` of its last client and at the end of the session; the bridge owns the processes, so
+  closing and session end work as before. The result and `instances_list` say `desktop`. Consequences, all in the tool
+  description: no visible window (close with `instances_close`), no `-mcp_return_focus` (the client never takes the user's
+  focus), `ui_click` / `ui_key` / `screenshot` unchanged (messages are posted from inside the game, the capture is the engine's),
+  and **sound off by default** on the private desktop (`-nosound`; `sound: true` keeps it, needed for `SoundDuration` of ADPCM
+  WAV files). `desktop: "shared"` is the previous behaviour (sound on by default). Clients of one session still share a desktop.
+- **The module in the game folder is checked before a launch** (Issue #13). The module now carries its version as a marker string;
+  the bridge reads it from `lua/bin/gmsv_mcpagent_win64.dll` and from the module it ships (`--module-dir`) and refuses a launch with
+  `module_outdated` and the update steps when the installed one is older (a module built before this release carries no marker and
+  counts as older); `ignore_outdated_module: true` starts anyway, with a warning. A newer installed module (a development build) is
+  fine. While no game runs, `instances_list` and the `game_not_running` error carry `module_outdated` and `module_check`.
+  `GMOD_MCP_MODULE_DIR` replaces the shipped module folder (tests, unusual layouts).
+
 - **Listed in the official MCP Registry.** Each release now attaches `gmod-mcp.mcpb` (one MCP Bundle with the bridge for Windows
   and Linux x86-64, built by `cmake/mcp_registry.py` and run once in CI before the release) and, from a tag, publishes
   `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the

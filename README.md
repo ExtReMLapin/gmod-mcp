@@ -424,8 +424,24 @@ Right after a game starts, the other games can be unreachable for 15-18 s (`inst
 order: launch all clients in one `instances_launch`, then work. `GMOD_MCP_FP7137_WORKAROUND=0` turns the wait off.
 The game that holds the base port is the coordinator (`instances_list` shows it): when it ends, another game takes the role over in about 3 s and calls with `instance` answer the retryable `coordinator_changing` meanwhile (the bridge retries for 10 s); `instances_close` says when it closed the coordinator.
 
+**The clients start on a private Windows desktop** (`desktop: "private"`, the default; Windows only). What makes your own game
+freeze and glitch when a test client starts is the new game's broadcast, which only reaches the windows of its own
+desktop: a client on another desktop of the same window station never finds your game, so your game is not disturbed
+at all (measured: no video-memory drop, no blocked main thread). One desktop per bridge session, created at the first
+launch and closed once its last client is gone. What it changes: the clients have no window and no taskbar button (close
+them with `instances_close`, not by hand), they never take your focus (no `-mcp_return_focus`), and they are **silent by
+default** (`-nosound`; pass `sound: true` for sound tests, as `SoundDuration` of ADPCM WAV files differs without sound).
+`ui_click`, `ui_key` and `screenshot` still work (the module posts window messages inside the game's own process, and
+the screenshot is the engine's own capture). `desktop: "shared"` starts them on your desktop as before (visible window,
+the foreground handed back to you). The clients of one session share their desktop, so they still disturb each other:
+the waits above still apply. Games started by hand are not on it: they are covered by the waits only.
+
 The clients share the game folder with your own game, including `data/` and the cookies (`sv.db`/`cl.db`): a test
 that writes there changes your game too.
+
+Before a launch the bridge compares the module in the game folder (`lua/bin`) with the one the plugin ships: an older one
+refuses the launch with `module_outdated` and the update steps (`ignore_outdated_module: true` starts anyway), and
+`instances_list` / the `game_not_running` error show `module_outdated` while no game runs.
 
 > **Test clients leave your video settings alone.** Garry's Mod normally saves the window size it was started with as
 > its video setting (resolution, anti-aliasing, ... in the registry). `instances_launch` starts its clients with

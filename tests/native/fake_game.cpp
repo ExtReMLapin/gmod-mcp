@@ -105,6 +105,25 @@ int main(int argc, char **argv) {
         }
     }
 #endif
+#ifdef _WIN32
+    // GMCP_FAKE_DESKTOP_DIR names a folder: <dir>/<pid>.desktop gets the name of the desktop this process runs on ("Default" for the user's
+    // input desktop; the bridge starts test clients on a private desktop of its own, issue #14).
+    if (const char *dd = std::getenv("GMCP_FAKE_DESKTOP_DIR")) {
+        if (*dd) {
+            wchar_t name[256] = {0};
+            DWORD need = 0;
+            HDESK d = GetThreadDesktop(GetCurrentThreadId());
+            if (!d || !GetUserObjectInformationW(d, UOI_NAME, name, sizeof name, &need)) wcscpy_s(name, L"?");
+            std::string path = std::string(dd) + "\\" + std::to_string((unsigned long)GetCurrentProcessId()) + ".desktop";
+            if (FILE *f = std::fopen(path.c_str(), "wb")) {
+                char u[512] = {0};
+                WideCharToMultiByte(CP_UTF8, 0, name, -1, u, (int)sizeof u - 1, nullptr, nullptr);
+                std::fputs(u, f);
+                std::fclose(f);
+            }
+        }
+    }
+#endif
     const char *out = std::getenv("GMCP_FAKE_ARGV");
     if (out && *out) {
         if (FILE *f = std::fopen(out, "ab")) {

@@ -27,6 +27,10 @@
 #define EXPORT extern "C" __attribute__((visibility("default")))
 #endif
 
+// Issue #13: the version, as text inside the file. The bridge reads it from the module on disk (src/modcheck.cpp) to tell that the module installed in
+// the game is older than the one it ships, before any game starts. Exported so that the linker keeps it; the prefix must not change.
+EXPORT const char gmcp_module_version[] = "GMCP_MODULE_VERSION=" GMOD_MCP_VERSION;
+
 static bool g_started = false;
 static bool g_bootstrap = false;       // started from a listen/singleplayer server state (first run)
 static lua_State *g_host_L = nullptr;  // state that runs the pump: menu (client mode) or server (srcds)

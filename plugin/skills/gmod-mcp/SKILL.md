@@ -113,6 +113,14 @@ that connects, map changes (use `map`) and what gmod-mcp sets itself (`-multirun
 [Command line options](https://developer.valvesoftware.com/wiki/Command_line_options), and the Garry's Mod wiki
 (`wiki_search`); console commands and convars with `api_search` and `concommand_list`.
 
+- **Private desktop (default on Windows).** `instances_launch` starts the clients on a Windows desktop of its own, so the
+  user's own game does not freeze or glitch when a client starts. They have no window and no taskbar button: close them
+  with `instances_close` only; they never take the user's focus; they are silent (`-nosound`) unless you pass
+  `sound: true` (needed for sound tests: `SoundDuration` of ADPCM WAV files differs without sound). `ui_click`, `ui_key`
+  and `screenshot` work as usual. `desktop: "shared"` gives the old visible-window behaviour. The clients of a session
+  share their desktop and still disturb each other (see the next point). Before launching, the bridge refuses an
+  installed module older than the shipped one (`module_outdated`, with the update steps; `ignore_outdated_module: true`
+  overrides); `instances_list` shows `module_outdated` while no game runs.
 <!-- FP7137: agent-facing text A1-A3, see docs/FP7137.md -->
 - **Launches and map loads.** Starting a game makes every other running GMod release its GPU resources for 2-10 s, and a
   map load ending in that window crashes that game (engine bug, Facepunch garrysmod-issues #7137). The bridge therefore
