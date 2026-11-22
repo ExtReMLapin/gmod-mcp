@@ -102,6 +102,15 @@ The agent runtime (global table `__mcpagent`) is re-injected automatically.
   `gamemodes/` and `addons/*/lua/` like include(). A miss lists every place tried. Same rule for `lua_job {path}`,
   `lua_check`, `lua_reload` and `tests_run` (a path, or a pattern such as `tests/*.lua`; the folder of a pattern is found the same way).
 - The chunk is named `@lua/mcpagent_tmp/<name>`, so errors and tracebacks point to the file; `include("mcpagent_tmp/x.lua")` works.
+- The result of `lua_exec_file` and `lua_reload` says which file ran: `file`, `from_mount` (the lua_mount folder's copy) and
+  `other_matches` (files the same path also fits, which did not run: the first one wins, in the order above).
+- A data file outside `lua/` (fixtures under `tests/` of a worktree): `lua_exec_file {path: <absolute>, assign_to: "NAME"}`; the
+  file ends with `return {...}` and the realm's global `NAME` keeps it. `file.Read(path, "LUA")` does not reach it, even mounted.
+- `include()` only resolves paths under `lua/`; for any other file it returns false without an error. A chunk run by a tool then
+  gets `include_failed` and a warning; load the file with `lua_exec_file` and its absolute path.
+- `lua_reload` re-runs the file: `X.Config = {...}` is reset, objects built from a `local Class = {}` of the old copy keep the old
+  methods, and clients get new files only at the next map load or reconnect (the answer's `note` says so). To reload only some
+  files, call it once per file with `path`; `mounted_changed` reloads every changed file of the folder.
 
 ## Returned values
 `lua_exec` returns all return values (`n` = exact count, `nil`s in the middle preserved), serialized to JSON:

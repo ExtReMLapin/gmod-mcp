@@ -39,6 +39,8 @@ static const char *kJobProtocol =
     "(wait_s to wait), stop it with lua_job_cancel; two jobs can then run side by side, e.g. one per realm. A job started "
     "while another runs in the same realm is reported in concurrent_jobs: their timings and state mix.\n"
     "Returned values come back whole (no cut unless depth/limit/max_string; then the result says truncated).\n"
+    "include() only resolves paths under lua/: when it returns false for a file that is not there, the result has include_failed "
+    "and a warning; lua_exec_file with an absolute path loads a file from anywhere.\n"
     "The LuaJIT compiler stays on (timings are real), except with resume_limit_s, whose count hook makes LuaJIT interpret. A resume that never yields freezes the game: polling it then fails "
     "with main_thread_timeout (about 10 s) and status shows main_thread_stalled. resume_limit_s (optional, best effort) "
     "aborts a resume that runs that long without yielding, for loops written in the script itself. "
@@ -67,6 +69,10 @@ static json job_result(const json &s, const json &args) {
                  {"generation", s.value("generation", json())}};
         if (s.contains("blocked_console_commands")) {  // issue #11: RunConsoleCommand of a command the engine blocks from Lua
             out["blocked_console_commands"] = s["blocked_console_commands"];
+            out["warning"] = s.value("warning", "");
+        }
+        if (s.contains("include_failed")) {  // issue #19: include() of a file outside lua/ returned false
+            out["include_failed"] = s["include_failed"];
             out["warning"] = s.value("warning", "");
         }
         if (s.value("reports_dropped", 0) > 0) out["reports_dropped"] = s["reports_dropped"];

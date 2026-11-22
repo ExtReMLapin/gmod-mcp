@@ -3852,6 +3852,20 @@ int main(int argc, char **argv) {
         CHECK(all.size() == 2 && same(all[0], ov / "lua/pba/core.lua") && same(all[1], root / "addons/pba/lua/pba/core.lua"));
         all = tools::find_game_lua("ovx/sh.lua", err);
         CHECK(all.size() == 1 && same(all[0], ov / "lua/ovx/sh.lua"));
+        // Issue #29: lua_reload and lua_exec_file say which copy ran. lua_matches lists every file a relative path fits, the one that
+        // runs first; file_provenance says whether the one that ran is the mounted folder's, and lists the others.
+        {
+            auto m = tools::lua_matches("pba/core.lua");
+            CHECK(m.size() == 2 && same(m[0], ov / "lua/pba/core.lua") && same(m[1], root / "addons/pba/lua/pba/core.lua"));  // Issue #29
+            json pv = tools::file_provenance(m[0], std::vector<std::string>(m.begin() + 1, m.end()));
+            CHECK(pv.value("from_mount", false) == true && pv["other_matches"].size() == 1 && same(pv.value("file", ""), fs::u8path(m[0])));  // Issue #29
+            json pi = tools::file_provenance(m[1], {});
+            CHECK(pi.value("from_mount", true) == false && !pi.contains("other_matches"));  // Issue #29: the installed copy, nothing else matched
+            CHECK(tools::lua_matches("ovx/sh.lua").size() == 1 && tools::lua_matches((ov / "lua/ovx/sh.lua").u8string()).empty());  // Issue #29: absolute: one file, no list
+            lua_mount::set_current_for_tests("");
+            CHECK(tools::file_provenance(m[1], {}).value("from_mount", true) == false);  // Issue #29: no folder mounted
+            lua_mount::set_current_for_tests(ov.u8string());
+        }
         err.clear();
         CHECK(!tools::resolve_lua_path("nope.lua", false, abs, err) && err.find("ov wt") != std::string::npos);  // listed when missing
         lua_mount::set_current_for_tests("");
@@ -3913,6 +3927,43 @@ int main(int argc, char **argv) {
         json big{{"ok", true}, {"result", {{"files", json::array({1, 2, 3})}, {"totals", {{"pass", 3}}}, {"ok", true}}}};
         json pk = tools::project_keys(big, json{{"fields", {"totals", "ok"}}});
         CHECK(!pk["result"].contains("files") && pk["result"]["totals"]["pass"] == 3 && pk["result"]["ok"] == true);
+    }
+
+    // Issue #25 and #32: what a reload cannot update is said in the answer, from the text of the file.
+    {
+        auto joined = [](const std::vector<std::string> &v) {
+            std::string o;
+            for (const auto &x : v) o += x + " ";
+            return o;
+        };
+        auto has = [](const std::string &h, const char *n) { return h.find(n) != std::string::npos; };
+        // #25: a file that calls AddCSLuaFile: clients only get new files at the next map load or reconnect.
+        std::string n25 = joined(tools::reload_notes("AddCSLuaFile()\nAddCSLuaFile(\"x/sh_new.lua\")\ninclude(\"x/sh_new.lua\")\n"));
+        CHECK(has(n25, "AddCSLuaFile") && has(n25, "map load") && has(n25, "reconnect") && has(n25, "realms"));  // Issue #25
+        CHECK(!has(joined(tools::reload_notes("local x = 1\nreturn x\n")), "AddCSLuaFile"));  // Issue #25: a plain file says nothing
+        // #32: a local table with methods: objects built before the reload keep the old one.
+        std::string n32 = joined(tools::reload_notes("local Clip = {}\nClip.__index = Clip\nfunction Clip:Play() end\nlocal Other = {}\nfunction helper() end\n"));
+        CHECK(has(n32, "Clip") && has(n32, "old") && !has(n32, "Other") && !has(n32, "AddCSLuaFile"));  // Issue #32
+        CHECK(has(joined(tools::reload_notes("local Rec = {}\r\nfunction Rec.New() end\r\n")), "Rec"));  // Issue #32: CRLF files
+        CHECK(!has(joined(tools::reload_notes("local Cfg = { a = 1 }\nreturn Cfg\n")), "Cfg"));  // Issue #32: data only, no methods
+        CHECK(!has(joined(tools::reload_notes("-- local Clip = {}\n-- function Clip:Play() end\n")), "Clip"));  // Issue #32: comments
+        CHECK(!has(joined(tools::reload_notes("MyAddon.Clip = MyAddon.Clip or {}\nfunction MyAddon.Clip:Play() end\n")), "Clip"));  // Issue #32: a global is replaced in place
+        CHECK(tools::reload_notes("").empty());
+        // The descriptions say it (Issues #11, #19, #25, #28, #29, #32).
+        const mcp::Tool *rl = mcp::find_tool("lua_reload"), *ef = mcp::find_tool("lua_exec_file"), *le = mcp::find_tool("lua_exec");
+        const mcp::Tool *lj = mcp::find_tool("lua_job"), *lm = mcp::find_tool("lua_mount");
+        CHECK(rl && ef && le && lj && lm);
+        if (rl && ef && le && lj && lm) {
+            CHECK(has(rl->description, "from_mount") && has(rl->description, "other_matches") && has(rl->description, "wins"));  // Issue #29
+            CHECK(has(rl->description, "compile_ms") && has(ef->description, "from_mount") && has(ef->description, "other_matches"));  // Issue #29
+            CHECK(has(rl->description, "next map load") && has(rl->description, "reconnect"));  // Issue #25
+            CHECK(has(rl->description, "old table") || has(rl->description, "old methods"));  // Issue #32
+            CHECK(has(rl->description, "Config") && has(rl->description, "once per file"));  // Issue #11: state reset, the only-these-files way
+            CHECK(has(ef->description, "assign_to") && ef->input_schema["properties"].contains("assign_to"));  // Issue #28
+            CHECK(!le->input_schema["properties"].contains("assign_to"));  // Issue #28: lua_exec_file only
+            CHECK(has(le->description, "include") && has(le->description, "lua_exec_file") && has(lj->description, "include"));  // Issue #19
+            CHECK(has(lm->description, "assign_to"));  // Issue #28: the way to load a data file outside lua/
+        }
     }
 
     // `fields` projection.

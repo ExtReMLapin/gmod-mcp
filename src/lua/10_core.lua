@@ -208,10 +208,12 @@ local function fmt_args(...)
 	return table.concat(t, "\t")
 end
 
+local function pack_values(...) return { n = select("#", ...), ... } end
+
 function A.capture_begin()
 	local buf = {}
 	local saved = { print = print, Msg = Msg, MsgN = MsgN, MsgC = MsgC, RunConsoleCommand = RunConsoleCommand }
-	local frame = { buf = buf, saved = saved, size = 0, dropped = 0, blocked = {}, blocked_seen = {} }
+	local frame = { buf = buf, saved = saved, size = 0, dropped = 0, blocked = {}, blocked_seen = {}, inc_failed = {}, inc_seen = {} }
 	capture_stack[#capture_stack + 1] = frame
 	-- Captured output is capped at 1 MiB (a print loop must not exhaust memory); the rest is counted as dropped.
 	local function add(s)
@@ -236,6 +238,37 @@ function A.capture_begin()
 	end
 	-- Issue #11: the engine ignores RunConsoleCommand for the commands on its Lua blacklist, without a word. Note them
 	-- (IsConCommandBlocked is the engine's own test for exactly that list) so the result can say so.
+	-- Issue #19: include() of a file that is not under lua/ returns false without a word. Note the paths that failed, so the
+	-- result can say so. The call is passed through; a path found only in the calling file's folder is handed over under its lua/
+	-- name (the engine would resolve it against this wrapper, not against the real caller).
+	saved.include = include
+	if saved.include and type(file) == "table" and file.Exists then
+		include = function(p, ...)
+			local target = p
+			local resolved = false
+			if type(p) == "string" then
+				local okx, found = pcall(file.Exists, p, "LUA")
+				if okx and found then
+					resolved = true
+				else
+					local info = debug.getinfo(2, "S")
+					local src = info and info.source or ""
+					local dir = src:match("^@lua/(.*)/[^/]*$") or src:match("^@addons/[^/]+/lua/(.*)/[^/]*$")
+					if dir then
+						local q = dir .. "/" .. p
+						local okq, foundq = pcall(file.Exists, q, "LUA")
+						if okq and foundq then target, resolved = q, true end
+					end
+				end
+			end
+			local r = pack_values(saved.include(target, ...))
+			if r[1] == false and not resolved and type(p) == "string" and not frame.inc_seen[p] then
+				frame.inc_seen[p] = true
+				frame.inc_failed[#frame.inc_failed + 1] = p
+			end
+			return unpack(r, 1, r.n)
+		end
+	end
 	if saved.RunConsoleCommand and IsConCommandBlocked then
 		RunConsoleCommand = function(cmd, ...)
 			if type(cmd) == "string" and not frame.blocked_seen[cmd] and IsConCommandBlocked(cmd) then
@@ -254,13 +287,28 @@ function A.blocked_fields(blocked)
 		.. " (it does so silently): use console_exec or convar_set, which go through the engine, then read the value back."
 end
 
+-- Fields a result carries for what a capture noted: blocked_console_commands (Issue #11), include_failed (Issue #19) and the one
+-- `warning` that explains them. Nothing is set when nothing was noted.
+function A.apply_capture_fields(out, blocked, failed_includes)
+	local arr, warn = A.blocked_fields(blocked)
+	out.blocked_console_commands, out.warning = arr, warn
+	if failed_includes and #failed_includes > 0 then
+		out.include_failed = J.array(failed_includes)
+		local w = "include(" .. table.concat(failed_includes, ", ") .. ") returned false: include() only resolves paths under lua/ " ..
+			"(the game's lua folder, addons and the mounted folder), so a file anywhere else is not loaded, silently. " ..
+			"lua_exec_file with an absolute path loads a file from anywhere on the game's disk."
+		out.warning = out.warning and (out.warning .. " " .. w) or w
+	end
+	return out
+end
+
 function A.capture_end()
 	local top = table.remove(capture_stack)
 	if not top then return "" end
 	for k, f in pairs(top.saved) do _G[k] = f end
 	local out = table.concat(top.buf)
 	if top.dropped > 0 then out = out .. string.format("\n[mcpagent: output truncated, %d more bytes dropped]\n", top.dropped) end
-	return out, top.blocked
+	return out, top.blocked, top.inc_failed
 end
 
 -- An error value as text: a string as is; a table through its __tostring, its message / msg / error field, or serialized
