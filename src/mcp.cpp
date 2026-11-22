@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "agent.h"
+#include "call_shape.h"
 #include "mcp_protocol.h"
 #include "log.h"
 #include "prompts.h"
@@ -428,7 +429,9 @@ static bool server_wants_task(const Tool &t, const json &args, const Ctx &c) {
 static json tools_list_json(const Ctx &c) {
     json arr = json::array();
     for (const auto &t : g_tools) {
-        json j{{"name", t.name}, {"title", t.title}, {"description", t.description}, {"inputSchema", t.input_schema},
+        // Issue #18: the call shape (`tests_run(path, realm?)`) leads every description.
+        json j{{"name", t.name}, {"title", t.title}, {"description", call_shape::prefixed(t.name, t.input_schema, t.description)},
+               {"inputSchema", t.input_schema},
                {"outputSchema", t.output_schema}, {"annotations", t.annotations}};
         // execution.taskSupport only exists in the experimental 2025-11-25 Tasks (with the extension, the server decides).
         if (c.era == tasks::Era::Legacy && !t.task_support.empty()) j["execution"] = json{{"taskSupport", t.task_support}};

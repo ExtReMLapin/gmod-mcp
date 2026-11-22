@@ -41,6 +41,7 @@
 
 #include "argcheck.h"
 #include "bridge_snapshot.h"
+#include "call_shape.h"
 #include "crashinfo.h"
 #include "lowmem.h"
 #include "gamedir.h"
@@ -2378,7 +2379,11 @@ void handle_bridge_tool(const json &msg) {
 // Tool lists the bridge serves: the game's, plus its own tools.
 void add_bridge_tools(json &result) {
     if (!result.is_object() || !result.contains("tools") || !result["tools"].is_array()) return;
-    for (const auto &t : bridge_tools()) result["tools"].push_back(t);
+    for (auto t : bridge_tools()) {
+        // Issue #18: the call shape leads the description, like the game's tools.
+        t["description"] = call_shape::prefixed(t.value("name", ""), t.value("inputSchema", json::object()), t.value("description", ""));
+        result["tools"].push_back(std::move(t));
+    }
 }
 
 // A call for an instance this session launched, while nothing answers on the base port: if that client crashed, say so
