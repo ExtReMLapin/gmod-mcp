@@ -722,5 +722,79 @@ do
 	gui, vgui, ScrW, ScrH, IsInLoading, IsInGame = old.gui, old.vgui, old.ScrW, old.ScrH, old.IsInLoading, old.IsInGame
 end
 
+-- Issue #15: hooks added by a lua_exec / lua_job chunk are guarded: after N identical errors in a row the hook is removed and a
+-- line is logged; the hook keeps its identifier (hook.Remove still works); other hooks and other errors are left alone.
+do
+	local old_hook, old_MsgN, old_native_note = hook, MsgN, __mcpagent_native.hook_error
+	local table_ = {}
+	hook = {
+		Add = function(ev, id, f) table_[ev] = table_[ev] or {} table_[ev][id] = f end,
+		Remove = function(ev, id) if table_[ev] then table_[ev][id] = nil end end,
+		GetTable = function() return table_ end,
+	}
+	local logged, noted = {}, {}
+	MsgN = function(...) logged[#logged + 1] = table.concat({ ... }, " ") end
+	__mcpagent_native.hook_error = function(ev, id, msg) noted[#noted + 1] = { ev, id, msg } end
+	local function fire(ev, id, ...)  -- like hook.Call: errors propagate, the engine reports them
+		local f = table_[ev] and table_[ev][id]
+		if not f then return "gone" end
+		return pcall(f, ...)
+	end
+
+	r = call("lua_exec", { code = "hook.Add('Think', 'bad', function() local x = nil; return x.y end) hook.Add('Think', 'good', function(a, b) return a + b, 'ok' end) return hook.Add == nil" })
+	check(r.ok and r.result.values[1] == false, "guard: lua_exec still works with the guard on")
+	check(table_.Think.bad ~= nil and table_.Think.good ~= nil, "guard: hooks keep their identifier")
+	local ok1, a1, a2 = fire("Think", "good", 2, 3)
+	check(ok1 and a1 == 5 and a2 == "ok", "guard: a guarded hook passes its arguments and results through")
+	check(hook.Add ~= nil and select("#", pcall(hook.Add, "X", "y", function() end)) == 1, "guard: hook.Add is the original again after the chunk")
+	local ok2, e2 = fire("Think", "bad")
+	check(ok2 == false and tostring(e2):find("attempt to index", 1, true), "guard: the error still reaches the caller (the engine reports it)")
+	check(#noted == 1 and noted[1][1] == "Think" and noted[1][2] == "bad" and tostring(noted[1][3]):find("attempt to index", 1, true), "guard: the first error of a hook is noted with its hook name")
+	for i = 1, 400 do fire("Think", "bad") end
+	check(table_.Think.bad == nil, "guard: removed after the default limit of identical errors")
+	check(#logged == 1 and logged[1]:find("Think", 1, true) and logged[1]:find("bad", 1, true) and logged[1]:find("300", 1, true), "guard: exactly one line is logged on removal")
+	check(table_.Think.good ~= nil, "guard: a hook that did not fail is left alone")
+
+	-- The limit is an option; a different error resets the streak; a success resets it too.
+	r = call("lua_exec", { code = "n = 0 hook.Add('T2', 'flip', function(k) if k == 'ok' then return 1 end n = n + 1 error('boom' .. (n % 2)) end)", hook_guard = 5 })
+	for i = 1, 20 do fire("T2", "flip") end
+	check(table_.T2.flip ~= nil, "guard: alternating messages never make a streak")
+	for i = 1, 4 do fire("T2", "flip", "ok") end
+	r = call("lua_exec", { code = "hook.Add('T3', 'same', function(k) if k ~= 'ok' then error('same') end end)", hook_guard = 5 })
+	for i = 1, 4 do fire("T3", "same") end
+	fire("T3", "same", "ok")
+	for i = 1, 4 do fire("T3", "same") end
+	check(table_.T3.same ~= nil, "guard: a success resets the streak")
+	fire("T3", "same")
+	check(table_.T3.same == nil, "guard: removed after hook_guard identical errors in a row")
+
+	-- hook_guard 0 turns it off: the hook added is the very function the chunk passed.
+	r = call("lua_exec", { code = "G_F = function() error('x') end hook.Add('T4', 'raw', G_F)", hook_guard = 0 })
+	check(table_.T4.raw == G_F, "guard: hook_guard 0 adds the hook unchanged")
+	-- A hook added outside any chunk run (by the game itself) is never wrapped.
+	local plain = function() end
+	hook.Add("T5", "plain", plain)
+	check(table_.T5.plain == plain, "guard: hooks added outside a run are not wrapped")
+
+	-- A job: hooks added during a resume are guarded, also after a yield; others added meanwhile are not.
+	local before = #logged
+	local st = call("job_start", { code = "hook.Add('T6', 'j1', function() error('jerr') end) job:yield() hook.Add('T6', 'j2', function() error('jerr2') end) return 1", hook_guard = 3 })
+	H.job_tick()
+	local foreign = function() end
+	hook.Add("T6", "foreign", foreign)  -- between two resumes: not the job's
+	for _ = 1, 3 do H.job_tick() end
+	check(table_.T6.foreign == foreign, "guard: a hook added between two resumes of a job is not wrapped")
+	for i = 1, 3 do fire("T6", "j1") fire("T6", "j2") end
+	check(table_.T6.j1 == nil and table_.T6.j2 == nil and #logged == before + 2, "guard: hooks added by a job (before and after a yield) are removed after hook_guard errors")
+	check(hook.Add ~= nil, "guard: hook.Add restored after a job")
+	call("job_poll", { id = st.result.id })
+
+	-- A chunk that fails still restores hook.Add.
+	local orig_add = hook.Add
+	r = call("lua_exec", { code = "error('chunk failed')" })
+	check(not r.ok and hook.Add == orig_add, "guard: hook.Add restored when the chunk fails")
+	hook, MsgN, __mcpagent_native.hook_error = old_hook, old_MsgN, old_native_note
+end
+
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)
