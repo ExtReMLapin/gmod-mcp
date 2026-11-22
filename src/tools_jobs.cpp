@@ -39,7 +39,7 @@ static const char *kJobProtocol =
     "(wait_s to wait), stop it with lua_job_cancel; two jobs can then run side by side, e.g. one per realm. A job started "
     "while another runs in the same realm is reported in concurrent_jobs: their timings and state mix.\n"
     "Returned values come back whole (no cut unless depth/limit/max_string; then the result says truncated).\n"
-    "The LuaJIT compiler stays on (timings are real). A resume that never yields freezes the game: polling it then fails "
+    "The LuaJIT compiler stays on (timings are real), except with resume_limit_s, whose count hook makes LuaJIT interpret. A resume that never yields freezes the game: polling it then fails "
     "with main_thread_timeout (about 10 s) and status shows main_thread_stalled. resume_limit_s (optional, best effort) "
     "aborts a resume that runs that long without yielding, for loops written in the script itself. "
     "Cancelling the request (or the task) stops the coroutine at the next frame. The job dies with its realm (map change). "
@@ -267,7 +267,7 @@ void register_jobs() {
                 {"slice_ms", {{"type", "number"}, {"minimum", 0.5}, {"maximum", 100}, {"description", "Time per frame before job:step() yields (default 8)."}}},
                 {"resume_limit_s", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 600},
                                     {"description", "Optional, best effort: abort a resume that runs this long without yielding "
-                                                    "(loops written in the script itself). None by default."}}},
+                                                    "(loops written in the script itself). None by default; while set, the script is interpreted (slower: do not time it)."}}},
                 {"async", {{"type", "boolean"},
                            {"description", "true: start the job and return its id at once (poll with lua_job_status). Default false."}}},
                 {"fresh_env", {{"type", "boolean"},

@@ -31,7 +31,7 @@ function GetConVar(n) error("cached GetConVar used (crash risk)") end
 function GetConVar_Internal(n) return setmetatable({}, fake_cv) end
 function RunConsoleCommand() end
 game = game or { ConsoleCommand = function() end }
-for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua" }) do
+for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua", "50_tests.lua" }) do
 	local f = assert(loadfile(dir .. "/" .. name))
 	f()
 end
@@ -577,7 +577,7 @@ end
 local function new_state(generation)
 	__mcpagent = {}
 	__mcpagent_native.generation = generation
-	for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua" }) do
+	for _, name in ipairs({ "00_json.lua", "10_core.lua", "20_lua.lua", "22_check.lua", "25_jobs.lua", "30_session.lua", "50_tests.lua" }) do
 		assert(loadfile(dir .. "/" .. name))()
 	end
 	A, H, J = __mcpagent, __mcpagent.handlers, __mcpagent.json
@@ -720,6 +720,139 @@ do
 	check(r.ok and r.result.game_ui == nil and r.result.loading == false and r.result.in_game == false, "ui_state (menu): missing APIs give no field")
 	A.realm = realm_before
 	gui, vgui, ScrW, ScrH, IsInLoading, IsInGame = old.gui, old.vgui, old.ScrW, old.ScrH, old.IsInLoading, old.IsInGame
+end
+
+-- tests_run (Issue #16, #21, #22, #26): the runner that `tests_run` drives, with test files given as source strings.
+do
+	local function run_tests(sources, extra)
+		local files = {}
+		for i, src in ipairs(sources) do files[i] = { name = "t" .. i .. ".lua", chunkname = "@t" .. i .. ".lua", source = src } end
+		local args = { files = files }
+		for k, v in pairs(extra or {}) do args[k] = v end
+		local res = call("tests_run", args)
+		if not res.ok then print("tests_run error", res.error and res.error.message) end
+		return res.ok and res.result or res
+	end
+	local function case_of(res, fi, name)
+		for _, c in ipairs(res.files[fi].cases) do if c.name == name then return c end end
+	end
+
+	-- Issue #16: a failing assertion reports its line (it was line: null), and its message is plain text.
+	local res = run_tests({ "return { groupName = 'g', cases = {\n" ..
+		"{ name = 'two', func = function()\n" ..          -- line 2
+		"  expect(1).to.equal(1)\n" ..                    -- line 3
+		"  expect(2).to.equal(3)\n" ..                    -- line 4 fails
+		"end } } }" })
+	local c = case_of(res, 1, "two")
+	check(c and c.status == "fail" and c.message == "expected 2 to equal 3" and c.line == 4,
+		"tests_run: a failed assertion reports its own line (got " .. tostring(c and c.line) .. ")")
+
+	-- Issue #16 / #11: assert(ok, err) around expect() used to hide the message ("string expected, got table").
+	res = run_tests({ "return { groupName = 'g', cases = { { name = 'wrapped', func = function()\n" ..
+		"  local ok, err = pcall(function() expect(1).to.equal(2) end)\n" ..
+		"  assert(ok, err)\n" ..
+		"end } } }" })
+	c = case_of(res, 1, "wrapped")
+	check(c and c.status == "fail" and c.message == "expected 1 to equal 2", "tests_run: assert(ok, err) around expect() keeps the message and the fail status ("
+		.. tostring(c and c.status) .. ": " .. tostring(c and c.message) .. ")")
+	-- ...also through error(err) and a rethrow with a prefix
+	res = run_tests({ "return { groupName = 'g', cases = { { name = 'rethrown', func = function()\n" ..
+		"  local ok, err = pcall(function() expect(1).to.equal(2) end)\n" ..
+		"  if not ok then error('context: ' .. err) end\n" ..
+		"end } } }" })
+	c = case_of(res, 1, "rethrown")
+	check(c and c.status == "fail" and c.message == "expected 1 to equal 2", "tests_run: a rethrown assertion failure is still a failure")
+	-- an expectation failure caught by the test is a string a test can match
+	res = run_tests({ "return { groupName = 'g', cases = { { name = 'matched', func = function()\n" ..
+		"  expect(function() expect(1).to.equal(2) end).to.errWith('expected 1 to equal 2')\n" ..
+		"end } } }" })
+	c = case_of(res, 1, "matched")
+	check(c and c.status == "pass", "tests_run: errWith sees the text of an expectation failure")
+
+	-- Issue #16: other error objects become text.
+	res = run_tests({ "return { groupName = 'g', cases = {\n" ..
+		"{ name = 'obj', func = function() error({ code = 5, message = 'boom obj' }) end },\n" ..
+		"{ name = 'plain table', func = function() error({ 1, 2, x = 'y' }) end },\n" ..
+		"{ name = 'string', func = function() error('plain', 0) end } } }" })
+	c = case_of(res, 1, "obj")
+	check(c and c.status == "error" and c.message == "boom obj", "tests_run: an error object with a message field reads as that message (" .. tostring(c and c.message) .. ")")
+	c = case_of(res, 1, "plain table")
+	check(c and c.status == "error" and c.message:find("error object", 1, true) and c.message:find('"x"', 1, true) and not c.message:find("table: 0x", 1, true),
+		"tests_run: another error table is serialized, not 'table: 0x...' (" .. tostring(c and c.message) .. ")")
+	c = case_of(res, 1, "string")
+	check(c and c.status == "error" and c.message == "plain", "tests_run: a string error is unchanged")
+
+	-- Issue #16: case filter (name substring, case-insensitive); beforeAll does not run for a file without a match.
+	local filtered = "return { groupName = 'g', beforeAll = function() BEFORE_ALL_RUNS = (BEFORE_ALL_RUNS or 0) + 1 end, cases = {\n" ..
+		"{ name = 'Alpha one', func = function() end },\n" ..
+		"{ name = 'beta two', func = function() end },\n" ..
+		"{ name = 'alpha three', func = function() error('x') end } } }"
+	BEFORE_ALL_RUNS = nil
+	res = run_tests({ filtered }, { case = "ALPHA" })
+	check(#res.files[1].cases == 2 and res.totals.pass == 1 and res.totals.error == 1 and res.files[1].filtered == 1,
+		"tests_run: `case` keeps the cases whose name contains it (case-insensitive) and counts what it left out")
+	res = run_tests({ filtered }, { case = "nothing like this" })
+	check(#res.files[1].cases == 0 and BEFORE_ALL_RUNS == 1 and res.ok == true, "tests_run: no case matches: nothing runs, beforeAll does not run, not a failure")
+	BEFORE_ALL_RUNS = nil
+
+	-- Issue #16: only_failures lists the fail/error cases only, with the counts of each file; totals count everything.
+	res = run_tests({ filtered }, { only_failures = true })
+	check(#res.files[1].cases == 1 and res.files[1].cases[1].name == "alpha three" and res.totals.pass == 2 and res.totals.error == 1
+		and res.files[1].totals.pass == 2 and res.files[1].totals.error == 1, "tests_run: only_failures lists the failing cases only; totals stay whole")
+	res = run_tests({ filtered })
+	check(#res.files[1].cases == 3 and res.files[1].totals and res.files[1].totals.pass == 2, "tests_run: by default every case is listed, and each file has its counts")
+
+	-- Issue #21: what a case prints comes back as `output`: failing cases by default, all with output = "all", none with "none".
+	local printing = "return { groupName = 'g', cases = {\n" ..
+		"{ name = 'ok', func = function() print('seen', 1) end },\n" ..
+		"{ name = 'bad', func = function() print('value', 42) MsgN('second') expect(1).to.equal(2) end },\n" ..
+		"{ name = 'boom', func = function() print('before the error') error('x') end } } }"
+	res = run_tests({ printing })
+	check(case_of(res, 1, "ok").output == nil, "tests_run: a passing case has no output by default")
+	check(case_of(res, 1, "bad").output == "value\t42\nsecond\n", "tests_run: print and MsgN of a failing case come back as output (" .. tostring(case_of(res, 1, "bad").output) .. ")")
+	check(case_of(res, 1, "boom").output == "before the error\n", "tests_run: the output of an erroring case comes back")
+	res = run_tests({ printing }, { output = "all" })
+	check(case_of(res, 1, "ok").output == "seen\t1\n", "tests_run: output = all also gives the output of a passing case")
+	res = run_tests({ printing }, { output = "none" })
+	check(case_of(res, 1, "bad").output == nil, "tests_run: output = none gives no output")
+	res = run_tests({ "return { groupName = 'g', cases = { { name = 'loud', func = function() for i = 1, 60 do print(string.rep('x', 100)) end error('x') end } } }" })
+	local loud = case_of(res, 1, "loud").output
+	check(loud and #loud < 5000 and loud:find("truncated", 1, true), "tests_run: a long output is cut, and says so")
+	check(print == _G.print and type(print) == "function", "tests_run: print is put back after the run")
+
+	-- Issue #16: skip markers: expect.skip(reason) at run time, skip = "reason" in the case.
+	res = run_tests({ "return { groupName = 'g', cases = {\n" ..
+		"{ name = 'runtime skip', func = function() expect.skip('player is dead') error('must not go on') end },\n" ..
+		"{ name = 'static skip', skip = 'not on this map', func = function() error('must not run') end },\n" ..
+		"{ name = 'when', when = false, func = function() error('must not run') end } } }" })
+	c = case_of(res, 1, "runtime skip")
+	check(c and c.status == "skip" and c.message == "player is dead" and res.totals.skip == 3 and res.ok == true, "tests_run: expect.skip(reason) marks the case skipped, with the reason")
+	check(case_of(res, 1, "static skip").message == "not on this map", "tests_run: skip = 'reason' gives the reason")
+
+	-- Issue #26: `state` is one table per file, shared by every step and NOT reset between cases; files do not share it.
+	local stateful = "return { groupName = 'g', beforeAll = function(state) state.all = 'set' end,\n" ..
+		"beforeEach = function(state) state.n = (state.n or 0) + 1 end, cases = {\n" ..
+		"{ name = 'one', func = function(state) state.from_one = true expect(state.n).to.equal(1) end },\n" ..
+		"{ name = 'two', func = function(state) expect(state.from_one).to.beTrue() expect(state.all).to.equal('set') expect(state.n).to.equal(2) end } } }"
+	res = run_tests({ stateful, stateful })
+	check(res.totals.pass == 4 and res.ok, "tests_run: state is shared between a file's cases, not reset, and not shared between files")
+
+	-- Issue #22: a count hook makes LuaJIT interpret (and not compile new code): a case that times something opts out.
+	local hooks = "return { groupName = 'g', cases = {\n" ..
+		"{ name = 'default', func = function() HOOK_DEFAULT = debug.gethook() ~= nil end },\n" ..
+		"{ name = 'timing', timing = true, func = function() HOOK_TIMING = debug.gethook() ~= nil end },\n" ..
+		"{ name = 'zero', timeout = 0, func = function() HOOK_ZERO = debug.gethook() ~= nil end } } }"
+	res = run_tests({ hooks })
+	check(HOOK_DEFAULT == true and HOOK_TIMING == false and HOOK_ZERO == false, "tests_run: `timing = true` and `timeout = 0` run a case with no hook; the default keeps one")
+	HOOK_DEFAULT, HOOK_TIMING, HOOK_ZERO = nil, nil, nil
+	res = run_tests({ hooks }, { budget = 0 })
+	check(HOOK_DEFAULT == false and HOOK_TIMING == false and res.ok, "tests_run: budget 0 installs no hook anywhere")
+	HOOK_DEFAULT, HOOK_TIMING, HOOK_ZERO = nil, nil, nil
+	local tr, tres = A.run_budget(function() return debug.gethook() ~= nil end, 0)
+	check(tr and tres[1] == false, "run_budget: a budget of 0 means no limit and no hook")
+	tr, tres = A.run_budget(function() return debug.gethook() ~= nil end, 5)
+	check(tr and tres[1] == true, "run_budget: a positive budget installs the hook")
+	check(debug.gethook() == nil, "run_budget: the hook is gone afterwards")
 end
 
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))

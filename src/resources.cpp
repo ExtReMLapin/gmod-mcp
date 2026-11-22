@@ -100,7 +100,7 @@ The agent runtime (global table `__mcpagent`) is re-injected automatically.
 - `lua_exec_file {realm, path}`: `path` is absolute, or relative: looked up in this directory first (e.g. `test.lua`,
   `sub/a.lua`), then in the mounted Lua folder (lua_mount) if any, the game folder (`addons/x/lua/y.lua`), then `lua/`,
   `gamemodes/` and `addons/*/lua/` like include(). A miss lists every place tried. Same rule for `lua_job {path}`,
-  `lua_check` and `lua_reload`; `tests_run` takes this directory or an absolute path only.
+  `lua_check`, `lua_reload` and `tests_run` (a path, or a pattern such as `tests/*.lua`; the folder of a pattern is found the same way).
 - The chunk is named `@lua/mcpagent_tmp/<name>`, so errors and tracebacks point to the file; `include("mcpagent_tmp/x.lua")` works.
 
 ## Returned values
@@ -111,7 +111,9 @@ Vector/Angle/Color/Entity/functions/cyclic tables have a `{"__type": ...}` form.
 ## Long-running Lua: lua_job
 `lua_exec` runs in one go on the main thread (the game is frozen meanwhile; no time limit unless `budget`, so an infinite
 loop freezes the game: the call fails with `main_thread_timeout` after `timeout_s`, `status` shows `main_thread_stalled`,
-`game_terminate` ends it). The LuaJIT compiler is never turned off: code and the functions it defines run at real speed.
+`game_terminate` ends it). The LuaJIT compiler is never turned off unless you pass `budget` (or `resume_limit_s` for `lua_job`): that installs a count hook,
+and while a hook is installed LuaJIT interprets the code and the helpers it calls, several times slower (a loop in a helper up to
+40x), and compiles nothing new. Never time code under a budget.
 Returned values come back whole unless you pass `depth`/`limit`/`max_string` (the result then says `truncated`); a value
 too big to send (over a million values or 64 MiB of strings) fails with `result_too_large`; a whole `_G` is
 about 4.5 MB, which your client may save to a file instead of showing it: return only what you need. For anything that spans frames,
@@ -500,8 +502,30 @@ return {
 Assertions: `expect(v).to.equal(x)`, `.to.beTrue()`, `.to.beFalse()`, `.to.beNil()`, `.to.exist()`, `.to.beA("string")`,
 `.to.beValid()`, `.to.beInvalid()`, `.to.beGreaterThan(x)`, `.to.beLessThan(x)`, `.to.beBetween(a, b)`, `.to.aboutEqual(x, tol)`,
 `.to.err()`, `.to.errWith("msg")`, `.to.succeed()`, `.to.haveLength(n)`, `.to.contain(v)`; negate with `.notTo` / `.toNot`.
-Optional case fields: `skip = true`, `when = false`, `timeout`. `tests_run` returns for each case: status (pass/fail/error/skip),
-message, line, duration.
+Optional case fields: `skip = true` (or `skip = "reason"`), `when = false`, `timeout` (seconds; 0 = no limit and no hook), `timing = true`.
+`tests_run` returns for each case: status (pass/fail/error/skip), message, line (the line of the failing assertion), duration, and
+`output` (what the case printed: failing cases by default).
+
+Skip at run time: `expect.skip("player is dead")` stops the case and marks it skipped with that reason (a test that just
+returns early shows as a pass).
+
+`state`: ONE table per file, handed to beforeAll, beforeEach, every case, afterEach and afterAll. It is NOT reset between cases
+(a field set by case 1 is seen by case 2; a counter incremented in beforeEach keeps growing) and it is not shared between files.
+Reset what you need in beforeEach.
+
+A failed `expect()` raises a string `file:line: expected ...`, so `local ok, err = pcall(...); assert(ok, err)` keeps the message.
+Other error values (`error({ code = 1 })`) are shown as text.
+
+Timing: `budget` (default 10 s per step) installs a count hook, and while a hook is installed LuaJIT interprets: the case body and
+the helpers it calls run several times slower (a loop in a helper up to 40x) and nothing new is compiled. A case that measures
+time gives itself `timing = true` (or `timeout = 0`): no hook, no time limit. `budget: 0` does that for the whole run.
+
+Frames: one call runs every file in the same frame on the main thread. `Entity:Remove()` only takes effect at the end of the
+frame, so a file still sees what the previous file removed: use `frames_between_files`. Calls sent together are queued and run
+one after the other; Lua globals, entities and convars stay between calls.
+
+Filters and size: `case` runs the cases whose name contains the text; `only_failures` lists fail/error cases only (each file keeps its
+totals); `fields: ["totals", "ok"]` returns the verdict alone; `realm: "both"` runs the files in the server, then the client.
 )";
 }
 

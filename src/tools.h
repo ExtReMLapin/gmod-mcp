@@ -55,6 +55,10 @@ bool resolve_lua_file(const std::string &path, std::string &abs, std::string &ch
 // Same lookup for a file, or with allow_dir a folder too (lua_check). err lists the places tried.
 // use_mount false skips the mounted folder (the installed copy of a file).
 bool resolve_lua_path(const std::string &path, bool allow_dir, std::string &abs, std::string &err, bool use_mount = true);
+// tests_run: the files a path or pattern names (found like lua_exec_file finds a file); err (with a hint) when there are none.
+std::vector<std::string> resolve_test_files(const std::string &pattern, std::string &err);
+// tests_run: adds up several runtime results ({files, totals, ok}).
+json merge_test_runs(const std::vector<json> &runs);
 // Applies the `fields` argument (lua_exec, lua_exec_file, lua_job): keeps only these keys of each returned table.
 json project_values(json result, const json &args);
 // `fields` on an object result (status): keeps only these top-level keys.

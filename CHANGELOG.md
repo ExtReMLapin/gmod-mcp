@@ -9,8 +9,26 @@
   `io.github.ExtReMLapin/gmod-mcp` to registry.modelcontextprotocol.io with GitHub Actions OIDC (no secret). The bundle is only the
   bridge; the module for the game is still installed as before. See `docs/MCP_REGISTRY.md`.
 
+- **`tests_run` is cheaper to read and easier to debug** (issues #16, #21, #22, #26). New arguments: `only_failures` (fail and
+  error cases only; every file keeps its `totals`), `case` (run the cases whose name contains the text), `output`
+  (`failures` / `all` / `none`: what a case prints with `print` or `MsgN` now comes back as `output`, cut at 4 KB, for failing
+  cases by default), `fields` (e.g. `["totals", "ok"]`), `timeout_s`, `realm: "both"` (server then client, each file says its
+  realm, `realms` says what each did) and `frames_between_files` (an `Entity:Remove()` of one file is only seen by the next one
+  a frame later). A failing assertion now reports its `line` (it was null), a failed `expect()` raises the string
+  `file:line: expected ...` instead of a table (so `assert(ok, err)` keeps the message), other error tables are shown as text,
+  `expect.skip(reason)` and `skip = "reason"` mark a case skipped, and a relative `path` is found like `lua_exec_file` finds it
+  (mounted folder, game folder) with a `not_found` that says where it looked and that an absolute path works. The description and
+  `mcpagent://tests-format` now say that `state` is one table per file and is not reset between cases, that calls are queued and
+  Lua globals and entities persist between them, and where a too-big result goes (your client may save it to a file).
+- **A case that times something can opt out of the budget** (issue #22): `timing = true` (or `timeout = 0`) on a case, or
+  `budget: 0` for the run, installs no count hook, so LuaJIT compiles the code and the measurement is real.
+
 ### Fixes
 
+- **The time budget is documented for what it does** (issue #22). A `budget` (and `resume_limit_s`) installs a count hook, and
+  while a hook is installed LuaJIT interprets the code and the helpers it calls (several times slower, up to 40x for a loop in
+  a helper, nothing new compiled): the comment on `A.run_budget` and the `lua_exec`, `lua_job` and `tests_run` texts said that
+  functions run compiled. Never time code under a budget.
 - **Tool annotations match what the tools do.** `lua_job_status` no longer reads as destructive (it only forgets the job whose
   result it hands over). `wait_for`, `lua_inspect` and `lua_function_source` run caller-supplied Lua, so they are no longer
   read-only (destructive, like `lua_exec`). `lua_file_write`, `ui_click` and `ui_key` are marked destructive (overwrite a file;
