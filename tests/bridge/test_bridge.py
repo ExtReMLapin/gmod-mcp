@@ -25,6 +25,8 @@ Cases (default: a f):
          hung, unless ignore_unhealthy, and names the unhealthy peers when it times out (fake server, stand-in game)
   chaos_launch Issue #8 (chaos test G2): a launched client dies at startup while its sibling keeps running: the error names
          the survivor and warns it is not closed (stand-in game, fake game server)
+  private_desktop Issue #14: instances_launch starts the test clients on a private Windows desktop (one per session, closed after), silent by default; desktop: "shared" is the old way
+  module_check Issue #13: the module installed in the game against the shipped one before a launch (module_outdated, refusal, override)
   return_focus FO-6: instances_launch records the foreground window (-mcp_return_focus) and starts clients without activating them
   chaos_owner Issue #8 (chaos test G3): the owner label rides on the command line and in the heartbeat; instances_close {owner}
          closes keep:true test clients of another session that carry it (never a non-test client or an untagged one)
@@ -3188,7 +3190,7 @@ def case_return_focus():
         try: return open(startup if name == "startup.txt" else os.path.join(S["work"], name), encoding="utf-8").read().splitlines()
         except OSError: return []
     fg_before = user32.GetForegroundWindow()
-    sc, err = S["call"]("instances_launch", {"count": 2, "timeout_s": 30, "game_dir": S["game"]})
+    sc, err = S["call"]("instances_launch", {"count": 2, "timeout_s": 30, "game_dir": S["game"], "desktop": "shared"})  # Issue #14: on the private desktop no focus is handed back
     fg_after = user32.GetForegroundWindow()
     argv = lines("argv.txt")
     handles = [re.search(r" -mcp_return_focus (\S+)", l) for l in argv]
@@ -3202,6 +3204,195 @@ def case_return_focus():
     st = lines("startup.txt")
     check("RETURN_FOCUS clients start with a window shown without activation (SW_SHOWNOACTIVATE = 4, STARTF_USESHOWWINDOW)", len(st) == 2 and all(x == "show=4 uses_show=1" for x in st), st)
     S["close"]()
+
+
+def fake_module(path, version):
+    """A stand-in module file: junk bytes around the marker the real module carries (`GMCP_MODULE_VERSION=<version>`). version None: no marker."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"MZ\x90\x00junk" + (b"GMCP_MODULE_VERSION=" + version.encode() + b"\x00" if version else b"") + b"tail")
+
+
+def case_private_desktop():
+    """Issue #14: instances_launch starts the test clients on a private Windows desktop of the bridge session (one per session, kept
+    while its clients run, closed after), so that they never find the user's game windows to send them the engine's "release your GPU
+    resources" message. They are silent by default (nobody can see or close them by hand); desktop: "shared" is the old behaviour.
+    Stand-in game that records the name of the desktop it runs on."""
+    print("== PRIVATE_DESKTOP: test clients on a private desktop (Issue #14)", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("PRIVATE_DESKTOP stand-in game built next to the bridge", False)
+        return
+    import ctypes, re
+    user32 = ctypes.windll.user32
+    user32.OpenDesktopW.restype = ctypes.c_void_p
+    def desktop_exists(name):
+        h = user32.OpenDesktopW(name, 0, False, 0x0040)  # DESKTOP_ENUMERATE
+        if h: user32.CloseDesktop(ctypes.c_void_p(h))
+        return bool(h)
+    ddir = tempfile.mkdtemp(prefix="gmcp-desk-")
+    S = chaos_session(extra_env={"GMCP_FAKE_DESKTOP_DIR": ddir})
+    def desk(pid):
+        for _ in range(50):
+            try: return open(os.path.join(ddir, "%d.desktop" % pid), encoding="utf-8").read()
+            except OSError: time.sleep(0.1)
+        return None
+    def argv_lines():
+        try: return open(os.path.join(S["work"], "argv.txt"), encoding="utf-8").read().splitlines()
+        except OSError: return []
+    def alive(pid):
+        h = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
+        if not h: return False
+        r = ctypes.windll.kernel32.WaitForSingleObject(h, 0) == 0x102; ctypes.windll.kernel32.CloseHandle(h); return r
+    try:
+        # 1. The default: a private desktop, no -mcp_return_focus (the client never takes the user's foreground), silent.
+        sc, err = S["call"]("instances_launch", {"count": 2, "owner": "pd", "timeout_s": 30, "game_dir": S["game"]})
+        ins = sc.get("instances", [])
+        names = [desk(i["pid"]) for i in ins]
+        check("PRIVATE_DESKTOP default: both clients run on a desktop that is not the user's (named gmod-mcp-<pid>), the same one for both",
+              len(ins) == 2 and names[0] and names[0] == names[1] and re.fullmatch(r"gmod-mcp-\d+", names[0]) is not None, (sc, names))
+        name = names[0]
+        check("PRIVATE_DESKTOP the result says desktop private and names it", sc.get("desktop") == "private" and sc.get("desktop_name") == name and "desktop_note" in sc, sc)
+        check("PRIVATE_DESKTOP the desktop exists while the clients run", name and desktop_exists(name), name)
+        lines = argv_lines()
+        check("PRIVATE_DESKTOP no -mcp_return_focus (nothing to give back: the client is not in front of the user)", len(lines) == 2 and all("-mcp_return_focus" not in l for l in lines), lines)
+        check("PRIVATE_DESKTOP silent by default: -nosound, and the result says sound false", len(lines) == 2 and all("-nosound" in l for l in lines) and sc.get("sound") is False, (lines, sc.get("sound")))
+        lst, _ = S["call"]("instances_list", {})
+        mine = [e for e in lst.get("instances", []) if e.get("launched_by_this_session")]
+        check("PRIVATE_DESKTOP instances_list marks the clients of the session with their desktop (private)", len(mine) == 2 and all(e.get("desktop") == "private" for e in mine), lst)
+        # 2. A second launch of the same session reuses the desktop.
+        sc2, err = S["call"]("instances_launch", {"count": 1, "owner": "pd", "timeout_s": 30, "game_dir": S["game"], "sound": True})
+        ins2 = sc2.get("instances", [])
+        check("PRIVATE_DESKTOP a second launch of the session uses the same desktop", len(ins2) == 1 and desk(ins2[0]["pid"]) == name and sc2.get("desktop_name") == name, (sc2, name))
+        check("PRIVATE_DESKTOP sound: true keeps the audio engine (no -nosound)", len(argv_lines()) == 3 and "-nosound" not in argv_lines()[2] and sc2.get("sound") is True, argv_lines())
+        # 3. instances_close of one client leaves the desktop (the others still use it); the last one closes it.
+        pids = [i["pid"] for i in ins + ins2]
+        S["call"]("instances_close", {"pids": [pids[0], pids[1]]}, 30)
+        time.sleep(1.0)
+        check("PRIVATE_DESKTOP closing two of three clients: they are gone, the desktop stays for the third", not alive(pids[0]) and not alive(pids[1]) and alive(pids[2]) and desktop_exists(name), [alive(p) for p in pids])
+        S["call"]("instances_close", {"all": True}, 30)
+        gone = False
+        for _ in range(50):
+            gone = not alive(pids[2]) and not desktop_exists(name)
+            if gone: break
+            time.sleep(0.1)
+        check("PRIVATE_DESKTOP closing the last client closes the desktop", gone, (alive(pids[2]), desktop_exists(name)))
+        # 4. A later launch makes a desktop again.
+        sc3, err = S["call"]("instances_launch", {"count": 1, "owner": "pd", "timeout_s": 30, "game_dir": S["game"]})
+        i3 = sc3.get("instances", [{}])[0]
+        n3 = desk(i3.get("pid", 0))
+        check("PRIVATE_DESKTOP a launch after the desktop was closed creates it again", n3 and desktop_exists(n3), (sc3, n3))
+        # 5. The session ends: the client and its desktop go.
+        S["b"].close()
+        time.sleep(1.5)
+        check("PRIVATE_DESKTOP the session ends: the client is closed and the desktop is gone", not alive(i3.get("pid", 0)) and not desktop_exists(n3), (alive(i3.get("pid", 0)), n3))
+    finally:
+        S["close"]()
+    # 6. desktop: "shared" is the old behaviour: the user's desktop, sound on by default, the foreground handed back.
+    ddir2 = tempfile.mkdtemp(prefix="gmcp-desk-")
+    S = chaos_session(extra_env={"GMCP_FAKE_DESKTOP_DIR": ddir2})
+    try:
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "pd", "timeout_s": 30, "game_dir": S["game"], "desktop": "shared"})
+        i = sc.get("instances", [{}])[0]
+        d2 = None
+        for _ in range(50):
+            try: d2 = open(os.path.join(ddir2, "%d.desktop" % i.get("pid", 0)), encoding="utf-8").read(); break
+            except OSError: time.sleep(0.1)
+        lines = argv_lines()
+        check("PRIVATE_DESKTOP desktop shared: the client is on the desktop the bridge runs on", d2 is not None and not d2.startswith("gmod-mcp-"), d2)
+        check("PRIVATE_DESKTOP desktop shared: result says shared, no desktop_name, sound on by default", sc.get("desktop") == "shared" and "desktop_name" not in sc and sc.get("sound") is True and all("-nosound" not in l for l in lines), (sc, lines))
+    finally:
+        S["close"]()
+    # 7. A wrong value is refused before anything starts.
+    S = chaos_session()
+    try:
+        sc, err = S["call"]("instances_launch", {"count": 1, "game_dir": S["game"], "desktop": "hidden"})
+        check("PRIVATE_DESKTOP desktop: \"hidden\" is refused (invalid_params), nothing started", sc.get("error", {}).get("code") == "invalid_params" and S["started"]() == [], sc)
+    finally:
+        S["close"]()
+
+
+def case_module_check():
+    """Issue #13: the module installed in the game folder is compared with the one the bridge ships (--module-dir) BEFORE a launch: an older
+    one refuses the launch with the update steps (ignore_outdated_module overrides), and `module_outdated` is in instances_list and in the
+    game_not_running error while no game runs. Files only (a marker string in each module file); the stand-in game, no real game."""
+    print("== MODULE_CHECK: installed module vs shipped module (Issue #13)", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    if not os.path.exists(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")):
+        check("MODULE_CHECK stand-in game built next to the bridge", False)
+        return
+    dll = "gmsv_mcpagent_win64.dll"
+    shipped = tempfile.mkdtemp(prefix="gmcp-shipped-")
+    fake_module(os.path.join(shipped, "garrysmod", "lua", "bin", dll), "0.9.0")
+    S = chaos_session(extra_env={"GMOD_MCP_MODULE_DIR": shipped})
+    inst = os.path.join(S["game"], "garrysmod", "lua", "bin", dll)
+    def launch(**kw):
+        return S["call"]("instances_launch", dict({"count": 1, "owner": "mc", "timeout_s": 30, "game_dir": S["game"]}, **kw))
+    try:
+        fake_module(inst, "0.1.0")
+        sc, err = launch()
+        e = sc.get("error", {})
+        check("MODULE_CHECK older module: the launch is refused (module_outdated), nothing started", e.get("code") == "module_outdated" and err is True and S["started"]() == [], sc)
+        check("MODULE_CHECK ... the message names both versions, says nothing was started, and gives the update steps (--module-dir, quit, copy)",
+              all(x in e.get("message", "") for x in ("0.1.0", "0.9.0", "--module-dir", "ignore_outdated_module")) and "nothing was started" in e.get("message", "").lower(), e)
+        check("MODULE_CHECK ... details carry installed, shipped and the file", e.get("details", {}).get("installed") == "0.1.0" and e.get("details", {}).get("shipped") == "0.9.0" and "installed_file" in e.get("details", {}), e)
+        sc, err = launch(ignore_outdated_module=True)
+        check("MODULE_CHECK ignore_outdated_module: the client starts, and the result still says the module is outdated", not err and len(sc.get("instances", [])) == 1 and sc.get("module", {}).get("state") == "outdated" and "outdated" in sc.get("warning", ""), sc)
+        S["call"]("instances_close", {"all": True}, 30)
+        fake_module(inst, None)
+        n_before = len(S["started"]())  # the client of the previous step left its pid file
+        sc, err = launch()
+        check("MODULE_CHECK a module without marker (built before the check existed) counts as older: refused, nothing started", sc.get("error", {}).get("code") == "module_outdated" and len(S["started"]()) == n_before, sc)
+        fake_module(inst, "0.9.0")
+        sc, err = launch()
+        check("MODULE_CHECK same version: starts, module.state current, no warning", not err and len(sc.get("instances", [])) == 1 and sc.get("module", {}).get("state") == "current" and "warning" not in sc, sc)
+        S["call"]("instances_close", {"all": True}, 30)
+        fake_module(inst, "1.0.0")
+        sc, err = launch()
+        check("MODULE_CHECK newer version (a development build): starts, not outdated", not err and len(sc.get("instances", [])) == 1 and sc.get("module", {}).get("state") == "newer", sc)
+        S["call"]("instances_close", {"all": True}, 30)
+        os.remove(inst)
+        sc, err = launch()
+        check("MODULE_CHECK no module file in the game folder: starts (an addon may carry it), module.state missing, and says so", not err and sc.get("module", {}).get("state") == "missing" and "missing" in json.dumps(sc.get("module", {})) , sc)
+        S["call"]("instances_close", {"all": True}, 30)
+    finally:
+        S["close"]()
+    # The shipped module cannot be read (a development checkout): nothing is compared, nothing is refused.
+    S = chaos_session(extra_env={"GMOD_MCP_MODULE_DIR": os.path.join(shipped, "nowhere")})
+    try:
+        fake_module(os.path.join(S["game"], "garrysmod", "lua", "bin", dll), "0.1.0")
+        sc, err = S["call"]("instances_launch", {"count": 1, "owner": "mc", "timeout_s": 30, "game_dir": S["game"]})
+        check("MODULE_CHECK no shipped module to compare with: no refusal, no module field", not err and len(sc.get("instances", [])) == 1 and "module" not in sc, sc)
+    finally:
+        S["close"]()
+    # No game runs: instances_list and the game_not_running error carry module_outdated (the game folder is the one the bridge remembers).
+    def offline(installed):
+        game = tempfile.mkdtemp(prefix="gmcp-modgame-")
+        shutil.copy(os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe"), os.path.join(game, "gmod_win64.exe"))
+        if installed != "absent": fake_module(os.path.join(game, "garrysmod", "lua", "bin", dll), installed)
+        env = isolated_config(with_token=True)
+        env["GMOD_MCP_MODULE_DIR"] = shipped
+        with open(os.path.join(env["_TEST_CONFIG_DIR"], "gmod-mcp", "bridge-cache.json"), "w") as f: json.dump({"game_root": game}, f)
+        b = Bridge(free_port(), env)
+        def call(tool):
+            r = b.req("tools/call", {"name": tool, "arguments": {}}, 20)
+            return (r or {}).get("result", {}).get("structuredContent", {})
+        out = (call("instances_list"), call("status"))
+        b.close(); shutil.rmtree(game, ignore_errors=True)
+        return out
+    lst, st = offline("0.1.0")
+    check("MODULE_CHECK no game: instances_list says module_outdated true and names both versions", lst.get("module_outdated") is True and lst.get("module_check", {}).get("installed") == "0.1.0" and lst.get("module_check", {}).get("shipped") == "0.9.0", lst)
+    check("MODULE_CHECK no game: the game_not_running error of status carries module_outdated true", st.get("error", {}).get("code") == "game_not_running" and st.get("error", {}).get("details", {}).get("module_outdated") is True, st)
+    lst, st = offline("0.9.0")
+    check("MODULE_CHECK no game, current module: module_outdated false", lst.get("module_outdated") is False and st.get("error", {}).get("details", {}).get("module_outdated") is False, (lst, st))
+    lst, st = offline("absent")
+    check("MODULE_CHECK no game, no module file: module_outdated is not claimed (missing)", "module_outdated" not in lst and lst.get("module_check", {}).get("state") == "missing", lst)
+    shutil.rmtree(shipped, ignore_errors=True)
+
 
 
 def case_chaos_memory():
@@ -3532,8 +3723,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "private_desktop": case_private_desktop, "module_check": case_module_check, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "private_desktop", "module_check", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).
