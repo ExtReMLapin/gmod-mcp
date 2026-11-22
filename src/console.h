@@ -53,6 +53,15 @@ nlohmann::json errors_since(uint64_t cursor, size_t limit, const std::function<b
 void errors_restamp(uint64_t from_seq, uint64_t map_load);
 uint64_t errors_cursor();
 void errors_clear();
+// Number of errors pushed in the last `window_s` seconds (the game's uptime clock): a flood shows here.
+size_t errors_recent(double window_s);
+// Errors older than the 2000 kept that nobody cleared: they can no longer be read (errors_since says it as `lost`).
+uint64_t errors_dropped();
+// The warning that says so ({code: "errors_dropped", lost, text}), shared by errors_since and instances_list.
+nlohmann::json errors_lost_warning(uint64_t lost);
+// Issue #15: the hook guard of lua_exec / lua_job names the hook (`event / id`) that raised a message; errors_since then adds `hook`.
+void note_hook_error(const std::string &message, const std::string &hook);
+std::string hook_of(const std::string &message);  // "" when unknown
 // Parses console lines to extract errors from them (srcds mode, without OnLuaError).
 void set_parse_errors_from_console(bool on);
 

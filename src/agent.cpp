@@ -217,6 +217,15 @@ static int native_push_error(lua_State *L) {
     return 0;
 }
 
+// native.hook_error(event, id, message): the hook guard of lua_exec / lua_job names the hook that raised `message` (Issue #15).
+static int native_hook_error(lua_State *L) {
+    try {
+        console::note_hook_error(lua::tostring(L, 3), lua::tostring(L, 1) + " / " + lua::tostring(L, 2));
+    } catch (...) {
+    }
+    return 0;
+}
+
 static int native_frames(lua_State *L) {
     lua::api().pushnumber(L, (double)jobs::frame_count());
     return 1;
@@ -375,6 +384,8 @@ static bool inject(int realm, lua_State *L, std::string &e) {
     A.createtable(L, 0, 8);
     A.pushcclosure(L, native_push_error, 0);
     A.setfield(L, -2, "push_error");
+    A.pushcclosure(L, native_hook_error, 0);
+    A.setfield(L, -2, "hook_error");
     A.pushcclosure(L, native_frames, 0);
     A.setfield(L, -2, "frames");
     A.pushcclosure(L, native_console_cursor, 0);

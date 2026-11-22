@@ -276,6 +276,27 @@ static json console_read_tool(const json &args) {
                    {"capture", console::method()}});
 }
 
+// Issue #24: where an error was raised, as "file:line": the place the message starts with (what the engine puts in front of every
+// Lua error), else the first stack frame. Backslashes read as slashes. "" when neither is known.
+static std::string error_source(const json &e) {
+    std::string msg = e.value("message", "");
+    static const std::regex loc(R"(^\s*@?([^\s:][^:]*\.lua):(\d+):)", std::regex::ECMAScript);
+    std::smatch m;
+    std::string head = msg.substr(0, 400);
+    std::string src;
+    if (std::regex_search(head, m, loc)) {
+        src = m[1].str() + ":" + m[2].str();
+    } else if (e.contains("stack") && e["stack"].is_array() && !e["stack"].empty() && e["stack"][0].is_object()) {
+        const json &f = e["stack"][0];
+        if (f.contains("file") && f["file"].is_string()) {
+            src = f["file"].get<std::string>();
+            if (f.contains("line") && f["line"].is_number()) src += ":" + std::to_string(f["line"].get<long long>());
+        }
+    }
+    std::replace(src.begin(), src.end(), '\\', '/');
+    return src;
+}
+
 static json errors_since_tool(const json &args) {
     uint64_t cur_load = agent::map_load_seq();
     bool only_current = args.value("since_map_load", false);
@@ -284,22 +305,63 @@ static json errors_since_tool(const json &args) {
     // Issue #11: group_by "message" reads everything kept from the cursor (the store holds at most 2000), then `limit` caps the groups.
     bool grouped = args.value("group_by", "") == "message";
     size_t limit = args.value("limit", 100);
-    // The filters apply while reading, so `limit` counts the errors kept and next_cursor stays exact.
-    json r = console::errors_since(args.value("cursor", (uint64_t)0), grouped ? (size_t)1 << 30 : limit, [&](const json &e) {
-        if (has_realm && e.value("realm", "") != realm) return false;
-        return !only_current || e.value("map_load", (uint64_t)0) == cur_load;
-    });
+    // Issue #24: filters on the place and the text of the error (all given filters must hold).
+    auto norm = [](std::string v) {
+        std::replace(v.begin(), v.end(), '\\', '/');
+        return util::to_lower(v);
+    };
+    std::string src_in = args.contains("source") ? norm(args["source"].get<std::string>()) : "";
+    std::string src_out = args.contains("exclude_source") ? norm(args["exclude_source"].get<std::string>()) : "";
+    bool has_src_in = args.contains("source"), has_src_out = args.contains("exclude_source");
+    std::unique_ptr<std::regex> pat_in, pat_out;
+    for (const char *k : {"pattern", "exclude_pattern"}) {
+        if (!args.contains(k)) continue;
+        try {
+            auto rx = std::make_unique<std::regex>(args[k].get<std::string>(), std::regex::ECMAScript | std::regex::icase);
+            (std::string(k) == "pattern" ? pat_in : pat_out) = std::move(rx);
+        } catch (const std::exception &ex) {
+            return agent::err("invalid_params", std::string(k) + ": invalid regex: " + ex.what());
+        }
+    }
+    json r;
+    try {
+        // The filters apply while reading, so `limit` counts the errors kept and next_cursor stays exact.
+        r = console::errors_since(args.value("cursor", (uint64_t)0), grouped ? (size_t)1 << 30 : limit, [&](const json &e) {
+            if (has_realm && e.value("realm", "") != realm) return false;
+            if (only_current && e.value("map_load", (uint64_t)0) != cur_load) return false;
+            if (has_src_in || has_src_out) {
+                std::string src = util::to_lower(error_source(e));
+                if (has_src_in && src.compare(0, src_in.size(), src_in) != 0) return false;
+                if (has_src_out && !src_out.empty() && src.compare(0, src_out.size(), src_out) == 0) return false;
+            }
+            if (pat_in || pat_out) {
+                std::string msg = e.value("message", "");
+                if (pat_in && !std::regex_search(msg, *pat_in)) return false;
+                if (pat_out && std::regex_search(msg, *pat_out)) return false;
+            }
+            return true;
+        });
+    } catch (const std::regex_error &ex) {  // error_complexity / error_stack on a pathological pattern
+        return agent::err("invalid_params", std::string("the pattern is too expensive to run: ") + ex.what());
+    }
+    json warnings = json::array();
+    if (r.value("lost", (uint64_t)0) > 0) warnings.push_back(console::errors_lost_warning(r["lost"].get<uint64_t>()));
     if (grouped) {
         std::vector<json> groups;
         std::map<std::string, size_t> index;
         for (const auto &e : r["errors"]) {
             std::string msg = e.value("message", "");
-            auto it = index.find(msg);
+            std::string src = error_source(e);
+            std::string key = msg + "\n" + src;  // the same text raised from two places is two groups
+            auto it = index.find(key);
             if (it == index.end()) {
-                index[msg] = groups.size();
+                index[key] = groups.size();
                 groups.push_back(json{{"message", msg}, {"count", 0}, {"first_seq", e.value("seq", 0)}, {"first_time", e.value("time", 0.0)},
                                       {"realms", json::array()}, {"stack", e.value("stack", json::array())}});
-                it = index.find(msg);
+                it = index.find(key);
+                if (!src.empty()) groups[it->second]["source"] = src;
+                std::string hook = console::hook_of(msg);
+                if (!hook.empty()) groups[it->second]["hook"] = hook;
                 if (e.contains("addon")) groups[it->second]["addon"] = e["addon"];
                 if (e.contains("addon_id")) groups[it->second]["addon_id"] = e["addon_id"];
             }
@@ -321,14 +383,39 @@ static json errors_since_tool(const json &args) {
         r["groups"] = groups;
         r["map_load"] = cur_load;
         r["map"] = agent::map_of_load(cur_load);
+        if (!warnings.empty()) r["warnings"] = warnings;
         return ok(r);
+    }
+    // The plain list: when most of it is one message, say so (the shape stays the same: scripts that parse `errors` are not affected).
+    {
+        std::map<std::string, size_t> counts;
+        size_t best = 0;
+        std::string best_msg;
+        for (const auto &e : r["errors"]) {
+            size_t c = ++counts[e.value("message", "")];
+            if (c > best) {
+                best = c;
+                best_msg = e.value("message", "");
+            }
+        }
+        if (best >= 20 && best * 2 >= r["errors"].size()) {
+            json w{{"code", "repeated_errors"}, {"count", best}, {"message", best_msg},
+                   {"text", std::to_string(best) + " of the " + std::to_string(r["errors"].size()) + " errors listed are the same message: "
+                            "group_by: \"message\" returns one entry per message and source with its count and first and last time."}};
+            std::string hook = console::hook_of(best_msg);
+            if (!hook.empty()) w["hook"] = hook;
+            warnings.push_back(w);
+        }
     }
     for (auto &e : r["errors"]) {
         std::string m = agent::map_of_load(e.value("map_load", (uint64_t)0));
         if (!m.empty()) e["map"] = m;
+        std::string hook = console::hook_of(e.value("message", ""));
+        if (!hook.empty()) e["hook"] = hook;
     }
     r["map_load"] = cur_load;
     r["map"] = agent::map_of_load(cur_load);
+    if (!warnings.empty()) r["warnings"] = warnings;
     return ok(r);
 }
 
@@ -481,19 +568,30 @@ void register_console() {
                         "oldest kept error; pass next_cursor to read only new ones. The last 2000 are kept and survive map loads: "
                         "each error carries map_load (a number that grows with every map load) and map; since_map_load: true "
                         "keeps only the current map's errors, including those raised while it loaded. Result: {errors: [{seq, "
-                        "realm, message, stack: [{file, line, function}], addon, addon_id, time, map_load, map}], next_cursor, "
-                        "lost, map_load, map}. A stuck loop can fill the 2000 kept with one message: group_by: \"message\" returns "
-                        "{groups: [{message, count, first_seq, first_time, last_seq, last_time, realms, map, stack, addon}], groups_total, "
-                        "next_cursor, lost, map_load, map} instead, most frequent first. "
-                        "Example: {\"cursor\": 0, \"since_map_load\": true}.",
+                        "realm, message, stack: [{file, line, function}], addon, addon_id, time, map_load, map, hook?}], next_cursor, "
+                        "lost, map_load, map, warnings?}. A game that several agents share, or a stuck loop, fills it with errors that "
+                        "are not yours or all the same: group_by: \"message\" returns one entry per message and source, "
+                        "{groups: [{message, source, count, first_seq, first_time, last_seq, last_time, realms, map, stack, hook?, addon}], "
+                        "groups_total, next_cursor, lost, map_load, map} instead, most frequent first; source / exclude_source keep or drop "
+                        "the errors raised under a file prefix (e.g. \"lua/my_addon/client/\"), pattern / exclude_pattern a regex on the message. "
+                        "warnings (only when there is something to say): errors_dropped (lost > 0: the oldest errors were dropped before "
+                        "you read them) and repeated_errors (most of the list is one message: group it). hook: the hook that raised it, "
+                        "when lua_exec / lua_job's hook guard removed or watched it. "
+                        "Example: {\"cursor\": 0, \"since_map_load\": true, \"group_by\": \"message\", \"source\": \"lua/my_addon/\"}.",
                         json{{"properties", {{"cursor", {{"type", "integer"}, {"minimum", 0}, {"description", "Start here (default 0 = the oldest kept error)."}}},
                                              {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Max errors returned (default 100)."}}},
                                              {"realm", realm_prop("Optional realm filter.")},
                                              {"since_map_load", {{"type", "boolean"}, {"description", "Only errors of the current map load (default false)."}}},
+                                             {"source", {{"type", "string"}, {"maxLength", 260},
+                                                         {"description", "Keep only errors raised under this prefix: the file:line the message starts with (else the first stack frame), "
+                                                                         "e.g. \"lua/my_addon/client/\" or \"lua/my_addon/hud.lua:59\". Case-insensitive; backslashes read as slashes."}}},
+                                             {"exclude_source", {{"type", "string"}, {"maxLength", 260}, {"description", "Drop the errors raised under this prefix (same form as source)."}}},
+                                             {"pattern", {{"type", "string"}, {"maxLength", 500}, {"description", "Keep only errors whose message matches this regular expression (case-insensitive, ECMAScript)."}}},
+                                             {"exclude_pattern", {{"type", "string"}, {"maxLength", 500}, {"description", "Drop the errors whose message matches this regular expression."}}},
                                              {"group_by", {{"type", "string"}, {"enum", json::array({"message"})},
-                                                           {"description", "\"message\": one entry per distinct message instead of the list of errors: {groups: [{message, count, first_seq, "
-                                                                           "first_time, last_seq, last_time, realms, map, stack, addon}]} most frequent first (limit caps the groups, "
-                                                                           "groups_total counts them), next_cursor covers every error read."}}}}}},
+                                                           {"description", "\"message\": one entry per distinct message and source instead of the list of errors: {groups: [{message, source, count, first_seq, "
+                                                                           "first_time, last_seq, last_time, realms, map, stack (the first one's), hook?, addon}]} most frequent first (limit caps the groups, "
+                                                                           "groups_total counts them), next_cursor covers every error read. Default: the plain list."}}}}}},
                         RO, errors_since_tool});
     mcp::register_tool({"errors_clear", "Clear errors", "Forgets the errors kept so far (errors_since then starts empty); cursors keep growing, so an old cursor stays "
                         "valid. Result: {cleared, next_cursor}.", json::object(),
