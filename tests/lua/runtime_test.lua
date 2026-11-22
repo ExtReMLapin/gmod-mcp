@@ -946,7 +946,7 @@ do
 	}
 	local logged, noted = {}, {}
 	MsgN = function(...) logged[#logged + 1] = table.concat({ ... }, " ") end
-	__mcpagent_native.hook_error = function(ev, id, msg) noted[#noted + 1] = { ev, id, msg } end
+	__mcpagent_native.hook_error = function(ev, id, msg, stack) noted[#noted + 1] = { ev, id, msg, stack } end
 	local function fire(ev, id, ...)  -- like hook.Call: errors propagate, the engine reports them
 		local f = table_[ev] and table_[ev][id]
 		if not f then return "gone" end
@@ -966,6 +966,34 @@ do
 	check(table_.Think.bad == nil, "guard: removed after the default limit of identical errors")
 	check(#logged == 1 and logged[1]:find("Think", 1, true) and logged[1]:find("bad", 1, true) and logged[1]:find("300", 1, true), "guard: exactly one line is logged on removal")
 	check(table_.Think.good ~= nil, "guard: a hook that did not fail is left alone")
+
+	-- The wrapper allocates nothing per call (it stays on hooks that run every frame): no closure, no table, no vararg pack.
+	r = call("lua_exec", { code = "hook.Add('Alloc', 'a', function(a, b) return a + b, a end)" })
+	local af = table_.Alloc.a
+	for _ = 1, 1000 do af(1, 2) end  -- warm up (the JIT compiles its trace)
+	collectgarbage("collect")
+	collectgarbage("stop")
+	local c0 = collectgarbage("count")
+	for _ = 1, 200000 do af(1, 2) end
+	local c1 = collectgarbage("count")
+	collectgarbage("restart")
+	check(c1 - c0 < 2, "guard: a successful hook call allocates nothing (grew " .. (c1 - c0) .. " KB over 200000 calls)")
+
+	-- The error keeps the stack of the point it was raised at: the module's note carries it (errors_since shows it).
+	r = call("lua_exec", { code = "hook.Add('T7', 'deep', function()\n\tlocal function inner() error('deep') end\n\tinner()\nend)" })
+	local n_before = #noted
+	local ok7, e7 = fire("T7", "deep")
+	check(ok7 == false and tostring(e7):find("deep", 1, true), "guard: the error is still rethrown")
+	local note7 = noted[n_before + 1]
+	local frames7 = note7 and type(note7[4]) == "string" and J.decode(note7[4]) or nil
+	check(type(frames7) == "table" and #frames7 >= 2, "guard: the note carries the stack of the error point")
+	local lines7, has_core = {}, false
+	for _, fr in ipairs(type(frames7) == "table" and frames7 or {}) do
+		lines7[#lines7 + 1] = tostring(fr.line)
+		if tostring(fr.file):find("10_core", 1, true) then has_core = true end
+	end
+	check(table.concat(lines7, ","):find("2", 1, true) and table.concat(lines7, ","):find("3", 1, true), "guard: the stack has the lines of inner (2) and of the hook function (3): " .. table.concat(lines7, ","))
+	check(not has_core, "guard: the runtime's own frames are cut from the stack")
 
 	-- The limit is an option; a different error resets the streak; a success resets it too.
 	r = call("lua_exec", { code = "n = 0 hook.Add('T2', 'flip', function(k) if k == 'ok' then return 1 end n = n + 1 error('boom' .. (n % 2)) end)", hook_guard = 5 })

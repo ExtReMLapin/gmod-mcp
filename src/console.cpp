@@ -442,24 +442,36 @@ json errors_lost_warning(uint64_t lost) {
 
 // Which hook raised a message (named by the hook guard of lua_exec / lua_job, Issue #15). Bounded: the newest 64 messages.
 static std::mutex g_hook_mu;
-static std::deque<std::pair<std::string, std::string>> g_hook_notes;
+struct HookNote {
+    std::string message, hook;
+    json stack;
+};
+static std::deque<HookNote> g_hook_notes;
 
-void note_hook_error(const std::string &message, const std::string &hook) {
+void note_hook_error(const std::string &message, const std::string &hook, const json &stack) {
     std::lock_guard<std::mutex> lk(g_hook_mu);
     for (auto &n : g_hook_notes)
-        if (n.first == message) {
-            n.second = hook;
+        if (n.message == message) {
+            n.hook = hook;
+            n.stack = stack;
             return;
         }
-    g_hook_notes.emplace_back(message, hook);
+    g_hook_notes.push_back(HookNote{message, hook, stack});
     while (g_hook_notes.size() > 64) g_hook_notes.pop_front();
 }
 
 std::string hook_of(const std::string &message) {
     std::lock_guard<std::mutex> lk(g_hook_mu);
     for (const auto &n : g_hook_notes)
-        if (n.first == message) return n.second;
+        if (n.message == message) return n.hook;
     return "";
+}
+
+json hook_stack_of(const std::string &message) {
+    std::lock_guard<std::mutex> lk(g_hook_mu);
+    for (const auto &n : g_hook_notes)
+        if (n.message == message) return n.stack;
+    return nullptr;
 }
 
 void errors_restamp(uint64_t from_seq, uint64_t map_load) {

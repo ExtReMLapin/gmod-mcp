@@ -348,27 +348,54 @@ local function guard_remove(st, w, msg)
 		tostring(st.event), tostring(st.id), st.limit, msg))
 end
 
+-- The xpcall handler is one shared function (no closure per wrapper, none per call). It keeps the traceback of the error point
+-- in an upvalue: the wrapper rethrows from its own frame, so the engine (and errors_since) would otherwise only see the wrapper.
+local guard_tb
+local function guard_handler(e)
+	guard_tb = debug.traceback("", 2)
+	return e
+end
+
+-- The traceback text as [{file, line, function}], from the error point up to the guard's own frames (not included).
+local function guard_frames(tb)
+	local frames = {}
+	for line in string.gmatch(tb or "", "[^\n]+") do
+		if string.find(line, "in function 'xpcall'", 1, true) or string.find(line, "10_core.lua", 1, true) then break end
+		local file, ln, what = string.match(line, "^%s*(.-):(%d+): in (.*)$")
+		if file then frames[#frames + 1] = { file = file, line = tonumber(ln), ["function"] = string.gsub(what, "^function ", "") } end
+	end
+	return frames
+end
+
+-- Hot path: one call per hook call, possibly every frame. No table, closure or string is made when the hook succeeds, and the
+-- varargs only travel through the stack (xpcall and the tail call).
 local function guard_finish(st, w, ok, ...)
-	if ok then st.streak = 0 return ... end
+	if ok then
+		if st.streak ~= 0 then st.streak = 0 end
+		return ...
+	end
 	local e = ...
 	local msg = tostring(e)
 	if msg == st.last then
 		st.streak = st.streak + 1
 	else
 		st.last, st.streak = msg, 1
-		-- The module remembers which hook raised this message: errors_since and the warnings name it.
+		-- The module remembers which hook raised this message, and from where: errors_since and the warnings name it.
 		local note = __mcpagent_native and __mcpagent_native.hook_error
-		if note then pcall(note, tostring(st.event), tostring(st.id), msg) end
+		if note then
+			local okj, stack = pcall(function() return J.encode(guard_frames(guard_tb)) end)
+			pcall(note, tostring(st.event), tostring(st.id), msg, okj and stack or nil)
+		end
 	end
+	guard_tb = nil
 	if st.streak >= st.limit then guard_remove(st, w, msg) end
 	error(e, 0)
 end
 
 local function guard_wrap(event, id, f, limit)
 	local st = { event = event, id = id, limit = limit, streak = 0 }
-	local function handler(e) return e end
 	local w
-	w = function(...) return guard_finish(st, w, xpcall(f, handler, ...)) end
+	w = function(...) return guard_finish(st, w, xpcall(f, guard_handler, ...)) end
 	guard_wrappers[w] = st
 	return w
 end

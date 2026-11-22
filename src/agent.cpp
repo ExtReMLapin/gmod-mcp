@@ -220,7 +220,10 @@ static int native_push_error(lua_State *L) {
 // native.hook_error(event, id, message): the hook guard of lua_exec / lua_job names the hook that raised `message` (Issue #15).
 static int native_hook_error(lua_State *L) {
     try {
-        console::note_hook_error(lua::tostring(L, 3), lua::tostring(L, 1) + " / " + lua::tostring(L, 2));
+        json stack = nullptr;
+        json s = json::parse(lua::tostring(L, 4), nullptr, false);  // no 4th argument: tostring gives "", which is not valid JSON
+        if (s.is_array()) stack = s;
+        console::note_hook_error(lua::tostring(L, 3), lua::tostring(L, 1) + " / " + lua::tostring(L, 2), stack);
     } catch (...) {
     }
     return 0;

@@ -60,8 +60,11 @@ uint64_t errors_dropped();
 // The warning that says so ({code: "errors_dropped", lost, text}), shared by errors_since and instances_list.
 nlohmann::json errors_lost_warning(uint64_t lost);
 // Issue #15: the hook guard of lua_exec / lua_job names the hook (`event / id`) that raised a message; errors_since then adds `hook`.
-void note_hook_error(const std::string &message, const std::string &hook);
+// `stack` (optional, [{file, line, function}]) is the stack at the point the hook raised it: the engine only sees the guard's
+// rethrow, so errors_since shows this one instead.
+void note_hook_error(const std::string &message, const std::string &hook, const nlohmann::json &stack = nullptr);
 std::string hook_of(const std::string &message);  // "" when unknown
+nlohmann::json hook_stack_of(const std::string &message);  // null when unknown
 // Parses console lines to extract errors from them (srcds mode, without OnLuaError).
 void set_parse_errors_from_console(bool on);
 

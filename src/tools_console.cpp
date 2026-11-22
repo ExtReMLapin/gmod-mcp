@@ -363,6 +363,8 @@ static json errors_since_tool(const json &args) {
                 if (!src.empty()) groups[it->second]["source"] = src;
                 std::string hook = console::hook_of(msg);
                 if (!hook.empty()) groups[it->second]["hook"] = hook;
+                json hs = console::hook_stack_of(msg);
+                if (hs.is_array() && !hs.empty()) groups[it->second]["stack"] = hs;
                 if (e.contains("addon")) groups[it->second]["addon"] = e["addon"];
                 if (e.contains("addon_id")) groups[it->second]["addon_id"] = e["addon_id"];
             }
@@ -413,6 +415,8 @@ static json errors_since_tool(const json &args) {
         if (!m.empty()) e["map"] = m;
         std::string hook = console::hook_of(e.value("message", ""));
         if (!hook.empty()) e["hook"] = hook;
+        json hs = console::hook_stack_of(e.value("message", ""));
+        if (hs.is_array() && !hs.empty()) e["stack"] = hs;  // the hook's own stack, not the guard's rethrow
     }
     r["map_load"] = cur_load;
     r["map"] = agent::map_of_load(cur_load);

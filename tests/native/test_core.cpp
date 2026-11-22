@@ -282,7 +282,9 @@ static void test_errors_group_source_and_hook() {
     for (int i = 0; i < 3; ++i) console::push_error(json{{"realm", "client"}, {"message", "attempt to call a nil value"}, {"stack", stk("lua/a.lua")}, {"time", 1.0 + i}});
     for (int i = 0; i < 2; ++i) console::push_error(json{{"realm", "client"}, {"message", "attempt to call a nil value"}, {"stack", stk("lua/b.lua")}, {"time", 5.0 + i}});
     console::push_error(json{{"realm", "client"}, {"message", "lua/c.lua:9: from a hook"}, {"stack", stk("lua/c.lua")}, {"time", 9.0}});
-    console::note_hook_error("lua/c.lua:9: from a hook", "Think / my_hook");
+    // The guard passes the stack of the error point (the engine only sees its rethrow): errors_since shows that one.
+    console::note_hook_error("lua/c.lua:9: from a hook", "Think / my_hook",
+                             json::array({json{{"file", "lua/c.lua"}, {"line", 9}, {"function", "inner"}}, json{{"file", "lua/c.lua"}, {"line", 12}, {"function", "<lua/c.lua:11>"}}}));
     json g = errs_call(json{{"cursor", 0}, {"group_by", "message"}});
     CHECK(g["groups"].size() == 3);
     if (g["groups"].size() != 3) return;
@@ -292,6 +294,9 @@ static void test_errors_group_source_and_hook() {
     CHECK(!g["groups"][0].contains("hook"));
     json plain = errs_call(json{{"cursor", 0}});
     CHECK(plain["errors"].size() == 6 && plain["errors"][5].value("hook", "") == "Think / my_hook" && !plain["errors"][0].contains("hook"));
+    CHECK(plain["errors"][5]["stack"].size() == 2 && plain["errors"][5]["stack"][1].value("line", 0) == 12);  // the hook's own stack replaced the guard's
+    CHECK(plain["errors"][0]["stack"].size() == 1);  // the other errors keep the stack the engine gave
+    CHECK(g["groups"][2]["stack"].size() == 2 && g["groups"][2]["stack"][0].value("function", "") == "inner");
     // The first stack stays on the group (the first occurrence).
     CHECK(g["groups"][0]["stack"].size() == 1);
 }

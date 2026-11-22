@@ -46,8 +46,9 @@
   and `lua_error_spam`, added by the plugin to the answer of any tool when the game raised 20 or more Lua errors in 5 s since this
   caller's last answer (count, seconds, message, source, hook). **Hook guard**: a hook added by `lua_exec` / `lua_exec_file` /
   `lua_job` / `lua_reload` (while the chunk runs, or during a job's resumes) is wrapped and removed after `hook_guard` identical errors in
-  a row (default 300, `0` = off) with one log line; it keeps its identifier, so `hook.Remove` still works, and the error is still reported.
-  The default of `errors_since` stays the plain list (a result-shape change for scripts).
+  a row (default 300, `0` = off) with one log line; it keeps its identifier, so `hook.Remove` still works, and the error is still reported, with the stack of the point where the hook
+  raised it (the module keeps it next to the hook name; `errors_since` shows it instead of the guard's rethrow). The wrapper allocates
+  nothing per call when the hook succeeds. The default of `errors_since` stays the plain list (a result-shape change for scripts).
 
 - **`tests_run` is cheaper to read and easier to debug** (issues #16, #21, #22, #26). New arguments: `only_failures` (fail and
   error cases only; every file keeps its `totals`), `case` (run the cases whose name contains the text), `output`
@@ -71,8 +72,9 @@
   (the server moves the player, the client says what it sees) instead of two jobs synchronised through files in `data/`.
   It runs at once on the main thread and never yields; `budget` (10 s by default) stops a runaway chunk; a missing realm
   (`realm_unavailable`), the client lock (`client_locked`) or a Lua error there raise a catchable `{code, message}`.
-- **Every tool description starts with its call shape** (issue #18). `tests_run(path, budget?, realm?)`: required arguments first,
-  optional ones with a `?` (six at most, then `...`), `instance` never listed. The tools are often deferred in the agent's client,
+- **Every tool description starts with its call shape** (issue #18). `tests_run(path, realm?, timeout_s?, budget?, ...)`: required
+  arguments first, then optional ones with a `?` (`realm`, `code`, `path`, `name`, `timeout_s` first when present, then alphabetical;
+  eight at most, then `...`), `instance` never listed. The tools are often deferred in the agent's client,
   which sees the description before the schema, so four first calls no longer fail on `file` for `path` or `title` for `name`.
   Built from the input schema when the list is served (the game's tools and the bridge's own), so it cannot drift.
 - **`convar_get` says whether the convar is archived** (issue #23): `archived`, `archived_from` (`flags` or `config.cfg`) and, on
