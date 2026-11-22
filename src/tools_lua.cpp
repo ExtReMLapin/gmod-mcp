@@ -5,6 +5,7 @@
 #include <regex>
 
 #include "agent.h"
+#include "jobs.h"
 #include "mcp.h"
 #include "platform/platform.h"
 #include "realms.h"
@@ -60,20 +61,41 @@ static json perf_hook_cost_tool(const json &args) {
     return agent::rt(r, "perf_stop", json{{"id", id}});
 }
 
-// Resolves a path or a pattern (* and ** in the file name) relative to tmp_dir, or absolute.
-static std::vector<std::string> resolve_glob(const std::string &pattern, std::string &err) {
+static const char *kPathHint =
+    "\nA relative path is looked up in lua/mcpagent_tmp/ first, then in the mounted Lua folder (lua_mount), the game folder and "
+    "include()-style folders; for a file in your project folder, pass its absolute path.";
+
+// Resolves a path or a pattern (* and ** in the file name). A path, or the folder of a pattern, is found like lua_exec_file finds a
+// file: absolute, or relative to lua/mcpagent_tmp/, the mounted Lua folder, the game folder.
+std::vector<std::string> resolve_test_files(const std::string &pattern, std::string &err) {
     namespace fs = std::filesystem;
     std::vector<std::string> out;
-    fs::path p = fs::u8path(pattern);
-    fs::path base = p.is_absolute() ? p.parent_path() : fs::u8path(agent::config().tmp_dir) / p.parent_path();
+    std::string pat = pattern;
+    std::replace(pat.begin(), pat.end(), '\\', '/');
+    fs::path p = fs::u8path(pat);
     std::string name = p.filename().u8string();
     if (name.find('*') == std::string::npos) {
-        fs::path f = base / name;
-        if (fs::exists(f)) out.push_back(f.u8string());
-        else err = "not found: " + f.u8string();
+        std::string abs;
+        if (resolve_lua_path(pat, false, abs, err)) out.push_back(abs);
+        else err += kPathHint;
         return out;
     }
-    bool recursive = pattern.find("**") != std::string::npos;
+    bool recursive = pat.find("**") != std::string::npos;
+    fs::path parent = p.parent_path();
+    if (parent.filename() == "**") parent = parent.parent_path();
+    fs::path base;
+    if (p.is_absolute()) {
+        base = parent;
+    } else if (parent.empty()) {
+        base = fs::u8path(agent::config().tmp_dir);
+    } else {
+        std::string abs;
+        if (!resolve_lua_path(parent.generic_u8string(), true, abs, err)) {
+            err += kPathHint;
+            return out;
+        }
+        base = fs::u8path(abs);
+    }
     std::string rx = "^";
     for (char c : name) {
         if (c == '*') rx += ".*";
@@ -81,19 +103,62 @@ static std::vector<std::string> resolve_glob(const std::string &pattern, std::st
         else rx += c;
     }
     std::regex re(rx + "$", std::regex::icase);
-    if (recursive && base.filename() == "**") base = base.parent_path();
     for (const auto &rel : plat::list_files(base.u8string(), recursive)) {
         std::string fname = fs::u8path(rel).filename().u8string();
         if (std::regex_match(fname, re)) out.push_back((base / fs::u8path(rel)).u8string());
     }
     std::sort(out.begin(), out.end());
-    if (out.empty()) err = "no file matches " + pattern + " (base " + base.u8string() + ")";
+    if (out.empty()) err = "no file matches " + pat + " (folder " + base.u8string() + ")" + kPathHint;
     return out;
+}
+
+// Adds up several tests_run results of the runtime ({files, totals, ok}) into one.
+json merge_test_runs(const std::vector<json> &runs) {
+    json files = json::array();
+    json totals{{"pass", 0}, {"fail", 0}, {"error", 0}, {"skip", 0}};
+    bool all_ok = true;
+    for (const auto &r : runs) {
+        if (r.contains("files") && r["files"].is_array())
+            for (const auto &f : r["files"]) files.push_back(f);
+        if (r.contains("totals") && r["totals"].is_object())
+            for (const char *k : {"pass", "fail", "error", "skip"}) totals[k] = totals[k].get<int>() + r["totals"].value(k, 0);
+        all_ok = all_ok && r.value("ok", false);
+    }
+    return json{{"files", files}, {"totals", totals}, {"ok", all_ok}};
+}
+
+static void wait_one_frame() {
+    uint64_t f = jobs::frame_count();
+    auto t0 = Clock::now();
+    while (jobs::frame_count() == f && !reqctx::cancelled() && std::chrono::duration<double>(Clock::now() - t0).count() < 5.0) plat::sleep_ms(2);
+}
+
+// One realm: the whole run in one call (all files in the same frame), or, with frames > 0, one call per file with that many
+// frames in between (what an Entity:Remove() of one file needs to be seen by the next). Returns an agent result.
+static json run_tests_in(int realm, const json &files, const json &extra, double budget, double timeout_s, int frames) {
+    auto call = [&](const json &subset) {
+        json payload = extra;
+        payload["files"] = subset;
+        double t = timeout_s > 0 ? timeout_s : (budget > 0 ? budget * (double)(subset.size() * 20 + 5) : 60.0);
+        return agent::rt(realm, "tests_run", payload, t);
+    };
+    if (frames <= 0 || files.size() <= 1) return call(files);
+    std::vector<json> runs;
+    for (size_t i = 0; i < files.size(); ++i) {
+        if (i > 0) {
+            if (reqctx::cancelled()) return agent::err("cancelled", "tests_run cancelled");
+            for (int k = 0; k < frames; ++k) wait_one_frame();
+        }
+        json r = call(json::array({files[i]}));
+        if (!r.value("ok", false)) return r;
+        runs.push_back(r["result"]);
+    }
+    return ok(merge_test_runs(runs));
 }
 
 static json tests_run_tool(const json &args) {
     std::string err;
-    auto files = resolve_glob(args["path"], err);
+    auto files = resolve_test_files(args["path"], err);
     if (files.empty()) return agent::err("not_found", err);
     json arr = json::array();
     for (const auto &f : files) {
@@ -102,9 +167,40 @@ static json tests_run_tool(const json &args) {
         arr.push_back(json{{"name", abs}, {"chunkname", chunk}, {"source", src}});
     }
     double budget = args.value("budget", 10.0);
-    json r = rt_realm(args, "realm", realms::SERVER, "tests_run", json{{"files", arr}, {"budget", budget}},
-                      budget * (double)(files.size() * 20 + 5));
-    return r;
+    json extra{{"budget", budget}};
+    for (const char *k : {"case", "only_failures", "output"})
+        if (args.contains(k)) extra[k] = args[k];
+    double timeout_s = args.value("timeout_s", 0.0);
+    int frames = args.value("frames_between_files", 0);
+    std::string realm_name = args.value("realm", std::string());
+    if (realm_name != "both") {
+        int r = realm_of(args, "realm", realms::SERVER);
+        if (r < 0) return agent::err("invalid_params", "realm: unknown realm");
+        return project_keys(run_tests_in(r, arr, extra, budget, timeout_s, frames), args);
+    }
+    // realm "both": the server, then the client; every file is listed with its realm. A realm that cannot run (no client on a
+    // dedicated server, a locked client) is named in `realms` and makes ok false.
+    json realm_info = json::object(), all_files = json::array();
+    std::vector<json> runs;
+    json first_error;
+    for (int r : {realms::SERVER, realms::CLIENT}) {
+        const char *rn = r == realms::SERVER ? "server" : "client";
+        json res = run_tests_in(r, arr, extra, budget, timeout_s, frames);
+        if (!res.value("ok", false)) {
+            if (first_error.is_null()) first_error = res;
+            realm_info[rn] = json{{"error", res.value("error", json::object())}};
+            continue;
+        }
+        json run = res["result"];
+        for (auto &f : run["files"]) f["realm"] = rn;
+        realm_info[rn] = json{{"totals", run["totals"]}, {"ok", run.value("ok", false)}};
+        runs.push_back(run);
+    }
+    if (runs.empty()) return first_error;
+    json merged = merge_test_runs(runs);
+    if (!first_error.is_null()) merged["ok"] = false;
+    merged["realms"] = realm_info;
+    return project_keys(ok(merged), args);
 }
 
 void register_lua_tools() {
@@ -154,19 +250,43 @@ void register_lua_tools() {
     mcp::set_task_support("perf_hook_cost", "optional");
     mcp::register_tool({"tests_run", "Run Lua tests",
                         "Runs test files in GLuaTest format in one realm and returns structured results. A file returns {groupName, "
-                        "beforeAll, beforeEach, afterEach, afterAll, cases = {{name, func, skip?, when?, timeout?}}}; inside, "
+                        "beforeAll, beforeEach, afterEach, afterAll, cases = {{name, func, skip?, when?, timeout?, timing?}}}; inside, "
                         "expect(x).to.equal(y) / .notTo / .beTrue / .beNil / .exist / .beA(type) / .beValid / .beGreaterThan / "
                         ".beLessThan / .beBetween / .aboutEqual(x, tol) / .haveLength / .contain / .err / .errWith(msg) / .succeed. "
-                        "Steps share a `state` table (their first argument). `path`: a file or a pattern in the file name (*.lua, "
-                        "or **/*.lua for subfolders), relative to lua/mcpagent_tmp/ or absolute. Result: {files: [{file, group, "
-                        "cases: [{name, status: pass|fail|error|skip, message?, line?, traceback?, duration_ms}], error?, "
-                        "setup_error?}], totals {pass, fail, error, skip}, ok}. The whole run is one call on the main thread (the "
-                        "game is frozen meanwhile): for multi-frame tests use lua_job. Full format: resource "
-                        "mcpagent://tests-format. Example: {\"realm\": \"server\", \"path\": \"tests/*.lua\"}.",
+                        "A failed expect() raises a string \"file:line: expected ...\" (so assert(ok, err) keeps it). Skip a case with "
+                        "skip = \"reason\", when = false, or expect.skip(reason) inside it (status skip, with the reason). "
+                        "`state` (first argument of every step) is ONE table per file, shared by beforeAll, beforeEach, the cases, "
+                        "afterEach and afterAll, and NOT reset between cases: reset what you need in beforeEach. "
+                        "`path`: a file or a pattern in the file name (*.lua, or **/*.lua for subfolders); absolute, or relative to "
+                        "lua/mcpagent_tmp/, then the mounted folder (lua_mount) and the game folder. Result: {files: [{file, group, "
+                        "cases: [{name, status: pass|fail|error|skip, message?, line? (of the failing assertion), traceback?, output?, "
+                        "duration_ms}], totals {pass, fail, error, skip}, error?, setup_error?, filtered?}], totals, ok}. "
+                        "Big runs: `only_failures` lists only the fail/error cases (each file keeps its totals); `fields: [\"totals\", \"ok\"]` "
+                        "returns just the verdict. A result too big for your client may be saved to a file: read the path it gives. "
+                        "`case` runs only the cases whose name contains it. What a failing case prints (print, MsgN) comes back as "
+                        "`output` (cut at 4 KB; `output`: all or none). "
+                        "The run is one call on the main thread (the game is frozen meanwhile; for multi-frame tests use lua_job), so "
+                        "every file runs in the same frame: Entity:Remove() only takes effect next frame, a removed entity is still "
+                        "valid for the next file. frames_between_files (default 0) waits that many frames between files. Calls sent "
+                        "together are queued and run one after the other; Lua globals, entities and convars persist between calls. "
+                        "`realm: \"both\"` runs the files in the server, then the client (each file says its realm; for sh_ files). "
+                        "The `budget` (default 10 s per step) installs a count hook, which makes LuaJIT interpret: code under it, "
+                        "and helpers it calls, run several times slower (up to 40x measured) and are not compiled. Never time "
+                        "anything under a budget: give that case `timing = true` (or timeout = 0), or pass budget 0 for the whole "
+                        "run (no time limit then: a loop freezes the game until timeout_s). "
+                        "Full format: resource mcpagent://tests-format. Example: {\"realm\": \"server\", \"path\": \"tests/*.lua\", "
+                        "\"only_failures\": true}.",
                         json{{"properties",
-                              {{"realm", realm_prop("Default server.")},
-                               {"path", {{"type", "string"}, {"minLength", 1}, {"description", "File or pattern, relative to lua/mcpagent_tmp/ or absolute."}}},
-                               {"budget", {{"type", "number"}, {"minimum", 0.1}, {"maximum", 120}, {"description", "Time limit per step (load, beforeAll, each case...) in seconds (default 10)."}}}}},
+                              {{"realm", json{{"type", "string"}, {"enum", json::array({"client", "server", "both"})},
+                                              {"description", "Default server. both: server then client (shared files)."}}},
+                               {"path", {{"type", "string"}, {"minLength", 1}, {"description", "File or pattern, absolute or relative to lua/mcpagent_tmp/ (then the mounted folder, the game folder)."}}},
+                               {"budget", {{"type", "number"}, {"minimum", 0}, {"maximum", 120}, {"description", "Time limit per step (load, beforeAll, each case...) in seconds (default 10). 0 = none and no hook (for timing runs)."}}},
+                               {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600}, {"description", "How long to wait for the game per call (default: budget x (20 per file + 5), 60 s without budget)."}}},
+                               {"case", {{"type", "string"}, {"minLength", 1}, {"description", "Run only the cases whose name contains this text (case-insensitive)."}}},
+                               {"only_failures", {{"type", "boolean"}, {"description", "List only the fail and error cases (totals still count all)."}}},
+                               {"output", {{"type", "string"}, {"enum", json::array({"failures", "all", "none"})}, {"description", "Captured print/MsgN of a case: failing cases only (default), all cases, or none."}}},
+                               {"frames_between_files", {{"type", "integer"}, {"minimum", 0}, {"maximum", 60}, {"description", "Wait this many frames between files (default 0): lets entity removals take effect."}}},
+                               {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 10}, {"description", "Keep only these top-level keys of the result (e.g. [\"totals\", \"ok\"])."}}}}},
                              {"required", {"path"}}},
                         json{{"destructiveHint", true}}, tests_run_tool});
 }

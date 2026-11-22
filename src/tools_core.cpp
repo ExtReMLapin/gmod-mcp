@@ -887,7 +887,9 @@ void register_core() {
                        {"budget", {{"type", "number"}, {"minimum", 0.05}, {"maximum", 600},
                                    {"description", "Optional time limit in seconds, best effort (none by default). It stops loops "
                                                    "written in this code itself (error budget_exceeded), not a loop inside a "
-                                                   "compiled function it calls. Without it, an infinite loop freezes the game: the "
+                                                   "compiled function it calls. While it runs the code is interpreted, not "
+                                                   "compiled: several times slower (a loop in a helper up to 40x), so do not time "
+                                                   "anything under it. Without it, an infinite loop freezes the game: the "
                                                    "call fails with main_thread_timeout after timeout_s, status shows "
                                                    "main_thread_stalled, and game_terminate ends the game."}}},
                        {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600},
@@ -911,7 +913,8 @@ void register_core() {
     exec_code["code"] = {{"type", "string"}, {"description", "Lua code. Use `return` to return values (several allowed)."}};
     mcp::register_tool({"lua_exec", "Execute Lua",
                         "Executes Lua code in a realm under xpcall + debug.traceback, at full speed (the LuaJIT compiler is "
-                        "left on; no time limit unless `budget`). Returns all serialized return values (values, n), captured "
+                        "left on; no time limit unless `budget`: a budget installs a count hook, which makes LuaJIT interpret, so "
+                        "never time or benchmark code under one). Returns all serialized return values (values, n), captured "
                         "print/Msg/MsgN/MsgC (output), duration_ms, chunk_bytes, chunkname and the realm's generation (it "
                         "changes on every map load: compare it with map_load's result to know which state ran the code). "
                         "Values come back whole: nothing is cut unless you pass depth, limit or max_string, and then the "

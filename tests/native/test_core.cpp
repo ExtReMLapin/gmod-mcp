@@ -3681,6 +3681,62 @@ int main(int argc, char **argv) {
         CHECK(!tools::resolve_lua_file("ovx/sh.lua", abs, chunk, err));
     }
 
+    // Issue #16: tests_run finds its files like lua_exec_file does (it took an absolute path or a lua/mcpagent_tmp/ one only), and its
+    // not_found message says where it looked and that an absolute path works.
+    {
+        std::vector<std::string> found;
+        found = tools::resolve_test_files("t.lua", err);
+        CHECK(found.size() == 1 && same(found[0], root / "lua/mcpagent_tmp/t.lua"));
+        found = tools::resolve_test_files("addons/pba/lua/pba/core.lua", err);  // relative to the game folder
+        CHECK(found.size() == 1 && same(found[0], root / "addons/pba/lua/pba/core.lua"));
+        found = tools::resolve_test_files("pba/core.lua", err);  // include() style
+        CHECK(found.size() == 1);
+        touch(root / "addons/pba/lua/pbatests/a_spec.lua");
+        touch(root / "addons/pba/lua/pbatests/b_spec.lua");
+        touch(root / "addons/pba/lua/pbatests/sub/c_spec.lua");
+        touch(root / "addons/pba/lua/pbatests/readme.txt");
+        found = tools::resolve_test_files("pbatests/*_spec.lua", err);  // a folder found through the search, then the pattern
+        CHECK(found.size() == 2 && same(found[0], root / "addons/pba/lua/pbatests/a_spec.lua"));
+        found = tools::resolve_test_files("pbatests\\*_spec.lua", err);  // backslashes
+        CHECK(found.size() == 2);
+        found = tools::resolve_test_files("pbatests/**/*_spec.lua", err);
+        CHECK(found.size() == 3);
+        found = tools::resolve_test_files("addons/pba/lua/pbatests/*.txt", err);
+        CHECK(found.size() == 1);
+        found = tools::resolve_test_files((root / "addons/pba/lua/pbatests/*_spec.lua").u8string(), err);  // absolute pattern
+        CHECK(found.size() == 2);
+        err.clear();
+        found = tools::resolve_test_files("nope/missing.lua", err);
+        CHECK(found.empty() && err.find("tried") != std::string::npos && err.find("absolute path") != std::string::npos);
+        err.clear();
+        found = tools::resolve_test_files("nofolder/*.lua", err);
+        CHECK(found.empty() && err.find("nofolder") != std::string::npos && err.find("absolute path") != std::string::npos);
+        err.clear();
+        found = tools::resolve_test_files("pbatests/*.nothing", err);
+        CHECK(found.empty() && err.find("no file matches") != std::string::npos);
+        // The same through the tool: not_found, with the hint (no game involved).
+        json nf = mcp::call_tool("tests_run", json{{"path", "nope/missing.lua"}});
+        CHECK(nf.value("isError", false) && nf["structuredContent"]["error"]["code"] == "not_found" &&
+              nf["structuredContent"]["error"]["message"].get<std::string>().find("absolute path") != std::string::npos);
+        // New arguments are accepted by the schema; the realm both has no client to run in here, and says so.
+        json both = mcp::call_tool("tests_run", json{{"path", "t.lua"}, {"realm", "both"}, {"case", "x"}, {"only_failures", true}, {"output", "all"},
+                                                    {"frames_between_files", 1}, {"timeout_s", 5}, {"budget", 0}, {"fields", {"totals"}}});
+        CHECK(!both["structuredContent"]["error"]["code"].is_null() && both["structuredContent"]["error"]["code"] != "invalid_params");
+        json bad = mcp::call_tool("tests_run", json{{"path", "t.lua"}, {"output", "everything"}});
+        CHECK(bad.value("isError", false) && bad["structuredContent"]["error"]["code"] == "invalid_params");
+        // Merging runs (realm both, frames_between_files).
+        json r1{{"files", {json{{"file", "a"}}}}, {"totals", {{"pass", 2}, {"fail", 1}, {"error", 0}, {"skip", 0}}}, {"ok", false}};
+        json r2{{"files", {json{{"file", "b"}}, json{{"file", "c"}}}}, {"totals", {{"pass", 1}, {"fail", 0}, {"error", 1}, {"skip", 3}}}, {"ok", false}};
+        json r3{{"files", {json{{"file", "d"}}}}, {"totals", {{"pass", 4}, {"fail", 0}, {"error", 0}, {"skip", 0}}}, {"ok", true}};
+        json m = tools::merge_test_runs({r1, r2, r3});
+        CHECK(m["files"].size() == 4 && m["totals"] == (json{{"pass", 7}, {"fail", 1}, {"error", 1}, {"skip", 3}}) && m["ok"] == false);
+        CHECK(tools::merge_test_runs({r3, r3})["ok"] == true && tools::merge_test_runs({})["totals"]["pass"] == 0);
+        // `fields` keeps the verdict of a big result.
+        json big{{"ok", true}, {"result", {{"files", json::array({1, 2, 3})}, {"totals", {{"pass", 3}}}, {"ok", true}}}};
+        json pk = tools::project_keys(big, json{{"fields", {"totals", "ok"}}});
+        CHECK(!pk["result"].contains("files") && pk["result"]["totals"]["pass"] == 3 && pk["result"]["ok"] == true);
+    }
+
     // `fields` projection.
     json r{{"ok", true}, {"result", {{"values", json::array({json{{"pass", 3}, {"fails", json::array()}, {"log", std::string(5000, 'x')}}, 7})}, {"n", 2}}}};
     json p = tools::project_values(r, json{{"fields", {"pass", "fails", "missing"}}});

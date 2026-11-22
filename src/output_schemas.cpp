@@ -249,7 +249,7 @@ json build(const std::string &tool) {
         s["reports_clear"] = obj({{"cleared", ANY}}, {"cleared"});
         s["hook_list"] = obj({{"hooks", Obj}, {"count", N}, {"event", S}, {"known", B}, {"gamemode_function", ANY}}, {"hooks", "count"});
         s["perf_hook_cost"] = obj({{"event", S}, {"duration_s", N}, {"functions", ANYS}, {"restored", ANY}}, {"event", "functions"});
-        s["tests_run"] = obj({{"files", ANYS}, {"totals", Obj}, {"ok", B}}, {"files", "totals", "ok"});
+        s["tests_run"] = obj({{"files", ANYS}, {"totals", Obj}, {"ok", B}, {"realms", Obj}, {"projected", STRS}}, {});
         // --- instances
         // silent_s: seconds since the instance's last heartbeat, on every entry (0 for this game), as in the instance_hung error.
         s["instances_list"] = obj({{"instances", arr(obj({{"state", S}, {"heartbeat_age_s", N}, {"silent_s", N}, {"stalled_s", N}, {"fps_low_s", N}, {"loading", B}}))},
