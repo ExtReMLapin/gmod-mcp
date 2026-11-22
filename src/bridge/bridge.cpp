@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -48,6 +49,7 @@
 #include "modcheck.h"  // Issue #13
 #include "gamedir.h"
 #include "launch_opts.h"  // Issue #10
+#include "data_overlay.h"  // Issue #20
 #include "fp7137.h"  // FP7137
 #include "gmod_mcp_reply.h"
 #include "mcp_protocol.h"
@@ -1001,6 +1003,9 @@ struct Launched {
     bool keep = false;
     bool private_desktop = false;  // issue #14: started on the session's private desktop
     std::string root;  // game folder it was started from (where its crash dumps go)
+    dataoverlay::Mode data_mode = dataoverlay::Mode::Off;  // Issue #20: data_isolation / data_audit of this client
+    std::string data_token;  // its folder data/mcp_overlay/<token> (empty when no mode and no early_lua)
+    std::string early_dir;   // <temp>/gmod-mcp-early/<token>: the early_lua source and the early autorun file the module writes
     std::shared_ptr<EndSlot> slot;  // how it ended, worked out once (shared by the copies of this record)
 #ifdef _WIN32
     HANDLE h = nullptr;
@@ -1110,6 +1115,7 @@ bool takes_instance(const std::string &tool) {
 const char *kLaunchName = "instances_launch";
 const char *kCloseName = "instances_close";
 const char *kSelectName = "instance_select";
+const char *kDataChangesName = "instances_data_changes";  // Issue #20
 
 json bridge_tools() {
     json launch{
@@ -1172,10 +1178,28 @@ json bridge_tools() {
          "client.\n"
          "All clients share the game folder with the user's own game: same addons, cfg, data/ and cookies (sv.db/cl.db). "
          "A test that writes cookies, data files or archived convars changes the user's game too: clean up after it. "
+         "An addon that caches into data/ (or deletes its cache when its format changes) does it in the first seconds after the map loads, "
+         "before you can switch it off (commands run before the addon's convars exist). Two ways to keep your data/ safe (Issue #20): "
+         "data_isolation: true gives each client a copy-on-write data/ (reads fall back to the real folder, writes, appends, deletes and "
+         "renames go to data/mcp_overlay/<token>/ of that client, removed by instances_close and when the session ends; the client sees its own "
+         "changes and an addon cleanup deletes nothing real), and data_audit: true only records what each client creates, changes or deletes. "
+         "Both are read with instances_data_changes while the client runs, and come back in instances_close (closed[i].data_changes: "
+         "{mode, changes: [{path, change: created|modified|deleted|created_dir, size?}], total}). The overlay is installed by a Lua file "
+         "the module mounts in front of every addon, so it runs before any addon in the client and server realms (instances[i].data_isolation."
+         "early_mount true; status of the client shows data_isolation per realm). It wraps the file library: file.Write/Append/Read/Open/Exists/"
+         "Find/IsDir/Size/Time/Delete/CreateDir/Rename/AsyncRead on DATA (and data/ through GAME or MOD). Not covered: code that saved a reference "
+         "to a file function before it, writes that do not go through the file library (console commands such as condump, the sql/cookie "
+         "databases), renaming a folder, sort orders other than by name in file.Find. "
+         "If the module cannot mount the early file (early_mount false, early_error says why) the overlay installs when gmod-mcp's runtime "
+         "starts in the realm, which can be after some addon code ran. A client that is killed with its bridge leaves its folder: the next launch removes folders nothing wrote to for three days. "
+         "early_lua runs your Lua in each client's client and server realms before any addon's file (to set what an addon reads before its first write). "
+         "Option off by default: the folder is shared as before. "
          "The frame cap and the focus options these clients start with (fps_max, fps_max_nofocus, snd_mute_losefocus) are "
          "archived convars: the module gives each one the user's value from cfg/config.cfg (its default when the file has "
          "no line) before the client quits cleanly (game_quit, console quit, the Quit button, the window's close button; "
          "not a `quit` the user types by hand in that client's console), so none of them leaks into the user's config. "
+         "The same holds for archived convars changed through `commands`, `launch_args` or fps_max (the module restores the ones that exist and are archived at quit); "
+         "a convar an addon creates later and that you set from console_exec or convar_set is NOT restored (the list is fixed at launch). "
          "Closing with instances_close kills the process and writes nothing.\n"
          "Video settings: the clients start with -dxlevel 95, so the engine neither reads nor writes the user's stored video "
          "mode (resolution, anti-aliasing): the user's own game keeps its resolution.\n"
@@ -1243,9 +1267,15 @@ json bridge_tools() {
             {"fps_max_nofocus", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000},  // Issue #10
                                  {"description", "Frame cap when the window has no focus (fps_max_nofocus): 0 = no cap, or 10 to 1000. Default: the same as fps_max."}}},
             {"commands", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 256}}},  // Issue #10
-                          {"description", "Console commands run on each client once it answers, before `map` loads, e.g. [\"fps_max 300\", \"snd_mute_losefocus 0\"]. quit, exit, connect and map changes are refused. Archived convars they change are given back on a clean quit."}}},
+                          {"description", "Console commands run on each client once it answers, before `map` loads, e.g. [\"fps_max 300\", \"snd_mute_losefocus 0\"]. quit, exit, connect and map changes are refused. Archived convars they change are given back on a clean quit (see the tool description). They run before the map's Lua exists, so they cannot set an addon's own convars: use early_lua."}}},
             {"launch_args", {{"type", "array"}, {"maxItems", 32}, {"items", {{"type", "string"}, {"maxLength", 160}}},  // Issue #10
                              {"description", "Extra engine command-line tokens, one per element, e.g. [\"-noborder\", \"+cl_showfps\", \"1\"]. Refused: what gmod-mcp sets itself (-multirun, -mcp*, -w, -h, window mode, -dxlevel, -condebug, -game), +connect, +map. Options: https://developer.valvesoftware.com/wiki/Command_line_options"}}},
+            {"data_isolation", {{"type", "boolean"},  // Issue #20
+                                {"description", "Give each client its own copy-on-write view of garrysmod/data: reads fall back to the real folder, every write, append, delete and rename goes to a private folder that is removed with the client, so addon caches never touch your real data/. Default false. See the tool description for what it does not cover."}}},
+            {"data_audit", {{"type", "boolean"},  // Issue #20
+                            {"description", "Do not isolate, only record what each client creates, changes or deletes under data/; read it with instances_data_changes or in instances_close. Default false. Not together with data_isolation."}}},
+            {"early_lua", {{"type", "string"}, {"maxLength", 16384},  // Issue #20
+                           {"description", "Lua run in the client and server realms of each client before any addon's file (the addon's convars and globals do not exist yet, which is why `commands` cannot switch an addon off): set what the addon reads, hook things, wrap a function. Runs after the data_isolation setup, so it is isolated too. A Lua error is printed to the console, not raised."}}},
             {"keep", {{"type", "boolean"}, {"description", "Keep them running after this session ends (default false)."}}},
             {"ignore_unhealthy", {{"type", "boolean"}, {"description", "Start even when a running client is unresponsive or hung (error peer_unhealthy otherwise: a frozen client keeps a new one from registering, so the launch would time out). Default false."}}},
             {"ignore_low_memory", {{"type", "boolean"}, {"description", "Start even when the free memory does not cover the clients asked for (error low_memory otherwise). Default false: a machine out of memory crashes every game on it."}}},
@@ -1272,7 +1302,7 @@ json bridge_tools() {
          "those only if the user asks, with game_terminate. By owner label it also closes keep: true test clients of an earlier "
          "session (a bridge restarted, another agent) that carry that label (instances_list shows it as `owner`; closed[i]."
          "launched_by_other_session is true), but never a game that is not a test client or one without the tag. Sub-agents of one Claude Code session share it: all: true closes their clients too. The selectors "
-         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?}], already_gone?: [{pid, instance?, owner?}] (processes that had ended before the call: nothing was closed), refused?: [ids, pids or "
+         "add up (instances, pids, owner). Result: {closed: [{pid, instance?, owner?, data_changes? (clients started with data_isolation or data_audit: what they changed under data/, see instances_data_changes; their overlay folder is removed here)}], already_gone?: [{pid, instance?, owner?}] (processes that had ended before the call: nothing was closed), refused?: [ids, pids or "
          "\"owner:<label>\" not started by this session or already closed], why_refused?}; an error (code refused, the same fields beside it) only when nothing was "
          "closed. Closing the client that is the coordinator (the game on the base port, see instances_list: role, "
          "coordinator_warning) while other games live moves that role: the answer says so (closed[i].was_coordinator, "
@@ -1301,10 +1331,27 @@ json bridge_tools() {
           {"required", json::array({"instance"})},
           {"additionalProperties", false}}},
         {"annotations", {{"title", "Set the default instance"}, {"readOnlyHint", false}, {"destructiveHint", false}, {"idempotentHint", true}, {"openWorldHint", false}}}};
-    return json::array({launch, close, select});
+    json changes{
+        {"name", kDataChangesName},
+        {"title", "What test clients changed in data/"},
+        {"description",
+         "Lists what each test client this session started with instances_launch {data_isolation: true} or {data_audit: true} has "
+         "created, modified or deleted under garrysmod/data so far (the same list instances_close returns when it closes them). "
+         "Without arguments: every such client of this session. Result: {clients: [{pid, instance?, owner?, data_changes: {mode: overlay|audit, token, "
+         "changes: [{path, change: created|modified|deleted|created_dir, size?}] (at most 500, sorted by path), total, truncated?}}], skipped?: "
+         "[clients without a data mode], note?}. With data_isolation the real files are untouched: `modified` and `deleted` are what the client sees, not what is on "
+         "disk; with data_audit they are real changes you may have to clean up. Only clients of this session are known (not keep: true clients of an earlier one)."},
+        {"inputSchema",
+         {{"type", "object"},
+          {"properties",
+           {{"instances", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Instance ids; default every client of this session."}}},
+            {"pids", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"description", "Process ids; default every client of this session."}}}}},
+          {"additionalProperties", false}}},
+        {"annotations", {{"title", "What test clients changed in data/"}, {"readOnlyHint", true}, {"destructiveHint", false}, {"idempotentHint", true}, {"openWorldHint", false}}}};
+    return json::array({launch, close, select, changes});
 }
 
-bool is_bridge_tool(const std::string &name) { return name == kLaunchName || name == kCloseName || name == kSelectName; }
+bool is_bridge_tool(const std::string &name) { return name == kLaunchName || name == kCloseName || name == kSelectName || name == kDataChangesName; }
 
 json tool_text(json structured, bool error);
 
@@ -1947,6 +1994,15 @@ json launch_tool(const json &args, const json &token) {
         std::string ae = launchopts::check_launch_args(args["launch_args"], extra_args);
         if (!ae.empty()) return tool_error("invalid_params", ae);
     }
+    // Issue #20: data/ isolation or audit, and Lua that runs before the addons.
+    bool data_iso = args.value("data_isolation", false), data_aud = args.value("data_audit", false);
+    std::string early_lua = args.value("early_lua", "");
+    if (data_iso && data_aud) return tool_error("invalid_params", "data_isolation and data_audit cannot be combined: isolation already records what the client changes (instances_data_changes)");
+    {
+        std::string ee = dataoverlay::check_early_lua(early_lua);
+        if (!ee.empty()) return tool_error("invalid_params", ee);
+    }
+    dataoverlay::Mode data_mode = data_iso ? dataoverlay::Mode::Overlay : data_aud ? dataoverlay::Mode::Audit : dataoverlay::Mode::Off;
     // Checked before anything starts: a bad folder must not leave clients behind.
     std::string mount_root;
     if (args.contains("lua_mount") && args["lua_mount"].is_string() && !args["lua_mount"].get<std::string>().empty()) {
@@ -2027,6 +2083,19 @@ json launch_tool(const json &args, const json &token) {
             if (lv.refuse) return tool_text(json{{"error", {{"code", "low_memory"}, {"message", lv.message}, {"details", lv.details}}}}, true);
         }
     }
+    // Issue #20: folders of clients that are gone (killed with their bridge) are removed; a live client's folder is kept.
+    {
+        std::vector<std::string> live;
+        {
+            std::lock_guard<std::mutex> lk(g_launch_mu);
+            for (const auto &l : g_launched)
+                if (!l.data_token.empty()) live.push_back(l.data_token);
+        }
+        dataoverlay::sweep_old(root + "/garrysmod/data", dataoverlay::kSweepHours, live);
+        std::error_code tec;
+        auto tmp = std::filesystem::temp_directory_path(tec);
+        if (!tec) dataoverlay::sweep_dir((tmp / "gmod-mcp-early").u8string(), dataoverlay::kSweepHours, live);
+    }
     // Fixed option set (no free arguments). The light preset comes from measurements of what actually saves CPU and
     // memory per client.
     // -mcp_test_client marks the game as one of ours: the module gives the archived convars below back to the user's
@@ -2094,6 +2163,26 @@ json launch_tool(const json &args, const json &token) {
             std::string t = launchopts::format_return_focus(return_target);
             if (!t.empty()) client_opts += " -mcp_return_focus " + t;
         }
+        // Issue #20: this client's folder token, the early Lua source and where the module writes its early autorun file.
+        std::string data_token, early_dir;
+        if (data_mode != dataoverlay::Mode::Off || !early_lua.empty()) {
+            data_token = dataoverlay::new_token();
+            std::error_code fec;
+            std::filesystem::path d = std::filesystem::temp_directory_path(fec) / "gmod-mcp-early" / data_token;
+            std::string du8 = d.u8string();
+            if (fec || du8.find_first_of("\";\r\n\t") != std::string::npos) {
+                for (auto &l : started) TerminateProcess(l.h, 0);
+                return tool_error("launch_failed", "the temporary folder path cannot be passed on a command line (it contains a quote, a ';' or a control character): " + du8);
+            }
+            std::filesystem::create_directories(d, fec);
+            if (!early_lua.empty()) {
+                std::ofstream o(d / "early.lua", std::ios::binary);
+                o << early_lua;
+            }
+            early_dir = du8;
+            if (data_mode != dataoverlay::Mode::Off) client_opts += std::string(" -mcp_data_mode ") + dataoverlay::mode_name(data_mode) + " -mcp_data_token " + data_token;
+            client_opts += " -mcp_early_dir \"" + early_dir + "\"";
+        }
         std::string cmd = "\"" + exe + "\" " + client_opts;
         std::wstring wcmd = utf8_to_wide(cmd), wdir = utf8_to_wide(root);
         STARTUPINFOW si{};
@@ -2106,6 +2195,10 @@ json launch_tool(const json &args, const json &token) {
         if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
             DWORD cpe = GetLastError();
             for (auto &l : started) TerminateProcess(l.h, 0);
+            if (!early_dir.empty()) {
+                std::error_code rec;
+                std::filesystem::remove_all(std::filesystem::u8path(early_dir), rec);
+            }
             fp_gate.release();
             return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(cpe) + ") for " + exe +
                                                    (private_desk ? " on the private desktop " + desk_name + ": pass desktop: \"shared\" to start the clients on the user's desktop" : ""));
@@ -2123,6 +2216,9 @@ json launch_tool(const json &args, const json &token) {
         l.private_desktop = private_desk;
         l.owner = owner;
         l.root = root;
+        l.data_mode = data_mode;
+        l.data_token = data_token;
+        l.early_dir = early_dir;
         l.slot = std::make_shared<EndSlot>();
         started.push_back(l);
     }
@@ -2338,6 +2434,11 @@ json launch_tool(const json &args, const json &token) {
         if (!owner.empty()) e["owner"] = owner;
         if (!mount_root.empty()) e["lua_mount"] = mount_res[i];
         if (!startup_cmds.empty()) e["commands"] = cmd_res[i];  // Issue #10
+        if (!started[i].data_token.empty()) {  // Issue #20
+            json di{{"mode", dataoverlay::mode_name(started[i].data_mode)}, {"token", started[i].data_token}, {"early_lua", !early_lua.empty()}};
+            if (started[i].data_mode != dataoverlay::Mode::Off) di["folder"] = std::string("garrysmod/data/") + dataoverlay::kFolder + "/" + started[i].data_token;
+            e["data_isolation"] = di;
+        }
         if (!map.empty()) {
             bool ok = !map_res[i].contains("error");
             all_ok = all_ok && ok;
@@ -2419,6 +2520,60 @@ json launch_tool(const json &args, const json &token) {
     fp_gate.annotate(fp_res);  // FP7137
     return fp_res;  // FP7137
 #endif
+}
+
+// Issue #20: what a client changed under data/ (null when it has no data mode). `remove`: also delete its folder and its early
+// folder (the client is gone).
+json data_report(const Launched &l, bool remove) {
+    json r;
+    if (l.data_mode != dataoverlay::Mode::Off && !l.data_token.empty()) {
+        std::string dd = l.root + "/garrysmod/data";
+        r = dataoverlay::changes_json(dataoverlay::read_changes(dd, l.data_token, l.data_mode), l.data_mode, l.data_token);
+        if (remove) {
+            bool removed = dataoverlay::remove_folder(dd, l.data_token);
+            r["folder_removed"] = removed;
+            if (!removed) r["folder"] = std::string("garrysmod/data/") + dataoverlay::kFolder + "/" + l.data_token;
+        }
+    }
+    if (remove && !l.early_dir.empty()) {
+        std::error_code ec;
+        std::filesystem::remove_all(std::filesystem::u8path(l.early_dir), ec);
+    }
+    return r;
+}
+
+json data_changes_tool(const json &args) {
+    json ids = args.value("instances", json::array()), pids = args.value("pids", json::array());
+    std::vector<Launched> sel;
+    {
+        std::lock_guard<std::mutex> lk(g_launch_mu);
+        for (const auto &l : g_launched) {
+            bool want = ids.empty() && pids.empty();
+            for (const auto &i : ids) want = want || (i.is_string() && !l.id.empty() && i.get<std::string>() == l.id);
+            for (const auto &p : pids) want = want || (p.is_number_unsigned() && p.get<uint32_t>() == l.pid);
+            if (want) sel.push_back(l);
+        }
+    }
+    json clients = json::array(), skipped = json::array();
+    for (const auto &l : sel) {
+        json c{{"pid", l.pid}};
+        if (!l.id.empty()) c["instance"] = l.id;
+        if (!l.owner.empty()) c["owner"] = l.owner;
+        json d = data_report(l, false);
+        if (d.is_null()) {
+            skipped.push_back(c);
+            continue;
+        }
+        c["data_changes"] = d;
+        clients.push_back(c);
+    }
+    json res{{"clients", clients}};
+    if (!skipped.empty()) {
+        res["skipped"] = skipped;
+        res["note"] = "skipped: started without data_isolation or data_audit (nothing is recorded for them)";
+    }
+    if (sel.empty()) res["note"] = "no client of this session matches (only clients this session started with instances_launch are known)";
+    return tool_text(res, false);
 }
 
 json close_tool(const json &args) {
@@ -2518,6 +2673,8 @@ json close_tool(const json &args) {
         json c{{"pid", l.pid}};
         if (!l.id.empty()) c["instance"] = l.id;
         if (!l.owner.empty()) c["owner"] = l.owner;
+        json dchg = data_report(l, true);  // Issue #20: the client is gone either way: read what it changed, remove its folder
+        if (!dchg.is_null()) c["data_changes"] = dchg;
         if (gone) {
             already_gone.push_back(c);
             std::lock_guard<std::mutex> lk(g_default_mu);
@@ -2645,7 +2802,9 @@ void close_launched_on_exit() {
         if (l.keep) continue;
 #ifdef _WIN32
         TerminateProcess(l.h, 0);  // immediate: like game_terminate, nothing is written to the user's config
+        WaitForSingleObject(l.h, 1000);
 #endif
+        data_report(l, true);  // Issue #20: its data/mcp_overlay folder goes with it
     }
     g_launched.clear();
     close_private_desktop();  // issue #14
@@ -2714,6 +2873,8 @@ void handle_bridge_tool(const json &msg) {
         probe_module_version();
     } else if (name == kCloseName) {
         res = close_tool(args);
+    } else if (name == kDataChangesName) {
+        res = data_changes_tool(args);
     } else {
         res = select_tool(args);
     }

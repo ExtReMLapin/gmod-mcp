@@ -418,6 +418,13 @@ static bool hook_ready(lua_State *L) {
     return ok;
 }
 
+std::string overlay_chunk_source() {
+    for (size_t i = 0; i < embedded::lua_chunk_count; ++i)
+        if (std::string(embedded::lua_chunks[i].name) == "12_data_overlay.lua")
+            return std::string(reinterpret_cast<const char *>(embedded::lua_chunks[i].data), embedded::lua_chunks[i].size);
+    return "";
+}
+
 static bool inject(int realm, lua_State *L, std::string &e) {
     const auto &A = lua::api();
     // Native table, set before the chunks.
@@ -467,6 +474,14 @@ static bool inject(int realm, lua_State *L, std::string &e) {
         A.setfield(L, -2, "test_client");
         A.pushcclosure(L, native_user_config, 0);
         A.setfield(L, -2, "user_config");
+        if (!g_cfg.data_mode.empty()) {  // Issue #20: the runtime installs the data/ overlay or audit if the early file did not
+            A.createtable(L, 0, 2);
+            A.pushstring(L, g_cfg.data_mode.c_str());
+            A.setfield(L, -2, "mode");
+            A.pushstring(L, g_cfg.data_token.c_str());
+            A.setfield(L, -2, "token");
+            A.setfield(L, -2, "data_overlay");
+        }
         if (!g_cfg.restore_convars.empty()) {  // Issue #10
             A.pushstring(L, g_cfg.restore_convars.c_str());
             A.setfield(L, -2, "restore_convars");

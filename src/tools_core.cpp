@@ -314,6 +314,12 @@ static json status_tool(const json &args) {
            {"tmp_dir", c.tmp_dir},
            {"game_dir", c.game_dir},
            {"pending_jobs", jobs::pending()}};
+    if (!c.data_mode.empty() || c.early_lua) {  // Issue #20: the data/ isolation or audit and the early Lua of a test client
+        json di{{"mode", c.data_mode.empty() ? "off" : c.data_mode}, {"early_mount", c.early_mount}, {"early_lua", c.early_lua}};
+        if (!c.data_token.empty()) di["token"] = c.data_token;
+        if (!c.early_error.empty()) di["early_error"] = c.early_error;
+        s["data_isolation"] = di;
+    }
     if (agent::map_loading_stuck()) {  // issue #8 (I-C1)
         s["loading_stuck"] = true;
         s["loading_stuck_note"] = agent::loading_stuck_note();

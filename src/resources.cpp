@@ -261,10 +261,17 @@ no line for it: `game_quit`, a `quit`/`exit` sent with `console_exec`, the main 
 button (the X, Alt+F4: the close request is held back 0.4 s while the values are put back) are covered. The same goes for
 the archived convars changed through `instances_launch {fps_max, commands, launch_args}`: the bridge lists their names
 on the command line (`-mcp_restore_convars a,b`) and the module restores those that are archived too (a convar changed
-by `exec` of a cfg file is not tracked). Not covered: a
+by `exec` of a cfg file is not tracked; the list is fixed at launch: a convar an addon creates later and that you set with `convar_set` is not restored). Not covered: a
 `quit` the user types by hand in that client's console, and a process killed from outside (which writes nothing). A
 `convar_set` of one of these three on such a client is reverted at quit too. `instances_close` kills the process:
 nothing is written. The same options on a game you start by hand are not restored: set them back yourself before it quits.
+
+`data/` of a test client (Issue #20): `instances_launch {data_isolation: true}` gives each client a copy-on-write `data/` (reads fall
+back to the real folder; writes, appends, deletes and renames go to `data/mcp_overlay/<token>/`, removed by `instances_close`), and
+`{data_audit: true}` only records the changes. `instances_data_changes` and `instances_close` (`closed[i].data_changes`) list what a client
+created, modified or deleted. It is installed by a file the module mounts in front of every addon (`status.data_isolation`); limits:
+a reference to a file function saved before it, writes outside the file library (console commands, sql/cookies), folder renames.
+`early_lua` runs your Lua in the client and server realms before any addon's file.
 
 Clients started by `instances_launch` carry `-dxlevel 95`: with it the engine neither reads nor writes the user's video
 settings (resolution, anti-aliasing), so test clients do not change the way the user's own game starts. A client you

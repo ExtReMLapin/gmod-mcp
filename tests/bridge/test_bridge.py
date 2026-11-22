@@ -14,6 +14,7 @@ Cases (default: a f):
   session the bridge's own tools: listed offline and live, default instance injected (and mirrored in the header),
          explicit instance wins, instances_close refuses what the session did not start, bad game_dir refused
   lua_mount_verify instances_launch {lua_mount}: the result reports the mount each engine really has (fake game server)
+  data_isolation instances_launch {data_isolation, data_audit, early_lua} (Issue #20): command line, early Lua file, instances_data_changes, report and cleanup
   launch_options instances_launch {fps_max, fps_max_nofocus, commands, launch_args} (Issue #10): command line, commands in
          order before the map, convars to restore listed for the module, bad options refused before anything starts
   handover Issue #6: the coordinator role moves to another game: calls wait for it and retry coordinator_changing, but
@@ -1366,6 +1367,130 @@ def case_launch_options():
     props = tool.get("inputSchema", {}).get("properties", {})
     check("LAUNCH_OPTIONS the schema offers fps_max, fps_max_nofocus, commands, launch_args", all(k in props for k in ("fps_max", "fps_max_nofocus", "commands", "launch_args")), list(props))
     check("LAUNCH_OPTIONS the description points at the option and command lists", "developer.valvesoftware.com/wiki/Command_line_options" in d and "concommand_list" in d and "api_search" in d, d[-600:])
+    b.close(); srv.stop()
+    shutil.rmtree(game, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def case_data_isolation():
+    """Issue #20: instances_launch {data_isolation, data_audit, early_lua}. The stand-in game records its command line; the test
+    plays the Lua side by writing the overlay folder the module's Lua would have written. Checks the options, the command line, the early
+    Lua file, instances_data_changes, the report and cleanup of instances_close, and the removal of folders of clients that are gone."""
+    print("== DATA_ISOLATION: per-client data/ overlay, audit and early Lua (Issue #20)", flush=True)
+    if os.name != "nt":
+        print("   (Windows only: instances_launch is Windows only)", flush=True)
+        return
+    fake = os.path.join(os.path.dirname(BRIDGE), "gmod-mcp-fakegame.exe")
+    if not os.path.exists(fake):
+        check("DATA_ISOLATION stand-in game built next to the bridge", False, fake)
+        return
+    import shutil, re as _re
+    game = tempfile.mkdtemp(prefix="gmcp-fake-game-")
+    shutil.copy(fake, os.path.join(game, "gmod_win64.exe"))
+    data = os.path.join(game, "garrysmod", "data")
+    os.makedirs(data)
+    work = tempfile.mkdtemp(prefix="gmcp-data-")
+    pid_file, argv_file = os.path.join(work, "pid.txt"), os.path.join(work, "argv.txt")
+    port, env = free_port(), isolated_config(with_token=True)
+    env.update(GMCP_FAKE_PID=pid_file, GMCP_FAKE_ARGV=argv_file, GMOD_MCP_FP7137_WORKAROUND="0")
+    srv = FakeServer(port, version=bridge_version())
+    srv.pid_file = pid_file
+    b = Bridge(port, env)
+
+    def launch(extra, close=True, timeout=60):
+        for f in (pid_file, argv_file):
+            if os.path.exists(f): os.remove(f)
+        args = {"count": 1, "owner": "dio", "timeout_s": 20, "game_dir": game}
+        args.update(extra)
+        r = b.req("tools/call", {"name": "instances_launch", "arguments": args}, timeout)
+        res = (r or {}).get("result", {})
+        line = open(argv_file, encoding="utf-8", errors="replace").read() if os.path.exists(argv_file) else ""
+        closed = None
+        if close:
+            closed = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "dio"}}, 20)
+            closed = (closed or {}).get("result", {}).get("structuredContent", {})
+        return res, res.get("structuredContent", {}), line, closed
+
+    def put(rel, content):
+        p = os.path.join(data, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").write(content)
+
+    # 1. no option: nothing on the command line, no folder, no data_isolation in the result.
+    res, sc, line, _ = launch({})
+    check("DATA_ISOLATION default: no data or early option on the command line", "-mcp_data" not in line and "-mcp_early_dir" not in line and "data_isolation" not in json.dumps(sc.get("instances")), line)
+    check("DATA_ISOLATION default: no overlay folder created", not os.path.exists(os.path.join(data, "mcp_overlay")))
+    # 2. data_isolation: mode, a valid token and the early folder on the command line; the result names them.
+    res, sc, line, closed = launch({"data_isolation": True}, close=False)
+    m = _re.search(r" -mcp_data_mode overlay -mcp_data_token (c[0-9a-f]{11}) -mcp_early_dir \"([^\"]+)\"", line)
+    check("DATA_ISOLATION data_isolation: -mcp_data_mode overlay, a token and -mcp_early_dir on the command line", m is not None, line)
+    tok, edir = (m.group(1), m.group(2)) if m else ("", "")
+    inst = (sc.get("instances") or [{}])[0]
+    di = inst.get("data_isolation", {})
+    check("DATA_ISOLATION the result names mode, token and folder", di.get("mode") == "overlay" and di.get("token") == tok and di.get("folder") == "garrysmod/data/mcp_overlay/" + tok and di.get("early_lua") is False, sc)
+    check("DATA_ISOLATION the early folder exists, without an early.lua when none was given", os.path.isdir(edir) and not os.path.exists(os.path.join(edir, "early.lua")), edir)
+    # What the Lua side would have written: a real file, a changed copy, a new file, a tombstone, an empty new folder.
+    put("cache/index.txt", "v1"); put("cache/t1.dat", "tile1")
+    put("mcp_overlay/%s/f/cache/index.txt" % tok, "version two")
+    put("mcp_overlay/%s/f/cache/new.dat" % tok, "n")
+    put("mcp_overlay/%s/w/cache/t1.dat.txt" % tok, "x")
+    os.makedirs(os.path.join(data, "mcp_overlay", tok, "f", "emptydir"))
+    r = b.req("tools/call", {"name": "instances_data_changes", "arguments": {}}, 20)
+    sc2 = (r or {}).get("result", {}).get("structuredContent", {})
+    cl = (sc2.get("clients") or [{}])[0]
+    dc = cl.get("data_changes", {})
+    got = {(c["path"], c["change"]) for c in dc.get("changes", [])}
+    check("DATA_ISOLATION instances_data_changes lists created, modified, deleted and created_dir", got == {("cache/index.txt", "modified"), ("cache/new.dat", "created"), ("cache/t1.dat", "deleted"), ("emptydir", "created_dir")} and dc.get("total") == 4 and dc.get("mode") == "overlay" and cl.get("instance") == inst.get("instance"), sc2)
+    check("DATA_ISOLATION reading the list touches nothing", os.path.exists(os.path.join(data, "mcp_overlay", tok, "f", "cache", "new.dat")) and open(os.path.join(data, "cache", "index.txt")).read() == "v1")
+    r = b.req("tools/call", {"name": "instances_data_changes", "arguments": {"instances": ["nosuch"]}}, 20)
+    check("DATA_ISOLATION instances_data_changes of an unknown id: empty, with a note", (r or {}).get("result", {}).get("structuredContent", {}).get("clients") == [] and "note" in (r or {}).get("result", {}).get("structuredContent", {}), r)
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "dio"}}, 20)
+    sc3 = (r or {}).get("result", {}).get("structuredContent", {})
+    cc = (sc3.get("closed") or sc3.get("already_gone") or [{}])[0]
+    check("DATA_ISOLATION instances_close returns data_changes and removes the overlay folder", len(cc.get("data_changes", {}).get("changes", [])) == 4 and cc["data_changes"].get("folder_removed") is True and not os.path.exists(os.path.join(data, "mcp_overlay", tok)), sc3)
+    check("DATA_ISOLATION the early folder is removed too, the real data is untouched", not os.path.exists(edir) and open(os.path.join(data, "cache", "t1.dat")).read() == "tile1" and open(os.path.join(data, "cache", "index.txt")).read() == "v1")
+    # 3. data_audit: mode audit; the audit log is replayed.
+    res, sc, line, _ = launch({"data_audit": True}, close=False)
+    m = _re.search(r" -mcp_data_mode audit -mcp_data_token (c[0-9a-f]{11}) ", line)
+    check("DATA_ISOLATION data_audit: -mcp_data_mode audit and a token", m is not None, line)
+    tok2 = m.group(1) if m else "x"
+    put("mcp_overlay/%s/audit.txt" % tok2, "W\t1\tcache/index.txt\nD\t1\tcache/t1.dat\nW\t0\tnewfile.txt\n")
+    put("newfile.txt", "1234")
+    r = b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "dio"}}, 20)
+    cc = ((r or {}).get("result", {}).get("structuredContent", {}).get("closed") or [{}])[0]
+    got = {(c["path"], c["change"]) for c in cc.get("data_changes", {}).get("changes", [])}
+    check("DATA_ISOLATION audit: the log is replayed into modified, deleted, created", got == {("cache/index.txt", "modified"), ("cache/t1.dat", "deleted"), ("newfile.txt", "created")} and cc["data_changes"].get("mode") == "audit", cc)
+    # 4. early_lua alone: the source is written for the module, no data mode.
+    res, sc, line, _ = launch({"early_lua": "MyAddon = { disabled = true }"}, close=False)
+    m = _re.search(r" -mcp_early_dir \"([^\"]+)\"", line)
+    src = os.path.join(m.group(1), "early.lua") if m else ""
+    check("DATA_ISOLATION early_lua: early.lua written in the early folder, no data mode on the command line", m is not None and "-mcp_data_mode" not in line and os.path.exists(src) and open(src).read() == "MyAddon = { disabled = true }", line)
+    inst = (sc.get("instances") or [{}])[0]
+    check("DATA_ISOLATION early_lua: the result says so", inst.get("data_isolation", {}).get("early_lua") is True and inst["data_isolation"].get("mode") == "off", sc)
+    r = b.req("tools/call", {"name": "instances_data_changes", "arguments": {}}, 20)
+    sc4 = (r or {}).get("result", {}).get("structuredContent", {})
+    check("DATA_ISOLATION a client with early_lua only has no data changes: skipped", sc4.get("clients") == [] and len(sc4.get("skipped", [])) == 1, sc4)
+    b.req("tools/call", {"name": "instances_close", "arguments": {"owner": "dio"}}, 20)
+    check("DATA_ISOLATION closing removes the early folder", m is not None and not os.path.exists(m.group(1)), m and m.group(1))
+    # 5. refused before anything starts.
+    for extra, word in (({"data_isolation": True, "data_audit": True}, "data_audit"), ({"early_lua": "x" * 16385}, "early_lua"), ({"data_isolation": "yes"}, "data_isolation")):
+        res, sc, line, _ = launch(extra)
+        check("DATA_ISOLATION refused before starting anything: %s" % json.dumps(extra)[:60], res.get("isError") and word in json.dumps(sc) and not line, sc)
+    # 6. a folder left by a client that is long gone is removed by the next launch; a young one stays.
+    put("mcp_overlay/oldfolder/audit.txt", "W\t0\tx.txt\n"); put("mcp_overlay/younger/audit.txt", "W\t0\ty.txt\n")
+    old = time.time() - 80 * 3600
+    for rel in ("mcp_overlay/oldfolder/audit.txt", "mcp_overlay/oldfolder"):
+        os.utime(os.path.join(data, *rel.split("/")), (old, old))
+    launch({"data_audit": True})
+    check("DATA_ISOLATION the next launch removes a folder nothing wrote to for 3 days, keeps a young one", not os.path.exists(os.path.join(data, "mcp_overlay", "oldfolder")) and os.path.exists(os.path.join(data, "mcp_overlay", "younger")), os.listdir(os.path.join(data, "mcp_overlay")))
+    # 7. the tool list and the descriptions.
+    r = b.req("tools/list", {})
+    tools = {t["name"]: t for t in (r or {}).get("result", {}).get("tools", [])}
+    props = tools.get("instances_launch", {}).get("inputSchema", {}).get("properties", {})
+    d = tools.get("instances_launch", {}).get("description", "")
+    check("DATA_ISOLATION the schema offers data_isolation, data_audit and early_lua", all(k in props for k in ("data_isolation", "data_audit", "early_lua")), list(props))
+    check("DATA_ISOLATION the launch description says what it does not cover and answers the commands convar question", "Not covered" in d and "instances_data_changes" in d and "changed through `commands`" in d, d[-300:])
+    check("DATA_ISOLATION instances_data_changes is listed and read-only", "instances_data_changes" in tools and tools["instances_data_changes"].get("annotations", {}).get("readOnlyHint") is True, list(tools)[-5:])
     b.close(); srv.stop()
     shutil.rmtree(game, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
@@ -3825,8 +3950,8 @@ def case_chaos_close():
         import shutil; shutil.rmtree(work, ignore_errors=True)
 
 
-CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "errwarn": case_errwarn, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "private_desktop": case_private_desktop, "module_check": case_module_check, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close}
-DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "errwarn", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "private_desktop", "module_check", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "fuzz"]
+CASES = {"a": case_a, "f": case_f, "m": case_m, "multi": case_multi, "session": case_session, "launch": case_launch, "orphans": case_orphans, "lua_mount": case_lua_mount, "win64_layout": case_win64_layout, "lua_mount_verify": case_lua_mount_verify, "launch_options": case_launch_options, "crash": case_crash, "lowmem": case_lowmem, "fp7137": case_fp7137, "orphan": case_orphan, "fuzz": case_fuzz, "fslow": lambda: case_f(slow=True), "b": case_b, "c": case_c, "retex": case_retex, "lua_mount_live": case_lua_mount_live, "edge_live": case_edge_live, "lua_mount_ecosystem": case_lua_mount_ecosystem, "edge": case_edge, "version": case_version, "errwarn": case_errwarn, "version_live": case_version_live, "observe": case_observe, "feedback": case_feedback, "codemode_tasks": case_codemode_tasks, "convar_crash": case_convar_crash, "fixes_live": case_fixes_live, "portconflict": case_portconflict, "unseen": case_unseen_loads, "handover": case_handover, "launch_mount_first": case_launch_mount_first, "close_coordinator": case_close_coordinator, "chaos_health": case_chaos_health, "chaos_launch": case_chaos_launch, "chaos_owner": case_chaos_owner, "chaos_final": case_chaos_final, "chaos_nogame": case_chaos_nogame, "return_focus": case_return_focus, "private_desktop": case_private_desktop, "module_check": case_module_check, "chaos_memory": case_chaos_memory, "chaos_relay": case_chaos_relay, "chaos_maps": case_chaos_maps, "chaos_job": case_chaos_job, "chaos_close": case_chaos_close, "data_isolation": case_data_isolation}
+DEFAULT = ["a", "f", "m", "multi", "session", "orphans", "lua_mount", "win64_layout", "lua_mount_verify", "launch_options", "crash", "lowmem", "fp7137", "orphan", "edge", "version", "errwarn", "feedback", "codemode_tasks", "portconflict", "unseen", "handover", "launch_mount_first", "close_coordinator", "chaos_health", "chaos_launch", "chaos_owner", "chaos_final", "chaos_nogame", "return_focus", "private_desktop", "module_check", "chaos_memory", "chaos_relay", "chaos_maps", "chaos_job", "chaos_close", "data_isolation", "fuzz"]
 args = sys.argv[2:]
 if args[:1] == ["--serial"] or len(args) == 1:
     # One case at a time in this process (also what each parallel worker runs).

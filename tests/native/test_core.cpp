@@ -52,6 +52,7 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 void run_slotcheck_tests(int *pass, int *fail);
+void run_data_overlay_tests(int *pass, int *fail);
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                     \
@@ -4102,6 +4103,12 @@ int main(int argc, char **argv) {
     {
         int p = 0, f = 0;
         run_slotcheck_tests(&p, &f);  // tests/native/test_slotcheck.cpp (its own counters: check.h)
+        g_pass += p;
+        g_fail += f;
+    }
+    {
+        int p = 0, f = 0;
+        run_data_overlay_tests(&p, &f);  // Issue #20: tests/native/test_data_overlay.cpp
         g_pass += p;
         g_fail += f;
     }

@@ -250,7 +250,7 @@ Repos: [ExtReMLapin/gmod-mcp](https://github.com/ExtReMLapin/gmod-mcp) · [AmyJe
 | Performance | `perf_snapshot` |
 | Documentation | `api_search` (what really exists in each realm), `wiki_search`, `wiki_page` (wiki.facepunch.com, cached) |
 | Events | `events_wait` (long-poll: `map_loaded`, `lua_error`, `main_thread_stalled`…), `reports_read` / `reports_channels` / `reports_clear` (fed by `mcpagent.report()` from your scripts) |
-| Instances | `instances_list`; with the plugin (Windows): `instances_launch` (1 to 8 test clients), `instances_close`, `instance_select` (the session's default instance) |
+| Instances | `instances_list`; with the plugin (Windows): `instances_launch` (1 to 8 test clients), `instances_close`, `instance_select` (the session's default instance), `instances_data_changes` (what test clients changed in `data/`) |
 
 Besides tools, the server offers:
 
@@ -437,7 +437,35 @@ the foreground handed back to you). The clients of one session share their deskt
 the waits above still apply. Games started by hand are not on it: they are covered by the waits only.
 
 The clients share the game folder with your own game, including `data/` and the cookies (`sv.db`/`cl.db`): a test
-that writes there changes your game too.
+that writes there changes your game too. An addon that caches into `data/` does it in the first seconds after the map
+loads (and an addon whose cache format changed may delete the old cache there), before `commands` can switch it off:
+its convars do not exist yet. Two options keep your `data/` safe:
+
+- `data_isolation: true` gives each client a copy-on-write `data/`: reads fall back to your real folder, every write,
+  append, delete and rename of the client goes to its own folder `garrysmod/data/mcp_overlay/<token>/`, which
+  `instances_close` (or the end of the session) removes. The client sees its own changes; your files are never touched,
+  so even an addon cleanup deletes nothing real. The overlay is a Lua file that the module mounts in front of every
+  addon, so it runs before any addon code in the client and server realms (`status` shows `data_isolation`: the early
+  file mounted or not, and per realm who installed the overlay). If that mount is refused (an unrecognized game build),
+  the runtime installs the overlay when it starts in the realm, which can be after some addon code ran: `early_mount:
+  false` in the launch result says so. It wraps the file library (`file.Write`, `Append`, `Read`, `Open`, `Exists`,
+  `Find`, `IsDir`, `Size`, `Time`, `Delete`, `CreateDir`, `Rename`, `AsyncRead`, on `DATA` and on `data/` through
+  `GAME`/`MOD`). It does not cover a reference to those functions saved before it ran, writes that do not go through
+  the file library (console commands such as `condump`, the `sql`/cookie databases), renaming a folder, or sort orders
+  of `file.Find` other than by name.
+- `data_audit: true` changes nothing and records what each client creates, changes or deletes under `data/`.
+
+`instances_data_changes` lists the changes of this session's clients while they run; `instances_close` returns them
+(`closed[i].data_changes`). A client killed together with its bridge leaves its folder behind: the next launch removes
+folders nothing wrote to for three days. Isolation is off by default.
+
+`early_lua` runs your Lua in the client and server realms of each client before any addon's file, to set what an
+addon reads before its first write (an addon's convars and globals do not exist when `commands` run).
+
+Archived convars changed through `commands`, `launch_args` or `fps_max` are given back to your value from
+`cfg/config.cfg` before a clean quit, like the options the tool sets itself (the module restores those that exist and
+are archived at that moment; the list is fixed at launch, so a convar an addon creates later and that you set from
+`console_exec` is not restored). `instances_close` kills the process: nothing is written then.
 
 Before a launch the bridge compares the module in the game folder (`lua/bin`) with the one the plugin ships: an older one
 refuses the launch with `module_outdated` and the update steps (`ignore_outdated_module: true` starts anyway), and
