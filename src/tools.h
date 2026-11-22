@@ -61,6 +61,12 @@ json project_values(json result, const json &args);
 json project_keys(json result, const json &args);
 // lua_reload's lookup: every file matching an include()-style or game-relative path, in the engine's order.
 std::vector<std::string> find_game_lua(const std::string &path, std::string &err);
+// Every file a relative path fits in lua_exec_file's lookup order, the first one runs (empty for an absolute path).
+std::vector<std::string> lua_matches(const std::string &path);
+// Issue #29: {file, from_mount, other_matches?} for the file a Lua tool ran and the files the same path also fits.
+json file_provenance(const std::string &abs, const std::vector<std::string> &others);
+// Issues #25 and #32: sentences for a reload's `note` from the file's text (AddCSLuaFile; a local table with methods).
+std::vector<std::string> reload_notes(const std::string &code);
 // Mounted folder (Issue #9). Where a function's file came from: {from_mount, mount_has_file?, disk?, provenance, note?}.
 json source_provenance(int realm, const std::string &source);
 // status.lua_mount: {path, loaded_with_mount, realms_without_mount, stale_files:[{file, disk, reason, realms}], warning?}

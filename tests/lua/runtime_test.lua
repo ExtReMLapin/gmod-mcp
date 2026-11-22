@@ -722,5 +722,76 @@ do
 	gui, vgui, ScrW, ScrH, IsInLoading, IsInGame = old.gui, old.vgui, old.ScrW, old.ScrH, old.IsInLoading, old.IsInGame
 end
 
+-- Issue #29: lua_exec says how long the compile took besides the run: a 28 KB file that only defines functions runs in
+-- ~0.005 ms, which reads like an empty reload.
+r = call("lua_exec", { code = "return 1" })
+check(r.ok and type(r.result.compile_ms) == "number" and type(r.result.duration_ms) == "number", "lua_exec reports compile_ms and duration_ms")
+
+-- Issue #28: assign_to keeps the first returned value in a global of the realm (a data file outside lua/ run by lua_exec_file).
+_G.MCP_FIXTURE = nil
+r = call("lua_exec", { code = "return { a = 1, list = { 1, 2, 3 } }, 'second'", assign_to = "MCP_FIXTURE" })
+check(r.ok and type(MCP_FIXTURE) == "table" and MCP_FIXTURE.a == 1 and #MCP_FIXTURE.list == 3, "assign_to stores the returned table in the global")
+check(r.ok and r.result.assigned_to == "MCP_FIXTURE" and r.result.assigned_type == "table", "assign_to is reported with the stored type")
+r = call("lua_exec", { code = "local t = {} for i = 1, 100 do t[i] = i end return t", assign_to = "MCP_FIXTURE2" })
+check(r.ok and type(MCP_FIXTURE2) == "table" and #MCP_FIXTURE2 == 100 and r.result.truncated ~= nil and #r.result.values[1] < 100, "assign_to: the answer is a short preview, the global is whole")
+r = call("lua_exec", { code = "local t = {} for i = 1, 100 do t[i] = i end return t", assign_to = "MCP_FIXTURE2", limit = 500 })
+check(r.ok and #r.result.values[1] == 100 and r.result.truncated == nil, "assign_to: an explicit limit is honoured")
+MCP_FIXTURE = "keep"
+r = call("lua_exec", { code = "return nil", assign_to = "MCP_FIXTURE" })
+check(r.ok and MCP_FIXTURE == "keep" and r.result.assigned_to == nil and type(r.result.note) == "string" and r.result.note:find("MCP_FIXTURE", 1, true),
+	"assign_to: a chunk that returns nothing leaves the global alone and says so")
+r = call("lua_exec", { code = "return 1", assign_to = "not a name" })
+check(not r.ok and r.error.code == "invalid_params", "assign_to: only a plain global name")
+r = call("lua_exec", { code = "return 1", assign_to = "a.b" })
+check(not r.ok and r.error.code == "invalid_params", "assign_to: no dotted path")
+r = call("lua_exec", { code = "error('boom')", assign_to = "MCP_FIXTURE" })
+check(not r.ok and MCP_FIXTURE == "keep", "assign_to: a failing chunk assigns nothing")
+MCP_FIXTURE, MCP_FIXTURE2 = nil, nil
+
+-- Issue #19: include() of a file that is not under lua/ returns false without a word. A chunk run by a tool now gets a warning
+-- that names the path and the way around (lua_exec_file with an absolute path). The call itself is passed through.
+do
+	local real_include, real_file = include, file
+	local seen = {}
+	local present = { ["addon/ok.lua"] = true, ["addon/sub/sibling.lua"] = true }
+	file = { Exists = function(p, id) return id == "LUA" and present[p] == true end }
+	include = function(p, ...) seen[#seen + 1] = p return present[p] and "loaded" or false end
+	r = call("lua_exec", { code = "return include('../../../dev/addon/file.lua')" })
+	check(r.ok and r.result.values[1] == false and type(r.result.warning) == "string" and r.result.warning:find("../../../dev/addon/file.lua", 1, true)
+		and r.result.warning:find("lua_exec_file", 1, true) and r.result.warning:find("lua/", 1, true), "failed include: warning names the path and lua_exec_file")
+	check(type(r.result.include_failed) == "table" and r.result.include_failed[1] == "../../../dev/addon/file.lua", "failed include: listed in include_failed")
+	check(include ~= real_include and seen[1] == "../../../dev/addon/file.lua", "the call reached the real include with the same path")
+	r = call("lua_exec", { code = "return include('addon/ok.lua')" })
+	check(r.ok and r.result.values[1] == "loaded" and r.result.include_failed == nil and r.result.warning == nil, "include of a file under lua/: no warning")
+	r = call("lua_exec", { code = "include('nope.lua') include('nope.lua') include('other.lua') return 1" })
+	check(r.ok and #r.result.include_failed == 2, "failed include: each path once")
+	-- A file that really returns false is not a failure when it exists.
+	present["addon/false.lua"] = true
+	include = function(p) return false end
+	r = call("lua_exec", { code = "return include('addon/false.lua')" })
+	check(r.ok and r.result.include_failed == nil, "include of an existing file that returns false: no warning")
+	-- Relative to the calling file: found in the caller's folder, not a failure.
+	include = function(p) return false end
+	r = call("lua_exec", { code = "local v = include('sibling.lua') return v", chunkname = "@lua/addon/sub/main.lua" })
+	check(r.ok and r.result.include_failed == nil, "include relative to the calling file's folder: no warning")
+	r = call("lua_exec", { code = "local v = include('missing.lua') return v", chunkname = "@lua/addon/sub/main.lua" })
+	check(r.ok and r.result.include_failed ~= nil, "include relative to the calling file's folder, not found: warning")
+	-- The call passes errors and several returns through, and include is put back.
+	include = function(p) error("inside " .. p) end
+	r = call("lua_exec", { code = "return include('a.lua')" })
+	check(not r.ok and r.error.message:find("inside a.lua", 1, true), "include errors pass through")
+	include = function() return 1, 2, 3 end
+	r = call("lua_exec", { code = "return include('addon/ok.lua')" })
+	check(r.ok and r.result.n == 3, "include returns pass through")
+	local mine = include
+	call("lua_exec", { code = "return 1" })
+	check(include == mine, "include is put back after the call")
+	include = function(p) return false end
+	r = run_job({ code = "include('a/x.lua') job:frames(1) include('a/y.lua') return 1" })
+	check(r.ok and r.result.state == "done" and type(r.result.include_failed) == "table" and #r.result.include_failed == 2
+		and r.result.warning:find("lua_exec_file", 1, true), "lua_job reports failed includes of all its resumes")
+	include, file = real_include, real_file
+end
+
 print(string.format("runtime_test: %d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

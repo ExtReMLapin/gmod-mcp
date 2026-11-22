@@ -162,6 +162,85 @@ bool resolve_lua_file(const std::string &path, std::string &abs, std::string &ch
     return true;
 }
 
+// Every file a relative path fits, in the order lua_exec_file would take them (the first one runs). Empty for an absolute path.
+std::vector<std::string> lua_matches(const std::string &path_in) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    if (fs::u8path(path_in).is_absolute()) return out;
+    std::string rel = normalize(path_in);
+    while (rel.size() > 2 && rel.compare(0, 2, "./") == 0) rel.erase(0, 2);
+    while (!rel.empty() && rel.back() == '/') rel.pop_back();
+    if (!safe_rel(rel)) return out;
+    std::error_code ec;
+    for (const auto &c : lua_candidates(rel, true))
+        if (fs::is_regular_file(fs::u8path(c), ec)) out.push_back(c);
+    return out;
+}
+
+// Which file a Lua tool ran (Issue #29): the real path, whether it is the mounted folder's copy, and the other files the same
+// path fits (the one that ran is the first of the list the tool searches; the others did not run).
+json file_provenance(const std::string &abs, const std::vector<std::string> &others) {
+    json out{{"file", native_path(abs)}, {"from_mount", !lua_mount::rel_in_mount(abs).empty()}};
+    if (!others.empty()) {
+        out["other_matches"] = json::array();
+        for (const auto &o : others) out["other_matches"].push_back(native_path(o));
+    }
+    return out;
+}
+
+// What a reload cannot update, read from the text of the file (Issues #25 and #32): sentences for the answer's `note`.
+std::vector<std::string> reload_notes(const std::string &code) {
+    std::vector<std::string> notes;
+    if (code.find("AddCSLuaFile") != std::string::npos)
+        notes.push_back("this file calls AddCSLuaFile: a reload runs it in the realms asked for (the client realm too), but clients only receive "
+                        "new or changed files from the server at the next map load or reconnect. Code that include()s such a file on a client "
+                        "that did not get it fails until then (map_load, or lua_reload with realms [\"client\"] on the machine that hosts the game).");
+    // A top-level `local X = {` that also gets `function X:m()` / `function X.m()` / `X.__index`: a class. Running the file again builds
+    // a new table, and the objects made before keep the old one with its old methods.
+    std::vector<std::string> locals, owners;
+    auto ident_at = [](const std::string &l, size_t i, std::string &id) {
+        size_t j = i;
+        while (j < l.size() && (std::isalnum((unsigned char)l[j]) || l[j] == '_')) ++j;
+        id = l.substr(i, j - i);
+        return j;
+    };
+    size_t pos = 0;
+    while (pos <= code.size()) {
+        size_t eol = code.find('\n', pos);
+        if (eol == std::string::npos) eol = code.size();
+        std::string l = code.substr(pos, eol - pos);
+        pos = eol + 1;
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        std::string id;
+        if (l.compare(0, 6, "local ") == 0) {
+            size_t j = ident_at(l, 6, id);
+            while (j < l.size() && l[j] == ' ') ++j;
+            if (!id.empty() && j < l.size() && l[j] == '=' && (j + 1 >= l.size() || l[j + 1] != '=')) {
+                ++j;
+                while (j < l.size() && l[j] == ' ') ++j;
+                if (j < l.size() && l[j] == '{') locals.push_back(id);
+            }
+        } else if (l.compare(0, 9, "function ") == 0) {
+            size_t j = ident_at(l, 9, id);
+            if (!id.empty() && j < l.size() && (l[j] == ':' || l[j] == '.')) owners.push_back(id);
+        } else if (!l.empty() && (std::isalpha((unsigned char)l[0]) || l[0] == '_')) {
+            size_t j = ident_at(l, 0, id);
+            if (!id.empty() && l.compare(j, 8, ".__index") == 0) owners.push_back(id);
+        }
+    }
+    std::string names;
+    size_t count = 0;
+    for (const auto &n : locals)
+        if (std::find(owners.begin(), owners.end(), n) != owners.end() && names.find(n + ",") == std::string::npos) {
+            if (++count <= 3) names += (names.empty() ? "" : ", ") + n;
+        }
+    if (count)
+        notes.push_back("this file builds a local table with methods (" + names + (count > 3 ? ", ..." : "") +
+                        "): a reload makes a new table, and objects created before it keep the old table and its old methods "
+                        "(a method the new version added fails on them). Rebuild those objects, or map_load.");
+    return notes;
+}
+
 // `fields`: keeps only these keys of each returned table (e.g. a test's verdict out of a large result).
 json project_values(json r, const json &args) {
     if (!args.contains("fields") || !r.value("ok", false) || !r.contains("result")) return r;
@@ -290,7 +369,7 @@ static json status_tool(const json &args) {
 
 static json exec_payload(const json &args, const std::string &code, const std::string &chunk) {
     json p{{"code", code}, {"chunkname", args.value("chunkname", chunk)}};
-    for (const char *k : {"budget", "jit", "depth", "limit", "max_string"})
+    for (const char *k : {"budget", "jit", "depth", "limit", "max_string", "assign_to"})
         if (args.contains(k)) p[k] = args[k];
     return p;
 }
@@ -314,7 +393,15 @@ static json lua_exec_file_tool(const json &args) {
     std::string code;
     if (!plat::read_file(abs, code)) return agent::err("io_error", "cannot read: " + abs);
     json r = rt_realm(args, "realm", default_host_realm(), "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
-    if (r.value("ok", false)) r["result"]["file"] = abs;
+    if (r.value("ok", false)) {
+        // Issue #29: which file ran (the first match of the lookup order), and whether it is the mounted folder's copy.
+        std::vector<std::string> all = lua_matches(args["path"]);
+        std::vector<std::string> others;
+        for (size_t i = 0; i < all.size(); ++i)
+            if (native_path(all[i]) != native_path(abs)) others.push_back(all[i]);
+        json pv = file_provenance(abs, others);
+        for (auto it = pv.begin(); it != pv.end(); ++it) r["result"][it.key()] = it.value();
+    }
     return project_values(std::move(r), args);
 }
 
@@ -602,7 +689,8 @@ json plan_mount_reload(const json &st) {
 
 // Runs one file in the given realms (a reload). Files of the mounted folder are recorded as loaded from it, with the file
 // time seen BEFORE the read, so an edit during the reload is still reported afterwards.
-static json run_file_in_realms(const std::string &abs, const json &args, const std::vector<int> &rs, bool &all_ok, std::string &chunk) {
+static json run_file_in_realms(const std::string &abs, const json &args, const std::vector<int> &rs, bool &all_ok, std::string &chunk,
+                               std::vector<std::string> *notes = nullptr) {
     long long mt = lua_mount::mtime_of(abs);
     std::string code;
     if (!plat::read_file(abs, code)) {
@@ -610,6 +698,7 @@ static json run_file_in_realms(const std::string &abs, const json &args, const s
         return json{{"error", {{"code", "io_error"}, {"message", "cannot read: " + abs}}}};
     }
     chunk = chunk_for(abs);
+    if (notes) *notes = reload_notes(code);
     std::string rel = lua_mount::rel_in_mount(abs);
     json per = json::object();
     for (int r : rs) {
@@ -659,8 +748,14 @@ static json reload_mounted_changed(const json &args) {
         std::vector<int> rs;
         for (const auto &n : it["realms"]) rs.push_back(realms::parse(n.get<std::string>()));
         std::string chunk;
-        json per = run_file_in_realms(it["disk"].get<std::string>(), args, rs, all_ok, chunk);
-        reloaded.push_back({{"file", it["file"]}, {"chunkname", chunk}, {"reason", it["reason"]}, {"realms", per}});
+        std::vector<std::string> notes;
+        bool before = all_ok;
+        json per = run_file_in_realms(it["disk"].get<std::string>(), args, rs, all_ok, chunk, &notes);
+        json entry{{"file", it["file"]}, {"chunkname", chunk}, {"reason", it["reason"]}, {"realms", per}};
+        std::string joined;  // Issues #25, #32: what this reload could not update
+        for (const auto &n : notes) joined += (joined.empty() ? "" : " ") + n;
+        if (!joined.empty() && before == all_ok) entry["note"] = joined;
+        reloaded.push_back(std::move(entry));
     }
     return mounted_reload_result(st, plan, reloaded, all_ok);
 }
@@ -692,11 +787,17 @@ static json lua_reload_tool(const json &args) {
     }
     bool all_ok = true;
     json per = run_file_in_realms(abs, args, rs, all_ok, chunk);
-    json out{{"ok", all_ok}, {"file", native_path(abs)}, {"chunkname", chunk}, {"realms", per}};
-    if (found.size() > 1) {
-        out["other_matches"] = json::array();
-        for (size_t i = 1; i < found.size(); ++i) out["other_matches"].push_back(found[i]);
-        out["warning"] = "several files match this path: the first one was run (pass a longer or absolute path to pick another)";
+    json out{{"ok", all_ok}, {"chunkname", chunk}, {"realms", per}};
+    json pv = file_provenance(abs, std::vector<std::string>(found.begin() + 1, found.end()));  // Issue #29: file, from_mount, other_matches
+    for (auto it = pv.begin(); it != pv.end(); ++it) out[it.key()] = it.value();
+    if (found.size() > 1)
+        out["warning"] = std::string("several files match this path: the first one was run") +
+                         (pv.value("from_mount", false) ? " (the mounted folder's copy, which wins over the installed one)" : "") +
+                         "; the others in other_matches did not run (pass a longer or absolute path to pick another)";
+    if (all_ok) {  // Issues #25, #32: what this reload could not update, from the text of the file
+        std::string notes;
+        for (const auto &n : reload_notes(probe)) notes += (notes.empty() ? "" : " ") + n;
+        if (!notes.empty()) out["note"] = notes;
     }
     return ok(out);
 }
@@ -922,6 +1023,10 @@ void register_core() {
                         "duration_ms, chunk_bytes, chunkname, generation}. "
                         "Errors: lua_syntax_error, lua_error (with traceback), budget_exceeded, main_thread_timeout, "
                         "result_too_large, realm_unavailable, client_locked. "
+                        "compile_ms is the time to compile the code, duration_ms the time to run it (a file that only defines functions runs in a "
+                        "few microseconds: that is not an empty run). "
+                        "include() only resolves paths under lua/ (and returns false, silently, for any other file): when it does, the result has "
+                        "include_failed and a warning; lua_exec_file with an absolute path loads a file from anywhere. "
                         "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
                         "Some convars cannot be set from Lua (RunConsoleCommand is refused for protected ones, e.g. "
                         "volume_sfx, fps_max, silently): when the code calls RunConsoleCommand with such a command the result lists it "
@@ -935,6 +1040,11 @@ void register_core() {
                          {"description", "Absolute path on the game's disk (e.g. a file in your git worktree), or relative: looked up in "
                                          "lua/mcpagent_tmp/, then the mounted Lua folder if any (lua_mount), then the game folder ('addons/x/lua/y.lua'), then lua/, gamemodes/ and "
                                          "addons/*/lua/ (include() style)."}};
+    exec_file["assign_to"] = {{"type", "string"}, {"pattern", "^[A-Za-z_][A-Za-z0-9_]*$"},
+                              {"description", "Name of a global of the realm that receives the FIRST value the file returns (e.g. \"FIXTURES\"), so a "
+                                              "data file (`return { ... }`) can be loaded once and used by later calls. The answer then shows only a preview "
+                                              "(depth 2, 20 entries; pass depth / limit for more); the global holds the whole value. Nothing is "
+                                              "assigned if the file returns nothing or fails."}};
     mcp::register_tool({"lua_exec_file", "Execute a Lua file",
                         "Like lua_exec but reads the code from a file on the game's disk (with a mounted Lua folder, see "
                         "lua_mount, a relative path finds its files first, like the engine). The chunk is named after the real path "
@@ -942,7 +1052,15 @@ void register_core() {
                         "addon-relative name of a file from your git worktree). Prefer it to pasting a file into lua_exec's "
                         "code: it saves the tokens of the file on every call. With `fields`, only the test's verdict comes back. "
                         "Example: {\"realm\": \"server\", \"path\": \"tests/check_doors.lua\", \"fields\": [\"pass\", \"fails\"]} "
-                        "(relative: lua/mcpagent_tmp/tests/check_doors.lua first).",
+                        "(relative: lua/mcpagent_tmp/tests/check_doors.lua first). "
+                        "Which file ran: the result has file (the real path), from_mount (true: the lua_mount folder's copy) and other_matches (other files "
+                        "the same relative path fits: they did NOT run; the first match wins: lua/mcpagent_tmp/, then the mounted folder, then the game "
+                        "folder, then lua/, gamemodes/, addons/*/lua/). "
+                        "A data file outside lua/ (fixtures under tests/ of a worktree, which file.Read(..., \"LUA\") cannot reach even when the worktree "
+                        "is mounted): give its absolute path and assign_to, e.g. {\"path\": \"D:/dev/my-addon-wt/tests/fixtures/walls.lua\", "
+                        "\"assign_to\": \"WALLS\"}; the file ends with `return { ... }` and later calls read WALLS. compile_ms / duration_ms say how long "
+                        "compiling and running took. include() of a file outside lua/ returns false silently (see include_failed in the result): this "
+                        "tool with an absolute path is the way to load it.",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
 
     json reload_props = exec_props;
@@ -965,10 +1083,21 @@ void register_core() {
                         "(checked live); a client connected to a separate server (e.g. a local srcds) only has the copies that "
                         "server sent, so there lua_reload is the way to run an edit on the client. Looks under "
                         "the mounted Lua folder if any (lua_mount), then lua/, gamemodes/, addons/*/lua|gamemodes/: the engine's order, "
-                        "so the copy the game would load (other matches are listed). Errors name the real file. "
+                        "so the copy the game would load. Which file ran: file (the real path), from_mount (true: the lua_mount folder's copy) and, "
+                        "when several files match, other_matches (they did NOT run) with a warning: the first match wins, and the mounted "
+                        "folder is searched before the installed addons. Errors name the real file. "
                         "Running a file again redefines its functions and hooks; what it built at load time (entities, timers, "
-                        "net strings) is not reset. Returns {ok, file, chunkname, realms: {<realm>: lua_exec result or {error}}, "
-                        "other_matches?}. Example: {\"path\": \"my_addon/sh_core.lua\"} (shared file: runs in server then client). "
+                        "net strings) is not reset. Pitfalls: a file that does `MyAddon.Config = {...}` resets that state to the file's "
+                        "values on every reload; a file that builds a `local Class = {}` with methods makes a new table, so objects created "
+                        "before the reload keep the old table and its old methods (rebuild them, or map_load: the result's note says so when it "
+                        "sees one); clients receive new or changed files only at the next map load or reconnect, even if the file calls "
+                        "AddCSLuaFile (the note says so too; lua_reload runs the file in the client realm itself, but code on the client that "
+                        "include()s a file it never received fails until then). Dependent files are reloaded in dependency order by hand. "
+                        "In each realm's result, compile_ms is the time to compile the file and duration_ms the time to run its top level "
+                        "(a file that only defines functions runs in microseconds: that is not an empty reload). "
+                        "Several agents on one game: `mounted_changed` also reloads files another agent is editing; to reload only your own "
+                        "files, call this tool once per file with `path` (there is no list mode). Returns {ok, file, from_mount, chunkname, "
+                        "realms: {<realm>: lua_exec result or {error}}, other_matches?, note?, warning?}. Example: {\"path\": \"my_addon/sh_core.lua\"} (shared file: runs in server then client). "
                         "With a mounted folder (lua_mount) there is no autorefresh: `mounted_changed: true` (instead of `path`) runs again every "
                         "file of that folder whose time differs from what each realm loaded (modified, added; the list is status.lua_mount.stale_files), "
                         "in alphabetical order and in the realms each file belongs to, and returns {ok, mode, path, reloaded: [{file, chunkname, "

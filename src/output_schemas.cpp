@@ -108,12 +108,13 @@ json build(const std::string &tool) {
         // --- Lua execution
         json exec = obj({{"values", ANYS}, {"n", N}, {"output", S}, {"duration_ms", N}, {"chunk_bytes", N}, {"chunkname", S},
                          {"budget_s", N}, {"generation", N}, {"truncated", N}, {"projected", STRS}, {"fields_note", S}, {"file", S},
-                         {"blocked_console_commands", STRS}},
+                         {"blocked_console_commands", STRS}, {"compile_ms", N}, {"include_failed", STRS}, {"assigned_to", S},
+                         {"assigned_type", S}, {"from_mount", B}, {"other_matches", STRS}},
                         {"values", "n"});
         s["lua_exec"] = exec;
         s["lua_exec_file"] = exec;
         // Two shapes: {path} runs one file; {mounted_changed} (issue #9) runs the changed files of the mounted folder.
-        s["lua_reload"] = obj({{"ok", B}, {"file", S}, {"chunkname", S}, {"realms", Obj}, {"other_matches", STRS},
+        s["lua_reload"] = obj({{"ok", B}, {"file", S}, {"chunkname", S}, {"realms", Obj}, {"other_matches", STRS}, {"from_mount", B},
                                {"mode", S}, {"path", S}, {"reloaded", ANYS}, {"skipped", ANYS}, {"realms_without_mount", ANYS}},
                               {"ok"});
         s["lua_check"] = obj({{"ok", B}, {"realm", S}, {"checked", N}, {"errors", ANYS}, {"unknown_globals", ANYS},
@@ -142,11 +143,11 @@ json build(const std::string &tool) {
         // --- jobs
         s["lua_job"] = obj({{"job_id", S}, {"state", S}, {"realm", S}, {"generation", N}, {"concurrent_jobs", ANYS}, {"values", ANYS},
                             {"n", N}, {"reports", ANYS}, {"output", S}, {"frames", N}, {"resumes", N}, {"cpu_ms", N}, {"elapsed_s", N},
-                            {"truncated", N}, {"reports_dropped", N}, {"reports_truncated", N}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}},
+                            {"truncated", N}, {"reports_dropped", N}, {"reports_truncated", N}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}, {"include_failed", STRS}},
                            {"job_id"});
         s["lua_job_status"] = obj({{"job_id", S}, {"state", S}, {"frames", N}, {"elapsed_s", N}, {"jobs", ANYS}, {"generation", N},
                                    {"values", ANYS}, {"n", N}, {"reports", ANYS}, {"output", S}, {"resumes", N}, {"cpu_ms", N},
-                                   {"truncated", N}, {"reports_count", N}, {"progress", ANY}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}});
+                                   {"truncated", N}, {"reports_count", N}, {"progress", ANY}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}, {"include_failed", STRS}});
         s["lua_job_cancel"] = obj({{"job_id", S}, {"cancelled", B}}, {"job_id", "cancelled"});
         // --- session
         s["map_list"] = obj({{"maps", STRS}, {"count", N}, {"truncated", B}, {"filter", S}}, {"maps", "count", "truncated"});

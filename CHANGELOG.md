@@ -11,6 +11,19 @@
 
 ### Fixes
 
+- **`lua_reload` and `lua_exec_file` say which file ran** (Issue #29): `file` (the real path), `from_mount` (the `lua_mount`
+  folder's copy) and `other_matches` (files the same path also fits, which did not run). The descriptions say which copy wins.
+  `lua_exec` results also carry `compile_ms`: `duration_ms` is only the run of the top level, about 0.005 ms for a file that
+  only defines functions, which read like an empty reload.
+- **`lua_reload` says what a reload cannot update.** A `note` for a file that calls `AddCSLuaFile` (clients receive new files at the
+  next map load or reconnect, Issue #25) and for a file that builds a `local Class = {}` with methods (objects made before keep the
+  old table, Issue #32). The description also says that `X.Config = {...}` is reset, and that `mounted_changed` reloads files other
+  agents may be editing (reload only yours with `path`, once per file).
+- **`lua_exec_file {path, assign_to}`** (Issue #28) keeps the file's return value in a global of the realm, so a data file outside
+  `lua/` (fixtures under `tests/` of a mounted worktree) can be loaded once and used by later calls. The answer shows a preview.
+- **A failed `include()` is no longer silent** (Issue #19): during `lua_exec`, `lua_exec_file` and `lua_job`, an `include` that returns
+  false for a file that is not found gets `include_failed` and a warning (include only resolves paths under `lua/`; use
+  `lua_exec_file` with an absolute path).
 - **Tool annotations match what the tools do.** `lua_job_status` no longer reads as destructive (it only forgets the job whose
   result it hands over). `wait_for`, `lua_inspect` and `lua_function_source` run caller-supplied Lua, so they are no longer
   read-only (destructive, like `lua_exec`). `lua_file_write`, `ui_click` and `ui_key` are marked destructive (overwrite a file;

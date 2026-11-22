@@ -7,24 +7,43 @@ function H.lua_exec(args)
 	local code = args.code
 	if type(code) ~= "string" then A.fail("invalid_params", "code: expected a string") end
 	local chunk = args.chunkname or ("=mcpagent:" .. A.realm)
+	-- Issue #28: assign_to keeps the first returned value in a global of this realm (lua_exec_file of a data file).
+	local assign = args.assign_to
+	if assign ~= nil and (type(assign) ~= "string" or not string.find(assign, "^[%a_][%w_]*$")) then
+		A.fail("invalid_params", "assign_to: a plain global name (letters, digits, underscore), not a path or an expression")
+	end
+	local tc = SysTime()
 	local fn, cerr = A.compile(code, chunk)
+	local compile_ms = (SysTime() - tc) * 1000
 	if not fn then A.fail("lua_syntax_error", tostring(cerr), { chunkname = chunk, line = (A.compile_error_line(cerr)) }) end
 	local opts = { depth = args.depth, limit = args.limit, maxstr = args.max_string }
+	if assign then opts.depth, opts.limit = opts.depth or 2, opts.limit or 20 end  -- the global holds it whole: the answer is a preview
 	-- No budget unless asked (jit: true, the old way to turn it off, wins).
 	local budget = args.jit ~= true and tonumber(args.budget) or nil
 	A.capture_begin()
 	local t0 = SysTime()
 	local ok, res, err, tb, exceeded = A.run_budget(fn, budget)
 	local dt = (SysTime() - t0) * 1000
-	local output, blocked = A.capture_end()
+	local output, blocked, failed_includes = A.capture_end()
 	if not ok then
 		if A.is_fail(err) then A.fail(err.code, err.message, err.details) end
 		A.fail(exceeded and "budget_exceeded" or "lua_error", tostring(err),
 			{ traceback = tb, output = output, duration_ms = dt })
 	end
-	local out = A.serialize_values(res, opts, { output = output, duration_ms = dt, chunk_bytes = #code, chunkname = chunk,
-		budget_s = budget, generation = A.generation })
-	out.blocked_console_commands, out.warning = A.blocked_fields(blocked)
+	local out = A.serialize_values(res, opts, { output = output, duration_ms = dt, compile_ms = compile_ms, chunk_bytes = #code,
+		chunkname = chunk, budget_s = budget, generation = A.generation })
+	A.apply_capture_fields(out, blocked, failed_includes)
+	if assign then
+		if res.n >= 1 and res[1] ~= nil then
+			_G[assign] = res[1]
+			out.assigned_to, out.assigned_type = assign, type(res[1])
+			if out.truncated then
+				out.truncated_note = "preview only: " .. assign .. " holds the whole value; pass depth / limit to see more of it here."
+			end
+		else
+			out.note = "the chunk returned nothing, so " .. assign .. " was left as it was: end the file with `return <value>`."
+		end
+	end
 	return out
 end
 

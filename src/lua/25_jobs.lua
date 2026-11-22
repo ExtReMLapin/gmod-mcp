@@ -80,7 +80,7 @@ function H.job_start(args)
 		-- No resume limit unless asked: a resume that never yields freezes the game (the caller notices).
 		limit = args.jit ~= true and tonumber(args.resume_limit_s) or nil,
 		depth = tonumber(args.depth), items = tonumber(args.limit), maxstr = tonumber(args.max_string),
-		started = SysTime(), _frames = 0, _resumes = 0, _cpu = 0, _blocked = {}, _blocked_seen = {},
+		started = SysTime(), _frames = 0, _resumes = 0, _cpu = 0, _blocked = {}, _blocked_seen = {}, _inc_failed = {}, _inc_seen = {},
 		wake_t = 0, wake_frame = 0, state = "running",
 		_reports = {}, _reports_dropped = 0, _reports_truncated = 0, _reports_bytes = 0, _output = {}, _output_size = 0,
 	}, Job)
@@ -125,8 +125,11 @@ local function resume(job)
 	job._resume_t0 = t0
 	A.capture_begin()
 	local res = pack(coroutine.resume(job.co))
-	local out, blocked = A.capture_end()
+	local out, blocked, failed_includes = A.capture_end()
 	add_output(job, out)
+	for _, p in ipairs(failed_includes or {}) do  -- issue #19: include() calls that failed, over all the resumes
+		if not job._inc_seen[p] then job._inc_seen[p] = true job._inc_failed[#job._inc_failed + 1] = p end
+	end
 	for _, c in ipairs(blocked or {}) do  -- issue #11: commands the engine blocked from Lua, over all the resumes
 		if not job._blocked_seen[c] then job._blocked_seen[c] = true job._blocked[#job._blocked + 1] = c end
 	end
@@ -192,7 +195,7 @@ function H.job_poll(args)
 		out.output = table.concat(job._output)
 		if job.state == "done" then
 			out.values, out.n, out.truncated, out.truncated_note = job.values, job.n, job.truncated, job.truncated_note
-			out.blocked_console_commands, out.warning = A.blocked_fields(job._blocked)
+			A.apply_capture_fields(out, job._blocked, job._inc_failed)
 		end
 		if job.state == "failed" then out.error, out.traceback = job.error, job.traceback end
 		jobs[args.id] = nil
