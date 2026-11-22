@@ -471,6 +471,35 @@ a JPEG at the game's screen size (the space ui_click coordinates are read on) an
 jpeg_quality, left alone): `format`, `w`, `h` and `quality` are not applied and are listed in `ignored`. No `Wrote` line within
 4 s gives `capture_timeout` (game minimized or frozen); a file that cannot be taken gives `capture_failed` and is left in place.
 
+## Small pitfalls
+- **Map load and InitPostEntity.** `InitPostEntity` and `Initialize` have already run when `map_load` returns. A hook added with
+  `lua_exec` after it never fires (measured: 0 calls in 21 s), and one added before it is destroyed with the old realm (the
+  `generation` changes). To test code that reacts to them: put it in a file the game loads at map load (an addon `autorun` file,
+  or a `lua_mount` folder, see "Mounted Lua folder") and call `map_load`: it fires once per load, client and server, before
+  `map_load` returns. Or call your init function by hand after `map_load`.
+- **Archived convars.** `convar_get` returns `archived` (will changing it be saved into `cfg/config.cfg`, shared with the user's
+  game and every instance) and `flags`. Do not rely on `ConVar:IsFlagSet(FCVAR_ARCHIVE)` from Lua: it can answer false for a
+  convar that is archived (`CreateClientConVar(name, def, true)`: its flags have no 128 bit although `config.cfg` lists it).
+  `archived_from` says what told (`flags`, or `config.cfg` on test clients, which can read that file; `in_config_cfg`). A convar
+  created this session and not saved yet shows `archived: false`.
+- **`net.Start` with a string that was not pooled raises an error** (it does not return false): `util.AddNetworkString` was not run
+  on a server that was not reloaded. A client sending to an old server needs a `pcall`.
+- **Testing with a second player.** Singleplayer has one player. With one game: `map_load {maxplayers: 4}` then `bots_add`: bots
+  are real players on the server (a networked variable read on a remote player works), but they are not clients: nothing joins, nothing loads on their side. For a real second client
+  (a join in progress, a message sent while another client loads): start a dedicated server with the module yourself (README,
+  "Dedicated server"; it shows in `instances_list` as `mode: srcds`), start a client with `instances_launch`, then
+  `console_exec {instance: "<client id>", cmd: "connect 127.0.0.1:<server game port>"}` (a loopback address is the only one
+  accepted) and wait with `wait_for` until the client's realms exist.
+- **Line endings when you write files on Windows.** Python's `open(path, "w")` turns `
+` into CRLF; in a repository that uses
+  LF, write with `open(path, "w", newline="")` (or `"wb"`), and check `git diff --stat` for a whole file changed. The module's
+  own file writers (`lua_file_write`, the temporary files) write exactly the bytes you send.
+- **Every call to another instance goes through the coordinator.** The coordinator is the game that holds the base port, often
+  the user's own game (`relayed_by` in the result says which). It carries the traffic of every other instance: its network
+  thread forwards each call and the answer (a screenshot or a big result passes through it), a thread per call in flight. No Lua
+  runs on its main thread for a relayed call (the target game runs it), so the load is the network thread, not the frame. The
+  cost was not measured. If the coordinator game closes, calls answer `coordinator_changing` until another game takes the role.
+
 ## Limits
 - No connection to remote servers; the client realm is refused outside singleplayer/listen/srcds loopback.
 - The only outgoing network access is GET to wiki.facepunch.com (wiki_*).
