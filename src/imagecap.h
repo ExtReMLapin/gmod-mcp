@@ -40,7 +40,7 @@ std::vector<Step> ladder(const std::string &format, int quality);
 // One capture: the tool's result {ok, result, image:{data (base64), mimeType}} or an error {ok:false, error}.
 using Attempt = std::function<json(const Step &)>;
 // Runs the ladder until an image fits. An error from an attempt is returned as it is. The image of the result that fits is
-// returned with result.size_capped = true and result.requested_format / requested_quality when it is not what was asked for.
+// returned with result.size_capped = true, result.requested_format and (for a JPEG) result.quality when it is not what was asked for.
 // When nothing fits: {ok:false, error:{code:"result_too_large"}} with no image.
 json capture_capped(const std::string &format, int quality, const Attempt &attempt);
 
@@ -64,7 +64,7 @@ double clamp_scale(int w, int h, double factor, long long max_pixels);
 
 // The enlargement step of `screenshot {scale}`: `out` is a capture result {ok, result, image} whose image is a PNG. The picture is
 // decoded, enlarged by `factor` (lowered when the result would pass kMaxScaledPixels, then result.scale_requested says so) and
-// encoded again as a PNG; result.w/h/bytes/format describe the new picture and result.scaled_from the old size. An error
+// encoded again as a PNG (a factor that ends at 1 keeps the capture's own PNG); result.w/h/bytes/format describe the new picture and result.scaled_from the old size. An error
 // result (or a picture that still cannot fit) is returned as an error with no image.
 json apply_scale(json out, double factor, bool smooth);
 

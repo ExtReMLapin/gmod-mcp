@@ -37,7 +37,7 @@ json too_large_error(size_t base64_bytes) {
     std::snprintf(cap, sizeof cap, "%.0f", (double)kMaxBase64 / (1024.0 * 1024.0));
     std::string msg = std::string("the image is ") + mb + " MB once encoded, over the " + cap +
                       " MB limit for one image (an MCP client drops the whole connection above 16 MB per message), so it was not sent. Ask for "
-                      "less: a crop {x, y, w, h}, a smaller w/h, or format jpeg with a lower quality";
+                      "less: a crop {x, y, w, h}, a smaller w/h, a lower scale, or format jpeg with a lower quality (a scaled picture is always a PNG, so drop scale for that)";
     return json{{"ok", false}, {"error", {{"code", "result_too_large"}, {"message", msg}}}};
 }
 
@@ -653,15 +653,27 @@ json apply_scale(json out, double factor, bool smooth) {
     if (out["image"].value("mimeType", "") != "image/png") return fail("scale needs the capture as a PNG");
     Rgb src;
     std::string err;
-    if (!decode_png(util::base64_decode(out["image"].value("data", "")), src, err)) return fail("could not read the captured PNG to enlarge it: " + err);
+    std::string original = util::base64_decode(out["image"].value("data", ""));
+    if (!decode_png(original, src, err)) return fail("could not read the captured PNG to enlarge it: " + err);
     double used = clamp_scale(src.w, src.h, factor, kMaxScaledPixels);
-    Rgb big = scale(src, used, smooth);
-    std::string png = encode_png(big);
+    // Nothing to enlarge (the factor is 1, or the picture already passes the pixel budget): keep the engine's own PNG, usually
+    // smaller than ours, instead of encoding the same pixels again.
+    const bool same = used <= 1.0;
+    std::string png;
+    int out_w = src.w, out_h = src.h;
+    if (same) {
+        png = std::move(original);
+    } else {
+        Rgb big = scale(src, used, smooth);
+        png = encode_png(big);
+        out_w = big.w;
+        out_h = big.h;
+    }
     if (!fits(png.size())) return too_large_error(png.size() / 3 * 4);
     json &r = out["result"];
     r["scaled_from"] = json{{"w", src.w}, {"h", src.h}};
-    r["w"] = big.w;
-    r["h"] = big.h;
+    r["w"] = out_w;
+    r["h"] = out_h;
     r["format"] = "png";
     r["bytes"] = png.size();
     r["scale"] = used;

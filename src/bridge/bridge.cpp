@@ -84,7 +84,9 @@ std::mutex g_out_mu;
 const size_t kMaxMessageBytes = 12u << 20;
 void log(const std::string &s);
 json too_big_replacement(const json &m, size_t size) {
-    std::string why = "the answer is " + std::to_string(size >> 20) + " MB, over the " + std::to_string(kMaxMessageBytes >> 20) +
+    char mb[32];
+    std::snprintf(mb, sizeof mb, "%.1f", (double)size / (1024.0 * 1024.0));  // one decimal: "12 MB over 12 MB" told nothing
+    std::string why = std::string("the answer is ") + mb + " MB, over the " + std::to_string(kMaxMessageBytes >> 20) +
                       " MB one message may have (an MCP client drops the whole connection above 16 MB): ask for less, e.g. a smaller region, "
                       "fewer fields or a lower limit";
     if (!m.is_object() || !m.contains("id") || !(m.contains("result") || m.contains("error"))) return nullptr;
