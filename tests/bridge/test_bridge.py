@@ -356,6 +356,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
             return self.reply_json(res(r))
         if name in ("echo", "status_like") and srv.err_meta is not None:  # Issue #15: the module's _meta on every answer
             sc = {"args": args}
+            if "own_warnings" in args: sc["warnings"] = args["own_warnings"]  # a tool that has warnings of its own (instances_list...)
             r = {"content": [{"type": "text", "text": json.dumps(sc, separators=(",", ":"))}], "structuredContent": sc,
                  "_meta": {"gmod-mcp/lua_errors": dict(srv.err_meta), "other": 1}}
             return self.reply_json(res(r))
@@ -2574,6 +2575,16 @@ def case_errwarn():
     with fake.lock: calls = list(fake.errors_calls)
     check("ERRWARN a first contact with a flooded game warns, asking for the burst only (cursor - recent)",
           sc.get("warnings") and len(calls) == 1 and calls[0].get("cursor") == 4960 and calls[0].get("instance") == "g2", (sc, calls))
+    # A tool that already has warnings keeps them: ours go after, and the text block holds the key once.
+    fake.err_meta = {"instance": "g3", "cursor": 300, "recent": 300}
+    r = b.req("tools/call", {"name": "echo", "arguments": {"own_warnings": [{"code": "lua_errors_lost"}]}})
+    res = (r or {}).get("result", {})
+    sc = res.get("structuredContent", {})
+    w = sc.get("warnings") or []
+    texts = [c.get("text", "") for c in res.get("content", []) if c.get("type") == "text"]
+    check("ERRWARN the tool's own warnings are kept, ours appended after them, one warnings key in the text",
+          len(w) >= 2 and w[0] == {"code": "lua_errors_lost"} and w[1].get("code") == "lua_error_spam" and
+          len(texts) == 1 and texts[0].count('"warnings"') == 1 and json_equal(texts[0], sc), res)
     # An answer that is an error is served too: an error result carries warnings like the rest.
     fake.stop(); b.close()
     # With a version mismatch both fields are there, the version warning stays first.

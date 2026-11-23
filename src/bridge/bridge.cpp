@@ -721,7 +721,9 @@ bool put_top_field(json &result, const std::string &key, const json &value) {
         for (json &c : result["content"]) {
             if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
             if (json::parse(c["text"].get<std::string>(), nullptr, false) == sc) {
-                std::string body = sc.dump(-1, ' ', false, json::error_handler_t::replace);
+                json rest = sc;
+                rest.erase(key);  // a key already there is replaced, not written twice
+                std::string body = rest.dump(-1, ' ', false, json::error_handler_t::replace);
                 c["text"] = "{" + json(key).dump() + ":" + v + (body.size() > 2 ? "," + body.substr(1) : "}");
             }
             break;  // only the first text block can be the JSON
@@ -733,6 +735,7 @@ bool put_top_field(json &result, const std::string &key, const json &value) {
         if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
         json body = json::parse(c["text"].get<std::string>(), nullptr, false);
         if (body.is_object()) {
+            body.erase(key);
             std::string text = body.dump(-1, ' ', false, json::error_handler_t::replace);
             c["text"] = "{" + json(key).dump() + ":" + v + (text.size() > 2 ? "," + text.substr(1) : "}");
             return true;
@@ -788,6 +791,24 @@ void add_lua_error_warnings(json &result, const std::string &tool) {
                 "errors_since {group_by: \"message\"} lists what repeats.";
         w["text"] = text;
         warnings.push_back(std::move(w));
+    }
+    // The tool's own warnings (instances_list, lua_exec...) stay: ours go after them.
+    json earlier;
+    if (result.contains("structuredContent") && result["structuredContent"].is_object()) {
+        earlier = result["structuredContent"].value("warnings", json());
+    } else if (result.contains("content") && result["content"].is_array()) {
+        for (const json &c : result["content"]) {
+            if (!c.is_object() || c.value("type", "") != "text" || !c.contains("text") || !c["text"].is_string()) continue;
+            json body = json::parse(c["text"].get<std::string>(), nullptr, false);
+            if (body.is_object()) earlier = body.value("warnings", json());
+            break;
+        }
+    }
+    if (earlier.is_array()) {
+        for (auto &w : warnings) earlier.push_back(std::move(w));
+        warnings = std::move(earlier);
+    } else if (!earlier.is_null()) {
+        warnings.insert(warnings.begin(), earlier);
     }
     put_top_field(result, "warnings", warnings);
 }
