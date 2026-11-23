@@ -391,8 +391,16 @@ static int native_call_realm(lua_State *L) {
         }
         args["code"] = lua::tostring(L, 2);
         args["chunkname"] = std::string("=mcpagent:call:") + realms::name(to);
+        // An exception must not cross the Lua C boundary, and the level must be given back: a counter stuck above 0 would
+        // refuse every later call as nested.
         ++depth;
-        out = call_runtime(to, "lua_exec", args);
+        try {
+            out = call_runtime(to, "lua_exec", args);
+        } catch (const std::exception &ex) {
+            out = err("internal", std::string("cross-realm call failed: ") + ex.what());
+        } catch (...) {
+            out = err("internal", "cross-realm call failed");
+        }
         --depth;
     }
     std::string s = out.dump(-1, ' ', false, json::error_handler_t::replace);

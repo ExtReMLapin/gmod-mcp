@@ -241,6 +241,22 @@ do
 		{ { ok = false, error = { code = "lua_error", message = "boom", details = { traceback = "tb" } } } })
 	check(r.ok and r.result.state == "failed" and r.result.error.code == "lua_error" and r.result.error.message:find("boom", 1, true),
 		"Issue #30: an uncaught remote error fails the job with its code")
+	-- (review, unverified) What the chunk printed before it failed comes back in the error's details: it reaches the job's output.
+	r = run("job:call('client', 'print(1) error(1)') return 1",
+		{ { ok = false, error = { code = "lua_error", message = "boom", details = { output = "seen before the error" } } } })
+	check(r.ok and r.result.state == "failed" and (r.result.output or ""):find("[client] seen before the error", 1, true),
+		"job:call keeps the output printed before a remote error")
+	-- (review, unverified) Vector / Angle / numbers JSON cannot hold are given back as what they were; the blocked commands and
+	-- failed include() calls the other realm noted join the job's own result.
+	r = run("local v, nan, inf, t = job:call('client', 'x') return v.x, v.__type == nil, nan ~= nan, inf == math.huge, t.list[1].y",
+		{ { ok = true, result = { n = 4, output = "", values = J.array({
+			{ __type = "Vector", x = 1, y = 2, z = 3 }, { __type = "number", value = "nan" }, { __type = "number", value = "inf" },
+			{ list = J.array({ { __type = "Vector", x = 4, y = 5, z = 6 } }) } }),
+			blocked_console_commands = J.array({ "quit" }), include_failed = J.array({ "x/y.lua" }) } } })
+	check(r.ok and r.result.state == "done" and r.result.values[1] == 1 and r.result.values[2] == true and r.result.values[3] == true
+		and r.result.values[4] == true and r.result.values[5] == 5, "job:call gives Vector, nan and inf back as values")
+	check(r.ok and r.result.blocked_console_commands and r.result.blocked_console_commands[1] == "quit"
+		and r.result.include_failed and r.result.include_failed[1] == "x/y.lua", "job:call keeps what the other realm noted (blocked commands, include_failed)")
 	-- Bad calls never reach the module.
 	r = run("job:call('server', 'return 1')")
 	check(r.ok and r.result.state == "failed" and r.result.error.code == "invalid_params" and #calls == 0, "Issue #30: job:call to its own realm refused")
