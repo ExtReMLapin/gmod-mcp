@@ -1043,6 +1043,29 @@ do
 	fire("T3", "same")
 	check(table_.T3.same == nil, "guard: removed after hook_guard identical errors in a row")
 
+	-- Messages that differ only by a hexadecimal address ("table: 0x...") are the same error: the streak counts them.
+	r = call("lua_exec", { code = "hook.Add('T8', 'addr', function() error('bad ' .. tostring({})) end)", hook_guard = 4 })
+	local n_noted = #noted
+	for i = 1, 3 do fire("T8", "addr") end
+	check(table_.T8.addr ~= nil and #noted == n_noted + 1, "guard: an error with a new address each time is noted once")
+	fire("T8", "addr")
+	check(table_.T8.addr == nil, "guard: removed after hook_guard errors that differ only by an address")
+
+	-- A guarded hook that runs another guarded hook: the inner one is named, noted and removed; the outer is not judged for it.
+	NEST_T = table_
+	r = call("lua_exec", { code = "hook.Add('T9', 'inner', function() error('inner failed') end) hook.Add('T9', 'outer', function() NEST_T.T9.inner() end)", hook_guard = 3 })
+	n_noted = #noted
+	for i = 1, 3 do fire("T9", "outer") end
+	check(#noted == n_noted + 1 and noted[n_noted + 1][2] == "inner", "guard: the error of a nested guarded hook is noted for the inner hook only")
+	check(table_.T9.inner == nil and table_.T9.outer ~= nil, "guard: the inner hook is removed, the outer one is left alone")
+	NEST_T = nil
+
+	-- hook_list shows where the hook's own function was defined, not the guard's wrapper.
+	r = call("lua_exec", { code = "\n\nhook.Add('T10', 'where', function() end)" })
+	r = call("hook_list", { event = "T10" })
+	local h10 = r.ok and r.result.hooks.T10 and r.result.hooks.T10[1]
+	check(h10 and h10.line == 3 and not tostring(h10.source):find("10_core", 1, true), "guard: hook_list names the hook's own source line, not the wrapper's")
+
 	-- hook_guard 0 turns it off: the hook added is the very function the chunk passed.
 	r = call("lua_exec", { code = "G_F = function() error('x') end hook.Add('T4', 'raw', G_F)", hook_guard = 0 })
 	check(table_.T4.raw == G_F, "guard: hook_guard 0 adds the hook unchanged")

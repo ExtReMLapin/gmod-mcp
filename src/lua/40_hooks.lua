@@ -4,6 +4,7 @@ local J = A.json
 local H = A.handlers
 
 local function fn_src(f)
+	if A.guard_origin then f = A.guard_origin(f) end  -- a hook added by a tool chunk is wrapped by the hook guard
 	if type(f) ~= "function" then return { type = type(f) } end
 	local i = debug.getinfo(f, "S")
 	return { source = i and i.short_src, line = i and i.linedefined, what = i and i.what }
