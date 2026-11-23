@@ -358,15 +358,25 @@ local function guard_handler(e)
 	return e
 end
 
--- The traceback text as [{file, line, function}], from the error point up to the guard's own frames (not included).
+-- The traceback text as [{file, line, function}], from the error point up to the guard's own frames (not included). The second
+-- value is true when the error point is itself another guard wrapper's rethrow (a guarded hook that runs a guarded hook): the
+-- inner wrapper has already named the hook and kept the stack, and the outer one only passes the error on.
 local function guard_frames(tb)
 	local frames = {}
 	for line in string.gmatch(tb or "", "[^\n]+") do
-		if string.find(line, "in function 'xpcall'", 1, true) or string.find(line, "10_core.lua", 1, true) then break end
+		local at_xpcall = string.find(line, "in function 'xpcall'", 1, true)
+		if at_xpcall or string.find(line, "10_core.lua", 1, true) then return frames, #frames == 0 and not at_xpcall end
 		local file, ln, what = string.match(line, "^%s*(.-):(%d+): in (.*)$")
 		if file then frames[#frames + 1] = { file = file, line = tonumber(ln), ["function"] = string.gsub(what, "^function ", "") } end
 	end
-	return frames
+	return frames, false
+end
+
+-- "Identical" compares the message with its hexadecimal addresses blanked: error("bad " .. tostring(obj)) reads "table: 0x..." with a
+-- new address at every call, and would never make a streak.
+local function guard_key(msg)
+	if string.find(msg, "0x", 1, true) then return (string.gsub(msg, "0x%x+", "0x")) end
+	return msg
 end
 
 -- Hot path: one call per hook call, possibly every frame. No table, closure or string is made when the hook succeeds, and the
@@ -377,29 +387,40 @@ local function guard_finish(st, w, ok, ...)
 		return ...
 	end
 	local e = ...
-	local msg = tostring(e)
-	if msg == st.last then
+	local tb = guard_tb
+	guard_tb = nil
+	local frames, nested = guard_frames(tb)
+	if nested then error(e, 0) end  -- raised by a guarded hook this one ran: that one is judged, not this one
+	local okm, msg = pcall(tostring, e)  -- a __tostring that fails must not replace the error
+	if not okm or type(msg) ~= "string" then msg = "(error object)" end
+	local key = guard_key(msg)
+	if key == st.last then
 		st.streak = st.streak + 1
 	else
-		st.last, st.streak = msg, 1
+		st.last, st.streak = key, 1
 		-- The module remembers which hook raised this message, and from where: errors_since and the warnings name it.
 		local note = __mcpagent_native and __mcpagent_native.hook_error
 		if note then
-			local okj, stack = pcall(function() return J.encode(guard_frames(guard_tb)) end)
+			local okj, stack = pcall(J.encode, frames)
 			pcall(note, tostring(st.event), tostring(st.id), msg, okj and stack or nil)
 		end
 	end
-	guard_tb = nil
 	if st.streak >= st.limit then guard_remove(st, w, msg) end
 	error(e, 0)
 end
 
 local function guard_wrap(event, id, f, limit)
-	local st = { event = event, id = id, limit = limit, streak = 0 }
+	local st = { event = event, id = id, limit = limit, streak = 0, f = f }
 	local w
 	w = function(...) return guard_finish(st, w, xpcall(f, guard_handler, ...)) end
 	guard_wrappers[w] = st
 	return w
+end
+
+-- The function a guarded hook was given (hook_list shows where it was defined, not the wrapper's own place); f itself otherwise.
+function A.guard_origin(f)
+	local st = guard_wrappers[f]
+	return st and st.f or f
 end
 
 -- limit: nil = the default, 0 = no guard. Runs can nest (a stack).

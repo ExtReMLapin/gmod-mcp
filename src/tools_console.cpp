@@ -336,7 +336,9 @@ static json errors_since_tool(const json &args) {
                 if (has_src_out && !src_out.empty() && src.compare(0, src_out.size(), src_out) == 0) return false;
             }
             if (pat_in || pat_out) {
-                std::string msg = e.value("message", "");
+                // Only the first 4000 characters are searched: std::regex recurses with the length of its input, and one huge message (a
+                // printed table in an error) must not overflow the stack or take minutes.
+                std::string msg = e.value("message", "").substr(0, 4000);
                 if (pat_in && !std::regex_search(msg, *pat_in)) return false;
                 if (pat_out && std::regex_search(msg, *pat_out)) return false;
             }
@@ -592,7 +594,7 @@ void register_console() {
                                                          {"description", "Keep only errors raised under this prefix: the file:line the message starts with (else the first stack frame), "
                                                                          "e.g. \"lua/my_addon/client/\" or \"lua/my_addon/hud.lua:59\". Case-insensitive; backslashes read as slashes."}}},
                                              {"exclude_source", {{"type", "string"}, {"maxLength", 260}, {"description", "Drop the errors raised under this prefix (same form as source)."}}},
-                                             {"pattern", {{"type", "string"}, {"maxLength", 500}, {"description", "Keep only errors whose message matches this regular expression (case-insensitive, ECMAScript)."}}},
+                                             {"pattern", {{"type", "string"}, {"maxLength", 500}, {"description", "Keep only errors whose message matches this regular expression (case-insensitive, ECMAScript, searched in the first 4000 characters of the message)."}}},
                                              {"exclude_pattern", {{"type", "string"}, {"maxLength", 500}, {"description", "Drop the errors whose message matches this regular expression."}}},
                                              {"group_by", {{"type", "string"}, {"enum", json::array({"message"})},
                                                            {"description", "\"message\": one entry per distinct message and source instead of the list of errors: {groups: [{message, source, count, first_seq, "
