@@ -146,14 +146,28 @@ static json run_tests_in(int realm, const json &files, const json &extra, double
     std::vector<json> runs;
     for (size_t i = 0; i < files.size(); ++i) {
         if (i > 0) {
-            if (reqctx::cancelled()) return agent::err("cancelled", "tests_run cancelled");
             for (int k = 0; k < frames; ++k) wait_one_frame();
+            // After the wait: a cancel during the frames must not start the next file.
+            if (reqctx::cancelled()) return agent::err("cancelled", "tests_run cancelled");
         }
         json r = call(json::array({files[i]}));
         if (!r.value("ok", false)) return r;
         runs.push_back(r["result"]);
     }
     return ok(merge_test_runs(runs));
+}
+
+// `case` that matched nothing anywhere runs nothing and is not a failure: say so, so that a typo does not read as a green run.
+static void warn_if_no_case_ran(json &res, const json &args) {
+    if (!args.contains("case") || !res.value("ok", false) || !res.contains("result") || !res["result"].is_object()) return;
+    json &r = res["result"];
+    if (!r.contains("files") || !r["files"].is_array() || r["files"].empty()) return;
+    for (const auto &f : r["files"]) {
+        if (f.contains("error") || !f.contains("totals") || !f["totals"].is_object()) return;
+        for (const char *k : {"pass", "fail", "error", "skip"})
+            if (f["totals"].value(k, 0) > 0) return;
+    }
+    r["warning"] = "no case name contains \"" + args["case"].get<std::string>() + "\" (case-insensitive): nothing ran, which is not a failure.";
 }
 
 static json tests_run_tool(const json &args) {
@@ -176,7 +190,9 @@ static json tests_run_tool(const json &args) {
     if (realm_name != "both") {
         int r = realm_of(args, "realm", realms::SERVER);
         if (r < 0) return agent::err("invalid_params", "realm: unknown realm");
-        return project_keys(run_tests_in(r, arr, extra, budget, timeout_s, frames), args);
+        json res = run_tests_in(r, arr, extra, budget, timeout_s, frames);
+        warn_if_no_case_ran(res, args);
+        return project_keys(std::move(res), args);
     }
     // realm "both": the server, then the client; every file is listed with its realm. A realm that cannot run (no client on a
     // dedicated server, a locked client) is named in `realms` and makes ok false.
@@ -185,6 +201,7 @@ static json tests_run_tool(const json &args) {
     json first_error;
     for (int r : {realms::SERVER, realms::CLIENT}) {
         const char *rn = r == realms::SERVER ? "server" : "client";
+        if (r == realms::CLIENT && reqctx::cancelled()) return agent::err("cancelled", "tests_run cancelled");
         json res = run_tests_in(r, arr, extra, budget, timeout_s, frames);
         if (!res.value("ok", false)) {
             if (first_error.is_null()) first_error = res;
@@ -200,7 +217,9 @@ static json tests_run_tool(const json &args) {
     json merged = merge_test_runs(runs);
     if (!first_error.is_null()) merged["ok"] = false;
     merged["realms"] = realm_info;
-    return project_keys(ok(merged), args);
+    json res = ok(merged);
+    warn_if_no_case_ran(res, args);
+    return project_keys(std::move(res), args);
 }
 
 void register_lua_tools() {

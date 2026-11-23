@@ -163,19 +163,19 @@ local function run_case(group, case, state, budget, opts)
 	return r
 end
 
+-- A malformed entry of `cases` (not a table) is always selected, so that it is reported instead of crashing the run.
 local function matches_filter(case, needle)
+	if type(case) ~= "table" then return true end
 	return needle == nil or string.find(string.lower(tostring(case.name or "")), needle, 1, true) ~= nil
 end
 
-function H.tests_run(args)
+local function run_all(args)
 	local results = J.array({})
 	local totals = { pass = 0, fail = 0, error = 0, skip = 0 }
 	local budget = args.budget or 10
 	if budget <= 0 then budget = nil end
 	local needle = type(args.case) == "string" and args.case ~= "" and string.lower(args.case) or nil
 	local opts = { output = args.output or "failures", only_failures = args.only_failures == true }
-	local old_expect = expect
-	expect = expect_api
 	for _, f in ipairs(args.files or {}) do
 		local fr = { file = f.name, cases = J.array({}) }
 		local counts = { pass = 0, fail = 0, error = 0, skip = 0 }
@@ -202,16 +202,29 @@ function H.tests_run(args)
 					if matches_filter(case, needle) then selected[#selected + 1] = { case = case, index = i } end
 				end
 				if needle then fr.filtered = #group.cases - #selected end
-				local setup_ok, setup_err = true, nil
+				local setup_ok, setup_err, setup_skip = true, nil, nil
 				if group.beforeAll and #selected > 0 then
 					marks = {}
 					local ok2, _, e2, tb2 = A.run_budget(group.beforeAll, budget, state)
-					if not ok2 then setup_ok, setup_err = false, A.error_text(e2) .. (tb2 and ("\n" .. tb2) or "") end
+					if not ok2 then
+						local mk = find_mark(e2)
+						if mk and mk.kind == "skip" then
+							-- expect.skip(reason) in beforeAll: the whole file is skipped, not reported as a setup error.
+							setup_ok, setup_skip = false, mk.message
+						else
+							setup_ok, setup_err = false, A.error_text(e2) .. (tb2 and ("\n" .. tb2) or "")
+						end
+					end
 				end
 				for _, sel in ipairs(selected) do
 					local r
-					if not setup_ok then
-						r = { name = sel.case.name or ("case " .. sel.index), status = "error", message = "beforeAll: " .. setup_err }
+					local nm = type(sel.case) == "table" and sel.case.name or nil
+					if type(sel.case) ~= "table" then
+						r = { name = "case " .. sel.index, status = "error", message = "case " .. sel.index .. " of `cases` is a " .. type(sel.case) .. ", not a table" }
+					elseif setup_skip then
+						r = { name = nm or ("case " .. sel.index), status = "skip", message = setup_skip }
+					elseif not setup_ok then
+						r = { name = nm or ("case " .. sel.index), status = "error", message = "beforeAll: " .. setup_err }
 					else
 						r = run_case(group, sel.case, state, budget, opts)
 					end
@@ -230,6 +243,17 @@ function H.tests_run(args)
 		fr.totals = counts
 		results[#results + 1] = fr
 	end
-	expect = old_expect
 	return { files = results, totals = totals, ok = totals.fail == 0 and totals.error == 0 }
+end
+
+-- `expect` (a global of the test files) is only ours during the run: put the previous one back and forget the marks even when
+-- the run itself raises (a malformed test file must not leave the runner's expect behind).
+function H.tests_run(args)
+	local old_expect = expect
+	expect = expect_api
+	local ok, res = pcall(run_all, args)
+	expect = old_expect
+	marks = {}
+	if not ok then error(res, 0) end
+	return res
 end

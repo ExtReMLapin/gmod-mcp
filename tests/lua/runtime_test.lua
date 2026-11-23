@@ -908,6 +908,25 @@ do
 	check(c and c.status == "skip" and c.message == "player is dead" and res.totals.skip == 3 and res.ok == true, "tests_run: expect.skip(reason) marks the case skipped, with the reason")
 	check(case_of(res, 1, "static skip").message == "not on this map", "tests_run: skip = 'reason' gives the reason")
 
+	-- expect.skip(reason) in beforeAll skips every case of the file (it used to read as a setup error); afterAll does not run.
+	AFTER_ALL_RAN = nil
+	res = run_tests({ "return { groupName = 'g', beforeAll = function() expect.skip('no player') end,\n" ..
+		"afterAll = function() AFTER_ALL_RAN = true end, cases = {\n" ..
+		"{ name = 'a', func = function() error('must not run') end }, { name = 'b', func = function() error('must not run') end } } }" })
+	check(res.totals.skip == 2 and res.totals.error == 0 and res.ok == true and res.files[1].setup_error == nil
+		and res.files[1].cases[1].message == "no player" and AFTER_ALL_RAN == nil,
+		"tests_run: expect.skip in beforeAll skips the whole file, with the reason")
+	AFTER_ALL_RAN = nil
+
+	-- A malformed entry of `cases` is an error result, not a crash that leaves `expect` replaced; `expect` is put back after a run.
+	local expect_before = expect
+	res = run_tests({ "return { groupName = 'g', cases = { 42, { name = 'fine', func = function() expect(1).to.equal(1) end } } }" })
+	check(res.totals.error == 1 and res.totals.pass == 1 and res.files[1].cases[1].message:find("not a table", 1, true),
+		"tests_run: a case that is not a table is reported as an error and the others still run")
+	res = run_tests({ "return { groupName = 'g', cases = { 42 } }" }, { case = "x" })
+	check(res.totals.error == 1, "tests_run: a case that is not a table is not hidden by a `case` filter")
+	check(expect == expect_before, "tests_run: the global expect is put back after a run")
+
 	-- Issue #26: `state` is one table per file, shared by every step and NOT reset between cases; files do not share it.
 	local stateful = "return { groupName = 'g', beforeAll = function(state) state.all = 'set' end,\n" ..
 		"beforeEach = function(state) state.n = (state.n or 0) + 1 end, cases = {\n" ..
