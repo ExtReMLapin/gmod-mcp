@@ -2118,6 +2118,13 @@ json launch_tool(const json &args, const json &token) {
         }
     }
     std::wstring wdesk = utf8_to_wide(desk_station + "\\" + desk_name);
+    // Issue #20: a launch that fails half way ends the clients it started: their early_lua folders go with them (best effort: the sweep
+    // at the next launch removes what a dying process still holds).
+    auto drop_early_dir = [](const std::string &dir) {
+        if (dir.empty()) return;
+        std::error_code rec;
+        std::filesystem::remove_all(std::filesystem::u8path(dir), rec);
+    };
     for (int i = 0; i < count; ++i) {
         // A test client takes the foreground window when it starts: tell it which window had it, so it hands it back once its own window is up.
         // The foreground window of a client this launch just started (it has not handed it back yet) is not a target: keep the earlier one.
@@ -2138,13 +2145,27 @@ json launch_tool(const json &args, const json &token) {
             std::filesystem::path d = std::filesystem::temp_directory_path(fec) / "gmod-mcp-early" / earlylua::new_token();
             std::string du8 = d.u8string();
             if (fec || du8.find_first_of("\";\r\n\t") != std::string::npos) {
-                for (auto &l : started) TerminateProcess(l.h, 0);
+                for (auto &l : started) {
+                    TerminateProcess(l.h, 0);
+                    drop_early_dir(l.early_dir);
+                }
                 return tool_error("launch_failed", "the temporary folder path cannot be passed on a command line (it contains a quote, a ';' or a control character): " + du8);
             }
             std::filesystem::create_directories(d, fec);
-            {
+            bool wrote = !fec;
+            if (wrote) {
                 std::ofstream o(d / "early.lua", std::ios::binary);
                 o << early_lua;
+                o.close();
+                wrote = !o.fail();
+            }
+            if (!wrote) {  // the clients would start and never run the code: refuse before anything else starts
+                for (auto &l : started) {
+                    TerminateProcess(l.h, 0);
+                    drop_early_dir(l.early_dir);
+                }
+                drop_early_dir(du8);
+                return tool_error("launch_failed", "cannot write the early_lua file under the temporary folder " + du8);
             }
             early_dir = du8;
             client_opts += " -mcp_early_dir \"" + early_dir + "\"";
@@ -2160,11 +2181,11 @@ json launch_tool(const json &args, const json &token) {
         HANDLE job = keep ? nullptr : client_job();  // issue #8: ends with the bridge unless keep: true
         if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
             DWORD cpe = GetLastError();
-            for (auto &l : started) TerminateProcess(l.h, 0);
-            if (!early_dir.empty()) {
-                std::error_code rec;
-                std::filesystem::remove_all(std::filesystem::u8path(early_dir), rec);
+            for (auto &l : started) {
+                TerminateProcess(l.h, 0);
+                drop_early_dir(l.early_dir);
             }
+            drop_early_dir(early_dir);
             fp_gate.release();
             return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(cpe) + ") for " + exe +
                                                    (private_desk ? " on the private desktop " + desk_name + ": pass desktop: \"shared\" to start the clients on the user's desktop" : ""));

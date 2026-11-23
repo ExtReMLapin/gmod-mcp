@@ -170,7 +170,7 @@ local function resume(job)
 	local out, blocked, failed_includes = A.capture_end()
 	add_output(job, out)
 	for _, p in ipairs(failed_includes or {}) do  -- issue #19: include() calls that failed, over all the resumes
-		if not job._inc_seen[p] then job._inc_seen[p] = true job._inc_failed[#job._inc_failed + 1] = p end
+		if not job._inc_seen[p] and #job._inc_failed < 20 then job._inc_seen[p] = true job._inc_failed[#job._inc_failed + 1] = p end
 	end
 	for _, c in ipairs(blocked or {}) do  -- issue #11: commands the engine blocked from Lua, over all the resumes
 		if not job._blocked_seen[c] then job._blocked_seen[c] = true job._blocked[#job._blocked + 1] = c end

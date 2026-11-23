@@ -173,8 +173,13 @@ std::vector<std::string> lua_matches(const std::string &path_in) {
     while (!rel.empty() && rel.back() == '/') rel.pop_back();
     if (!safe_rel(rel)) return out;
     std::error_code ec;
-    for (const auto &c : lua_candidates(rel, true))
-        if (fs::is_regular_file(fs::u8path(c), ec)) out.push_back(c);
+    for (const auto &c : lua_candidates(rel, true)) {
+        if (!fs::is_regular_file(fs::u8path(c), ec)) continue;
+        // The same file reached through two roots (the mounted folder is an installed addon's own folder) is one match.
+        bool dup = false;
+        for (const auto &o : out) dup = dup || fs::equivalent(fs::u8path(o), fs::u8path(c), ec);
+        if (!dup) out.push_back(c);
+    }
     return out;
 }
 
@@ -231,8 +236,10 @@ std::vector<std::string> reload_notes(const std::string &code) {
     }
     std::string names;
     size_t count = 0;
+    std::vector<std::string> counted;  // each class once (a name given twice, or one that is the end of another, is not a duplicate by substring)
     for (const auto &n : locals)
-        if (std::find(owners.begin(), owners.end(), n) != owners.end() && names.find(n + ",") == std::string::npos) {
+        if (std::find(owners.begin(), owners.end(), n) != owners.end() && std::find(counted.begin(), counted.end(), n) == counted.end()) {
+            counted.push_back(n);
             if (++count <= 3) names += (names.empty() ? "" : ", ") + n;
         }
     if (count)
@@ -412,7 +419,7 @@ static json lua_exec_file_tool(const json &args) {
 }
 
 // Finds a Lua file the way include() names it ("autorun/x.lua", "mygm/gamemode/init.lua"), or a path relative to the
-// game folder ("lua/...", "addons/<name>/lua/..."), or an absolute path. Every match is returned, game folder first.
+// game folder ("lua/...", "addons/<name>/lua/..."), or an absolute path. Every match is returned, in the engine's order (the mounted folder first, then the game folder).
 std::vector<std::string> find_game_lua(const std::string &path, std::string &err) {
     namespace fs = std::filesystem;
     std::vector<std::string> out;
@@ -429,7 +436,10 @@ std::vector<std::string> find_game_lua(const std::string &path, std::string &err
     }
     const std::string game = agent::config().game_dir;
     auto add = [&](const std::string &p) {
-        if (fs::is_regular_file(fs::u8path(p), ec) && std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
+        if (!fs::is_regular_file(fs::u8path(p), ec) || std::find(out.begin(), out.end(), p) != out.end()) return;
+        for (const auto &o : out)  // the same file through another root (the mounted folder is an installed addon's own folder)
+            if (fs::equivalent(fs::u8path(o), fs::u8path(p), ec)) return;
+        out.push_back(p);
     };
     std::string low = util::to_lower(rel);
     // The mounted Lua folder first, like the engine.
@@ -1071,7 +1081,7 @@ void register_core() {
                         "result_too_large, realm_unavailable, client_locked. "
                         "compile_ms is the time to compile the code, duration_ms the time to run it (a file that only defines functions runs in a "
                         "few microseconds: that is not an empty run). "
-                        "include() only resolves paths under lua/ (and returns false, silently, for any other file): when it does, the result has "
+                        "include() only resolves paths under lua/ (for any other file it loads nothing and returns no value; the error only goes to the game console): then the result has "
                         "include_failed and a warning; lua_exec_file with an absolute path loads a file from anywhere. "
                         "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
                         "Some convars cannot be set from Lua (RunConsoleCommand is refused for protected ones, e.g. "
