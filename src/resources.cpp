@@ -568,7 +568,8 @@ Optional case fields: `skip = true` (or `skip = "reason"`), `when = false`, `tim
 `output` (what the case printed: failing cases by default).
 
 Skip at run time: `expect.skip("player is dead")` stops the case and marks it skipped with that reason (a test that just
-returns early shows as a pass).
+returns early shows as a pass). In `beforeAll` it skips every case of the file. A `case` filter that matches no case
+anywhere adds a `warning` (nothing ran; `ok` stays true).
 
 `state`: ONE table per file, handed to beforeAll, beforeEach, every case, afterEach and afterAll. It is NOT reset between cases
 (a field set by case 1 is seen by case 2; a counter incremented in beforeEach keeps growing) and it is not shared between files.
