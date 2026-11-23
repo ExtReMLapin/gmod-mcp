@@ -1079,6 +1079,14 @@ do
 	check(r.ok and r.result.values[1] == "loaded" and r.result.include_failed == nil and r.result.warning == nil, "include of a file under lua/: no warning")
 	r = call("lua_exec", { code = "include('nope.lua') include('nope.lua') include('other.lua') return 1" })
 	check(r.ok and #r.result.include_failed == 2, "failed include: each path once")
+	-- The real engine (2026.09 x64, checked in game) returns NO value for a file it cannot find, not false.
+	include = function(p) seen[#seen + 1] = p if present[p] then return "loaded" end end
+	r = call("lua_exec", { code = "include('../../../dev/addon/none.lua') return 1" })
+	check(r.ok and type(r.result.include_failed) == "table" and r.result.include_failed[1] == "../../../dev/addon/none.lua",
+		"failed include that returns nothing (the engine's way): listed in include_failed")
+	present["addon/nothing.lua"] = true
+	r = call("lua_exec", { code = "include('addon/nothing.lua') return 1" })
+	check(r.ok and r.result.include_failed == nil, "include of an existing file that returns nothing: no warning")
 	-- A file that really returns false is not a failure when it exists.
 	present["addon/false.lua"] = true
 	include = function(p) return false end

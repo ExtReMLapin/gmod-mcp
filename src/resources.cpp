@@ -106,7 +106,7 @@ The agent runtime (global table `__mcpagent`) is re-injected automatically.
   `other_matches` (files the same path also fits, which did not run: the first one wins, in the order above).
 - A data file outside `lua/` (fixtures under `tests/` of a worktree): `lua_exec_file {path: <absolute>, assign_to: "NAME"}`; the
   file ends with `return {...}` and the realm's global `NAME` keeps it. `file.Read(path, "LUA")` does not reach it, even mounted.
-- `include()` only resolves paths under `lua/`; for any other file it returns false without an error. A chunk run by a tool then
+- `include()` only resolves paths under `lua/`; for any other file it loads nothing and returns no value (the "Couldn't include file" error goes only to the game console). A chunk run by a tool then
   gets `include_failed` and a warning; load the file with `lua_exec_file` and its absolute path.
 - `lua_reload` re-runs the file: `X.Config = {...}` is reset, objects built from a `local Class = {}` of the old copy keep the old
   methods, and clients get new files only at the next map load or reconnect (the answer's `note` says so). To reload only some

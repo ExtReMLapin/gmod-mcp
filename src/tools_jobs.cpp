@@ -51,7 +51,7 @@ static const char *kJobProtocol =
     "(wait_s to wait), stop it with lua_job_cancel; two jobs can then run side by side, e.g. one per realm. A job started "
     "while another runs in the same realm is reported in concurrent_jobs: their timings and state mix.\n"
     "Returned values come back whole (no cut unless depth/limit/max_string; then the result says truncated).\n"
-    "include() only resolves paths under lua/: when it returns false for a file that is not there, the result has include_failed "
+    "include() only resolves paths under lua/: when it loads nothing because the file is not there, the result has include_failed "
     "and a warning; lua_exec_file with an absolute path loads a file from anywhere.\n"
     "The LuaJIT compiler stays on (timings are real), except with resume_limit_s, whose count hook makes LuaJIT interpret. A resume that never yields freezes the game: polling it then fails "
     "with main_thread_timeout (about 10 s) and status shows main_thread_stalled. resume_limit_s (optional, best effort) "

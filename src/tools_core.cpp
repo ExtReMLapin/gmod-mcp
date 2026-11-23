@@ -1106,7 +1106,7 @@ void register_core() {
                         "A data file outside lua/ (fixtures under tests/ of a worktree, which file.Read(..., \"LUA\") cannot reach even when the worktree "
                         "is mounted): give its absolute path and assign_to, e.g. {\"path\": \"D:/dev/my-addon-wt/tests/fixtures/walls.lua\", "
                         "\"assign_to\": \"WALLS\"}; the file ends with `return { ... }` and later calls read WALLS. compile_ms / duration_ms say how long "
-                        "compiling and running took. include() of a file outside lua/ returns false silently (see include_failed in the result): this "
+                        "compiling and running took. include() of a file outside lua/ loads nothing and returns nothing (the error goes only to the game console) (see include_failed in the result): this "
                         "tool with an absolute path is the way to load it.",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
 

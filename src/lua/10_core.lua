@@ -262,7 +262,9 @@ function A.capture_begin()
 				end
 			end
 			local r = pack_values(saved.include(target, ...))
-			if r[1] == false and not resolved and type(p) == "string" and not frame.inc_seen[p] then
+			-- The engine returns no value (not false) for a file it cannot find, and prints "Couldn't include file" to a
+			-- console the agent does not read; an older build returned false.
+			if (r.n == 0 or r[1] == false) and not resolved and type(p) == "string" and not frame.inc_seen[p] then
 				frame.inc_seen[p] = true
 				frame.inc_failed[#frame.inc_failed + 1] = p
 			end
@@ -294,7 +296,7 @@ function A.apply_capture_fields(out, blocked, failed_includes)
 	out.blocked_console_commands, out.warning = arr, warn
 	if failed_includes and #failed_includes > 0 then
 		out.include_failed = J.array(failed_includes)
-		local w = "include(" .. table.concat(failed_includes, ", ") .. ") returned false: include() only resolves paths under lua/ " ..
+		local w = "include(" .. table.concat(failed_includes, ", ") .. ") loaded nothing: include() only resolves paths under lua/ " ..
 			"(the game's lua folder, addons and the mounted folder), so a file anywhere else is not loaded, silently. " ..
 			"lua_exec_file with an absolute path loads a file from anywhere on the game's disk."
 		out.warning = out.warning and (out.warning .. " " .. w) or w
