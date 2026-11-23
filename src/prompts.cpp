@@ -31,7 +31,7 @@ static const std::vector<Prompt> &all() {
          "Collect the recent Lua errors, find their root cause in the code and propose (or apply) a fix.",
          {{"realm", "Realm", "Only this realm (menu, client or server).", false}}},
         {"run-tests", "Run a Lua test file", "Run a GLuaTest-format test file, then analyze the failures.",
-         {{"path", "Test file", "Path relative to lua/mcpagent_tmp/ (or absolute).", true},
+         {{"path", "Test file", "Absolute, or relative to lua/mcpagent_tmp/ (then the mounted Lua folder, the game folder); a pattern such as tests/*.lua works.", true},
           {"realm", "Realm", "Realm to run in (default server).", false}}},
         {"check-map", "Load and check a map", "Load a map, then report errors, entity counts, performance and a screenshot.",
          {{"map", "Map", "Map name without .bsp (e.g. gm_construct).", true}}},
@@ -77,7 +77,9 @@ static std::string body(const std::string &name, const json &a) {
     if (name == "debug-errors") {
         std::string realm = arg(a, "realm");
         return "Debug the recent Lua errors of the running Garry's Mod instance" + (realm.empty() ? "" : " (realm " + realm + ")") +
-               ".\n\n1. Call errors_since with cursor 0 to list them (grouped by message; note counts and realms).\n"
+               ".\n\n1. Call errors_since with cursor 0 and group_by \"message\" to list them" +
+               (realm.empty() ? std::string() : std::string(" (pass realm \"") + realm + "\")") +
+               " (one entry per message and source; note counts and realms; `source` or `pattern` keep only your addon's errors).\n"
                "2. For each distinct error, read the stack, open the source file (lua_file_read for the temporary directory, or the "
                "addon file on disk) and find the root cause.\n"
                "3. Check any API you suspect with api_search / wiki_page.\n"

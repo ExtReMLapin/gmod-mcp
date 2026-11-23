@@ -403,7 +403,7 @@ flowchart LR
   over and the rest register with it.
 
 Several **clients** can run side by side too. With the Claude Code plugin, the `instances_launch` tool starts 1 to 8
-test clients (small window, frame cap, Windows for now), `instances_close` closes them (by id, pid or owner label),
+test clients (small, frame-capped, on a private desktop, Windows for now), `instances_close` closes them (by id, pid or owner label),
 and `instance_select` sets the default instance of a session. Its description gives the measured cost: about 1.5 GB of
 RAM and a fifth of a CPU core per client. Sub-agents of one Claude Code session share that session: each one labels its
 clients with `owner` and closes only those. The label travels with the game (command line and heartbeat), so
@@ -571,6 +571,8 @@ tracebacks then point at the real file.
 - **Steam "Verify integrity of game files"** will report `menu.lua` as modified and restore the original — that is
   expected. Game updates do the same. The block comes back by itself the next time you play with `-mcp` and load a map.
 - `garrysmod/data/mcpagent/` (wiki cache) and `garrysmod/lua/mcpagent_tmp/` (agent scratch files).
+- With `instances_launch {early_lua}`: a small `gmod-mcp-early/<token>` folder in your temp folder, outside the game folder. It
+  is removed when the client is closed, and the next launch removes the ones that are three days old.
 
 ## Uninstall
 
