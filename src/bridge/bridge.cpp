@@ -15,6 +15,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1623,9 +1624,17 @@ ModuleCheck check_installed_module(const std::string &game_root) {
     ModuleCheck c;
     c.shipped_file = module_dir() + "/garrysmod/lua/bin/" + module_file_name();
     c.installed_file = game_root + "/garrysmod/lua/bin/" + module_file_name();
+    // The paths are UTF-8 (the game folder may hold non-ASCII characters): plat::read_file opens through the ANSI code page, which would
+    // make such a module look "missing" (and skip the check).
+    auto read_u8 = [](const std::string &path, std::string &out) {
+        std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+        if (!in) return false;
+        out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return true;
+    };
     std::string shipped, installed;
-    bool sr = plat::read_file(c.shipped_file, shipped);
-    bool ir = plat::read_file(c.installed_file, installed);
+    bool sr = read_u8(c.shipped_file, shipped);
+    bool ir = read_u8(c.installed_file, installed);
     c.verdict = modcheck::decide(sr, sr ? modcheck::find_version(shipped) : "", ir, ir ? modcheck::find_version(installed) : "");
     return c;
 }
@@ -1933,6 +1942,8 @@ inline void release_private_desktop_if_unused() {}
 inline void close_private_desktop() {}
 #endif
 
+void early_cleanup(const Launched &l);  // defined below
+
 json launch_tool(const json &args, const json &token) {
 #ifndef _WIN32
     (void)args;
@@ -2101,6 +2112,17 @@ json launch_tool(const json &args, const json &token) {
     if (!fp_gate.ok()) return retry_later(fp_gate.error_result(), "instances_launch", args, 180.0);  // FP7137
     if (fp_gate.waited_s() > 0) g_fp7137_progress_offset = fp_gate.waited_s() + 1;  // FP7137
     std::vector<Launched> started;
+    // A launch that fails half way: the clients it already started are ended and their handles and early_lua folders released (they are
+    // not in g_launched yet, so nothing else would ever close them).
+    auto abort_started = [&] {
+        for (auto &st : started) {
+            TerminateProcess(st.h, 0);
+            WaitForSingleObject(st.h, 1000);
+            CloseHandle(st.h);
+            early_cleanup(st);
+        }
+        started.clear();
+    };
     unsigned long long return_target = 0;  // the foreground window before the first start: the clients give the foreground back to it
     // Issue #14: the private desktop (created now, kept while a client runs on it). The count keeps release_private_desktop_if_unused away
     // until these clients are in g_launched.
@@ -2138,13 +2160,22 @@ json launch_tool(const json &args, const json &token) {
             std::filesystem::path d = std::filesystem::temp_directory_path(fec) / "gmod-mcp-early" / earlylua::new_token();
             std::string du8 = d.u8string();
             if (fec || du8.find_first_of("\";\r\n\t") != std::string::npos) {
-                for (auto &l : started) TerminateProcess(l.h, 0);
+                abort_started();
                 return tool_error("launch_failed", "the temporary folder path cannot be passed on a command line (it contains a quote, a ';' or a control character): " + du8);
             }
             std::filesystem::create_directories(d, fec);
-            {
+            bool wrote = !fec;
+            if (wrote) {
                 std::ofstream o(d / "early.lua", std::ios::binary);
                 o << early_lua;
+                o.close();
+                wrote = !o.fail();
+            }
+            if (!wrote) {  // without early.lua the client would start and silently run nothing
+                std::error_code rec;
+                std::filesystem::remove_all(d, rec);
+                abort_started();
+                return tool_error("launch_failed", "could not write the early_lua file under " + du8 + ". Nothing was started.");
             }
             early_dir = du8;
             client_opts += " -mcp_early_dir \"" + early_dir + "\"";
@@ -2160,7 +2191,7 @@ json launch_tool(const json &args, const json &token) {
         HANDLE job = keep ? nullptr : client_job();  // issue #8: ends with the bridge unless keep: true
         if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
             DWORD cpe = GetLastError();
-            for (auto &l : started) TerminateProcess(l.h, 0);
+            abort_started();
             if (!early_dir.empty()) {
                 std::error_code rec;
                 std::filesystem::remove_all(std::filesystem::u8path(early_dir), rec);

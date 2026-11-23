@@ -18,6 +18,9 @@ inline std::string of(const std::string &name, const nlohmann::json &input_schem
     static const char *const kPriority[] = {"realm", "code", "path", "name", "timeout_s"};
     std::string req;
     std::vector<std::string> optional;
+    // `instance` is the routing argument every game tool takes, so it is never listed; instance_select is the one tool whose own
+    // argument is called `instance` (it is required there): leaving it out would show `instance_select()`.
+    const bool list_instance = name == "instance_select";
     nlohmann::json required = input_schema.value("required", nlohmann::json::array());
     auto is_required = [&](const std::string &k) {
         for (const auto &r : required)
@@ -26,7 +29,7 @@ inline std::string of(const std::string &name, const nlohmann::json &input_schem
     };
     if (input_schema.contains("properties") && input_schema["properties"].is_object()) {
         for (const auto &r : required) {
-            if (!r.is_string() || r.get<std::string>() == "instance") continue;
+            if (!r.is_string() || (r.get<std::string>() == "instance" && !list_instance)) continue;
             if (!req.empty()) req += ", ";
             req += r.get<std::string>();
         }
@@ -34,7 +37,7 @@ inline std::string of(const std::string &name, const nlohmann::json &input_schem
         for (const char *p : kPriority)
             if (props.contains(p) && !is_required(p)) optional.push_back(p);
         for (auto it = props.begin(); it != props.end(); ++it) {
-            if (it.key() == "instance" || is_required(it.key())) continue;
+            if ((it.key() == "instance" && !list_instance) || is_required(it.key())) continue;
             bool done = false;
             for (const char *p : kPriority) done = done || it.key() == p;
             if (!done) optional.push_back(it.key());
