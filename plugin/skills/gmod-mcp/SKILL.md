@@ -98,7 +98,7 @@ user at once and offer section 3 (update the module; the game must be quit first
 their descriptions mention.
 
 **Several clients side by side** (for example to split a long test suite): use the `instances_launch` tool (Windows),
-which works even while no game runs. It starts 1 to 8 clients with the right options (`-multirun`, a small window, a
+which works even while no game runs. It starts 1 to 8 clients with the right options (`-multirun`, a small window on a private desktop, a
 frame cap, no `+map`), waits until each answers, loads the map with `map_load`, and returns their ids and pids. Then
 pass `instance` to every tool, or `instance_select` to make one the session's default (with several games running,
 calls without `instance` are refused with `ambiguous_instance`). Close them with `instances_close`; they also close

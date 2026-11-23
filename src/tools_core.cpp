@@ -1013,7 +1013,8 @@ void register_core() {
                         "loading (a map load in progress: the same flag as instances_list; menu.loading is the loading screen alone), uptime, age of the main thread's last tick (main_thread_stalled if > 5 s), "
                         "Lua temporary directory (tmp_dir, absolute path), and with a mounted Lua folder (lua_mount) `lua_mount`: {path, "
                         "loaded_with_mount, realms_without_mount, stale_files: [{file, disk, reason, realms}], warning?} (the folder's files that "
-                        "changed since each realm loaded them). Call this first. Works even if the game is frozen. "
+                        "changed since each realm loaded them), and on a client started with instances_launch {early_lua} `early_lua`: {mounted, error?} "
+                        "(false = the early Lua did not run). Call this first. Works even if the game is frozen. "
                         "Result: summary fields at the top (instance, mode, map, gamemode, maxplayers, fps_max, loading, "
                         "main_thread_stalled...) and one object per realm (menu, server, client) with its own details; `fields` "
                         "keeps only some top-level keys. Example: {\"fields\": [\"map\", \"realms\", \"perf\"]}.",
@@ -1071,7 +1072,7 @@ void register_core() {
                         "result_too_large, realm_unavailable, client_locked. "
                         "compile_ms is the time to compile the code, duration_ms the time to run it (a file that only defines functions runs in a "
                         "few microseconds: that is not an empty run). "
-                        "include() only resolves paths under lua/ (and returns false, silently, for any other file): when it does, the result has "
+                        "include() only resolves paths under lua/ (for any other file it loads nothing and returns no value, silently): then the result has "
                         "include_failed and a warning; lua_exec_file with an absolute path loads a file from anywhere. "
                         "Code that is already in a file: lua_exec_file (or lua_job {path}), not its content pasted here. "
                         "Some convars cannot be set from Lua (RunConsoleCommand is refused for protected ones, e.g. "
@@ -1163,7 +1164,7 @@ void register_core() {
          "Unknown globals depend on the realm: pick the one the code runs in ('client'/'server' need a map; 'menu' lacks "
          "most game functions). ENT, SWEP, GM, EFFECT and TOOL are never reported. Result: {ok, realm, checked (files), errors: "
          "[{file, line, message}], unknown_globals: [{name, file, line}], globals_written: [{name, file, line}], "
-         "truncated? (lists cut at limit), notes?}. In a test file (a tests/ folder, test_*.lua, *_test.lua) `expect` is known, "
+         "truncated? (lists cut at limit), notes?}. In a test file (a tests/, test/ or spec/ folder, test_*.lua, *_test.lua, *_spec.lua) `expect` is known, "
          "so tests_run files do not drown the list; other unknown globals there are still reported. Errors: "
          "realm_unavailable, not_found. Example: {\"realm\": \"server\", \"path\": \"addons/my_addon/lua\"}.",
          json{{"properties",

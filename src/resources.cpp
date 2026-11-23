@@ -363,7 +363,7 @@ fields, all plain sentences for you, present only when they apply:
 - `truncated_note`: values were cut by `depth`/`limit`/`max_string`; they are marked `__type = "truncated"`; raise the limit.
 - `output_note`: the console lines in `output` are shared with the game; `fps_note`: a test client runs at most 20 fps.
 - `version_warning`: the module in the game and the Claude Code plugin have different versions; tell the user.
-- `warnings`: a list of `{code, text, ...}` entries. `lua_error_spam` (added by the plugin on the answer of any tool): the game raised a
+- `warnings`: a list of `{code, text, ...}` entries. `lua_error_spam` (added by the plugin on the answer of any tool except errors_since and errors_clear): the game raised a
   burst of Lua errors (20 or more in 5 s) since your last call; it names the message, its source, the hook when known and the count:
   a hook added by `lua_exec` that fails keeps failing until removed (`hook.Remove`), and floods the user's game. `errors_dropped`
   (`errors_since`, `instances_list`): the 2000 kept errors overflowed, the oldest were dropped. `repeated_errors` (`errors_since`): most of the
@@ -464,7 +464,7 @@ Facepunch garrysmod-issues #7137).
 For what has no console command: the buttons of VGUI2 dialogs ("Disconnected by the server" > Close), Derma panels, the menu's
 HTML. `ui_click {x, y}` takes the pixel of a `screenshot` image (coordinates are those of the image; pass `screenshot_size`
 when it is not the game window's size, or `coords: "window"` for client-area pixels); `ui_key {key, text}` presses a key and
-types text (Unicode included). Click a text field first, then type. `screenshot_after: true` returns the result of the click.
+types text (only what the machine's ANSI code page keeps, see below). Click a text field first, then type. `screenshot_after: true` returns the result of the click.
 - The input is posted to the game's own window (PostMessage): the user's real mouse does not move and no window takes the
   focus. Windows game client only.
 - Refusals, each its own error code: `unsupported` (srcds, not Windows), `not_a_test_client` (only games started by
@@ -524,8 +524,7 @@ real size (no `w`/`h`) and crop in its pixels.
   "Dedicated server"; it shows in `instances_list` as `mode: srcds`), start a client with `instances_launch`, then
   `console_exec {instance: "<client id>", cmd: "connect 127.0.0.1:<server game port>"}` (a loopback address is the only one
   accepted) and wait with `wait_for` until the client's realms exist.
-- **Line endings when you write files on Windows.** Python's `open(path, "w")` turns `
-` into CRLF; in a repository that uses
+- **Line endings when you write files on Windows.** Python's `open(path, "w")` turns `\n` into CRLF; in a repository that uses
   LF, write with `open(path, "w", newline="")` (or `"wb"`), and check `git diff --stat` for a whole file changed. The module's
   own file writers (`lua_file_write`, the temporary files) write exactly the bytes you send.
 - **Every call to another instance goes through the coordinator.** The coordinator is the game that holds the base port, often
