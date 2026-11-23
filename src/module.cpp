@@ -119,8 +119,12 @@ static void setup_early_files(agent::Config &cfg, const std::vector<std::string>
             if (!earlylua::check_early_lua(early).empty()) early.clear();
         }
     }
-    if (early.empty()) return;
-    cfg.early_lua = true;
+    cfg.early_lua = true;  // the client was started with early_lua: status says so, also when the code cannot run
+    if (early.empty()) {
+        cfg.early_error = "early.lua is missing, empty, unreadable or too large in " + dir;
+        logx::warn("early Lua file not mounted: %s", cfg.early_error.c_str());
+        return;
+    }
     std::error_code ec;
     std::filesystem::path root = std::filesystem::u8path(dir) / "root";
     std::filesystem::create_directories(root / "lua" / "autorun", ec);

@@ -210,6 +210,20 @@ end
 
 local function pack_values(...) return { n = select("#", ...), ... } end
 
+-- dir .. "/" .. p with "." and ".." segments resolved ("addon/sub" + "../shared.lua" = "addon/shared.lua"); nil when the path climbs out of lua/.
+function A.join_lua_path(dir, p)
+	local out = {}
+	for seg in string.gmatch(dir .. "/" .. p, "[^/]+") do
+		if seg == ".." then
+			if #out == 0 then return nil end
+			out[#out] = nil
+		elseif seg ~= "." then
+			out[#out + 1] = seg
+		end
+	end
+	return table.concat(out, "/")
+end
+
 function A.capture_begin()
 	local buf = {}
 	local saved = { print = print, Msg = Msg, MsgN = MsgN, MsgC = MsgC, RunConsoleCommand = RunConsoleCommand }
@@ -253,9 +267,11 @@ function A.capture_begin()
 				else
 					local info = debug.getinfo(2, "S")
 					local src = info and info.source or ""
+					-- The folder of the calling file under lua/ (or gamemodes/, which the engine also searches), as include() names it.
 					local dir = src:match("^@lua/(.*)/[^/]*$") or src:match("^@addons/[^/]+/lua/(.*)/[^/]*$")
-					if dir then
-						local q = dir .. "/" .. p
+						or src:match("^@gamemodes/(.*)/[^/]*$") or src:match("^@addons/[^/]+/gamemodes/(.*)/[^/]*$")
+					local q = dir and A.join_lua_path(dir, p)
+					if q then
 						local okq, foundq = pcall(file.Exists, q, "LUA")
 						if okq and foundq then target, resolved = q, true end
 					end
@@ -264,7 +280,7 @@ function A.capture_begin()
 			local r = pack_values(saved.include(target, ...))
 			-- The engine returns no value (not false) for a file it cannot find, and prints "Couldn't include file" to a
 			-- console the agent does not read; an older build returned false.
-			if (r.n == 0 or r[1] == false) and not resolved and type(p) == "string" and not frame.inc_seen[p] then
+			if (r.n == 0 or r[1] == false) and not resolved and type(p) == "string" and not frame.inc_seen[p] and #frame.inc_failed < 20 then
 				frame.inc_seen[p] = true
 				frame.inc_failed[#frame.inc_failed + 1] = p
 			end

@@ -2142,6 +2142,13 @@ json launch_tool(const json &args, const json &token) {
         }
     }
     std::wstring wdesk = utf8_to_wide(desk_station + "\\" + desk_name);
+    // Issue #20: a launch that fails half way ends the clients it started: their early_lua folders go with them (best effort: the sweep
+    // at the next launch removes what a dying process still holds).
+    auto drop_early_dir = [](const std::string &dir) {
+        if (dir.empty()) return;
+        std::error_code rec;
+        std::filesystem::remove_all(std::filesystem::u8path(dir), rec);
+    };
     for (int i = 0; i < count; ++i) {
         // A test client takes the foreground window when it starts: tell it which window had it, so it hands it back once its own window is up.
         // The foreground window of a client this launch just started (it has not handed it back yet) is not a target: keep the earlier one.
@@ -2174,8 +2181,7 @@ json launch_tool(const json &args, const json &token) {
                 wrote = !o.fail();
             }
             if (!wrote) {  // without early.lua the client would start and silently run nothing
-                std::error_code rec;
-                std::filesystem::remove_all(d, rec);
+                drop_early_dir(du8);
                 abort_started();
                 return tool_error("launch_failed", "could not write the early_lua file under " + du8 + ". Nothing was started.");
             }
@@ -2194,10 +2200,7 @@ json launch_tool(const json &args, const json &token) {
         if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, job ? CREATE_SUSPENDED : 0, nullptr, wdir.c_str(), &si, &pi)) {
             DWORD cpe = GetLastError();
             abort_started();
-            if (!early_dir.empty()) {
-                std::error_code rec;
-                std::filesystem::remove_all(std::filesystem::u8path(early_dir), rec);
-            }
+            drop_early_dir(early_dir);
             fp_gate.release();
             return tool_error("launch_failed", "CreateProcess failed (error " + std::to_string(cpe) + ") for " + exe +
                                                    (private_desk ? " on the private desktop " + desk_name + ": pass desktop: \"shared\" to start the clients on the user's desktop" : ""));

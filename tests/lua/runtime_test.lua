@@ -1156,6 +1156,19 @@ do
 	check(r.ok and r.result.include_failed == nil, "include relative to the calling file's folder: no warning")
 	r = call("lua_exec", { code = "local v = include('missing.lua') return v", chunkname = "@lua/addon/sub/main.lua" })
 	check(r.ok and r.result.include_failed ~= nil, "include relative to the calling file's folder, not found: warning")
+	-- (unverified, written without running) "../" climbs out of the caller's folder, a gamemode file's siblings count, the list is capped.
+	present["addon/shared.lua"], present["mygm/gamemode/shared.lua"] = true, true
+	local seen_target
+	include = function(p) seen_target = p return false end
+	r = call("lua_exec", { code = "local v = include('../shared.lua') return v", chunkname = "@lua/addon/sub/main.lua" })
+	check(r.ok and r.result.include_failed == nil and seen_target == "addon/shared.lua", "include '../x.lua' relative to the calling file's folder: resolved, no warning")
+	r = call("lua_exec", { code = "local v = include('shared.lua') return v", chunkname = "@gamemodes/mygm/gamemode/init.lua" })
+	check(r.ok and r.result.include_failed == nil and seen_target == "mygm/gamemode/shared.lua", "include relative to a gamemode file's folder: resolved, no warning")
+	r = call("lua_exec", { code = "local v = include('../../../x.lua') return v", chunkname = "@lua/addon/sub/main.lua" })
+	check(r.ok and r.result.include_failed ~= nil and seen_target == "../../../x.lua", "include that climbs out of lua/: passed as given, warned")
+	r = call("lua_exec", { code = "for i = 1, 50 do include('nofile' .. i .. '.lua') end return 1" })
+	check(r.ok and #r.result.include_failed == 20, "include_failed is capped at 20 paths")
+	include = function(p) return false end
 	-- The call passes errors and several returns through, and include is put back.
 	include = function(p) error("inside " .. p) end
 	r = call("lua_exec", { code = "return include('a.lua')" })

@@ -4091,6 +4091,12 @@ int main(int argc, char **argv) {
         CHECK(!has(joined(tools::reload_notes("-- local Clip = {}\n-- function Clip:Play() end\n")), "Clip"));  // Issue #32: comments
         CHECK(!has(joined(tools::reload_notes("MyAddon.Clip = MyAddon.Clip or {}\nfunction MyAddon.Clip:Play() end\n")), "Clip"));  // Issue #32: a global is replaced in place
         CHECK(tools::reload_notes("").empty());
+        {  // a class named twice is listed once; a name that is the end of another is not taken for a duplicate (unverified: written without a build)
+            std::string nd = joined(tools::reload_notes("local Aa = {}\nfunction Aa.x() end\nlocal Bb = {}\nfunction Bb.x() end\nlocal Bb = {}\n"));
+            CHECK(has(nd, "(Aa, Bb)") && !has(nd, "Bb, Bb") && !has(nd, "..."));
+            std::string ns = joined(tools::reload_notes("local Ab = {}\nfunction Ab.x() end\nlocal b = {}\nfunction b.x() end\n"));
+            CHECK(has(ns, "(Ab, b)"));
+        }
         // The descriptions say it (Issues #11, #19, #25, #28, #29, #32).
         const mcp::Tool *rl = mcp::find_tool("lua_reload"), *ef = mcp::find_tool("lua_exec_file"), *le = mcp::find_tool("lua_exec");
         const mcp::Tool *lj = mcp::find_tool("lua_job"), *lm = mcp::find_tool("lua_mount");
