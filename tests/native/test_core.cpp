@@ -413,7 +413,7 @@ static void test_long_waits() {
 // not a page is looked up in the page list, and a test file is recognised from its path.
 static void test_frictions_small() {
     if (mcp::tools().empty()) tools::register_all();
-    // Item 1: `name(required, optional?)` from the input schema, `instance` never listed, at most 6 optional ones.
+    // Item 1: `name(required, optional?)` from the input schema, `instance` never listed, at most 8 optional ones.
     auto shape = [](const char *tool) {
         const mcp::Tool *t = mcp::find_tool(tool);
         return t ? call_shape::of(tool, t->input_schema) : std::string("<no tool>");
@@ -436,6 +436,10 @@ static void test_frictions_small() {
     for (char c = 'b'; c <= 'h'; ++c) prio_cap["properties"][std::string(1, c)] = json::object();
     // A priority argument is never cut by the cap while an alphabetical one is shown: realm and timeout_s come before `a`.
     CHECK(call_shape::of("p", prio_cap) == "p(path, realm?, code?, name?, timeout_s?, a?, b?, c?, d?, ...)");
+    // instance_select's own argument is `instance`: it is the one tool that lists it.
+    json sel{{"properties", {{"instance", json::object()}}}, {"required", {"instance"}}};
+    CHECK(call_shape::of("instance_select", sel) == "instance_select(instance)");
+    CHECK(call_shape::of("other_tool", sel) == "other_tool()");
     CHECK(call_shape::of("y", json::object()) == "y()");
     CHECK(call_shape::prefixed("y", json::object(), "Does y.") == "y(). Does y.");
     CHECK(call_shape::prefixed("y", json::object(), "y(). Does y.") == "y(). Does y.");  // idempotent
