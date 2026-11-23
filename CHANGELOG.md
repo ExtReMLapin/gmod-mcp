@@ -26,13 +26,11 @@
   agent's side. The enlarged picture is always a PNG; `scale` is lowered when the result would pass 4 million pixels and the result says
   so (`scale_requested`). Not applied by the engine's own JPEG (`source: engine_jpeg`): listed in `ignored`. To look at the HUD
   larger, crop and scale the window capture (no `w`/`h`: that render has no interface).
-- **Test clients can keep your `data/` folder safe (Issue #20).** `instances_launch` takes `data_isolation: true` (each client
-  gets a copy-on-write `data/`: reads fall back to the real folder, writes, appends, deletes and renames go to
-  `data/mcp_overlay/<token>/`, removed with the client), `data_audit: true` (only record what each client creates, changes or
-  deletes) and `early_lua` (Lua run in the client and server realms before any addon's file, which is the only way to prepare an
-  addon whose convars do not exist yet when `commands` run). The overlay is installed by a file the module mounts in front of
-  every addon; `status` shows `data_isolation`. The new tool `instances_data_changes` lists the changes while the clients run
-  and `instances_close` returns them (`closed[i].data_changes`) and removes the folder. Off by default. The docs now say that
+- **`instances_launch {early_lua}`: Lua that runs before the addons** (Issue #20). It runs in the client and server realms of
+  each test client before any addon's file, which is the only way to prepare an addon whose convars and globals do not exist
+  yet when `commands` run (switch its cache or its deletions off). The module writes it into a small autorun file mounted in
+  front of every addon, so it replaces nothing in the game; `status.early_lua` says whether the mount worked. The docs now say
+  that test clients share the user's real `data/`, cfg and cookies (nothing isolates them: clean up after the test) and that
   archived convars changed through `commands`, `launch_args` and `fps_max` are given back before a clean quit.
 - **Listed in the official MCP Registry.** Each release now attaches `gmod-mcp.mcpb` (one MCP Bundle with the bridge for Windows
   and Linux x86-64, built by `cmake/mcp_registry.py` and run once in CI before the release) and, from a tag, publishes
@@ -104,12 +102,6 @@
   its main thread; not measured).
 
 ### Fixes
-
-- **`data_isolation` overlay: a client read nothing of what it wrote** (Issue #20, found in the game). The game's `file.Write` and
-  `file.Append` are Lua code that calls the global `file.Open`, which the overlay also wraps, so its own write into
-  `data/mcp_overlay/<token>/f/` was redirected a second time (`f/mcp_overlay/<token>/f/<name>`): `file.Exists` and `file.Read` of
-  a file the client had just written said it was not there. Names under the overlay's own folder now go straight through.
-  The fake `file` library of `tests/lua/data_overlay_test.lua` now writes through `file.Open` like the game (red: 19 failures).
 
 - **The time budget is documented for what it does** (issue #22). A `budget` (and `resume_limit_s`) installs a count hook, and
   while a hook is installed LuaJIT interprets the code and the helpers it calls (several times slower, up to 40x for a loop in

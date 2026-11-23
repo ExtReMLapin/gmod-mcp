@@ -8,7 +8,7 @@
 #include "console.h"
 #include "coordinator.h"
 #include "crashguard.h"
-#include "data_overlay.h"
+#include "early_lua.h"
 #include "events.h"
 #include "http_server.h"
 #include "installer.h"
@@ -98,26 +98,16 @@ static void register_pump(lua_State *L) {
     if (!lua::run(L, code, "=mcpagent", nullptr, e)) logx::warn("failed to register the pump: %s", e.c_str());
 }
 
-// Issue #20: the data/ overlay or audit and the early Lua of a test client. The bridge writes <dir>/early.lua (the user's code)
-// and passes the mode, the token and <dir> on the command line; the module writes the early autorun file under <dir>/root and
-// mounts it in front of every addon (lua_mount::set_early_root). Without the mount the runtime still installs the overlay when it
-// is injected, which can be after some addon's code ran: `status` says which one happened (data_isolation).
+// Issue #20: the early Lua of a test client. The bridge writes <dir>/early.lua (the user's code) and passes <dir> on the command
+// line; the module writes the early autorun file under <dir>/root and mounts it in front of every addon
+// (lua_mount::set_early_root). Without the mount the code does not run: `status` says so (early_lua.mounted, early_lua.error).
 static void setup_early_files(agent::Config &cfg, const std::vector<std::string> &args) {
     auto wide = util::split_args(plat::process_command_line());
     auto flag = [&](const char *name) {
         std::string v = util::flag_value(wide, name, "");  // the wide command line is exact for non-ASCII folders
         return v.empty() ? util::flag_value(args, name, "") : v;
     };
-    dataoverlay::Mode mode = dataoverlay::parse_mode(flag("-mcp_data_mode"));
-    std::string token = flag("-mcp_data_token"), dir = flag("-mcp_early_dir");
-    if (mode != dataoverlay::Mode::Off && !dataoverlay::valid_token(token)) {
-        logx::warn("-mcp_data_mode ignored: -mcp_data_token is missing or invalid");
-        mode = dataoverlay::Mode::Off;
-    }
-    if (mode != dataoverlay::Mode::Off) {
-        cfg.data_mode = dataoverlay::mode_name(mode);
-        cfg.data_token = token;
-    }
+    std::string dir = flag("-mcp_early_dir");
     if (dir.empty()) return;
     std::string early;
     {
@@ -126,17 +116,16 @@ static void setup_early_files(agent::Config &cfg, const std::vector<std::string>
             std::ostringstream ss;
             ss << in.rdbuf();
             early = ss.str();
-            if (!dataoverlay::check_early_lua(early).empty()) early.clear();
+            if (!earlylua::check_early_lua(early).empty()) early.clear();
         }
     }
-    if (mode == dataoverlay::Mode::Off && early.empty()) return;
-    cfg.early_lua = !early.empty();
-    std::string chunk = mode == dataoverlay::Mode::Off ? std::string() : agent::overlay_chunk_source();
+    if (early.empty()) return;
+    cfg.early_lua = true;
     std::error_code ec;
     std::filesystem::path root = std::filesystem::u8path(dir) / "root";
     std::filesystem::create_directories(root / "lua" / "autorun", ec);
-    std::ofstream out(root / "lua" / "autorun" / dataoverlay::kShimName, std::ios::binary);
-    out << dataoverlay::build_shim(chunk, mode, token, early);
+    std::ofstream out(root / "lua" / "autorun" / earlylua::kShimName, std::ios::binary);
+    out << earlylua::build_shim(early);
     out.close();
     std::string rootu8 = root.u8string(), checked, nerr, why;
     if (ec || !out) cfg.early_error = "could not write the early file under " + dir;

@@ -266,12 +266,10 @@ by `exec` of a cfg file is not tracked; the list is fixed at launch: a convar an
 `convar_set` of one of these three on such a client is reverted at quit too. `instances_close` kills the process:
 nothing is written. The same options on a game you start by hand are not restored: set them back yourself before it quits.
 
-`data/` of a test client (Issue #20): `instances_launch {data_isolation: true}` gives each client a copy-on-write `data/` (reads fall
-back to the real folder; writes, appends, deletes and renames go to `data/mcp_overlay/<token>/`, removed by `instances_close`), and
-`{data_audit: true}` only records the changes. `instances_data_changes` and `instances_close` (`closed[i].data_changes`) list what a client
-created, modified or deleted. It is installed by a file the module mounts in front of every addon (`status.data_isolation`); limits:
-a reference to a file function saved before it, writes outside the file library (console commands, sql/cookies), folder renames.
-`early_lua` runs your Lua in the client and server realms before any addon's file.
+`data/` of a test client: the clients share the user's real `data/`, cfg and cookies and nothing isolates them (the module
+replaces none of the game's file functions). `early_lua` (Issue #20) runs your Lua in the client and server realms before any addon's
+file (through a file the module mounts in front of every addon; `status.early_lua` says `mounted`): use it to switch an addon's writes
+off, then clean up after the test.
 
 Clients started by `instances_launch` carry `-dxlevel 95`: with it the engine neither reads nor writes the user's video
 settings (resolution, anti-aliasing), so test clients do not change the way the user's own game starts. A client you

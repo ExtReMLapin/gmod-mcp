@@ -113,7 +113,7 @@ add_custom_command(
   COMMENT "Building the bridge's offline snapshot")
 
 # --- gmod-mcp-bridge: stdio MCP server started by the MCP client, relays to the module (works while the game is closed) ---
-add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/lowmem.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/modcheck.cpp src/launch_opts.cpp src/data_overlay.cpp src/cmdline.cpp src/next_call.cpp src/mdmp.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
+add_executable(gmod-mcp-bridge src/bridge/bridge.cpp src/crashinfo.cpp src/lowmem.cpp src/gamedir.cpp src/util.cpp src/lua_mount_path.cpp src/argcheck.cpp src/modcheck.cpp src/launch_opts.cpp src/early_lua.cpp src/cmdline.cpp src/next_call.cpp src/mdmp.cpp ${PLATFORM_SOURCES} ${SNAPSHOT_H}
   src/bridge/fp7137.cpp)  # FP7137: the launch/map_load lock, see docs/FP7137.md
 target_include_directories(gmod-mcp-bridge PRIVATE src ${httplib_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(gmod-mcp-bridge PRIVATE nlohmann_json::nlohmann_json)
@@ -154,7 +154,7 @@ endif()
 add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
 
 # Module helpers that need no game (links the module's sources like the snapshot generator).
-add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp tests/native/test_data_overlay.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES})
+add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp tests/native/test_early_lua.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES})
 add_dependencies(gmod-mcp-coretests mcpagent-embed-lua)
 target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)

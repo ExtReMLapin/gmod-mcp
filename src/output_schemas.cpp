@@ -105,7 +105,7 @@ json build(const std::string &tool) {
                            {"console_capture", S}, {"tmp_dir", S}, {"game_dir", S}, {"menu", Obj}, {"server", Obj}, {"client", Obj},
                            {"host_error", Obj}, {"map", NS}, {"gamemode", ANY}, {"maxplayers", ANY}, {"loading", B}, {"loading_stuck", B}, {"loading_stuck_note", S},
                            {"fps_max", ANY}, {"host_timescale", ANY}, {"projected", STRS},
-                           {"lua_mount", Obj}, {"data_isolation", Obj}});
+                           {"lua_mount", Obj}, {"early_lua", Obj}});
         // --- Lua execution
         json exec = obj({{"values", ANYS}, {"n", N}, {"output", S}, {"duration_ms", N}, {"chunk_bytes", N}, {"chunkname", S},
                          {"budget_s", N}, {"generation", N}, {"truncated", N}, {"projected", STRS}, {"fields_note", S}, {"file", S},

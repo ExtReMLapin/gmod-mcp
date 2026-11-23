@@ -52,7 +52,7 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 void run_slotcheck_tests(int *pass, int *fail);
-void run_data_overlay_tests(int *pass, int *fail);
+void run_early_lua_tests(int *pass, int *fail);
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                     \
@@ -4123,7 +4123,7 @@ int main(int argc, char **argv) {
     }
     {
         int p = 0, f = 0;
-        run_data_overlay_tests(&p, &f);  // Issue #20: tests/native/test_data_overlay.cpp
+        run_early_lua_tests(&p, &f);  // Issue #20: tests/native/test_early_lua.cpp
         g_pass += p;
         g_fail += f;
     }

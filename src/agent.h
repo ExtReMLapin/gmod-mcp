@@ -25,19 +25,15 @@ struct Config {
     bool test_client = false;  // -mcp_test_client: started by the bridge (instances_launch); see native.test_client
     std::string owner;  // -mcp_owner (issue #8): the instances_launch owner label, carried in the heartbeat so it outlives the launching bridge
     std::string restore_convars;  // -mcp_restore_convars a,b (Issue #10): more archived convars to give back on a clean quit; see native.restore_convars
-    // Issue #20 (test clients only): -mcp_data_mode overlay|audit, -mcp_data_token <token>, -mcp_early_dir "<folder>": see data_overlay.h.
-    std::string data_mode;     // "overlay", "audit" or "" (off); native.data_overlay tells the runtime, which installs it when the early file did not
-    std::string data_token;
-    bool early_mount = false;  // the early autorun file is mounted (runs before the addons)
-    bool early_lua = false;    // ... and carries the user's early_lua
-    std::string early_error;   // why it is not (the overlay then installs when the runtime is injected: after some addon code may have run)
+    // Issue #20 (test clients only): -mcp_early_dir "<folder>": the user's early_lua, see early_lua.h.
+    bool early_lua = false;    // the client was started with early_lua
+    bool early_mount = false;  // its autorun file is mounted (it runs before the addons)
+    std::string early_error;   // why it is not (the code then does not run)
     unsigned long long return_focus = 0;  // -mcp_return_focus <hwnd> (test clients): the window that gets the foreground back; see launchopts::decide_return_focus
     std::string version = GMOD_MCP_VERSION;
 };
 
 Config &config();
-// The source of the Lua runtime file src/lua/12_data_overlay.lua as embedded in this module (the early autorun file carries a copy).
-std::string overlay_chunk_source();
 const char *mode_name();
 
 // Main thread only.
