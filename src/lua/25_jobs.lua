@@ -119,6 +119,25 @@ end
 -- opts: budget, depth, limit, max_string (as lua_exec). What the chunk printed is added to the job's output as "[realm] ...".
 -- A failure (realm_unavailable, client_locked, lua_error...) raises a table {code, message, details}: catch it with pcall.
 local REALMS = { client = true, server = true, menu = true }
+
+-- What the other realm serialized, turned back into what the job can use: a Vector, Angle or Color is a real one again (the
+-- serializer sends {__type = "Vector", x, y, z}: pos:Distance(...) or ply:SetPos(pos) on that table would fail) and the numbers
+-- JSON cannot hold (nan, inf) are numbers again. Entities, functions and the like stay in their {__type = ...} form.
+local function revive(v)
+	if type(v) ~= "table" or v == J.null then return v end
+	local t = v.__type
+	if t == "Vector" and Vector and type(v.x) == "number" and type(v.y) == "number" and type(v.z) == "number" then return Vector(v.x, v.y, v.z) end
+	if t == "Angle" and Angle and type(v.p) == "number" and type(v.y) == "number" and type(v.r) == "number" then return Angle(v.p, v.y, v.r) end
+	if t == "Color" and Color and type(v.r) == "number" and type(v.g) == "number" and type(v.b) == "number" then return Color(v.r, v.g, v.b, tonumber(v.a) or 255) end
+	if t == "number" then
+		if v.value == "nan" then return 0 / 0 elseif v.value == "inf" then return math.huge elseif v.value == "-inf" then return -math.huge end
+	end
+	for k, x in pairs(v) do
+		if type(x) == "table" then v[k] = revive(x) end  -- assigning to an existing key while traversing is allowed
+	end
+	return v
+end
+
 function Job:call(realm, code, opts)
 	if type(realm) ~= "string" or not REALMS[realm] then A.fail("invalid_params", "job:call: realm must be \"client\", \"server\" or \"menu\"") end
 	if realm == A.realm then A.fail("invalid_params", "job:call: this job already runs in the " .. realm .. " realm: run the code directly") end
@@ -130,21 +149,31 @@ function Job:call(realm, code, opts)
 	local o = { budget = tonumber(opts.budget) or 10, depth = tonumber(opts.depth), limit = tonumber(opts.limit), max_string = tonumber(opts.max_string) }
 	local res = J.decode(native.call_realm(realm, code, J.encode(o), A.realm))
 	local result = res.result
-	if type(result) == "table" and type(result.output) == "string" and result.output ~= "" then
-		local out = result.output
-		if out:sub(-1) ~= "\n" then out = out .. "\n" end
-		add_output(self, "[" .. realm .. "] " .. out)
+	-- A chunk that fails reports what it printed in the error's details, not in a result.
+	local printed = type(result) == "table" and result.output
+	if not printed and type(res.error) == "table" and type(res.error.details) == "table" then printed = res.error.details.output end
+	if type(printed) == "string" and printed ~= "" then
+		if printed:sub(-1) ~= "\n" then printed = printed .. "\n" end
+		add_output(self, "[" .. realm .. "] " .. printed)
 	end
 	if not res.ok then
 		local e = res.error or {}
 		A.fail(e.code or "internal", "job:call(" .. realm .. "): " .. tostring(e.message), e.details)
+	end
+	-- What the other realm noted while the chunk ran (a RunConsoleCommand the engine blocked, an include() that loaded nothing)
+	-- belongs to the job's own result, like what it printed.
+	for _, c in ipairs(type(result.blocked_console_commands) == "table" and result.blocked_console_commands or {}) do
+		if not self._blocked_seen[c] then self._blocked_seen[c] = true self._blocked[#self._blocked + 1] = c end
+	end
+	for _, p in ipairs(type(result.include_failed) == "table" and result.include_failed or {}) do
+		if not self._inc_seen[p] then self._inc_seen[p] = true self._inc_failed[#self._inc_failed + 1] = p end
 	end
 	local values, n = result.values or {}, result.n or 0
 	local unpacked = {}
 	for i = 1, n do
 		local v = values[i]
 		if v == J.null then v = nil end
-		unpacked[i] = v
+		unpacked[i] = revive(v)
 	end
 	return unpack(unpacked, 1, n)
 end

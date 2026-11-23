@@ -137,7 +137,7 @@ use `lua_job`: the script runs as a coroutine resumed once per frame and talks t
 | `job:report(value [, channel])` | intermediate result: returned at the end, live through `reports_read` (`job:<id>`); each item is bounded (depth 8, 5000 entries, 1 MiB strings; cut parts are marked, `reports_truncated` counts them), 1000 items kept |
 | `args` (global) = `job.args`, `job:elapsed()` | call arguments, seconds since start |
 | `job:dt()` | real seconds since the job was last resumed; `FrameTime()` on the server is the tick step, not that interval |
-| `job:call(realm, code [, opts])` | runs a chunk in another realm of the instance (`"server"`, `"client"`, `"menu"`) now and returns its values; it never yields, so one job drives both sides (opts: `budget` 10 s by default, `depth`, `limit`, `max_string`; its `print` goes to the job's output as `[client] ...`); failures raise `{code, message}` (`realm_unavailable`, `client_locked`, `lua_error`...) |
+| `job:call(realm, code [, opts])` | runs a chunk in another realm of the instance (`"server"`, `"client"`, `"menu"`) now and returns its values (a Vector, Angle or Color comes back as a real one; an Entity as a `{__type, id, class}` table); it never yields, so one job drives both sides (opts: `budget` 10 s by default, `depth`, `limit`, `max_string`; its `print` goes to the job's output as `[client] ...`); failures raise `{code, message}` (`realm_unavailable`, `client_locked`, `lua_error`...) |
 | `return ...` | final result |
 
 A resume that never yields freezes the game (optional `resume_limit_s`: best effort, stops loops written in the script
