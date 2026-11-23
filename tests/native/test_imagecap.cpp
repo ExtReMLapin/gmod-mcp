@@ -251,6 +251,11 @@ static void test_apply_scale() {
     r = apply_scale(capture(png, "image/png"), 2.5, true);
     CHECK(r.value("ok", false) && r["result"].value("w", 0) == 160 && r["result"].value("scale_filter", "") == "smooth");
 
+    // Factor 1: nothing to enlarge, the engine's PNG is returned as it is (not re-encoded by our larger encoder). Unverified: not run.
+    r = apply_scale(capture(png, "image/png"), 1, false);
+    CHECK(r.value("ok", false) && r["result"].value("w", 0) == 64 && r["result"].value("h", 0) == 48 && r["result"].value("scale", 0.0) == 1);
+    CHECK(util::base64_decode(r["image"]["data"].get<std::string>()) == png && (size_t)r["result"].value("bytes", 0) == png.size());
+
     // Too large a factor is lowered, and the result says so.
     json big = capture(png, "image/png");
     big["result"]["w"] = 2000;
