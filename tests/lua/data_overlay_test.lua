@@ -17,15 +17,17 @@ local function new_fs()
 	function F.Read(n, path) return fs.files[key(n)] end
 	function F.Size(n, path) local c = fs.files[key(n)] return c and #c or -1 end
 	function F.Time(n, path) return fs.files[key(n)] and 100 or 0 end
+	-- As in the game (lua/includes/extensions/file.lua): file.Write and file.Append are Lua functions that go through
+	-- the global file.Open, so a wrapper of file.Open sees the calls its own file.Write makes (Issue #20, found in the game).
 	function F.Write(n, c)
-		local p = parent(n)
-		if p and not fs.dirs[key(p)] then return end
-		fs.files[key(n)] = c fs.names[key(n)] = n fs.writes[#fs.writes + 1] = n
+		local h = file.Open(n, "wb", "DATA")
+		if not h then return end
+		h:Write(c) h:Close()
 	end
 	function F.Append(n, c)
-		local p = parent(n)
-		if p and not fs.dirs[key(p)] then return end
-		fs.files[key(n)] = (fs.files[key(n)] or "") .. c fs.names[key(n)] = n fs.writes[#fs.writes + 1] = n
+		local h = file.Open(n, "ab", "DATA")
+		if not h then return end
+		h:Write(c) h:Close()
 	end
 	function F.Delete(n, path)
 		local k = key(n)
@@ -61,11 +63,11 @@ local function new_fs()
 		if string.find(mode, "w") then
 			local p = parent(n)
 			if p and not fs.dirs[key(p)] then return nil end
-			fs.files[key(n)] = "" fs.names[key(n)] = n
+			fs.files[key(n)] = "" fs.names[key(n)] = n fs.writes[#fs.writes + 1] = n
 		elseif string.find(mode, "a") then
 			local p = parent(n)
 			if p and not fs.dirs[key(p)] then return nil end
-			fs.files[key(n)] = fs.files[key(n)] or "" fs.names[key(n)] = n
+			fs.files[key(n)] = fs.files[key(n)] or "" fs.names[key(n)] = n fs.writes[#fs.writes + 1] = n
 		elseif not fs.files[key(n)] then return nil end
 		local h = { path = n, mode = mode }
 		function h:Write(s) fs.files[key(n)] = fs.files[key(n)] .. s end
@@ -171,6 +173,10 @@ do
 	file.Write("cache/index.txt", "v2")
 	check(file.Read("cache/index.txt", "DATA") == "v2", "the client reads its own write")
 	check(fs.files["cache/index.txt"] == "v1", "the real file is untouched after a write")
+	-- Issue #20, found in the game: the overlay's own call to the engine's file.Write went through the wrapped file.Open and
+	-- was redirected a second time (data/mcp_overlay/<token>/f/mcp_overlay/<token>/f/...), so the client never read its writes.
+	check(fs.files["mcp_overlay/t1/f/cache/index.txt"] == "v2", "the overlay copy is at <root>/f/<name>, not nested")
+	check(not fs.files["mcp_overlay/t1/f/mcp_overlay/t1/f/cache/index.txt"], "no second redirection of the overlay's own writes")
 	check(file.Size("cache/index.txt", "DATA") == 2, "Size follows the overlay copy")
 	file.Write("cache/gm_construct/new.dat", "n")
 	check(file.Exists("cache/gm_construct/new.dat", "DATA") and not fs.files["cache/gm_construct/new.dat"], "a new file exists for the client only")

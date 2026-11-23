@@ -105,6 +105,12 @@
 
 ### Fixes
 
+- **`data_isolation` overlay: a client read nothing of what it wrote** (Issue #20, found in the game). The game's `file.Write` and
+  `file.Append` are Lua code that calls the global `file.Open`, which the overlay also wraps, so its own write into
+  `data/mcp_overlay/<token>/f/` was redirected a second time (`f/mcp_overlay/<token>/f/<name>`): `file.Exists` and `file.Read` of
+  a file the client had just written said it was not there. Names under the overlay's own folder now go straight through.
+  The fake `file` library of `tests/lua/data_overlay_test.lua` now writes through `file.Open` like the game (red: 19 failures).
+
 - **The time budget is documented for what it does** (issue #22). A `budget` (and `resume_limit_s`) installs a count hook, and
   while a hook is installed LuaJIT interprets the code and the helpers it calls (several times slower, up to 40x for a loop in
   a helper, nothing new compiled): the comment on `A.run_budget` and the `lua_exec`, `lua_job` and `tests_run` texts said that

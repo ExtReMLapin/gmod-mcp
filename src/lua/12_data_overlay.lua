@@ -63,6 +63,15 @@ local M = (function()
 		if not (O.Exists and O.Read and O.Write and O.Append and O.Delete and O.CreateDir and O.Open and O.Find and O.IsDir) then return nil end
 
 		local root = "mcp_overlay/" .. token
+		-- The game's file.Write and file.Append are Lua functions that call the global file.Open (lua/includes/extensions/file.lua),
+		-- that is the wrapper below: a call the overlay makes into its own folder must not be redirected a second time (it
+		-- ended up in <root>/f/<root>/f/<name>, where the client never found it). Names under the root go straight through.
+		local plain_data_name = data_name
+		local function data_name(name, path, nil_is_data)
+			local n = plain_data_name(name, path, nil_is_data)
+			if n and (n == root or string.sub(n, 1, #root + 1) == root .. "/") then return nil end
+			return n
+		end
 		local st = { mode = mode, token = token, root = root, installed_by = by or "unknown", ops = { write = 0, append = 0, delete = 0, mkdir = 0, rename = 0, read_overlay = 0 },
 			original = O }
 		_G[STATE] = st
