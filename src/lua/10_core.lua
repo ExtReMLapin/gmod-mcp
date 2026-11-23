@@ -252,7 +252,7 @@ function A.capture_begin()
 	end
 	-- Issue #11: the engine ignores RunConsoleCommand for the commands on its Lua blacklist, without a word. Note them
 	-- (IsConCommandBlocked is the engine's own test for exactly that list) so the result can say so.
-	-- Issue #19: include() of a file that is not under lua/ returns false without a word. Note the paths that failed, so the
+	-- Issue #19: include() of a file that is not under lua/ loads nothing without a word. Note the paths that failed, so the
 	-- result can say so. The call is passed through; a path found only in the calling file's folder is handed over under its lua/
 	-- name (the engine would resolve it against this wrapper, not against the real caller).
 	saved.include = include

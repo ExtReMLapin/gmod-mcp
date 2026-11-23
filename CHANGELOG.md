@@ -41,7 +41,7 @@
   message), so an agent in a game shared with others reads only its own errors. `group_by: "message"` now groups per message **and
   source**, each group carries its `source` and, when known, the `hook`. `warnings` on the answers: `errors_dropped` when `lost > 0`
   (`errors_since` and `instances_list`, which also gets `lua_errors_lost`), `repeated_errors` on a plain list that is mostly one message,
-  and `lua_error_spam`, added by the plugin to the answer of any tool when the game raised 20 or more Lua errors in 5 s since this
+  and `lua_error_spam`, added by the plugin to the answer of any tool but `errors_since` / `errors_clear` when the game raised 20 or more Lua errors in 5 s since this
   caller's last answer (count, seconds, message, source, hook). **Hook guard**: a hook added by `lua_exec` / `lua_exec_file` /
   `lua_job` / `lua_reload` (while the chunk runs, or during a job's resumes) is wrapped and removed after `hook_guard` identical errors in
   a row (default 300, `0` = off) with one log line; it keeps its identifier, so `hook.Remove` still works, and the error is still reported, with the stack of the point where the hook
@@ -122,8 +122,8 @@
   agents may be editing (reload only yours with `path`, once per file).
 - **`lua_exec_file {path, assign_to}`** (Issue #28) keeps the file's return value in a global of the realm, so a data file outside
   `lua/` (fixtures under `tests/` of a mounted worktree) can be loaded once and used by later calls. The answer shows a preview.
-- **A failed `include()` is no longer silent** (Issue #19): during `lua_exec`, `lua_exec_file` and `lua_job`, an `include` that returns
-  false for a file that is not found gets `include_failed` and a warning (include only resolves paths under `lua/`; use
+- **A failed `include()` is no longer silent** (Issue #19): during `lua_exec`, `lua_exec_file` and `lua_job`, an `include` that loads
+  nothing (the engine returns no value for a file it cannot find) gets `include_failed` and a warning (include only resolves paths under `lua/`; use
   `lua_exec_file` with an absolute path).
 - **Tool annotations match what the tools do.** `lua_job_status` no longer reads as destructive (it only forgets the job whose
   result it hands over). `wait_for`, `lua_inspect` and `lua_function_source` run caller-supplied Lua, so they are no longer
