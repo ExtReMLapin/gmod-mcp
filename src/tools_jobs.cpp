@@ -83,7 +83,7 @@ static json job_result(const json &s, const json &args) {
             out["blocked_console_commands"] = s["blocked_console_commands"];
             out["warning"] = s.value("warning", "");
         }
-        if (s.contains("include_failed")) {  // issue #19: include() of a file outside lua/ returned false
+        if (s.contains("include_failed")) {  // issue #19: include() of a file that loaded nothing
             out["include_failed"] = s["include_failed"];
             out["warning"] = s.value("warning", "");
         }
