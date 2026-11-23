@@ -155,7 +155,9 @@ that connects, map changes (use `map`) and what gmod-mcp sets itself (`-multirun
   An addon that caches into `data/` (or deletes its cache when its format changes) does it right after the map loads, before
   `commands` can switch it off: start the clients with `instances_launch {data_isolation: true}` (copy-on-write `data/`, removed
   with the client; `instances_data_changes` and `instances_close` list what the client changed) or `{data_audit: true}` (only record).
-  `early_lua` runs Lua in the client and server realms before any addon's file.
+  `early_lua` runs Lua in the client and server realms before any addon's file. Isolation is OFF by default: without
+  `data_isolation: true` a test client writes into the user's real `data/`. Pass it whenever the addon under test caches
+  or deletes files.
 - A background test client may believe it has the focus (`system.HasFocus()` true): `fps_max_nofocus` is not
   exercised there.
 - Engine facts that cost agents runs: entity names (targetname) are server-side (`ents.FindByName` does nothing on the
