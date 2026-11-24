@@ -249,6 +249,21 @@ std::vector<std::string> reload_notes(const std::string &code) {
     return notes;
 }
 
+// Issue #25: a file that looks shared (sh_*.lua, shared.lua, or one that calls AddCSLuaFile) reloaded in one realm only. The other
+// half has not run, and for a NEW file the order matters: the server half goes first (it may register something the client half
+// reads, e.g. a replicated convar), then the client half, with `realms` set (a client that never got the file does not get it otherwise).
+// Empty when the file does not look shared, or both realms ran, or there is no client realm to run it in (srcds).
+std::string shared_reload_note(const std::string &file_name, const std::string &code, const std::vector<int> &ran) {
+    if (ran.size() != 1 || (ran[0] != realms::SERVER && ran[0] != realms::CLIENT)) return "";
+    if (agent::config().mode == agent::Mode::Dedicated) return "";
+    std::string l = util::to_lower(file_name);
+    l = l.substr(l.find_last_of("/\\") == std::string::npos ? 0 : l.find_last_of("/\\") + 1);
+    if (l.rfind("sh_", 0) != 0 && l != "shared.lua" && code.find("AddCSLuaFile") == std::string::npos) return "";
+    return std::string("this file looks shared and ran in the ") + realms::name(ran[0]) + " realm only. A new shared file must be reloaded with `realms` set, "
+           "`server` first, then `client` (a client that never got the file does not receive it otherwise, and a server half that registers something "
+           "the client half reads has to run first): {\"realms\": [\"server\", \"client\"]}.";
+}
+
 // `fields`: keeps only these keys of each returned table (e.g. a test's verdict out of a large result).
 json project_values(json r, const json &args) {
     if (!args.contains("fields") || !r.value("ok", false) || !r.contains("result")) return r;
@@ -380,10 +395,15 @@ static json status_tool(const json &args) {
     return project_keys(ok(s), args);
 }
 
-static json exec_payload(const json &args, const std::string &code, const std::string &chunk) {
-    json p{{"code", code}, {"chunkname", args.value("chunkname", chunk)}};
+// What the Lua runtime gets for one chunk. `tool` is the tool that sends it (lua_exec, lua_exec_file or lua_reload): the runtime
+// records it for hook_list (Issue #34). The hook guard (Issue #15) wraps the hooks of code the agent typed only: a file run by
+// lua_exec_file or lua_reload registers its hooks exactly as the game would (Issue #33), so the payload says hook_guard 0 unless
+// lua_exec_file was given one (an explicit opt-in); lua_reload has no such argument and never wraps.
+json exec_payload(const json &args, const std::string &code, const std::string &chunk, const std::string &tool) {
+    json p{{"code", code}, {"chunkname", args.value("chunkname", chunk)}, {"tool", tool}};
     for (const char *k : {"budget", "jit", "depth", "limit", "max_string", "hook_guard", "assign_to"})
         if (args.contains(k)) p[k] = args[k];
+    if (tool == "lua_reload" || (tool == "lua_exec_file" && !args.contains("hook_guard"))) p["hook_guard"] = 0;
     return p;
 }
 
@@ -397,7 +417,7 @@ static double exec_timeout(const json &args) {
 }
 
 static json lua_exec_tool(const json &args) {
-    return project_values(rt_realm(args, "realm", default_host_realm(), "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec"), exec_timeout(args)), args);
+    return project_values(rt_realm(args, "realm", default_host_realm(), "lua_exec", exec_payload(args, args["code"], "=mcpagent:lua_exec", "lua_exec"), exec_timeout(args)), args);
 }
 
 static json lua_exec_file_tool(const json &args) {
@@ -405,7 +425,7 @@ static json lua_exec_file_tool(const json &args) {
     if (!resolve_lua_file(args["path"], abs, chunk, e)) return agent::err("not_found", e);
     std::string code;
     if (!plat::read_file(abs, code)) return agent::err("io_error", "cannot read: " + abs);
-    json r = rt_realm(args, "realm", default_host_realm(), "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
+    json r = rt_realm(args, "realm", default_host_realm(), "lua_exec", exec_payload(args, code, chunk, "lua_exec_file"), exec_timeout(args));
     if (r.value("ok", false)) {
         // Issue #29: which file ran (the first match of the lookup order), and whether it is the mounted folder's copy.
         std::vector<std::string> all = lua_matches(args["path"]);
@@ -718,7 +738,7 @@ static json run_file_in_realms(const std::string &abs, const json &args, const s
     std::string rel = lua_mount::rel_in_mount(abs);
     json per = json::object();
     for (int r : rs) {
-        json res = agent::rt(r, "lua_exec", exec_payload(args, code, chunk), exec_timeout(args));
+        json res = agent::rt(r, "lua_exec", exec_payload(args, code, chunk, "lua_reload"), exec_timeout(args));
         bool rok = res.value("ok", false);
         all_ok = all_ok && rok;
         if (rok && !rel.empty()) lua_mount::note_reloaded(r, lua_mount::current(), rel, mt);
@@ -813,6 +833,8 @@ static json lua_reload_tool(const json &args) {
     if (all_ok) {  // Issues #25, #32: what this reload could not update, from the text of the file
         std::string notes;
         for (const auto &n : reload_notes(probe)) notes += (notes.empty() ? "" : " ") + n;
+        std::string shared = shared_reload_note(abs, probe, rs);  // Issue #25
+        if (!shared.empty()) notes += (notes.empty() ? "" : " ") + shared;
         if (!notes.empty()) out["note"] = notes;
     }
     return ok(out);
@@ -1059,7 +1081,8 @@ void register_core() {
                        {"hook_guard", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000000},
                                        {"description", "A hook added by this code (hook.Add while it runs) is removed after this many identical errors in a row, "
                                                        "with one log line (default 300; 0 = never). GMod never removes a hook that errors, so a failing one floods the game. "
-                                                       "The hook keeps its identifier: hook.Remove(event, id) still works. The error is still reported as usual."}}}};
+                                                       "The hook keeps its identifier: hook.Remove(event, id) still works. The error is still reported as usual. "
+                                                       "The registered function is the guard's wrapper, not the one passed to hook.Add: mcpagent.unwrap(fn) gives the original back."}}}};
     exec_props["fields"] = {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table (e.g. [\"pass\", \"fails\"]): the rest "
                                             "of a large result is dropped before it reaches you. Only returned tables are projected: when none is "
@@ -1089,7 +1112,11 @@ void register_core() {
                         "volume_sfx, fps_max, silently): when the code calls RunConsoleCommand with such a command the result lists it "
                         "in blocked_console_commands with a warning (only RunConsoleCommand calls made by this code while it runs "
                         "are seen; a command refused for another reason, e.g. a cheat convar, is not): use convar_set or "
-                        "console_exec, then read the value back.",
+                        "console_exec, then read the value back. "
+                        "Hooks: a hook this code adds with hook.Add is wrapped by the hook guard (see hook_guard) and listed by hook_list with added_by \"lua_exec\": "
+                        "hook.GetTable()[event][id] is then the guard's wrapper, not your function (mcpagent.unwrap(fn) gives your function back); only lua_exec {code} and lua_job "
+                        "wrap, lua_exec_file and lua_reload register hooks exactly as the game would. "
+                        "A temporary hook is yours to remove: hook_list {added_by: \"mcp\"} lists what the tools left on the game.",
                         json{{"properties", exec_code}, {"required", {"code"}}}, json{{"destructiveHint", true}}, lua_exec_tool});
 
     json exec_file = exec_props;
@@ -1102,6 +1129,10 @@ void register_core() {
                                               "data file (`return { ... }`) can be loaded once and used by later calls. The answer then shows only a preview "
                                               "(depth 2, 20 entries; pass depth / limit for more); the global holds the whole value. Nothing is "
                                               "assigned if the file returns nothing or fails."}};
+    exec_file["hook_guard"] = {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000000},
+                               {"description", "Default 0: the hooks the file adds are registered exactly as the game would, with the file's own functions (no wrapper). "
+                                               "A value above 0 opts in to the hook guard: a hook added while the file runs is removed after this many identical errors in a row, "
+                                               "with one log line; it keeps its identifier, and its function is then a wrapper (mcpagent.unwrap(fn) gives the file's function back)."}};
     mcp::register_tool({"lua_exec_file", "Execute a Lua file",
                         "Like lua_exec but reads the code from a file on the game's disk (with a mounted Lua folder, see "
                         "lua_mount, a relative path finds its files first, like the engine). The chunk is named after the real path "
@@ -1117,11 +1148,14 @@ void register_core() {
                         "is mounted): give its absolute path and assign_to, e.g. {\"path\": \"D:/dev/my-addon-wt/tests/fixtures/walls.lua\", "
                         "\"assign_to\": \"WALLS\"}; the file ends with `return { ... }` and later calls read WALLS. compile_ms / duration_ms say how long "
                         "compiling and running took. include() of a file outside lua/ loads nothing and returns nothing (the error goes only to the game console) (see include_failed in the result): this "
-                        "tool with an absolute path is the way to load it.",
+                        "tool with an absolute path is the way to load it. "
+                        "Hooks: the file's hooks are registered exactly as the game would, unwrapped (hook.GetTable() holds the file's own functions), unless you "
+                        "pass hook_guard above 0 (then they are the guard's wrappers). hook_list names them with added_by \"lua_exec_file\".",
                         json{{"properties", exec_file}, {"required", {"path"}}}, json{{"destructiveHint", true}}, lua_exec_file_tool});
 
     json reload_props = exec_props;
     reload_props.erase("realm");
+    reload_props.erase("hook_guard");  // Issue #33: a reloaded file registers its hooks exactly as the game would, never wrapped
     reload_props["path"] = {{"type", "string"},
                             {"description", "The file as include() names it (e.g. 'autorun/my_addon.lua', 'my_addon/sh_core.lua'), "
                                             "a path relative to the game folder ('addons/my_addon/lua/...'), or an absolute path."}};
@@ -1149,7 +1183,13 @@ void register_core() {
                         "before the reload keep the old table and its old methods (rebuild them, or map_load: the result's note says so when it "
                         "sees one); clients receive new or changed files only at the next map load or reconnect, even if the file calls "
                         "AddCSLuaFile (the note says so too; lua_reload runs the file in the client realm itself, but code on the client that "
-                        "include()s a file it never received fails until then). Dependent files are reloaded in dependency order by hand. "
+                        "include()s a file it never received fails until then). A NEW shared file must be reloaded with `realms` set, `server` first "
+                        "then `client` (a client that never got the file does not receive it otherwise, and a server half that registers something "
+                        "the client half reads, a replicated convar for instance, must run first): {\"path\": \"my_addon/sh_core.lua\", \"realms\": "
+                        "[\"server\", \"client\"]}; when a file that looks shared (sh_*.lua, shared.lua, or one that calls AddCSLuaFile) ran in one realm "
+                        "only, the note says so. Dependent files are reloaded in dependency order by hand. "
+                        "The hooks the file adds are registered exactly as the game would, with the file's own functions: the hook guard never wraps "
+                        "a reload (hook.GetTable() holds your functions, so a test may compare them), and hook_list {added_by: \"mcp\"} names them added_by \"lua_reload\". "
                         "In each realm's result, compile_ms is the time to compile the file and duration_ms the time to run its top level "
                         "(a file that only defines functions runs in microseconds: that is not an empty reload). "
                         "Several agents on one game: `mounted_changed` also reloads files another agent is editing; to reload only your own "

@@ -16,24 +16,33 @@ function H.hook_list(args)
 	local count = 0
 	-- Issue #18: `name` keeps the hooks whose identifier contains it (plain text, any case); events left empty are omitted.
 	local want = type(args.name) == "string" and args.name ~= "" and string.lower(args.name) or nil
+	-- Issue #34: `added_by` keeps the hooks the MCP tools added ("mcp": any tool, or one tool's name). Every hook a tool added says
+	-- added_by (the tool), chunk (its chunk name) and added_at (SysTime() when it was added; `now` is the same clock).
+	local by = args.added_by
+	if by ~= nil and by ~= "mcp" and by ~= "lua_exec" and by ~= "lua_exec_file" and by ~= "lua_reload" and by ~= "lua_job" then
+		A.fail("invalid_params", "added_by: expected mcp, lua_exec, lua_exec_file, lua_reload or lua_job")
+	end
+	A.hook_added_prune()
 	for ev, hooks in pairs(t) do
 		if not args.event or ev == args.event then
 			local list = J.array({})
 			for id, f in pairs(hooks) do
-				local o = fn_src(f)
-				o.id = type(id) == "string" and id or A.serialize(id, { depth = 1 })
-				if not want or string.find(string.lower(tostring(type(o.id) == "string" and o.id or id)), want, 1, true) then
+				local rec = A.hook_added(ev, id, f)  -- nil when the hook was replaced since (by the addon itself, say): not ours
+				if (not by or (rec and (by == "mcp" or rec.tool == by))) and (not want or string.find(string.lower(tostring(id)), want, 1, true)) then
+					local o = fn_src(f)
+					o.id = type(id) == "string" and id or A.serialize(id, { depth = 1 })
+					if rec then o.added_by, o.chunk, o.added_at = rec.tool, rec.chunk or J.null, rec.at end
 					list[#list + 1] = o
 					count = count + 1
 				end
 			end
-			if not want or #list > 0 then out[ev] = list end
+			if not (want or by) or #list > 0 then out[ev] = list end
 		end
 	end
 	local gm_has = false
 	local gm = GAMEMODE or GM
 	if args.event and gm and type(gm[args.event]) == "function" then gm_has = true end
-	local r = { hooks = out, count = count }
+	local r = { hooks = out, count = count, now = SysTime() }
 	if args.event then
 		r.event = args.event
 		r.known = (t[args.event] ~= nil) or gm_has

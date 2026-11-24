@@ -253,7 +253,7 @@ json build(const std::string &tool) {
         s["reports_read"] = obj({{"channel", S}, {"items", ANYS}, {"next_cursor", N}, {"lost", N}, {"timed_out", B}}, {"items", "next_cursor"});
         s["reports_channels"] = obj({{"channels", ANY}}, {"channels"});
         s["reports_clear"] = obj({{"cleared", ANY}}, {"cleared"});
-        s["hook_list"] = obj({{"hooks", Obj}, {"count", N}, {"event", S}, {"known", B}, {"gamemode_function", ANY}}, {"hooks", "count"});
+        s["hook_list"] = obj({{"hooks", Obj}, {"count", N}, {"now", N}, {"event", S}, {"known", B}, {"gamemode_function", ANY}}, {"hooks", "count"});
         s["perf_hook_cost"] = obj({{"event", S}, {"duration_s", N}, {"functions", ANYS}, {"restored", ANY}}, {"event", "functions"});
         s["tests_run"] = obj({{"files", ANYS}, {"totals", Obj}, {"ok", B}, {"realms", Obj}, {"projected", STRS}}, {});
         // --- instances

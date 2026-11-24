@@ -193,7 +193,7 @@ local function resume(job)
 	end
 	job._resume_t0 = t0
 	A.capture_begin()
-	A.guard_begin(job.hook_guard)  -- Issue #15: only while this job runs, so another script's hooks are never wrapped
+	A.guard_begin(job.hook_guard, "lua_job", job.chunkname)  -- Issue #15: only while this job runs, so another script's hooks are never wrapped
 	local res = pack(coroutine.resume(job.co))
 	A.guard_end()
 	local out, blocked, failed_includes = A.capture_end()

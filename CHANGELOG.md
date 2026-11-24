@@ -42,11 +42,25 @@
   source**, each group carries its `source` and, when known, the `hook`. `warnings` on the answers: `errors_dropped` when `lost > 0`
   (`errors_since` and `instances_list`, which also gets `lua_errors_lost`), `repeated_errors` on a plain list that is mostly one message,
   and `lua_error_spam`, added by the plugin to the answer of any tool but `errors_since` / `errors_clear` when the game raised 20 or more Lua errors in 5 s since this
-  caller's last answer (count, seconds, message, source, hook). **Hook guard**: a hook added by `lua_exec` / `lua_exec_file` /
-  `lua_job` / `lua_reload` (while the chunk runs, or during a job's resumes) is wrapped and removed after `hook_guard` identical errors in
+  caller's last answer (count, seconds, message, source, hook). **Hook guard** (issues #15, #33): a hook added by `lua_exec {code}` or
+  `lua_job` (while the chunk runs, or during a job's resumes) is wrapped and removed after `hook_guard` identical errors in
   a row (default 300, `0` = off) with one log line; it keeps its identifier, so `hook.Remove` still works, and the error is still reported, with the stack of the point where the hook
   raised it (the module keeps it next to the hook name; `errors_since` shows it instead of the guard's rethrow). The wrapper allocates
-  nothing per call when the hook succeeds. The default of `errors_since` stays the plain list (a result-shape change for scripts).
+  nothing per call when the hook succeeds. Only those two tools wrap, so the function in `hook.GetTable()` differs from the one the code
+  passed only for their hooks (`mcpagent.unwrap(fn)` gives the original back; `hook_list` already shows its own source). `lua_exec_file` and
+  `lua_reload` register the hooks of a real file exactly as the game would, unwrapped, so a test that compares the registered function with
+  the addon's own passes after a reload; `lua_exec_file` still opts in with an explicit `hook_guard` above 0, and `lua_reload` has no
+  `hook_guard` argument any more. The default of `errors_since` stays the plain list (a result-shape change for scripts).
+- **`hook_list` says which hooks the tools added** (issue #34). A hook that `lua_exec`, `lua_exec_file`, `lua_reload` or `lua_job` added
+  through `hook.Add` carries `added_by` (the tool), `chunk` (the chunk name) and `added_at` (`SysTime()` of the realm; the result's `now` is
+  the same clock), and `added_by: "mcp"` (or one tool's name) keeps only those, combinable with `name` and `event`: one call answers "what did
+  the tools leave on this game?". It is recorded by the temporary `hook.Add` replacement that exists only while a chunk runs (it passes
+  the function through when the guard is off), nothing stays replaced afterwards. A hook counts only while it is still registered with the
+  function the tool added (or its guard wrapper): one the addon replaced since is not reported. The registry is bounded (500, dead hooks
+  dropped first) and starts empty at every map load. Hooks added later by a timer or callback the chunk left behind are not seen.
+- **`lua_reload` of a new shared file** (issue #25): the description and the guide say to reload it with `realms` set, `server` first, then
+  `client`, and the answer carries a `note` when a file that looks shared (`sh_*.lua`, `shared.lua`, or one that calls `AddCSLuaFile`) ran in one
+  realm only.
 
 - **`tests_run` is cheaper to read and easier to debug** (issues #16, #21, #22, #26). New arguments: `only_failures` (fail and
   error cases only; every file keeps its `totals`), `case` (run the cases whose name contains the text), `output`

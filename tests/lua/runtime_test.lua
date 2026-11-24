@@ -979,6 +979,7 @@ do
 		Remove = function(ev, id) if table_[ev] then table_[ev][id] = nil end end,
 		GetTable = function() return table_ end,
 	}
+	assert(loadfile(dir .. "/40_hooks.lua"))()  -- hook_list (guard origin, Issue #34 added_by) is part of what this block checks
 	local logged, noted = {}, {}
 	MsgN = function(...) logged[#logged + 1] = table.concat({ ... }, " ") end
 	__mcpagent_native.hook_error = function(ev, id, msg, stack) noted[#noted + 1] = { ev, id, msg, stack } end
@@ -1086,6 +1087,72 @@ do
 	check(table_.T6.j1 == nil and table_.T6.j2 == nil and #logged == before + 2, "guard: hooks added by a job (before and after a yield) are removed after hook_guard errors")
 	check(hook.Add ~= nil, "guard: hook.Add restored after a job")
 	call("job_poll", { id = st.result.id })
+
+	-- Issue #33: the module asks for the guard for code the agent typed only. For a real file (lua_exec_file, lua_reload) it sends
+	-- hook_guard 0 and the tool: the hook is exactly the file's function, not a wrapper, and the guard never judges it.
+	r = call("lua_exec", { code = "FILE_F = function() error('file hook') end hook.Add('T11', 'file', FILE_F)", hook_guard = 0, tool = "lua_exec_file", chunkname = "@lua/addon/hooks.lua" })
+	check(r.ok and table_.T11.file == FILE_F, "Issue #33: a hook added by a file (hook_guard 0, tool lua_exec_file) is the file's own function")
+	for _ = 1, 400 do fire("T11", "file") end
+	check(table_.T11.file == FILE_F, "Issue #33: an unwrapped hook is never removed by the guard")
+	r = call("lua_exec", { code = "REL_F = function() end hook.Add('T11', 'reload', REL_F)", hook_guard = 0, tool = "lua_reload", chunkname = "@lua/addon/sh_core.lua" })
+	check(r.ok and table_.T11.reload == REL_F, "Issue #33: a reloaded file's hook is the file's own function")
+	-- An explicit hook_guard above 0 on lua_exec_file opts in (the module passes it through).
+	r = call("lua_exec", { code = "OPT_F = function() error('opt') end hook.Add('T11', 'optin', OPT_F)", hook_guard = 3, tool = "lua_exec_file", chunkname = "@lua/addon/opt.lua" })
+	check(table_.T11.optin ~= OPT_F and mcpagent.unwrap(table_.T11.optin) == OPT_F, "Issue #33: hook_guard above 0 on lua_exec_file wraps again")
+	for _ = 1, 3 do fire("T11", "optin") end
+	check(table_.T11.optin == nil, "Issue #33: ...and removes it after that many identical errors")
+	-- lua_exec {code} (no hook_guard sent) wraps, and mcpagent.unwrap gives the original function back.
+	r = call("lua_exec", { code = "TYPED_F = function() end hook.Add('T11', 'typed', TYPED_F)", tool = "lua_exec" })
+	check(table_.T11.typed ~= TYPED_F, "Issue #33: a hook added by lua_exec {code} is the guard's wrapper")
+	check(mcpagent.unwrap(table_.T11.typed) == TYPED_F and mcpagent.unwrap(TYPED_F) == TYPED_F and mcpagent.unwrap(nil) == nil,
+		"Issue #33: mcpagent.unwrap gives the original of a wrapped hook, and any other value as it is")
+
+	-- Issue #34: hook_list says which tool added a hook, from which chunk and when; added_by filters.
+	hook.Add("T11", "foreign", function() end)  -- added by the game, outside any chunk
+	r = call("hook_list", { event = "T11" })
+	local by_id = {}
+	for _, h in ipairs(r.ok and r.result.hooks.T11 or {}) do by_id[h.id] = h end
+	check(by_id.foreign and by_id.foreign.added_by == nil and by_id.foreign.added_at == nil, "Issue #34: a hook the game added has no added_by")
+	check(by_id.file and by_id.file.added_by == "lua_exec_file" and by_id.file.chunk == "@lua/addon/hooks.lua" and type(by_id.file.added_at) == "number",
+		"Issue #34: added_by, chunk and added_at of a file's hook")
+	check(by_id.reload and by_id.reload.added_by == "lua_reload" and by_id.typed and by_id.typed.added_by == "lua_exec" and by_id.typed.chunk == "=mcpagent:server",
+		"Issue #34: lua_reload and lua_exec are named, the default chunk name is shown")
+	check(type(r.result.now) == "number" and by_id.file and r.result.now >= by_id.file.added_at, "Issue #34: now is on the clock of added_at")
+	r = call("hook_list", { event = "T11", added_by = "mcp" })
+	check(r.ok and r.result.count == 3 and #r.result.hooks.T11 == 3, "Issue #34: added_by mcp keeps the hooks the tools added and not the game's")
+	r = call("hook_list", { event = "T11", added_by = "lua_reload" })
+	check(r.ok and r.result.count == 1 and r.result.hooks.T11[1].id == "reload", "Issue #34: added_by with one tool's name")
+	r = call("hook_list", { added_by = "mcp", name = "TYP" })
+	check(r.ok and r.result.count == 1 and r.result.hooks.T11[1].id == "typed" and r.result.hooks.T10 == nil, "Issue #34: added_by combines with name (events left empty are omitted)")
+	r = call("hook_list", { added_by = "bogus" })
+	check(not r.ok and r.error.code == "invalid_params", "Issue #34: an unknown added_by is refused")
+	-- A job: named lua_job with its own chunk name, also for a hook added after a yield.
+	st = call("job_start", { code = "hook.Add('T12', 'jobhook', function() end) job:yield() hook.Add('T12', 'jobhook2', function() end) return 1", chunkname = "=my_job" })
+	for _ = 1, 4 do H.job_tick() end
+	r = call("hook_list", { event = "T12", added_by = "lua_job" })
+	check(r.ok and r.result.count == 2 and r.result.hooks.T12[1].chunk == "=my_job", "Issue #34: the hooks of a job (before and after a yield) are named lua_job with its chunk")
+	call("job_poll", { id = st.result.id })
+	-- A hook the addon replaced since is not ours any more, one that was removed is gone; hook_guard 0 still records.
+	r = call("lua_exec", { code = "hook.Add('T13', 'swapped', function() end) hook.Add('T13', 'gone', function() end)", hook_guard = 0 })
+	hook.Add("T13", "swapped", function() end)  -- the addon registers the same identifier again with its own function
+	hook.Remove("T13", "gone")
+	r = call("hook_list", { event = "T13", added_by = "mcp" })
+	check(r.ok and r.result.count == 0 and next(r.result.hooks) == nil, "Issue #34: a replaced hook and a removed hook are not reported as the tools'")
+	r = call("hook_list", { event = "T13" })
+	check(r.ok and r.result.count == 1, "Issue #34: the replacing hook is still listed, without added_by")
+	-- Nothing stays replaced after a chunk, and a hook added outside a chunk is not recorded.
+	hook.Add("T13", "plain2", function() end)
+	r = call("hook_list", { event = "T13", added_by = "mcp" })
+	check(r.ok and r.result.count == 0, "Issue #34: a hook added after the chunk is not recorded")
+	-- The registry is bounded: 600 hooks of one chunk keep the newest, never more than 500 entries.
+	r = call("lua_exec", { code = "for i = 1, 600 do hook.Add('TB', 'h' .. i, function() end) end", hook_guard = 0 })
+	r = call("hook_list", { event = "TB", added_by = "mcp" })
+	local have = {}
+	for _, h in ipairs(r.ok and r.result.hooks.TB or {}) do have[h.id] = true end
+	check(r.ok and r.result.count <= 500 and r.result.count >= 300 and have.h600 and not have.h1, "Issue #34: the registry is capped (" .. tostring(r.result and r.result.count) .. " entries), the oldest go first")
+	table_.TB = nil  -- every hook gone: nothing is kept for them
+	r = call("hook_list", { added_by = "mcp", event = "TB" })
+	check(r.ok and r.result.count == 0, "Issue #34: hooks that are gone are not reported")
 
 	-- A chunk that fails still restores hook.Add.
 	local orig_add = hook.Add

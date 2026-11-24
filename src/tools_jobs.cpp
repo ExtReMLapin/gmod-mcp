@@ -300,7 +300,8 @@ void register_jobs() {
                                 {"description", "Cut returned strings longer than this (default: no cut)."}}},
                 {"hook_guard", {{"type", "integer"}, {"minimum", 0}, {"maximum", 1000000},
                                 {"description", "A hook the script adds while it runs (hook.Add) is removed after this many identical errors in a row, "
-                                                "with one log line (default 300; 0 = never). The hook keeps its identifier: hook.Remove still works."}}}}},
+                                                "with one log line (default 300; 0 = never). The hook keeps its identifier: hook.Remove still works. Its registered function is "
+                                                "the guard's wrapper (mcpagent.unwrap(fn) gives the script's function back); hook_list names it added_by \"lua_job\"."}}}}},
               {"oneOf", json::array({json{{"required", {"code"}}}, json{{"required", {"path"}}}})}},
          json{{"destructiveHint", true}}, lua_job_tool});
     mcp::set_task_support("lua_job", "optional");
