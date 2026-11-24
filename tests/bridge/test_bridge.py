@@ -3098,6 +3098,17 @@ def case_close_coordinator():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def lines_of(path, at_least=0, timeout=10.0):
+    """The lines of a file the stand-in game appends to, waiting (up to timeout) until it holds at_least lines: the game writes
+    them once it has started, which can be after instances_launch has answered."""
+    deadline = time.time() + timeout
+    while True:
+        try: ls = open(path, encoding="utf-8").read().splitlines()
+        except OSError: ls = []
+        if len(ls) >= at_least or time.time() >= deadline: return ls
+        time.sleep(0.1)
+
+
 # --- Issue #8 (chaos tests): instances_launch and instances_close around unhealthy, crashed and foreign clients. ---
 def chaos_session(extra_env=None, extra_instances=None, with_pid_dir=True):
     """A bridge, a fake game server and a temporary game folder holding the stand-in game. Returns a dict with call(tool, args)."""
@@ -3326,17 +3337,15 @@ def case_chaos_owner():
         check("CHAOS_OWNER stand-in game built next to the bridge", False)
         return
     S = chaos_session()
-    def argv_lines():
-        try: return open(os.path.join(S["work"], "argv.txt"), encoding="utf-8").read().splitlines()
-        except OSError: return []
+    def argv_lines(n=0): return lines_of(os.path.join(S["work"], "argv.txt"), n)
     sc, err = S["call"]("instances_launch", {"count": 1, "owner": "fork-a", "timeout_s": 30, "game_dir": S["game"]})
     import re
-    check("CHAOS_OWNER the owner label is on the client's command line (-mcp_owner fork-a)", any(re.search(r" -mcp_owner fork-a(\s|$)", l) for l in argv_lines()), argv_lines())
+    check("CHAOS_OWNER the owner label is on the client's command line (-mcp_owner fork-a)", any(re.search(r" -mcp_owner fork-a(\s|$)", l) for l in argv_lines(1)), argv_lines())
     sc, err = S["call"]("instances_launch", {"count": 1, "owner": "my task; \"x\"", "timeout_s": 30, "game_dir": S["game"]})
     check("CHAOS_OWNER a label with spaces and quotes is encoded (no space, quote or ';' reaches the command line)",
-          any("-mcp_owner my%20task%3B%20%22x%22" in l for l in argv_lines()), argv_lines())
+          any("-mcp_owner my%20task%3B%20%22x%22" in l for l in argv_lines(2)), argv_lines())
     sc, err = S["call"]("instances_launch", {"count": 1, "timeout_s": 30, "game_dir": S["game"]})
-    check("CHAOS_OWNER no owner: no -mcp_owner option", sum("-mcp_owner" in l for l in argv_lines()) == 2, argv_lines())
+    check("CHAOS_OWNER no owner: no -mcp_owner option", sum("-mcp_owner" in l for l in argv_lines(3)) == 2, argv_lines())
     S["close"]()
 
     # A keep:true client of an earlier bridge session: not in this bridge's table. Its module says owner and test_client.
@@ -3392,13 +3401,11 @@ def case_return_focus():
     user32 = ctypes.windll.user32
     startup = os.path.join(tempfile.mkdtemp(prefix="gmcp-focus-"), "startup.txt")
     S = chaos_session(extra_env={"GMCP_FAKE_STARTUP": startup})
-    def lines(name):
-        try: return open(startup if name == "startup.txt" else os.path.join(S["work"], name), encoding="utf-8").read().splitlines()
-        except OSError: return []
+    def lines(name, n=0): return lines_of(startup if name == "startup.txt" else os.path.join(S["work"], name), n)
     fg_before = user32.GetForegroundWindow()
     sc, err = S["call"]("instances_launch", {"count": 2, "timeout_s": 30, "game_dir": S["game"], "desktop": "shared"})  # Issue #14: on the private desktop no focus is handed back
     fg_after = user32.GetForegroundWindow()
-    argv = lines("argv.txt")
+    argv = lines("argv.txt", 2)
     handles = [re.search(r" -mcp_return_focus (\S+)", l) for l in argv]
     values = [m.group(1) if m else None for m in handles]
     if fg_before and fg_before == fg_after:
@@ -3407,7 +3414,7 @@ def case_return_focus():
         check("RETURN_FOCUS (the foreground changed during the test: only the form is checked) the option is a valid decimal handle or absent", all(v is None or (v.isdigit() and not v.startswith("0") and 0 < int(v) <= 0xFFFFFFFF) for v in values), (argv, fg_before, fg_after))
     check("RETURN_FOCUS the option comes after the fixed options and nothing else follows it but the owner/restore options",
           all(m is None or "-mcp_test_client" in l[:m.start()] for l, m in zip(argv, handles)), argv)
-    st = lines("startup.txt")
+    st = lines("startup.txt", 2)
     check("RETURN_FOCUS clients start with a window shown without activation (SW_SHOWNOACTIVATE = 4, STARTF_USESHOWWINDOW)", len(st) == 2 and all(x == "show=4 uses_show=1" for x in st), st)
     S["close"]()
 
@@ -3445,9 +3452,7 @@ def case_private_desktop():
             try: return open(os.path.join(ddir, "%d.desktop" % pid), encoding="utf-8").read()
             except OSError: time.sleep(0.1)
         return None
-    def argv_lines():
-        try: return open(os.path.join(S["work"], "argv.txt"), encoding="utf-8").read().splitlines()
-        except OSError: return []
+    def argv_lines(n=0): return lines_of(os.path.join(S["work"], "argv.txt"), n)
     def alive(pid):
         h = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
         if not h: return False
@@ -3462,7 +3467,7 @@ def case_private_desktop():
         name = names[0]
         check("PRIVATE_DESKTOP the result says desktop private and names it", sc.get("desktop") == "private" and sc.get("desktop_name") == name and "desktop_note" in sc, sc)
         check("PRIVATE_DESKTOP the desktop exists while the clients run", name and desktop_exists(name), name)
-        lines = argv_lines()
+        lines = argv_lines(2)
         check("PRIVATE_DESKTOP no -mcp_return_focus (nothing to give back: the client is not in front of the user)", len(lines) == 2 and all("-mcp_return_focus" not in l for l in lines), lines)
         check("PRIVATE_DESKTOP silent by default: -nosound, and the result says sound false", len(lines) == 2 and all("-nosound" in l for l in lines) and sc.get("sound") is False, (lines, sc.get("sound")))
         lst, _ = S["call"]("instances_list", {})
@@ -3472,11 +3477,13 @@ def case_private_desktop():
         sc2, err = S["call"]("instances_launch", {"count": 1, "owner": "pd", "timeout_s": 30, "game_dir": S["game"], "sound": True})
         ins2 = sc2.get("instances", [])
         check("PRIVATE_DESKTOP a second launch of the session uses the same desktop", len(ins2) == 1 and desk(ins2[0]["pid"]) == name and sc2.get("desktop_name") == name, (sc2, name))
-        check("PRIVATE_DESKTOP sound: true keeps the audio engine (no -nosound)", len(argv_lines()) == 3 and "-nosound" not in argv_lines()[2] and sc2.get("sound") is True, argv_lines())
+        check("PRIVATE_DESKTOP sound: true keeps the audio engine (no -nosound)", len(argv_lines(3)) == 3 and "-nosound" not in argv_lines()[2] and sc2.get("sound") is True, argv_lines())
         # 3. instances_close of one client leaves the desktop (the others still use it); the last one closes it.
         pids = [i["pid"] for i in ins + ins2]
         S["call"]("instances_close", {"pids": [pids[0], pids[1]]}, 30)
-        time.sleep(1.0)
+        for _ in range(50):  # the processes end shortly after the answer
+            if not alive(pids[0]) and not alive(pids[1]): break
+            time.sleep(0.1)
         check("PRIVATE_DESKTOP closing two of three clients: they are gone, the desktop stays for the third", not alive(pids[0]) and not alive(pids[1]) and alive(pids[2]) and desktop_exists(name), [alive(p) for p in pids])
         S["call"]("instances_close", {"all": True}, 30)
         gone = False
@@ -3506,7 +3513,7 @@ def case_private_desktop():
         for _ in range(50):
             try: d2 = open(os.path.join(ddir2, "%d.desktop" % i.get("pid", 0)), encoding="utf-8").read(); break
             except OSError: time.sleep(0.1)
-        lines = argv_lines()
+        lines = argv_lines(1)
         check("PRIVATE_DESKTOP desktop shared: the client is on the desktop the bridge runs on", d2 is not None and not d2.startswith("gmod-mcp-"), d2)
         check("PRIVATE_DESKTOP desktop shared: result says shared, no desktop_name, sound on by default", sc.get("desktop") == "shared" and "desktop_name" not in sc and sc.get("sound") is True and all("-nosound" not in l for l in lines), (sc, lines))
     finally:
