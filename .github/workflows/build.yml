@@ -21,10 +21,23 @@ jobs:
           - os: ubuntu-22.04
             platform: linux64
     runs-on: ${{ matrix.os }}
+    env:
+      # Compiler cache kept by GitHub between runs: a run recompiles only what changed (the tag run after a branch run
+      # recompiles nothing).
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v7
 
-      # Asks CMake for its code model (File API, codemodel-v2) at configure time, on both generators: the fixture check
+      - name: Compiler cache (sccache)
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Ninja on both systems (the Visual Studio generator compiled the files of one project one after the other and cannot
+      # use a compiler launcher): the MSVC environment comes from the Developer Command Prompt variables.
+      - name: MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # Asks CMake for its code model (File API, codemodel-v2) at configure time: the fixture check
       # reads it to prove that nothing under tests/conformance/ is a source of any target but the conformance host.
       - name: Request the CMake code model
         shell: bash
@@ -32,18 +45,22 @@ jobs:
           mkdir -p build/.cmake/api/v1/query
           touch build/.cmake/api/v1/query/codemodel-v2
 
-      - name: Configure (Windows)
-        if: runner.os == 'Windows'
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-
-      - name: Configure (Linux)
+      - name: Ninja (Linux)
         if: runner.os == 'Linux'
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: command -v ninja || sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_C_COMPILER_LAUNCHER=sccache
 
       - name: Build
         # A bounded job count: unbounded make -j started every compile at once and the Linux runner killed them
         # (exit 143) once the test executables also compiled every source.
         run: cmake --build build --config Release --parallel 4
+
+      - name: Compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
 
       # Every test step tees its output to build/logs/*.log: cmake/ci_badges.py reads them for the README badges.
       - name: Native unit tests (no game)

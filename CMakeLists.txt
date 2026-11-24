@@ -67,12 +67,21 @@ add_compile_definitions(GMOD_MCP_VERSION="${PROJECT_VERSION}")
   # ("Permission denied", CI run 44802275839). The users depend on this target instead and do not list the header.
   add_custom_target(mcpagent-embed-lua DEPENDS ${EMBED_OUT})
   file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
-  add_library(mcpagent SHARED ${CORE_SOURCES} ${PLATFORM_SOURCES})
-  add_dependencies(mcpagent mcpagent-embed-lua)
-  target_include_directories(mcpagent PRIVATE ${CMAKE_BINARY_DIR}/generated)
-  target_link_libraries(mcpagent PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
+  # The module's code is compiled once, with the module's flags, and linked into the module, the snapshot generator, the core
+  # tests and the conformance host (each of them compiled all of it again before: four times the work for the same objects).
+  add_library(mcpagent-core OBJECT ${CORE_SOURCES} ${PLATFORM_SOURCES})
+  add_dependencies(mcpagent-core mcpagent-embed-lua)
+  target_include_directories(mcpagent-core PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
+  target_link_libraries(mcpagent-core PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
+  if(MSVC)
+    target_compile_options(mcpagent-core PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)
+    target_compile_definitions(mcpagent-core PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  else()
+    target_compile_options(mcpagent-core PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fvisibility=hidden)
+  endif()
 
-target_include_directories(mcpagent PRIVATE src ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
+  add_library(mcpagent SHARED $<TARGET_OBJECTS:mcpagent-core>)
+  target_link_libraries(mcpagent PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
 
 set_target_properties(mcpagent PROPERTIES
   PREFIX ""
@@ -80,11 +89,8 @@ set_target_properties(mcpagent PROPERTIES
   SUFFIX ".dll")
 
 if(MSVC)
-  target_compile_options(mcpagent PRIVATE /W4 /utf-8 /EHsc /permissive- /wd4100 /wd4996)
-  target_compile_definitions(mcpagent PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
   target_link_libraries(mcpagent PRIVATE ws2_32 bcrypt)
 else()
-  target_compile_options(mcpagent PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fvisibility=hidden)
   # The game process has its own libstdc++: keep the module's statically linked C++ runtime private (not exported, and
   # bound to itself), otherwise its exception unwinding calls the game's personality routine and aborts.
   target_link_libraries(mcpagent PRIVATE dl pthread -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
@@ -92,7 +98,7 @@ endif()
 
 # --- Offline snapshot: tools, prompts, resources and instructions built from the module's sources without the game,
 # embedded into the bridge (served while the game has never answered). The generator is a build tool, not shipped.
-add_executable(gmod-mcp-snapshot src/snapshot/snapshot_main.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES})
+add_executable(gmod-mcp-snapshot src/snapshot/snapshot_main.cpp $<TARGET_OBJECTS:mcpagent-core>)
 add_dependencies(gmod-mcp-snapshot mcpagent-embed-lua)
 target_include_directories(gmod-mcp-snapshot PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-snapshot PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
@@ -154,7 +160,7 @@ endif()
 add_executable(gmod-mcp-fakegame tests/native/fake_game.cpp)
 
 # Module helpers that need no game (links the module's sources like the snapshot generator).
-add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp tests/native/test_early_lua.cpp ${CORE_SOURCES} ${PLATFORM_SOURCES})
+add_executable(gmod-mcp-coretests tests/native/test_core.cpp tests/native/test_slotcheck.cpp tests/native/test_early_lua.cpp $<TARGET_OBJECTS:mcpagent-core>)
 add_dependencies(gmod-mcp-coretests mcpagent-embed-lua)
 target_include_directories(gmod-mcp-coretests PRIVATE src ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-coretests PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
@@ -172,7 +178,7 @@ endif()
 # fixtures live in this executable and nowhere else (never in the DLL, the bridge or a release package).
 add_executable(gmod-mcp-conformance-host
   tests/conformance/conformance_host.cpp tests/conformance/fixtures.cpp tests/conformance/relay.cpp
-  ${CORE_SOURCES} ${PLATFORM_SOURCES})
+  $<TARGET_OBJECTS:mcpagent-core>)
 add_dependencies(gmod-mcp-conformance-host mcpagent-embed-lua)
 target_include_directories(gmod-mcp-conformance-host PRIVATE src tests/conformance ${CMAKE_BINARY_DIR}/generated ${httplib_SOURCE_DIR} ${garrysmod_common_SOURCE_DIR}/include)
 target_link_libraries(gmod-mcp-conformance-host PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
