@@ -279,7 +279,8 @@ void register_lua_tools() {
                         "`state` (first argument of every step) is ONE table per file, shared by beforeAll, beforeEach, the cases, "
                         "afterEach and afterAll, and NOT reset between cases: reset what you need in beforeEach. "
                         "`path`: a file or a pattern in the file name (*.lua, or **/*.lua for subfolders); absolute, or relative to "
-                        "lua/mcpagent_tmp/, then the mounted folder (lua_mount) and the game folder. Result: {files: [{file, group, "
+                        "lua/mcpagent_tmp/, then the mounted folder (lua_mount) and the game folder (so `addons/<addon>/tests/x.lua` works). There is no "
+                        "`filter` argument: which files = `path`, which cases = `case`. Result: {files: [{file, group, "
                         "cases: [{name, status: pass|fail|error|skip, message?, line? (of the failing assertion), traceback?, output?, "
                         "duration_ms}], totals {pass, fail, error, skip}, error?, setup_error?, filtered?, realm? (with realm both)}], totals, ok, "
                         "realms? (with realm both: what each realm did, or why it could not run)}. "
@@ -296,15 +297,16 @@ void register_lua_tools() {
                         "and helpers it calls, run several times slower (up to 40x measured) and are not compiled. Never time "
                         "anything under a budget: give that case `timing = true` (or timeout = 0), or pass budget 0 for the whole "
                         "run (no time limit then: a loop freezes the game until timeout_s). "
-                        "Full format: resource mcpagent://tests-format. Example: {\"realm\": \"server\", \"path\": \"tests/*.lua\", "
-                        "\"only_failures\": true}.",
+                        "Full format: resource mcpagent://tests-format. Examples: {\"realm\": \"server\", \"path\": \"tests/*.lua\", "
+                        "\"only_failures\": true}; one case of one file: {\"path\": \"addons/myaddon/tests/sh_x.lua\", \"realm\": \"both\", "
+                        "\"case\": \"saves the value\"}.",
                         json{{"properties",
                               {{"realm", json{{"type", "string"}, {"enum", json::array({"client", "server", "both"})},
                                               {"description", "Default server. both: server then client (shared files)."}}},
-                               {"path", {{"type", "string"}, {"minLength", 1}, {"description", "File or pattern, absolute or relative to lua/mcpagent_tmp/ (then the mounted folder, the game folder)."}}},
+                               {"path", {{"type", "string"}, {"minLength", 1}, {"description", "A file or a glob on the file name (tests/*.lua, tests/**/*.lua), absolute or relative to lua/mcpagent_tmp/ (then the mounted folder, the game folder: addons/<addon>/tests/x.lua). Cases are picked with `case`."}}},
                                {"budget", {{"type", "number"}, {"minimum", 0}, {"maximum", 120}, {"description", "Time limit per step (load, beforeAll, each case...) in seconds (default 10). 0 = none and no hook (for timing runs)."}}},
                                {"timeout_s", {{"type", "number"}, {"minimum", 1}, {"maximum", 3600}, {"description", "How long to wait for the game per call (default: budget x (20 per file + 5), 60 s without budget)."}}},
-                               {"case", {{"type", "string"}, {"minLength", 1}, {"description", "Run only the cases whose name contains this text (case-insensitive)."}}},
+                               {"case", {{"type", "string"}, {"minLength", 1}, {"description", "Run only the cases whose name contains this text (case-insensitive); the files are picked by `path`."}}},
                                {"only_failures", {{"type", "boolean"}, {"description", "List only the fail and error cases (totals still count all)."}}},
                                {"output", {{"type", "string"}, {"enum", json::array({"failures", "all", "none"})}, {"description", "Captured print/MsgN of a case: failing cases only (default), all cases, or none."}}},
                                {"frames_between_files", {{"type", "integer"}, {"minimum", 0}, {"maximum", 60}, {"description", "Wait this many frames between files (default 0): lets entity removals take effect."}}},
