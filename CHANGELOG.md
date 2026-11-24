@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.8
+
+Test clients no longer disturb the user's own game: they start on a private Windows desktop, without sound, and an
+installed module older than the plugin is refused. Built from agent feedback: Lua errors and erroring hooks are bounded
+and named, `tests_run` gets case filters, output capture and honest timing, `lua_reload` / `lua_exec_file` say which file
+ran, `job:call` runs code in the other realm of a job, `early_lua` runs before addons, screenshots can be cropped, scaled
+and never exceed the client's message limit, and cancelling one session's request no longer cancels another session's.
 
 ### Features
 
