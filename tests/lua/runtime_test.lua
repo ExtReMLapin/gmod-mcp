@@ -1206,13 +1206,19 @@ do
 	hook.Add("T13", "plain2", function() end)
 	r = call("hook_list", { event = "T13", added_by = "mcp" })
 	check(r.ok and r.result.count == 0, "Issue #34: a hook added after the chunk is not recorded")
-	-- The registry is bounded: 600 hooks of one chunk keep the newest, never more than 500 entries.
-	r = call("lua_exec", { code = "for i = 1, 600 do hook.Add('TB', 'h' .. i, function() end) end", hook_guard = 0 })
+	-- The registry is bounded: 600 hooks of one chunk keep the newest, never more than 500 entries. With the guard on, hook.Add
+	-- records them in the order they were added; with it off they are found by comparing the hook table after the chunk (no order
+	-- among the hooks of one chunk), so there only the cap is checked.
+	r = call("lua_exec", { code = "for i = 1, 600 do hook.Add('TB', 'h' .. i, function() end) end" })
 	r = call("hook_list", { event = "TB", added_by = "mcp" })
 	local have = {}
 	for _, h in ipairs(r.ok and r.result.hooks.TB or {}) do have[h.id] = true end
 	check(r.ok and r.result.count <= 500 and r.result.count >= 300 and have.h600 and not have.h1, "Issue #34: the registry is capped (" .. tostring(r.result and r.result.count) .. " entries), the oldest go first")
 	table_.TB = nil  -- every hook gone: nothing is kept for them
+	r = call("lua_exec", { code = "for i = 1, 600 do hook.Add('TB', 'h' .. i, function() end) end", hook_guard = 0, tool = "lua_reload" })
+	r = call("hook_list", { event = "TB", added_by = "mcp" })
+	check(r.ok and r.result.count <= 500 and r.result.count >= 300, "Issue #34: the registry is capped without the guard too (" .. tostring(r.result and r.result.count) .. " entries)")
+	table_.TB = nil
 	r = call("hook_list", { added_by = "mcp", event = "TB" })
 	check(r.ok and r.result.count == 0, "Issue #34: hooks that are gone are not reported")
 
