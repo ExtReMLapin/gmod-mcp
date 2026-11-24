@@ -384,6 +384,10 @@ struct Ctx {
     int http_status = 200;
     const Emit *emit = nullptr;  // SSE response stream, if any
     bool code_mode = false;      // Issue #3: the call comes from a Claude Code "Code Mode" script (see from_code_mode)
+    // Issue #35: names the sender (the bridge sends X-Gmod-Mcp-Client). JSON-RPC ids are only unique per client, and several
+    // bridges (one per Claude session) talk to one game: without it, a notifications/cancelled for the request "7" of one
+    // session cancelled the request "7" of another.
+    std::string client_key;
 };
 
 struct Prepared {
@@ -615,7 +619,7 @@ static json handle_message(const json &msg, bool &is_notification, Ctx &c) {
     if (is_notification) {
         // Legacy cancellation of an in-flight request (modern clients close the response stream instead).
         if (method == "notifications/cancelled" && params.contains("requestId")) {
-            if (reqctx::cancel_tracked(params["requestId"].dump())) logx::info("request %s cancelled by the client", params["requestId"].dump().c_str());
+            if (reqctx::cancel_tracked(c.client_key + "|" + params["requestId"].dump())) logx::info("request %s cancelled by the client", params["requestId"].dump().c_str());
         }
         return nullptr;
     }
@@ -819,6 +823,7 @@ static std::shared_ptr<Prepared> prepare_inner(const std::string &body, const He
     std::string hv = header(headers, "mcp-protocol-version");
     json meta = params.value("_meta", json::object());
     c.code_mode = from_code_mode(params);
+    c.client_key = header(headers, "x-gmod-mcp-client").substr(0, 128);
     std::string mv = meta.is_object() ? meta.value(mcpproto::kMetaProtocolVersion, "") : "";
     bool is_modern = hv == kModernVersion || !mv.empty();
     if (is_modern) {
@@ -923,7 +928,7 @@ static std::string execute_inner(Prepared &p, int &http_status, const Emit &emit
             emit(notification("notifications/progress", np));
         };
     }
-    std::string track_key = p.notification ? "" : p.id.dump();
+    std::string track_key = p.notification ? "" : c.client_key + "|" + p.id.dump();
     if (!track_key.empty()) reqctx::track(track_key, rc.cancel);
     bool notif = false;
     json r;

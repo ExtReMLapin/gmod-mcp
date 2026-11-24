@@ -45,6 +45,10 @@ static const char *kJobProtocol =
     "resumes, cpu_ms, elapsed_s, generation, truncated?, concurrent_jobs?}; timeout_s (default 300) cancels a job that "
     "is still running. Errors: lua_syntax_error, lua_error (with traceback, reports and output so far), realm_reset (the "
     "map changed: the job died with its Lua state), cancelled, timeout.\n"
+    "With timeout_s of 15 or more the call runs as a background task (when the client supports tasks): the result is then "
+    "delivered ONCE, by the task notification, and the job is forgotten. A later lua_job_status {id} does not give it again: "
+    "it answers not_found with details.delivered_at (\"result already delivered\") as long as the Lua state lives; the job "
+    "did not get lost. To poll a long job yourself, start it with async: true.\n"
     "Globals the script assigns go to the realm's _G (they outlive the job and the next job sees them) unless "
     "fresh_env: true.\n"
     "async: true starts the job and returns {job_id, state, realm, generation} at once: poll it with lua_job_status "
@@ -185,7 +189,7 @@ static json lua_job_tool(const json &args) {
         if (agent::generation(realm) != gen || !agent::realm_present(realm))
             return agent::err("realm_reset", std::string("the ") + realms::name(realm) + " realm was destroyed while the job was running (map change?)",
                               json{{"job_id", id}, {"progress", last_progress}});
-        json st = agent::rt(realm, "job_poll", json{{"id", id}});
+        json st = agent::rt(realm, "job_poll", json{{"id", id}, {"by", "lua_job"}});  // `by`: see lua_job_status (Issue #35)
         if (!st.value("ok", false)) return st;
         json s = st["result"];
         if (s.contains("progress") && s["progress"].is_object()) {
@@ -234,6 +238,8 @@ static json lua_job_status_tool(const json &args) {
     if (realm < 0) return agent::err("invalid_params", "id: expected a job id like 'server-g3-1'");
     double wait_s = args.value("wait_s", 0.0);
     auto t0 = Clock::now();
+    auto waited = [&] { return std::chrono::duration<double>(Clock::now() - t0).count(); };
+    int64_t last_seq = 0;
     for (;;) {
         json reset = job_reset_error(id, jid);
         if (!reset.is_null()) return reset;
@@ -241,14 +247,42 @@ static json lua_job_status_tool(const json &args) {
         if (!st.value("ok", false)) return st;
         const json &s = st["result"];
         if (s.value("state", "running") != "running") {
-            json fin = agent::rt(realm, "job_poll", json{{"id", id}});
+            // `by`: the runtime remembers who got the result, to answer "already delivered" to a later call (Issue #35).
+            json fin = agent::rt(realm, "job_poll", json{{"id", id}, {"by", "lua_job_status"}});
             if (!fin.value("ok", false)) return fin;
             return job_result(fin["result"], args);
         }
-        if (std::chrono::duration<double>(Clock::now() - t0).count() >= wait_s || reqctx::cancelled()) {
-            return ok(json{{"job_id", id}, {"state", "running"}, {"frames", s["frames"]}, {"elapsed_s", s["elapsed_s"]},
-                           {"cpu_ms", s.value("cpu_ms", json())}, {"progress", s.value("progress", json())},
-                           {"reports_count", s.value("reports_count", 0)}, {"chunkname", s.value("chunkname", json())}});
+        if (s.contains("progress") && s["progress"].is_object()) {  // the status of the task this call may run as
+            const json &pr = s["progress"];
+            int64_t seq = pr.value("seq", (int64_t)0);
+            if (seq != last_seq) {
+                last_seq = seq;
+                double done = pr.contains("done") && pr["done"].is_number() ? pr["done"].get<double>() : (double)seq;
+                double total = pr.contains("total") && pr["total"].is_number() ? pr["total"].get<double>() : 0.0;
+                reqctx::progress(done, total, pr.value("message", ""));
+            }
+        }
+        double w = waited();
+        bool cancelled = reqctx::cancelled();
+        // Issue #35: a wait that is cut short is never an unexplained "running". A cancelled request is an error (its answer
+        // normally goes nowhere; when it does arrive, the caller must see that the wait did not run its course).
+        if (cancelled && w < wait_s)
+            return agent::err("cancelled",
+                              "lua_job_status was cancelled after " + std::to_string((int)w) + " s of its " + std::to_string((int)wait_s) +
+                                  " s wait: this says nothing about the job, which is still running. Call lua_job_status again with the same id.",
+                              json{{"job_id", id}, {"state", "running"}, {"waited_s", w}, {"wait_s", wait_s}, {"stopped", "cancelled"},
+                                   {"elapsed_s", s["elapsed_s"]}, {"progress", s.value("progress", json())}});
+        if (w >= wait_s || cancelled) {
+            json out{{"job_id", id}, {"state", "running"}, {"frames", s["frames"]}, {"elapsed_s", s["elapsed_s"]},
+                     {"cpu_ms", s.value("cpu_ms", json())}, {"progress", s.value("progress", json())},
+                     {"reports_count", s.value("reports_count", 0)}, {"chunkname", s.value("chunkname", json())}};
+            // elapsed_s is the job's own age, not the time this call waited.
+            if (wait_s > 0) {
+                out["waited_s"] = w;
+                out["wait_s"] = wait_s;
+                out["stopped"] = "wait_elapsed";
+            }
+            return ok(out);
         }
         plat::sleep_ms(100);
     }
@@ -308,15 +342,25 @@ void register_jobs() {
         {"lua_job_status", "State of a Lua job",
          "With id: the state of a job started by lua_job (frames, elapsed_s, cpu_ms, last progress, reports_count); once it "
          "has finished, its full result exactly like lua_job's, and the job is then forgotten. wait_s waits up to that long "
-         "for the end. A job id belongs to one Lua state: after a map change (new realm) an id of the old state answers realm_reset. Without id: every job of every realm, running or finished but not collected yet.",
+         "for the end (the game's main thread is not held: the wait is a poll). With wait_s of 15 or more the call runs as a "
+         "background task (when the client supports tasks), like lua_job: the result then arrives as the task notification. "
+         "A wait that stops with the job still running says why: state running with stopped \"wait_elapsed\" (waited_s, wait_s; "
+         "elapsed_s is the job's own age, not the time waited), or the error cancelled when the request itself was cancelled "
+         "(the job keeps running: call again with the same id). "
+         "A result is delivered once: after that, the id answers not_found with details.delivered_at / delivered_by (the task "
+         "notification of lua_job, or an earlier lua_job_status) while the Lua state lives; the plain \"realm reloaded or result "
+         "already collected\" wording means no memory of it (reload, or more than 1 h ago), and dropped_at says a result nobody "
+         "collected in time. A job id belongs to one Lua state: after a map change (new realm) an id of the old state answers realm_reset. Without id: every job of every realm, running or finished but not collected yet.",
          json{{"properties",
                {{"id", {{"type", "string"}, {"description", "Job id returned by lua_job (e.g. 'server-g3-1')."}}},
-                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600}, {"description", "Wait up to this long for the job to finish (default 0)."}}},
+                {"wait_s", {{"type", "number"}, {"minimum", 0}, {"maximum", 3600},
+                            {"description", "Wait up to this long for the job to finish (default 0). 15 s or more: runs as an MCP task when the client supports it."}}},
                 {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 50},
                             {"description", "Keep only these keys of each returned table."}}}}}},
          // Not read-only: a finished job's result is handed over once and the job is forgotten. Not destructive: that only drops
          // the module's own bookkeeping of a result the caller just received (the default would say destructive).
          json{{"readOnlyHint", false}, {"destructiveHint", false}, {"idempotentHint", false}}, lua_job_status_tool});
+    mcp::set_task_support("lua_job_status", "optional");  // Issue #35: a long wait_s is a task like lua_job's timeout_s
     mcp::register_tool({"lua_job_cancel", "Cancel a Lua job",
                         "Asks a running job (started by lua_job, e.g. with async: true) to stop: it ends at its next frame, before "
                         "resuming. Result: {job_id, cancelled (false if the id is unknown), note}. Its final state (cancelled) "

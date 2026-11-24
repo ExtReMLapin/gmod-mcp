@@ -357,6 +357,14 @@ void set_port_conflict(int status, const std::string &token) {
 
 using NoteFn = std::function<void(const json &)>;
 
+// Issue #35: names this bridge to the game (header X-Gmod-Mcp-Client). Several bridges (one per Claude session) talk to one
+// game and JSON-RPC ids are only unique per client: the game keys the cancellation of a request by this tag and the id.
+const std::string &client_tag() {
+    static const std::string tag =
+        "bridge-" + std::to_string(plat::process_id()) + "-" + std::to_string((long long)std::chrono::system_clock::now().time_since_epoch().count());
+    return tag;
+}
+
 // Sends one message to the game. Notifications seen on an SSE response (progress...) go to on_note as they arrive;
 // the final response is returned.
 Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> cancel = nullptr, NoteFn on_note = nullptr) {
@@ -368,7 +376,7 @@ Relay relay(const json &msg, double read_timeout_s, std::shared_ptr<Inflight> ca
     }
     while (!token.empty() && (token.back() == '\n' || token.back() == '\r' || token.back() == ' ')) token.pop_back();
 
-    httplib::Headers h{{"Authorization", "Bearer " + token}, {"Accept", "application/json, text/event-stream"}};
+    httplib::Headers h{{"Authorization", "Bearer " + token}, {"Accept", "application/json, text/event-stream"}, {"X-Gmod-Mcp-Client", client_tag()}};
     std::string method = msg.value("method", "");
     if (is_modern(msg)) {
         const json &p = msg["params"];

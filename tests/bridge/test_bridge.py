@@ -594,6 +594,12 @@ def case_f(slow=False):
     h = (r or {}).get("result", {}).get("structuredContent", {}).get("headers", {})
     check("F modern headers: version, method, name", h.get("mcp-protocol-version") == MODERN and h.get("mcp-method") == "tools/call" and h.get("mcp-name") == "echo", h)
     check("F non-ASCII Mcp-Param-Instance sent base64 and decodes back", h.get("mcp-param-instance", "").startswith("=?base64?") and decode_header(h.get("mcp-param-instance")) == inst, h)
+    # Issue #35: the bridge names itself to the game (the game keys a request's cancellation by this tag and the JSON-RPC id, so a
+    # cancel sent through another session's bridge cannot reach this one's request with the same id). Written without running.
+    with srv.lock:
+        tags = {{k.lower(): v for k, v in hd.items()}.get("x-gmod-mcp-client") for body, hd in srv.seen if body.get("method") == "tools/call"}
+    check("F Issue #35: every call carries one X-Gmod-Mcp-Client tag of this bridge",
+          len(tags) == 1 and None not in tags and str(next(iter(tags))).startswith("bridge-"), tags)
     r = b.req("tools/call", {"name": "echo", "arguments": {}, "_meta": {"io.modelcontextprotocol/protocolVersion": 5}})
     check("F non-string version in _meta: answered (legacy), bridge alive", r and "result" in r, r)
 

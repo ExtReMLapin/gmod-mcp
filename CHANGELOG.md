@@ -103,6 +103,17 @@
 
 ### Fixes
 
+- **`lua_job_status {wait_s}` no longer stops early without saying why, and "result already delivered" is no longer "not found"**
+  (Issue #35). Read, not run: the only way the wait returned `running` before `wait_s` was `reqctx::cancelled()`, and a request was
+  found by its JSON-RPC id alone, which is only unique per client, while every Claude session has its own bridge to the same game:
+  a `notifications/cancelled` for the request `7` of one session could cancel the request `7` of another (at any moment, which
+  fits 17.9 s and 3.2 s; the most likely cause, not reproduced). The bridge now sends `X-Gmod-Mcp-Client` and the game matches a cancellation on that tag and the id. A wait that
+  ends early now says why: `stopped: "wait_elapsed"` with `waited_s` / `wait_s` (`elapsed_s` is the job's age, not the wait), and a
+  cancelled request is the error `cancelled` (the job keeps running), not a plain `running`. A long `wait_s` (15 s or more) runs as an
+  MCP task like `lua_job`'s `timeout_s`. A job whose result was already handed over (by the task notification of `lua_job`, or by an
+  earlier `lua_job_status`) or dropped uncollected is remembered for an hour (256 ids): `not_found` then says "result already
+  delivered at <time>" with `details.delivered_at`, `delivered_by`, `delivered_ago_s` (or `dropped_at`), instead of "realm reloaded or
+  result already collected"; a realm reload still gives the old wording. Tests written, not run.
 - **The time budget is documented for what it does** (issue #22). A `budget` (and `resume_limit_s`) installs a count hook, and
   while a hook is installed LuaJIT interprets the code and the helpers it calls (several times slower, up to 40x for a loop in
   a helper, nothing new compiled): the comment on `A.run_budget` and the `lua_exec`, `lua_job` and `tests_run` texts said that

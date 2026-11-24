@@ -148,7 +148,8 @@ json build(const std::string &tool) {
                            {"job_id"});
         s["lua_job_status"] = obj({{"job_id", S}, {"state", S}, {"frames", N}, {"elapsed_s", N}, {"jobs", ANYS}, {"generation", N},
                                    {"values", ANYS}, {"n", N}, {"reports", ANYS}, {"output", S}, {"resumes", N}, {"cpu_ms", N},
-                                   {"truncated", N}, {"reports_count", N}, {"progress", ANY}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}, {"include_failed", STRS}});
+                                   {"truncated", N}, {"reports_count", N}, {"progress", ANY}, {"projected", STRS}, {"fields_note", S}, {"blocked_console_commands", STRS}, {"include_failed", STRS},
+                                   {"waited_s", N}, {"wait_s", N}, {"stopped", S}});
         s["lua_job_cancel"] = obj({{"job_id", S}, {"cancelled", B}}, {"job_id", "cancelled"});
         // --- session
         s["map_list"] = obj({{"maps", STRS}, {"count", N}, {"truncated", B}, {"filter", S}}, {"maps", "count", "truncated"});

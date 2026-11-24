@@ -142,11 +142,15 @@ use `lua_job`: the script runs as a coroutine resumed once per frame and talks t
 
 A resume that never yields freezes the game (optional `resume_limit_s`: best effort, stops loops written in the script
 itself). Cancelling the request stops the job at the next frame; a map change destroys it (`realm_reset`). With
-`timeout_s` >= 15 the call runs as an MCP task.
+`timeout_s` >= 15 the call runs as an MCP task: its result is delivered once, by the task notification, and the job is then
+forgotten (a later `lua_job_status {id}` answers `not_found` with `details.delivered_at`: not lost, already delivered; to poll
+a long job yourself start it with `async: true`).
 
 Globals the script assigns land in the realm's `_G` and the next job sees them: pass `fresh_env: true` to keep them in the
 job's own table. `async: true` returns the job id at once: `lua_job_status {id, wait_s}` polls it and returns the result
-once finished, `lua_job_cancel {id}` stops it (ids look like `server-g3-1`: the number after `g` is the realm's generation, so after a map change an old id answers `realm_reset` instead of reaching a newer job); a job started while another runs in the same realm gets `concurrent_jobs`.
+once finished (`wait_s` >= 15 runs as a task like `lua_job`'s `timeout_s`; a wait that ends with the job still running says
+`stopped: "wait_elapsed"` with `waited_s`, `elapsed_s` being the job's own age; a cancelled request is the error `cancelled`),
+`lua_job_cancel {id}` stops it (ids look like `server-g3-1`: the number after `g` is the realm's generation, so after a map change an old id answers `realm_reset` instead of reaching a newer job); a job started while another runs in the same realm gets `concurrent_jobs`.
 Pitfall: `EyePos()` / `EyeAngles()` are only reliable inside rendering hooks (wiki); a job runs outside them (agents saw
 (0,0,0)): use `LocalPlayer():EyePos()` / `LocalPlayer():EyeAngles()`.
 
