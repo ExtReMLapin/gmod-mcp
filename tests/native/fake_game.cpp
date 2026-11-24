@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 
@@ -30,6 +31,25 @@ static void write_dump_body(FILE *d) {
         }
     }
     std::fputs("MDMP", d);
+}
+
+// Appends one line to a file that several stand-in games write at once (one line per start). fopen "ab" seeks to the end and
+// then writes, so two games starting together could write at the same offset and one line was lost (RETURN_FOCUS saw one of
+// two). A handle opened with FILE_APPEND_DATA only makes each WriteFile an atomic append; POSIX "ab" is O_APPEND already.
+static void append_line(const char *path, const std::string &line) {
+#ifdef _WIN32
+    HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    std::string l = line + "\n";
+    DWORD written = 0;
+    WriteFile(h, l.data(), (DWORD)l.size(), &written, nullptr);
+    CloseHandle(h);
+#else
+    if (FILE *f = std::fopen(path, "ab")) {
+        std::fprintf(f, "%s\n", line.c_str());
+        std::fclose(f);
+    }
+#endif
 }
 
 int main(int argc, char **argv) {
@@ -98,10 +118,7 @@ int main(int argc, char **argv) {
             STARTUPINFOW si{};
             si.cb = sizeof si;
             GetStartupInfoW(&si);
-            if (FILE *f = std::fopen(so, "ab")) {
-                std::fprintf(f, "show=%u uses_show=%d\n", (unsigned)si.wShowWindow, (si.dwFlags & STARTF_USESHOWWINDOW) ? 1 : 0);
-                std::fclose(f);
-            }
+            append_line(so, "show=" + std::to_string((unsigned)si.wShowWindow) + " uses_show=" + ((si.dwFlags & STARTF_USESHOWWINDOW) ? "1" : "0"));
         }
     }
 #endif
@@ -126,20 +143,18 @@ int main(int argc, char **argv) {
 #endif
     const char *out = std::getenv("GMCP_FAKE_ARGV");
     if (out && *out) {
-        if (FILE *f = std::fopen(out, "ab")) {
 #ifdef _WIN32
-            // The wide command line, written as UTF-8: what the bridge really passed, whatever the ANSI code page.
-            const wchar_t *w = GetCommandLineW();
-            int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-            std::string u(n > 0 ? (size_t)n : 1, '\0');
-            if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, u.data(), n, nullptr, nullptr);
-            std::fprintf(f, "%s\n", u.c_str());
+        // The wide command line, written as UTF-8: what the bridge really passed, whatever the ANSI code page.
+        const wchar_t *w = GetCommandLineW();
+        int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+        std::string u(n > 0 ? (size_t)n : 1, '\0');
+        if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, u.data(), n, nullptr, nullptr);
+        u.resize(std::strlen(u.c_str()));  // without the terminating NUL that WideCharToMultiByte counted
 #else
-            for (int i = 0; i < argc; ++i) std::fprintf(f, "%s%s", i ? " " : "", argv[i]);
-            std::fprintf(f, "\n");
+        std::string u;
+        for (int i = 0; i < argc; ++i) u += std::string(i ? " " : "") + argv[i];
 #endif
-            std::fclose(f);
-        }
+        append_line(out, u);
     }
     // GMCP_FAKE_CWD names a file that gets the working directory (UTF-8): a test checks where the bridge started the game.
     const char *cwdf = std::getenv("GMCP_FAKE_CWD");
