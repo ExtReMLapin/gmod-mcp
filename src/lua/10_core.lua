@@ -353,6 +353,12 @@ end
 -- replaced by a version that wraps the functions it is given: after `limit` identical errors in a row the hook is removed and one
 -- line is logged. The hook keeps its identifier (hook.Remove works), the error still propagates (the engine reports it as before),
 -- and a hook added by anything else, at any other time, is never touched. hook_guard 0 turns it off.
+-- Issue #33: the module asks for the guard only for code the agent typed (lua_exec {code}, lua_job): it sends hook_guard 0 for
+-- lua_exec_file (unless the caller passes one) and for lua_reload, so the hooks of a real addon file are registered exactly as
+-- the game would, with the file's own functions. mcpagent.unwrap(fn) gives back the function a wrapped hook was given.
+-- Issue #34: hook_list says which tool added each hook. With the guard on, the temporary hook.Add replacement records them; with it
+-- off and for anything but a job (lua_exec_file, lua_reload: an addon's real file), hook.Add is NOT replaced at all (a file that
+-- keeps `local hook_Add = hook.Add` would keep our function for good): hook.GetTable() is compared before and after the chunk.
 A.HOOK_GUARD_DEFAULT = 300
 local guard_stack = {}
 local guard_wrappers = setmetatable({}, { __mode = "k" })  -- wrapper -> its state (a wrapper is never wrapped twice)
@@ -439,17 +445,93 @@ function A.guard_origin(f)
 	return st and st.f or f
 end
 
--- limit: nil = the default, 0 = no guard. Runs can nest (a stack).
-function A.guard_begin(limit)
+-- Hooks the tools added (Issue #34): event -> id -> { f (the function as registered: the guard's wrapper when wrapped), tool,
+-- chunk, at (SysTime), seq }. Bounded; an entry only counts while the hook is still registered with that very function.
+local ADDED_MAX = 500
+local ADDED_TOOLS = { lua_exec = true, lua_exec_file = true, lua_reload = true, lua_job = true }
+local added, added_n, added_seq = {}, 0, 0
+
+local function added_prune(tbl)  -- tbl: hook.GetTable() (nil: forget everything)
+	for ev, ids in pairs(added) do
+		local cur = type(tbl) == "table" and type(tbl[ev]) == "table" and tbl[ev] or nil
+		for id, rec in pairs(ids) do
+			if not cur or cur[id] ~= rec.f then ids[id] = nil added_n = added_n - 1 end
+		end
+		if next(ids) == nil then added[ev] = nil end
+	end
+end
+
+local function added_record(event, id, f, tool, chunk)
+	if event == nil or id == nil or id ~= id then return end
+	local ids = added[event]
+	if not ids then ids = {} added[event] = ids end
+	if ids[id] == nil then added_n = added_n + 1 end
+	added_seq = added_seq + 1
+	ids[id] = { f = f, tool = tool, chunk = chunk, at = SysTime(), seq = added_seq }
+	if added_n <= ADDED_MAX then return end
+	local ok, tbl = pcall(function() return hook.GetTable() end)
+	added_prune(ok and tbl or nil)
+	if added_n <= ADDED_MAX then return end
+	local all = {}  -- still over the cap with every hook alive: forget the oldest quarter
+	for ev, byid in pairs(added) do
+		for i, rec in pairs(byid) do all[#all + 1] = { ev = ev, id = i, seq = rec.seq } end
+	end
+	table.sort(all, function(a, b) return a.seq < b.seq end)
+	for i = 1, math.min(#all, math.floor(ADDED_MAX / 4)) do
+		local e = all[i]
+		added[e.ev][e.id] = nil
+		added_n = added_n - 1
+		if next(added[e.ev]) == nil then added[e.ev] = nil end
+	end
+end
+
+-- The record of a hook a tool added, if it is still the function registered under event / id (f = what hook.GetTable() holds):
+-- { tool, chunk, at }. A hook the addon replaced since is not ours any more.
+function A.hook_added(event, id, f)
+	local rec = added[event] and added[event][id]
+	if rec and rec.f == f then return rec end
+	return nil
+end
+-- Forgets the records of hooks that are gone or replaced (hook_list calls it: the registry never keeps a dead hook for long).
+function A.hook_added_prune()
+	local ok, tbl = pcall(function() return hook.GetTable() end)
+	added_prune(ok and tbl or nil)
+end
+
+-- limit: nil = the default, 0 = no guard (the hook is still recorded as added by `tool`). Runs can nest (a stack).
+-- tool: lua_exec | lua_exec_file | lua_reload | lua_job (anything else is lua_exec); chunk: the chunk name, for hook_list.
+function A.guard_begin(limit, tool, chunk)
 	limit = limit == nil and A.HOOK_GUARD_DEFAULT or tonumber(limit) or 0
-	if limit < 1 or type(hook) ~= "table" or type(hook.Add) ~= "function" then
+	if type(hook) ~= "table" or type(hook.Add) ~= "function" then
 		guard_stack[#guard_stack + 1] = false
 		return
 	end
+	if not ADDED_TOOLS[tool] then tool = "lua_exec" end
+	chunk = type(chunk) == "string" and chunk or nil
+	if limit < 1 and tool ~= "lua_job" then  -- no guard: nothing is replaced, the hook table is compared at guard_end
+		local ok, tbl = pcall(function() return hook.GetTable() end)
+		local before = {}
+		if ok and type(tbl) == "table" then
+			for ev, ids in pairs(tbl) do
+				if type(ids) == "table" then
+					local c = {}
+					for id, f in pairs(ids) do c[id] = f end
+					before[ev] = c
+				end
+			end
+		end
+		guard_stack[#guard_stack + 1] = { before = before, tool = tool, chunk = chunk }
+		return
+	end
 	local orig = hook.Add
+	-- hook.Add returns nothing in the game; whatever it returns is passed on after the hook is recorded.
+	local function recorded(event, id, f, ...)
+		if type(f) == "function" then pcall(added_record, event, id, f, tool, chunk) end
+		return ...
+	end
 	local function detour(event, id, f, ...)
-		if type(f) == "function" and not guard_wrappers[f] then f = guard_wrap(event, id, f, limit) end
-		return orig(event, id, f, ...)
+		if limit >= 1 and type(f) == "function" and not guard_wrappers[f] then f = guard_wrap(event, id, f, limit) end
+		return recorded(event, id, f, orig(event, id, f, ...))
 	end
 	hook.Add = detour
 	guard_stack[#guard_stack + 1] = { orig = orig, detour = detour }
@@ -457,6 +539,19 @@ end
 
 function A.guard_end()
 	local top = table.remove(guard_stack)
+	if top and top.before then  -- unguarded run: what is new or changed in the hook table since guard_begin was added by it
+		local ok, tbl = pcall(function() return hook.GetTable() end)
+		if not ok or type(tbl) ~= "table" then return end
+		for ev, ids in pairs(tbl) do
+			if type(ids) == "table" then
+				local was = top.before[ev]
+				for id, f in pairs(ids) do
+					if type(f) == "function" and (not was or was[id] ~= f) then pcall(added_record, ev, id, f, top.tool, top.chunk) end
+				end
+			end
+		end
+		return
+	end
 	if top and hook.Add == top.detour then hook.Add = top.orig end  -- the chunk replaced hook.Add itself: leave its choice
 end
 
@@ -600,6 +695,9 @@ function mcpagent.event(etype, data)
 	if native.event then native.event("user:" .. etype, J.encode(A.serialize(data or {}, { depth = 6 }))) end
 end
 mcpagent.realm = A.realm
+-- Issue #33: a hook added by lua_exec {code} or lua_job is wrapped by the hook guard (a different function from the one the code
+-- passed to hook.Add); mcpagent.unwrap(fn) gives back that function, and fn itself for anything else.
+function mcpagent.unwrap(f) return A.guard_origin(f) end
 
 -- Internal tool: runtime ping.
 function H.ping(args) return { realm = A.realm, generation = A.generation, time = SysTime() } end

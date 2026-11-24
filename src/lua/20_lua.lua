@@ -21,7 +21,9 @@ function H.lua_exec(args)
 	-- No budget unless asked (jit: true, the old way to turn it off, wins).
 	local budget = args.jit ~= true and tonumber(args.budget) or nil
 	A.capture_begin()
-	A.guard_begin(args.hook_guard)  -- Issue #15: hooks added by this chunk are removed after N identical errors in a row
+	-- Issue #15: hooks added by this chunk are removed after N identical errors in a row; the module sends hook_guard 0 for a real file
+	-- (lua_exec_file, lua_reload: Issue #33) and says which tool this is (args.tool), so hook_list can name it (Issue #34).
+	A.guard_begin(args.hook_guard, args.tool, chunk)
 	local t0 = SysTime()
 	local ok, res, err, tb, exceeded = A.run_budget(fn, budget)
 	local dt = (SysTime() - t0) * 1000

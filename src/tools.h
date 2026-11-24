@@ -62,6 +62,9 @@ json merge_test_runs(const std::vector<json> &runs);
 // Issue #11: is this relative path (folder segments + file name) a test file: a directory named tests, test, spec, specs or
 // __tests__, or a file named test_*.lua, *_test.lua, *_spec.lua? lua_check then knows the globals tests_run gives (expect).
 bool is_test_lua_path(const std::string &rel_path);
+// The payload the Lua runtime gets for a chunk of `tool` (lua_exec, lua_exec_file, lua_reload): hook_guard is 0 for a real file
+// (Issue #33), `tool` is what hook_list reports as added_by (Issue #34).
+json exec_payload(const json &args, const std::string &code, const std::string &chunk, const std::string &tool);
 // Applies the `fields` argument (lua_exec, lua_exec_file, lua_job): keeps only these keys of each returned table.
 json project_values(json result, const json &args);
 // `fields` on an object result (status): keeps only these top-level keys.
@@ -74,6 +77,8 @@ std::vector<std::string> lua_matches(const std::string &path);
 json file_provenance(const std::string &abs, const std::vector<std::string> &others);
 // Issues #25 and #32: sentences for a reload's `note` from the file's text (AddCSLuaFile; a local table with methods).
 std::vector<std::string> reload_notes(const std::string &code);
+// Issue #25: the note for a shared-looking file reloaded in one realm only ("" otherwise); file_name may be a full path.
+std::string shared_reload_note(const std::string &file_name, const std::string &code, const std::vector<int> &ran);
 // Mounted folder (Issue #9). Where a function's file came from: {from_mount, mount_has_file?, disk?, provenance, note?}.
 json source_provenance(int realm, const std::string &source);
 // status.lua_mount: {path, loaded_with_mount, realms_without_mount, stale_files:[{file, disk, reason, realms}], warning?}

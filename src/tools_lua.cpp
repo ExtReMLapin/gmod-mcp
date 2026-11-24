@@ -225,15 +225,25 @@ static json tests_run_tool(const json &args) {
 void register_lua_tools() {
     json RO = {{"readOnlyHint", true}};
     mcp::register_tool({"hook_list", "List hooks", "Hooks registered with hook.Add in a realm (hook.GetTable), with where each function was defined. Without `event`: "
-                        "every event (large; `name` keeps the hooks whose identifier contains it, e.g. to check that one was removed). Result: {hooks: {<event>: [{id, source (file), line, what}]}, count}, and with "
+                        "every event (large; `name` keeps the hooks whose identifier contains it, e.g. to check that one was removed). Result: {hooks: {<event>: [{id, source (file), line, what, added_by?, chunk?, added_at?}]}, count, now}, and with "
                         "`event`: event, known (false = no hook and no gamemode function for that name: probably a typo) and "
-                        "gamemode_function (source of GAMEMODE:<event>, or null). Example: {\"realm\": \"client\", \"event\": \"Think\"}.",
+                        "gamemode_function (source of GAMEMODE:<event>, or null). Example: {\"realm\": \"client\", \"event\": \"Think\"}. "
+                        "Which hooks the tools left on the game: a hook that lua_exec, lua_exec_file, lua_reload or lua_job added through hook.Add while its chunk ran "
+                        "(or during a job's resumes) carries added_by (that tool), chunk (the chunk name) and added_at (SysTime() of the realm when it was added; "
+                        "`now` in the result is the same clock, so now - added_at is its age in seconds). `added_by: \"mcp\"` keeps only those hooks (or name one tool), "
+                        "combinable with `name` and `event`: {\"added_by\": \"mcp\"} answers \"what did the tools leave on this game?\". "
+                        "Only a hook still registered with the function the tool added (or its guard wrapper) is reported: one the addon replaced since is not. "
+                        "Not seen: a hook added later by a callback or a timer the chunk left behind. The list is kept per realm, bounded (500 hooks) and starts empty "
+                        "at every map load. Remove a leftover with hook.Remove(event, id) in lua_exec.",
                         json{{"properties", {{"realm", realm_prop("Default server.")}, {"event", {{"type", "string"}, {"description", "Event name (e.g. Think)."}}},
+                                             {"added_by", {{"type", "string"}, {"enum", json::array({"mcp", "lua_exec", "lua_exec_file", "lua_reload", "lua_job"})},
+                                                           {"description", "Keep only the hooks the MCP tools added: \"mcp\" (any tool) or one tool's name. Events left empty are omitted."}}},
                                              {"name", {{"type", "string"}, {"description", "Keep only the hooks whose identifier contains this text (plain text, any case, not a pattern); events left empty are omitted."}}}}}},
                         RO, [](const json &a) {
                             json p = json::object();
                             if (a.contains("event")) p["event"] = a["event"];
                             if (a.contains("name")) p["name"] = a["name"];
+                            if (a.contains("added_by")) p["added_by"] = a["added_by"];
                             return rt_realm(a, "realm", realms::SERVER, "hook_list", p);
                         }});
     mcp::register_tool({"hook_trace", "Trace a hook",

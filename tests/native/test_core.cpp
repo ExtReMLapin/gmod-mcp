@@ -448,7 +448,7 @@ static void test_frictions_small() {
     // Optional arguments: realm, code, path, name, timeout_s first when present, then alphabetical; at most 8, then `...`.
     CHECK(shape("tests_run") == "tests_run(path, realm?, timeout_s?, budget?, case?, fields?, frames_between_files?, only_failures?, output?)");
     CHECK(shape("wiki_page") == "wiki_page(name, format?, refresh?)");
-    CHECK(shape("hook_list") == "hook_list(realm?, name?, event?)");
+    CHECK(shape("hook_list") == "hook_list(realm?, name?, added_by?, event?)");
     CHECK(shape("status").rfind("status(", 0) == 0 && shape("status").find("instance") == std::string::npos);
     json many{{"properties", {{"a", json::object()}, {"b", json::object()}, {"c", json::object()}, {"d", json::object()}, {"e", json::object()},
                               {"f", json::object()}, {"g", json::object()}, {"h", json::object()}, {"i", json::object()},
@@ -4119,6 +4119,38 @@ int main(int argc, char **argv) {
         CHECK(!has(joined(tools::reload_notes("-- local Clip = {}\n-- function Clip:Play() end\n")), "Clip"));  // Issue #32: comments
         CHECK(!has(joined(tools::reload_notes("MyAddon.Clip = MyAddon.Clip or {}\nfunction MyAddon.Clip:Play() end\n")), "Clip"));  // Issue #32: a global is replaced in place
         CHECK(tools::reload_notes("").empty());
+        {  // Issue #25 (comment): a shared-looking file reloaded in one realm says server first, then client, with realms (unverified: written without a build)
+            auto &sc = agent::config();
+            agent::Mode saved_mode = sc.mode;
+            sc.mode = agent::Mode::Client;
+            std::string a = tools::shared_reload_note("C:/g/lua/my_addon/sh_core.lua", "x = 1", {realms::SERVER});
+            CHECK(has(a, "server") && has(a, "first") && has(a, "client") && has(a, "realms") && has(a, "shared"));
+            CHECK(has(tools::shared_reload_note("lua/my_addon/sh_core.lua", "", {realms::CLIENT}), "client realm only"));
+            CHECK(!tools::shared_reload_note("lua/my_addon/shared.lua", "", {realms::SERVER}).empty());          // shared.lua
+            CHECK(!tools::shared_reload_note("lua/my_addon/core.lua", "AddCSLuaFile()", {realms::SERVER}).empty());  // calls AddCSLuaFile
+            CHECK(!tools::shared_reload_note("lua\\my_addon\\SH_Core.lua", "", {realms::SERVER}).empty());        // any case, backslashes
+            CHECK(tools::shared_reload_note("lua/my_addon/sv_core.lua", "x = 1", {realms::SERVER}).empty());      // does not look shared
+            CHECK(tools::shared_reload_note("lua/my_addon/ash_core.lua", "x = 1", {realms::SERVER}).empty());     // sh_ is a prefix of the file name
+            CHECK(tools::shared_reload_note("lua/sh_dir/core.lua", "x = 1", {realms::SERVER}).empty());          // not of a folder
+            CHECK(tools::shared_reload_note("lua/my_addon/sh_core.lua", "", {realms::SERVER, realms::CLIENT}).empty());  // both ran
+            CHECK(tools::shared_reload_note("lua/my_addon/sh_core.lua", "", {realms::MENU}).empty());
+            sc.mode = agent::Mode::Dedicated;  // srcds has no client realm to run the other half in
+            CHECK(tools::shared_reload_note("lua/my_addon/sh_core.lua", "", {realms::SERVER}).empty());
+            sc.mode = saved_mode;
+        }
+        {  // Issues #33, #34: what the Lua runtime is told about each tool (unverified: written without a build)
+            json typed = tools::exec_payload(json{{"code", "x"}}, "x", "=mcpagent:lua_exec", "lua_exec");
+            CHECK(typed["tool"] == "lua_exec" && !typed.contains("hook_guard"));  // the runtime's default (guard on) applies to typed code
+            CHECK(tools::exec_payload(json{{"hook_guard", 7}}, "x", "c", "lua_exec")["hook_guard"] == 7);
+            CHECK(tools::exec_payload(json{{"hook_guard", 0}}, "x", "c", "lua_exec")["hook_guard"] == 0);
+            json file = tools::exec_payload(json{{"path", "a.lua"}}, "x", "@lua/a.lua", "lua_exec_file");
+            CHECK(file["tool"] == "lua_exec_file" && file["hook_guard"] == 0 && file["chunkname"] == "@lua/a.lua");  // a real file is not wrapped
+            CHECK(tools::exec_payload(json{{"path", "a.lua"}, {"hook_guard", 5}}, "x", "c", "lua_exec_file")["hook_guard"] == 5);  // explicit opt-in
+            json reload = tools::exec_payload(json{{"path", "a.lua"}}, "x", "@lua/a.lua", "lua_reload");
+            CHECK(reload["tool"] == "lua_reload" && reload["hook_guard"] == 0);
+            CHECK(tools::exec_payload(json{{"hook_guard", 5}}, "x", "c", "lua_reload")["hook_guard"] == 0);  // never wraps a reload
+            CHECK(tools::exec_payload(json{{"chunkname", "@x"}, {"budget", 2}}, "x", "c", "lua_reload")["chunkname"] == "@x");
+        }
         {  // a class named twice is listed once; a name that is the end of another is not taken for a duplicate (unverified: written without a build)
             std::string nd = joined(tools::reload_notes("local Aa = {}\nfunction Aa.x() end\nlocal Bb = {}\nfunction Bb.x() end\nlocal Bb = {}\n"));
             CHECK(has(nd, "(Aa, Bb)") && !has(nd, "Bb, Bb") && !has(nd, "..."));
@@ -4139,6 +4171,23 @@ int main(int argc, char **argv) {
             CHECK(!le->input_schema["properties"].contains("assign_to"));  // Issue #28: lua_exec_file only
             CHECK(has(le->description, "include") && has(le->description, "lua_exec_file") && has(lj->description, "include"));  // Issue #19
             CHECK(has(lm->description, "assign_to"));  // Issue #28: the way to load a data file outside lua/
+            // Issue #33: which tools wrap hooks. Only lua_exec {code} and lua_job; a file runs as the game would (hook_guard 0 by default).
+            CHECK(has(le->description, "mcpagent.unwrap") && has(le->description, "lua_job") && has(le->description, "lua_exec_file and lua_reload register hooks"));
+            CHECK(has(ef->description, "unwrapped") && has(ef->description, "hook_guard") && has(ef->description, "added_by"));
+            CHECK(ef->input_schema["properties"]["hook_guard"]["description"].get<std::string>().find("Default 0") != std::string::npos);
+            CHECK(has(le->input_schema["properties"]["hook_guard"]["description"].get<std::string>(), "default 300") && has(le->input_schema["properties"]["hook_guard"]["description"].get<std::string>(), "mcpagent.unwrap"));
+            CHECK(!rl->input_schema["properties"].contains("hook_guard") && has(rl->description, "never wraps") && has(rl->description, "lua_reload"));
+            CHECK(has(lj->input_schema["properties"]["hook_guard"]["description"].get<std::string>(), "mcpagent.unwrap"));
+            // Issue #25 (comment): a new shared file needs realms, server first.
+            CHECK(has(rl->description, "NEW shared file") && has(rl->description, "`realms` set") && has(rl->description, "`server` first") && has(rl->description, "`client`"));
+            // Issue #34: hook_list says which tool added a hook.
+            const mcp::Tool *hl = mcp::find_tool("hook_list");
+            CHECK(hl != nullptr);
+            if (hl) {
+                CHECK(has(hl->description, "added_by") && has(hl->description, "added_at") && has(hl->description, "SysTime") && has(hl->description, "chunk"));
+                CHECK(hl->input_schema["properties"].contains("added_by") && hl->input_schema["properties"]["added_by"]["enum"].size() == 5);
+                CHECK(has(hl->description, "replaced") && has(hl->description, "bounded"));
+            }
         }
     }
 

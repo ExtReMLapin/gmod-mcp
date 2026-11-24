@@ -117,6 +117,14 @@ The agent runtime (global table `__mcpagent`) is re-injected automatically.
 Vector/Angle/Color/Entity/functions/cyclic tables have a `{"__type": ...}` form.
 `print`/`Msg`/`MsgN`/`MsgC` emitted during execution are captured in `output`.
 
+**Hooks added by the tools.** A hook that `lua_exec {code}` or `lua_job` adds with `hook.Add` is wrapped by the hook guard: after
+`hook_guard` identical errors in a row (default 300) it is removed and one line is logged. `hook.GetTable()[event][id]` is then the
+guard's wrapper, not your function: compare behaviour, or `mcpagent.unwrap(fn)` for the function you passed. `lua_exec_file` and
+`lua_reload` register hooks exactly as the game would, unwrapped (the file's own functions), unless `lua_exec_file` gets a `hook_guard`
+above 0. Every hook the four tools added is named by `hook_list` (`added_by`, `chunk`, `added_at`), and `hook_list {added_by: "mcp"}` answers
+"what did the tools leave on this game?" so a temporary hook (for example one that hides the HUD) does not silently change a later test;
+a hook the addon replaced since is not listed. `hook.Remove(event, id)` in `lua_exec` removes a leftover.
+
 ## Long-running Lua: lua_job
 `lua_exec` runs in one go on the main thread (the game is frozen meanwhile; no time limit unless `budget`, so an infinite
 loop freezes the game: the call fails with `main_thread_timeout` after `timeout_s`, `status` shows `main_thread_stalled`,
@@ -232,7 +240,11 @@ check when it ends (`warning` and `lua_mount` in its result) and empties the eng
 files and entity/weapon/effect files are listed in `skipped`: `map_load`, or `lua_reload {path}` to force one), or
 `lua_reload {path: "my_addon/core.lua"}` for a single file, or `map_load` for a clean state. A reload re-runs the file: it
 does not undo what the old copy did (hooks or timers under another name, net strings, entities already spawned) and what
-the file built at load time is not reset. If a file fails (a syntax error, a Lua error) `lua_reload {mounted_changed}` answers
+the file built at load time is not reset. A NEW shared file (`sh_*.lua`, `shared.lua`, or one that calls `AddCSLuaFile`) must be reloaded
+with `realms` set, `server` first, then `client`: `lua_reload {path: "my_addon/sh_core.lua", realms: ["server", "client"]}` (a client that never got
+the file does not receive it otherwise, and a server half that registers something the client half reads, a replicated convar for
+instance, must run first; the answer's `note` says so when only one realm ran). A reload registers the file's hooks exactly as the game
+would (the hook guard never wraps them). If a file fails (a syntax error, a Lua error) `lua_reload {mounted_changed}` answers
 the error `reload_failed` (`isError`): `details` holds the whole `reloaded` list, the other files did run.
 Limit of `stale_files`: it compares file times, not contents. An edit that leaves the file's time as it was (a tool that
 restores the time, or two saves inside the clock's resolution) is not seen, whatever its size; `map_load` still runs the
