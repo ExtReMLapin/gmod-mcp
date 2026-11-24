@@ -1,5 +1,7 @@
 # gmod-mcp
 
+[![ExtReMLapin/gmod-mcp MCP server](https://glama.ai/mcp/servers/ExtReMLapin/gmod-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ExtReMLapin/gmod-mcp)
+
 [![MCP conformance](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ExtReMLapin/gmod-mcp/badges/mcp-conformance.json)](https://github.com/ExtReMLapin/gmod-mcp/actions/workflows/build.yml)
 [![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ExtReMLapin/gmod-mcp/badges/tests.json)](https://github.com/ExtReMLapin/gmod-mcp/actions/workflows/build.yml)
 
