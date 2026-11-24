@@ -3943,23 +3943,38 @@ if args[:1] == ["--serial"] or len(args) == 1:
         cleanup_made()
         print("   [%s: %.1f s]" % (c, time.time() - t_case), flush=True)
 else:
-    # Several cases: each in its own process, all at once (they use their own ports, configs and stand-in games), so
-    # the whole default suite takes about as long as its slowest case. Output is printed per case, in order.
+    # Several cases: each in its own process (they use their own ports, configs and stand-in games), at most JOBS at once.
+    # All 39 at once on a 4-core CI runner made the cases that wait for a process to end within a few seconds fail at
+    # random on Windows (a different one each run: orphan, private_desktop, chaos_job, portconflict...). The slowest cases
+    # start first, so the suite still takes little more than its slowest case. Output is printed per case, in order.
+    # BRIDGE_JOBS overrides the bound (default: twice the processor count, at least 4).
     t0 = time.time()
     names = args or DEFAULT
-    procs = [(c, subprocess.Popen([sys.executable, "-u", __file__, BRIDGE, "--serial", c], stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONIOENCODING="utf-8"))) for c in names]
-    for c, pr in procs:
-        out = pr.communicate()[0].decode("utf-8", "replace")
+    jobs = int(os.environ.get("BRIDGE_JOBS") or 0) or max(4, 2 * (os.cpu_count() or 2))
+    SLOW_FIRST = ["fp7137", "crash", "lowmem", "lua_mount", "launch_mount_first", "unseen", "win64_layout", "lua_mount_verify",
+                  "chaos_maps", "orphans"]
+    order = [c for c in SLOW_FIRST if c in names] + [c for c in names if c not in SLOW_FIRST]
+    outs = {}
+
+    def run_case(c):
+        pr = subprocess.Popen([sys.executable, "-u", __file__, BRIDGE, "--serial", c], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        outs[c] = (pr.communicate()[0].decode("utf-8", "replace"), pr.returncode)
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        list(pool.map(run_case, order))
+    for c in names:
+        out, rc = outs[c]
         for line in out.splitlines():
             if line.startswith("TOTAL "):
                 continue
             print(line, flush=True)
             if line.startswith("PASS "): results.append((line[5:], True))
             elif line.startswith("FAIL "): results.append((line[5:], False))
-        if pr.returncode != 0 and not any(l.startswith(("PASS ", "FAIL ")) for l in out.splitlines()):
-            results.append(("case %s crashed (exit %d)" % (c, pr.returncode), False))
-    print("   [all %d cases in parallel: %.1f s]" % (len(names), time.time() - t0), flush=True)
+        if rc != 0 and not any(l.startswith(("PASS ", "FAIL ")) for l in out.splitlines()):
+            results.append(("case %s crashed (exit %d)" % (c, rc), False))
+    print("   [all %d cases, %d at a time: %.1f s]" % (len(names), jobs, time.time() - t0), flush=True)
 passed = sum(1 for _, ok in results if ok)
 print("TOTAL %d/%d" % (passed, len(results)))
 sys.exit(0 if passed == len(results) else 1)
