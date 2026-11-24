@@ -356,8 +356,9 @@ end
 -- Issue #33: the module asks for the guard only for code the agent typed (lua_exec {code}, lua_job): it sends hook_guard 0 for
 -- lua_exec_file (unless the caller passes one) and for lua_reload, so the hooks of a real addon file are registered exactly as
 -- the game would, with the file's own functions. mcpagent.unwrap(fn) gives back the function a wrapped hook was given.
--- Issue #34: the same temporary hook.Add replacement (also when the guard is off: it then passes the function through) records
--- which tool added each hook, so hook_list can say it. Nothing stays replaced after the chunk.
+-- Issue #34: hook_list says which tool added each hook. With the guard on, the temporary hook.Add replacement records them; with it
+-- off and for anything but a job (lua_exec_file, lua_reload: an addon's real file), hook.Add is NOT replaced at all (a file that
+-- keeps `local hook_Add = hook.Add` would keep our function for good): hook.GetTable() is compared before and after the chunk.
 A.HOOK_GUARD_DEFAULT = 300
 local guard_stack = {}
 local guard_wrappers = setmetatable({}, { __mode = "k" })  -- wrapper -> its state (a wrapper is never wrapped twice)
@@ -507,6 +508,21 @@ function A.guard_begin(limit, tool, chunk)
 	end
 	if not ADDED_TOOLS[tool] then tool = "lua_exec" end
 	chunk = type(chunk) == "string" and chunk or nil
+	if limit < 1 and tool ~= "lua_job" then  -- no guard: nothing is replaced, the hook table is compared at guard_end
+		local ok, tbl = pcall(function() return hook.GetTable() end)
+		local before = {}
+		if ok and type(tbl) == "table" then
+			for ev, ids in pairs(tbl) do
+				if type(ids) == "table" then
+					local c = {}
+					for id, f in pairs(ids) do c[id] = f end
+					before[ev] = c
+				end
+			end
+		end
+		guard_stack[#guard_stack + 1] = { before = before, tool = tool, chunk = chunk }
+		return
+	end
 	local orig = hook.Add
 	-- hook.Add returns nothing in the game; whatever it returns is passed on after the hook is recorded.
 	local function recorded(event, id, f, ...)
@@ -523,6 +539,19 @@ end
 
 function A.guard_end()
 	local top = table.remove(guard_stack)
+	if top and top.before then  -- unguarded run: what is new or changed in the hook table since guard_begin was added by it
+		local ok, tbl = pcall(function() return hook.GetTable() end)
+		if not ok or type(tbl) ~= "table" then return end
+		for ev, ids in pairs(tbl) do
+			if type(ids) == "table" then
+				local was = top.before[ev]
+				for id, f in pairs(ids) do
+					if type(f) == "function" and (not was or was[id] ~= f) then pcall(added_record, ev, id, f, top.tool, top.chunk) end
+				end
+			end
+		end
+		return
+	end
 	if top and hook.Add == top.detour then hook.Add = top.orig end  -- the chunk replaced hook.Add itself: leave its choice
 end
 

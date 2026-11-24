@@ -1096,6 +1096,11 @@ do
 	check(table_.T11.file == FILE_F, "Issue #33: an unwrapped hook is never removed by the guard")
 	r = call("lua_exec", { code = "REL_F = function() end hook.Add('T11', 'reload', REL_F)", hook_guard = 0, tool = "lua_reload", chunkname = "@lua/addon/sh_core.lua" })
 	check(r.ok and table_.T11.reload == REL_F, "Issue #33: a reloaded file's hook is the file's own function")
+	-- A file that keeps `local hook_Add = hook.Add` must keep the game's function: an unguarded file run never replaces hook.Add.
+	local add_before = hook.Add
+	r = call("lua_exec", { code = "KEPT_ADD = hook.Add", hook_guard = 0, tool = "lua_reload", chunkname = "@lua/addon/sh_keep.lua" })
+	check(r.ok and KEPT_ADD == add_before, "Issue #33: hook.Add is not replaced while a reloaded file runs (a cached hook.Add stays the game's)")
+	KEPT_ADD = nil
 	-- An explicit hook_guard above 0 on lua_exec_file opts in (the module passes it through).
 	r = call("lua_exec", { code = "OPT_F = function() error('opt') end hook.Add('T11', 'optin', OPT_F)", hook_guard = 3, tool = "lua_exec_file", chunkname = "@lua/addon/opt.lua" })
 	check(table_.T11.optin ~= OPT_F and mcpagent.unwrap(table_.T11.optin) == OPT_F, "Issue #33: hook_guard above 0 on lua_exec_file wraps again")
