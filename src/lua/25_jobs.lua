@@ -12,12 +12,53 @@ local MAX_REPORTS = 1000
 local MAX_REPORT_BYTES = 33554432  -- strings kept in one job's reports (each item is already bounded)
 local MAX_OUTPUT = 262144
 
+-- Issue #35: a small bounded memory of the jobs whose result is gone, so that "unknown job" can say why. A tombstone is
+-- written when a finished job's result is handed over (job_poll without peek: `by` says to whom) or dropped uncollected
+-- (prune). It lives as long as the Lua state: a realm reload starts with none, and the plain message then applies.
+A.job_tombs = A.job_tombs or {}   -- id -> { wall = os.time(), t = SysTime(), by = string|nil, dropped = bool }
+A.job_tomb_order = A.job_tomb_order or {}
+local MAX_TOMBS = 256
+local TOMB_TTL = 3600
+
+local function add_tomb(id, by, dropped)
+	local tombs, order = A.job_tombs, A.job_tomb_order
+	if tombs[id] == nil then order[#order + 1] = id end
+	tombs[id] = { wall = os.time(), t = SysTime(), by = by, dropped = dropped or false }
+	while #order > MAX_TOMBS do
+		tombs[table.remove(order, 1)] = nil
+	end
+end
+
+local function iso_utc(wall) return os.date("!%Y-%m-%dT%H:%M:%SZ", wall) end
+
+-- The not_found error of a job id: precise when the job's result was delivered or dropped, the plain text otherwise.
+local function unknown_job(id)
+	local tomb = A.job_tombs[id]
+	if tomb and SysTime() - tomb.t <= TOMB_TTL then
+		local ago = math.max(0, SysTime() - tomb.t)
+		local at = iso_utc(tomb.wall)
+		if tomb.dropped then
+			A.fail("not_found", "job " .. tostring(id) .. ": its result was not collected in time and was dropped at " .. at ..
+				" (" .. math.floor(ago) .. " s ago): run the job again", { job_id = id, dropped_at = at, dropped_ago_s = ago })
+		end
+		local who = tomb.by == "lua_job_status" and "an earlier lua_job_status call"
+			or "the lua_job call that started it (when that call ran as a background task: the task notification)"
+		A.fail("not_found", "job " .. tostring(id) .. ": its result was already delivered at " .. at .. " (" .. math.floor(ago) ..
+			" s ago) to " .. who .. ". The job did not get lost: read that result, a result is delivered once",
+			{ job_id = id, delivered_at = at, delivered_ago_s = ago, delivered_by = tomb.by })
+	end
+	A.fail("not_found", "unknown job " .. tostring(id) .. " (realm reloaded or result already collected)", { job_id = id })
+end
+
 -- Drops finished jobs nobody collected (5 min; async jobs 1 h). Called from every entry point, not only from the
 -- per-frame tick: the module stops ticking once no job runs, and the results would stay in memory forever.
 local function prune(now)
 	now = now or SysTime()
 	for id, job in pairs(jobs) do
-		if job.state ~= "running" and now - (job.finished or now) > (job.async and 3600 or 300) then jobs[id] = nil end
+		if job.state ~= "running" and now - (job.finished or now) > (job.async and 3600 or 300) then
+			jobs[id] = nil
+			add_tomb(id, nil, true)
+		end
 	end
 end
 
@@ -251,7 +292,7 @@ end
 function H.job_poll(args)
 	prune()
 	local job = jobs[args.id]
-	if not job then A.fail("not_found", "unknown job " .. tostring(args.id) .. " (realm reloaded or result already collected)") end
+	if not job then unknown_job(args.id) end
 	if args.peek and job.state ~= "running" then
 		return { id = job.id, state = job.state, frames = job._frames, elapsed_s = (job.finished or SysTime()) - job.started, progress = job._progress }
 	end
@@ -270,6 +311,7 @@ function H.job_poll(args)
 		end
 		if job.state == "failed" then out.error, out.traceback = job.error, job.traceback end
 		jobs[args.id] = nil
+		add_tomb(args.id, type(args.by) == "string" and args.by or nil, false)  -- Issue #35
 	end
 	return out
 end

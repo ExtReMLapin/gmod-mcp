@@ -42,6 +42,7 @@
 #include "output_schemas.h"
 #include "lua_mount.h"
 #include "realms.h"
+#include "reqctx.h"
 #include "resources.h"
 #include "prompts.h"
 #include "tools.h"
@@ -407,6 +408,32 @@ static void test_long_waits() {
     json too_long = mcp::call_tool("wait_for", json{{"condition", "true"}, {"timeout_s", 3601}});
     CHECK(too_long.value("isError", false));
     CHECK(coordinator::kRelayReadTimeoutS >= 3600 + 60);
+    // Issue #35 (written without running it): a long wait_s becomes a task like lua_job's timeout_s, and the descriptions say that a
+    // result is delivered once and what a stopped wait looks like.
+    const mcp::Tool *status = mcp::find_tool("lua_job_status"), *job = mcp::find_tool("lua_job");
+    CHECK(status && job);
+    if (status && job) {
+        CHECK(status->task_support == "optional");
+        CHECK(status->description.find("delivered_at") != std::string::npos);
+        CHECK(status->description.find("wait_elapsed") != std::string::npos);
+        CHECK(job->description.find("delivered_at") != std::string::npos);
+    }
+}
+
+// Issue #35 (written without running it): JSON-RPC ids are only unique per client and several bridges talk to one game, so a
+// notifications/cancelled is matched on the sender's X-Gmod-Mcp-Client tag as well as on the id.
+static void test_cancel_is_per_client() {
+    auto mine = std::make_shared<std::atomic<bool>>(false), other = std::make_shared<std::atomic<bool>>(false);
+    reqctx::track("bridge-A|7", mine);
+    reqctx::track("bridge-B|7", other);
+    int status = 0;
+    const std::string note = R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}})";
+    mcp::handle(note, mcp::Headers{{"x-gmod-mcp-client", "bridge-B"}}, status);
+    CHECK(!mine->load() && other->load());  // B's cancel reached B's request 7 only
+    mcp::handle(note, mcp::Headers{{"x-gmod-mcp-client", "bridge-A"}}, status);
+    CHECK(mine->load());
+    reqctx::untrack("bridge-A|7");
+    reqctx::untrack("bridge-B|7");
 }
 
 // Issue #18 (items 1 and 3) and Issue #11 (lua_check comment): the call shape leads every served description, a wiki name that is
@@ -3893,6 +3920,7 @@ int main(int argc, char **argv) {
     test_errors_meta_for_the_bridge();
     test_fields_note();
     test_long_waits();
+    test_cancel_is_per_client();
     test_frictions_small();
     test_errors_load_stamp_order();
     test_small_b6();

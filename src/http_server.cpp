@@ -205,7 +205,7 @@ static void setup_routes(httplib::Server &svr) {
     svr.Post("/mcp", [](const httplib::Request &req, httplib::Response &res) {
         int status = 200;
         mcp::Headers h;
-        for (const char *k : {"MCP-Protocol-Version", "Mcp-Method", "Mcp-Name", "Mcp-Param-Instance"})
+        for (const char *k : {"MCP-Protocol-Version", "Mcp-Method", "Mcp-Name", "Mcp-Param-Instance", "X-Gmod-Mcp-Client"})
             if (req.has_header(k)) h[util::to_lower(k)] = req.get_header_value(k);
         std::string immediate;
         auto p = mcp::prepare(req.body, h, immediate, status);

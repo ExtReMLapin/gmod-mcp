@@ -482,6 +482,63 @@ age_all()
 local lst2 = call("job_list", {})
 check(lst2.ok and #lst2.result.jobs == 0 and count_jobs() == 0, "job_list prunes old finished jobs (" .. count_jobs() .. ")")
 
+-- Issue #35 (written without running it): a result is delivered once; asking again says it was delivered (when, to whom)
+-- instead of the bare "realm reloaded or result already collected", which read as "the job was lost".
+do
+	local function finish(code, by)
+		local st = call("job_start", { code = code or "return 5", async = true })
+		for _ = 1, 5 do H.job_tick() end
+		local got = call("job_poll", { id = st.result.id, by = by })
+		check(got.ok and got.result.state == "done", "tombstone: the result is delivered the first time")
+		return st.result.id
+	end
+	local id1 = finish("return 5", "lua_job")
+	local again = call("job_poll", { id = id1 })
+	local e = again.error or {}
+	check(not again.ok and e.code == "not_found" and tostring(e.message):find("already delivered", 1, true) ~= nil, "tombstone: second poll says already delivered")
+	check(type(e.details) == "table" and type(e.details.delivered_at) == "string" and e.details.delivered_at:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ$") ~= nil
+		and e.details.delivered_by == "lua_job" and type(e.details.delivered_ago_s) == "number" and e.details.job_id == id1,
+		"tombstone: details carry delivered_at (ISO UTC), delivered_by, delivered_ago_s, job_id")
+	check(tostring(e.message):find("task notification", 1, true) ~= nil, "tombstone: a lua_job delivery names the task notification")
+	local peek = call("job_poll", { id = id1, peek = true })
+	check(not peek.ok and peek.error.code == "not_found" and peek.error.details and peek.error.details.delivered_at, "tombstone: a peek says it too")
+	local id2 = finish("return 6", "lua_job_status")
+	local e2 = call("job_poll", { id = id2 }).error or {}
+	check(e2.details and e2.details.delivered_by == "lua_job_status" and tostring(e2.message):find("earlier lua_job_status", 1, true) ~= nil,
+		"tombstone: a lua_job_status delivery says so")
+	-- A result delivered without `by` is still remembered.
+	local id3 = finish("return 7", nil)
+	local e3 = call("job_poll", { id = id3 }).error or {}
+	check(e3.details and e3.details.delivered_at and e3.details.delivered_by == nil, "tombstone: delivery without `by`")
+	-- An id nobody knows (a realm reload starts with no tombstones) keeps the old wording.
+	local unk = call("job_poll", { id = "server-g7-424242" })
+	check(not unk.ok and unk.error.code == "not_found" and tostring(unk.error.message):find("realm reloaded or result already collected", 1, true) ~= nil
+		and not tostring(unk.error.message):find("delivered", 1, true), "tombstone: an unknown id keeps the old message")
+	-- A running job is not a tombstone.
+	local run = call("job_start", { code = "job:sleep(100)" })
+	check(call("job_poll", { id = run.result.id, peek = true }).ok, "tombstone: a running job is still polled")
+	call("job_cancel", { id = run.result.id })
+	H.job_tick()
+	call("job_poll", { id = run.result.id })
+	-- A result nobody collected in time is dropped: the answer says so.
+	local old = call("job_start", { code = "return 8", async = true })
+	for _ = 1, 5 do H.job_tick() end
+	age_all()
+	local dropped = call("job_poll", { id = old.result.id })
+	check(not dropped.ok and dropped.error.code == "not_found" and tostring(dropped.error.message):find("dropped", 1, true) ~= nil
+		and dropped.error.details and dropped.error.details.dropped_at, "tombstone: an uncollected result that was pruned says it was dropped")
+	-- Bounded: at most 256 tombstones; the oldest go first.
+	local first = finish("return 1", "lua_job")
+	local last
+	for _ = 1, 300 do last = finish("return 1", "lua_job") end
+	local n = 0
+	for _ in pairs(A.job_tombs) do n = n + 1 end
+	check(n <= 256, "tombstone: bounded (" .. n .. ")")
+	check(call("job_poll", { id = last }).error.details.delivered_at ~= nil, "tombstone: the latest one is kept")
+	local gone = call("job_poll", { id = first })
+	check(not gone.ok and not tostring(gone.error.message):find("delivered", 1, true), "tombstone: the oldest was evicted (plain message again)")
+end
+
 -- Reports are bounded per item: depth 8, 5000 entries, 1 MiB strings; a cut is flagged. The count cap stays.
 local rj = run_job({ code = [[
 	job:report(string.rep("z", 2 * 1048576))
