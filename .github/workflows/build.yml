@@ -253,8 +253,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The whole bundle is unpacked: the validator also checks the files the manifest names (icon.png) next to it.
           mkdir -p check
-          unzip -p dist/gmod-mcp.mcpb manifest.json > check/manifest.json
+          unzip -q dist/gmod-mcp.mcpb -d check
           npx --yes @anthropic-ai/mcpb@2.1.2 validate check/manifest.json
           npx --yes @anthropic-ai/mcpb@2.1.2 info dist/gmod-mcp.mcpb
       # Unpacks the bundle and starts its server the way a client does (initialize, tools/list, one call: no game runs).
