@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "gmod-mcp",
   "display_name": "gmod-mcp (Garry's Mod)",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "MCP server for Garry's Mod: Lua in every realm, maps, console, errors, screenshots and hook tracing.",
   "long_description": "gmod-mcp-bridge, the stdio side of gmod-mcp. It relays to the gmod-mcp module running inside Garry's Mod, stays connected while the game is closed (every tool then answers `game_not_running`) and tells the client when the game is back.\n\n**The module for the game is a separate install** (two files, in the game folder): see the Install section of the README. The game must run with the launch option `-mcp`. Everything stays on your machine (127.0.0.1, bearer token read from a file under your user profile).\n\nWindows and Linux (x86-64) only.",
   "author": {

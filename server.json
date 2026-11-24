@@ -9,12 +9,12 @@
     "id": "1449665628"
   },
   "websiteUrl": "https://github.com/ExtReMLapin/gmod-mcp#readme",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/ExtReMLapin/gmod-mcp/releases/download/v0.3.7/gmod-mcp.mcpb",
-      "version": "0.3.7",
+      "identifier": "https://github.com/ExtReMLapin/gmod-mcp/releases/download/v0.3.8/gmod-mcp.mcpb",
+      "version": "0.3.8",
       "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "transport": {
         "type": "stdio"
